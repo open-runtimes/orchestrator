@@ -1,0 +1,19 @@
+# ko configuration
+# https://ko.build/configuration/
+
+# Default base image (distroless)
+defaultBaseImage: gcr.io/distroless/static-debian12:nonroot
+
+# Build settings
+builds:
+  - id: jobs-service
+    dir: ./cmd/jobs-service
+    main: .
+    ldflags:
+      - -s -w
+
+  - id: job-sidecar
+    dir: ./cmd/job-sidecar
+    main: .
+    ldflags:
+      - -s -w

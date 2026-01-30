@@ -1,0 +1,69 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/jobs-service
+/job-sidecar
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+coverage.html
+coverage.txt
+
+# Dependency directories
+vendor/
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-*
+
+# OS
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Local config
+*.local
+*.local.*
+
+# Debug
+debug
+__debug_bin*
+*.pprof
+
+# Task
+.task/
+
+# ko
+.ko/
+
+# Docker
+docker-compose.override.yml
+
+# Go workspace
+go.work
+go.work.sum
+
+# Build output
+dist/
+bin/
+out/
+tmp/

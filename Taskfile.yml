@@ -1,0 +1,110 @@
+version: "3"
+
+vars:
+  GOARCH:
+    sh: go env GOARCH
+  # Pin tool versions explicitly to avoid polluting go.mod
+  KO: go run github.com/google/ko@v0.18.1
+  LINT: go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+
+tasks:
+  default:
+    cmds:
+      - go run github.com/go-task/task/v3/cmd/task@v3.48.0 --list-all
+    silent: true
+
+  # === Development ===
+
+  dev:
+    desc: Run service locally with hot reload
+    deps: [build-sidecar]
+    env:
+      SIDECAR_IMAGE: ko.local/job-sidecar:latest
+      SHUTDOWN_DRAIN_WAIT: "0s"
+      EXTRA_HOSTS: "appwrite.test:host-gateway"
+    cmds:
+      - go run github.com/air-verse/air@latest
+
+  run:
+    desc: Run service locally (no reload)
+    deps: [build-sidecar]
+    env:
+      SIDECAR_IMAGE: ko.local/job-sidecar:latest
+      EXTRA_HOSTS: "appwrite.test:host-gateway"
+    cmds:
+      - go run ./cmd/jobs-service
+
+  # === Build ===
+
+  build:
+    desc: Build all images
+    cmds:
+      - task: build-service
+      - task: build-sidecar
+    silent: true
+
+  build-service:
+    desc: Build service image
+    cmds:
+      - KO_DOCKER_REPO=ko.local/jobs-service {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/jobs-service
+    sources:
+      - cmd/jobs-service/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - go.mod
+
+  build-sidecar:
+    desc: Build sidecar image
+    cmds:
+      - KO_DOCKER_REPO=ko.local/job-sidecar {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/job-sidecar
+    sources:
+      - cmd/job-sidecar/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - go.mod
+
+  # === Test ===
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test -race ./...
+
+  test-integration:
+    desc: Run integration tests (adapter tests)
+    cmds:
+      - go test -race -tags=integration -timeout=10m ./...
+
+  test-e2e:
+    desc: Run e2e tests (full system)
+    deps: [build]
+    cmds:
+      - go test -race -tags=e2e -timeout=10m ./...
+
+  test-all:
+    desc: Run all tests
+    deps: [build]
+    cmds:
+      - go test -race ./...
+      - go test -race -tags=integration -timeout=10m ./...
+      - go test -race -tags=e2e -timeout=10m ./...
+
+  # === Code Quality ===
+
+  lint:
+    desc: Run linter
+    cmds:
+      - "{{.LINT}} run"
+
+  fmt:
+    desc: Format code
+    cmds:
+      - "{{.LINT}} run --fix"
+
+  # === Cleanup ===
+
+  clean:
+    desc: Clean caches and built images
+    cmds:
+      - go clean -cache -testcache
+      - docker rmi ko.local/jobs-service:latest ko.local/job-sidecar:latest 2>/dev/null || true

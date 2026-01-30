@@ -1,0 +1,66 @@
+linters:
+  enable:
+    - errcheck
+    - exhaustive
+    - gocritic
+    - gofumpt
+    - goimports
+    - gomodguard
+    - gosimple
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unused
+
+run:
+  timeout: 5m
+  build-tags:
+    - integration
+    - e2e
+
+linters-settings:
+  exhaustive:
+    check:
+      - switch
+      - map
+    default-signifies-exhaustive: true
+
+  gomodguard:
+    blocked:
+      modules:
+        - github.com/pkg/errors:
+            reason: "Use stdlib errors.Join and fmt.Errorf with %w"
+
+  revive:
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: error-return
+      - name: error-strings
+      - name: exported
+      - name: increment-decrement
+      - name: var-declaration
+      - name: package-comments
+        disabled: true
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+    disabled-checks:
+      - hugeParam
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gocritic
+    # Cleanup functions intentionally ignore errors
+    - path: internal/job/adapter/
+      text: "Error return value of .*(ContainerStop|ContainerRemove|NetworkRemove|VolumeRemove).*is not checked"
+      linters:
+        - errcheck
