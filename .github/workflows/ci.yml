@@ -110,6 +110,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: ko-build/setup-ko@v0.7
+
+      - name: Build sidecar image
+        run: KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
+
       - name: Pull test images
         run: docker pull alpine:latest
 
