@@ -41,10 +41,13 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		Workers:    2,
 	}, nil)
 
-	orchestrator, err := docker.NewOrchestrator(context.Background(), docker.Config{
+	store := job.NewStore()
+	emitter := job.NewEventEmitter()
+	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
+
+	orchestrator, err := job.NewOrchestrator(store, emitter, docker.NewOrchestrator(context.Background(), docker.Config{
 		SidecarImage: "ko.local/job-sidecar:latest",
-		Dispatcher:   eventDispatcher,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Failed to create Docker orchestrator: %v", err)
 	}

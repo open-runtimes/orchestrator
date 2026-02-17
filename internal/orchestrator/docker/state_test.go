@@ -8,11 +8,8 @@ import (
 func TestNewStateRepo(t *testing.T) {
 	t.Parallel()
 	repo := newStateRepo()
-	if repo == nil {
-		t.Fatal("Expected non-nil repo")
-	}
-	if repo.jobs == nil {
-		t.Fatal("Expected non-nil jobs map")
+	if repo == nil || repo.jobs == nil {
+		t.Fatal("Expected non-nil repo with initialized jobs map")
 	}
 	if len(repo.jobs) != 0 {
 		t.Errorf("Expected empty jobs map, got %d entries", len(repo.jobs))
@@ -86,11 +83,8 @@ func TestStateRepo_Commit(t *testing.T) {
 
 	// Verify state
 	js, exists := repo.get("job-1")
-	if !exists {
-		t.Fatal("Expected job to exist")
-	}
-	if js == nil {
-		t.Fatal("Expected non-nil state after commit")
+	if !exists || js == nil {
+		t.Fatal("Expected job to exist with non-nil state after commit")
 	}
 	if js.jobContainerID != "container-1" {
 		t.Errorf("Expected container-1, got %s", js.jobContainerID)
@@ -128,11 +122,8 @@ func TestStateRepo_Release(t *testing.T) {
 
 	// Release
 	js, exists := repo.release("job-1")
-	if !exists {
-		t.Fatal("Expected exists=true for release")
-	}
-	if js == nil {
-		t.Fatal("Expected non-nil state from release")
+	if !exists || js == nil {
+		t.Fatal("Expected exists=true with non-nil state from release")
 	}
 	if js.jobContainerID != "container-1" {
 		t.Errorf("Expected container-1, got %s", js.jobContainerID)

@@ -42,23 +42,30 @@ func run() error {
 		return err
 	}
 
-	// Create callback dispatcher
+	// Create callback dispatcher and event emitter
 	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
+	store := job.NewStore()
+	emitter := job.NewEventEmitter()
+	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
+	emitter.OnEvent(job.NewMetricsListener(metrics))
 
-	// Create Docker orchestrator (automatically reconciles existing jobs)
-	orchestrator, err := docker.NewOrchestrator(ctx, docker.Config{
+	// Create Docker orchestrator
+	orchestrator, err := job.NewOrchestrator(store, emitter, docker.NewOrchestrator(ctx, docker.Config{
 		SidecarImage:        svcCfg.SidecarImage,
 		RetentionPeriod:     orchCfg.JobRetention,
 		MaintenanceInterval: orchCfg.MaintenanceInterval,
-		Dispatcher:          eventDispatcher,
 		CallbackProxyURL:    orchCfg.CallbackProxyURL,
 		ExtraHosts:          orchCfg.ExtraHosts,
-		Metrics:             metrics,
-	})
+	}))
 	if err != nil {
 		return err
 	}
 	defer orchestrator.Close()
+
+	// Start reconciliation and maintenance
+	if err := orchestrator.Start(ctx); err != nil {
+		return err
+	}
 
 	slog.Info("Connected to Docker daemon")
 

@@ -104,15 +104,15 @@ Artifacts handle file operations before and after job execution. An artifact run
 
 ### Artifact Types
 
-| Type | Description | When |
-|------|-------------|------|
-| `download` | Download file from URL | Pre-job |
-| `write` | Write inline content | Pre-job |
-| `unarchive` | Extract tar.gz archive | Pre-job |
-| `upload` | Upload file to URL | Post-job (requires `depends: "job"`) |
-| `read` | Include file in callback | Post-job (requires `depends: "job"`) |
-| `archive` | Create tar.gz archive | Post-job (requires `depends: "job"`) |
-| `list` | List files with glob excludes | Either (typically post-job) |
+| Type | Description |
+|------|-------------|
+| `download` | Download file from URL |
+| `write` | Write inline content |
+| `unarchive` | Extract tar.gz archive |
+| `upload` | Upload file to URL |
+| `read` | Include file contents in callback event |
+| `archive` | Create tar.gz archive |
+| `list` | List files with glob pattern exclusions |
 
 ### Common Fields
 
@@ -127,7 +127,7 @@ All artifacts use standardized `in` and `out` fields:
 
 ### Download Artifact
 
-Download a file from a URL before the job starts:
+Download a file from a URL:
 
 ```json
 {
@@ -143,7 +143,7 @@ Download a file from a URL before the job starts:
 
 ### Write Artifact
 
-Write content directly before the job starts:
+Write inline content to a file:
 
 ```json
 {
@@ -159,7 +159,7 @@ Write content directly before the job starts:
 
 ### Unarchive Artifact
 
-Extract a tar.gz archive before the job starts:
+Extract a tar.gz archive:
 
 ```json
 {
@@ -226,7 +226,7 @@ Often chained with a download:
 
 ### Upload Artifact
 
-Upload a file to a presigned URL after the job completes:
+Upload a file to a presigned URL:
 
 ```json
 {
@@ -243,7 +243,7 @@ Upload a file to a presigned URL after the job completes:
 
 ### Read Artifact
 
-Include file contents in the callback event after the job completes:
+Include file contents in the callback event:
 
 ```json
 {
@@ -260,7 +260,7 @@ The file contents (parsed as JSON if valid, otherwise string) are included in th
 
 ### Archive Artifact
 
-Create a tar.gz archive from a file or directory after the job completes:
+Create a tar.gz archive from a file or directory:
 
 ```json
 {
@@ -423,6 +423,8 @@ X-Signature-256: sha256=abc123...
   "data": {
     "jobId": "my-job-123",
     "exitCode": 0,
+    "image": "ffmpeg:latest",
+    "durationSeconds": 12.34,
     "meta": {
       "userId": "user-456",
       "requestId": "req-789"
@@ -450,7 +452,7 @@ X-Signature-256: sha256=abc123...
 
 **exit:**
 ```json
-{"jobId": "...", "exitCode": 0, "error": "...", "meta": {...}}
+{"jobId": "...", "exitCode": 0, "image": "alpine:latest", "durationSeconds": 12.34, "error": "...", "meta": {...}}
 ```
 
 ### Verifying Signatures
