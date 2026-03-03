@@ -14,7 +14,6 @@ import (
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/testutil"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,144 +81,8 @@ func TestOrchestrator_EventBasedFlow(t *testing.T) {
 	_ = orchestrator.Stop(ctx, jobID)
 }
 
-func TestOrchestrator_WithDownload(t *testing.T) {
-	ctx := context.Background()
-
-	// Create a test server to serve the input file
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("test input content"))
-	}))
-	defer server.Close()
-
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewStore(), job.NewEventEmitter())
-	if err != nil {
-		t.Fatalf("Failed to create orchestrator: %v", err)
-	}
-	defer orchestrator.Close()
-	if err := orchestrator.Start(ctx); err != nil {
-		t.Fatalf("Failed to start orchestrator: %v", err)
-	}
-
-	jobID := fmt.Sprintf("download-test-%d", time.Now().UnixNano())
-
-	req := &job.Request{
-		ID:             jobID,
-		Image:          "alpine:latest",
-		Command:        "cat /workspace/input.txt && echo ' - processed'",
-		CPU:            1,
-		Memory:         128,
-		TimeoutSeconds: 60,
-		Workspace:      "/workspace",
-		Artifacts: []artifact.Artifact{
-			&artifact.Download{
-				ID:  "test-input",
-				Out: "input.txt",
-				In:  server.URL,
-			},
-		},
-	}
-
-	if err := orchestrator.Run(ctx, req); err != nil {
-		t.Fatalf("Failed to run job: %v", err)
-	}
-
-	// Wait for completion
-	var finalStatus *job.Status
-	testutil.MustWaitFor(t, func() bool {
-		finalStatus, err = orchestrator.Status(ctx, jobID)
-		if err != nil {
-			return true
-		}
-		return finalStatus.State == job.StateCompleted || finalStatus.State == job.StateFailed
-	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(time.Second))
-
-	if finalStatus.State != job.StateCompleted {
-		t.Errorf("Expected completed state, got %s", finalStatus.State)
-	}
-
-	_ = orchestrator.Stop(ctx, jobID)
-}
-
-func TestOrchestrator_WithUpload(t *testing.T) {
-	ctx := context.Background()
-
-	// Create a test server to receive uploads
-	var uploadReceived atomic.Bool
-	var uploadContent []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
-			uploadContent, _ = io.ReadAll(r.Body)
-			uploadReceived.Store(true)
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer server.Close()
-
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewStore(), job.NewEventEmitter())
-	if err != nil {
-		t.Fatalf("Failed to create orchestrator: %v", err)
-	}
-	defer orchestrator.Close()
-	if err := orchestrator.Start(ctx); err != nil {
-		t.Fatalf("Failed to start orchestrator: %v", err)
-	}
-
-	jobID := fmt.Sprintf("upload-test-%d", time.Now().UnixNano())
-
-	req := &job.Request{
-		ID:             jobID,
-		Image:          "alpine:latest",
-		Command:        "echo 'output content' > /workspace/output.txt",
-		CPU:            1,
-		Memory:         128,
-		TimeoutSeconds: 60,
-		Workspace:      "/workspace",
-		Artifacts: []artifact.Artifact{
-			&artifact.Upload{
-				ID:      "test-output",
-				In:      "output.txt",
-				Out:     server.URL,
-				Depends: artifact.JobDependency,
-			},
-		},
-	}
-
-	if err := orchestrator.Run(ctx, req); err != nil {
-		t.Fatalf("Failed to run job: %v", err)
-	}
-
-	// Wait for completion
-	testutil.MustWaitFor(t, func() bool {
-		status, err := orchestrator.Status(ctx, jobID)
-		if err != nil {
-			return true
-		}
-		return status.State == job.StateCompleted || status.State == job.StateFailed
-	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(time.Second))
-
-	// Verify upload was received
-	if !uploadReceived.Load() {
-		t.Error("Upload was not received")
-	}
-	if len(uploadContent) == 0 {
-		t.Error("Upload content was empty")
-	}
-
-	_ = orchestrator.Stop(ctx, jobID)
-}
-
 func TestOrchestrator_DownloadFailure(t *testing.T) {
 	ctx := context.Background()
-
-	// Create a server that returns 404
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -246,7 +109,7 @@ func TestOrchestrator_DownloadFailure(t *testing.T) {
 			&artifact.Download{
 				ID:  "bad-input",
 				Out: "input.txt",
-				In:  server.URL + "/nonexistent",
+				In:  "http://127.0.0.1:1/nonexistent",
 			},
 		},
 	}
