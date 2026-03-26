@@ -1,6 +1,7 @@
 linters:
   enable:
     - errcheck
+    - errname
     - exhaustive
     - gocritic
     - gofumpt
@@ -9,6 +10,8 @@ linters:
     - gosimple
     - govet
     - ineffassign
+    - misspell
+    - predeclared
     - revive
     - staticcheck
     - unused
