@@ -16,8 +16,8 @@ const defaultDownloadTimeoutSeconds = 300 // 5 minutes
 // Download downloads a file from a URL.
 type Download struct {
 	ID             string `json:"id"`
-	In             string `json:"in"`             // URL to download from
-	Out            string `json:"out"`            // Path to write to
+	In             string `json:"in"`  // URL to download from
+	Out            string `json:"out"` // Path to write to
 	Depends        string `json:"depends,omitempty"`
 	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 }

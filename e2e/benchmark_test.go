@@ -399,7 +399,6 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	port := tempServer.Listener.Addr().(*net.TCPAddr).Port
 	callbackProxyURL := fmt.Sprintf("http://host.docker.internal:%d", port)
 
-	
 	emitter := job.NewEventEmitter()
 	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
 

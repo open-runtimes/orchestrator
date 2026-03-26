@@ -190,8 +190,8 @@ func (r *dockerRegistry) Each(f func(jobID string, e job.Entry, h job.Handle[doc
 	}
 	r.mu.RUnlock()
 
-	for _, s := range snaps {
-		f(s.id, s.entry, s.h)
+	for i := range snaps {
+		f(snaps[i].id, snaps[i].entry, snaps[i].h)
 	}
 }
 

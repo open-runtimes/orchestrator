@@ -23,8 +23,8 @@ type watchConfig struct {
 // Collected once via inspectContainers, then mapped purely in memory.
 type containerState struct {
 	jobID          string
-	workerExitCode int            // exit code of the worker container
-	workerImage    string         // e.g. "alpine:latest"
+	workerExitCode int               // exit code of the worker container
+	workerImage    string            // e.g. "alpine:latest"
 	workerLabels   map[string]string // worker container labels (callback config, meta)
 }
 

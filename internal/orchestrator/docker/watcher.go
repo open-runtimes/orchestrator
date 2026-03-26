@@ -256,11 +256,12 @@ func (w *dockerJobWatcher) process(ctx context.Context, logger *slog.Logger, sid
 				out <- WorkerExited{ExitCode: exitCode, Duration: duration}
 
 			case event.Actor.ID == sidecarID && event.Action == "die":
-				if !state.workerStarted {
+				switch {
+				case !state.workerStarted:
 					logger.Error("Sidecar exited before inputs completed")
-				} else if !state.workerExited {
+				case !state.workerExited:
 					logger.Warn("Sidecar exited while worker still running")
-				} else {
+				default:
 					logger.Info("Sidecar exited, job complete")
 				}
 				out <- SidecarExited{WorkerEverStarted: state.workerStarted}
@@ -270,7 +271,7 @@ func (w *dockerJobWatcher) process(ctx context.Context, logger *slog.Logger, sid
 	}
 }
 
-func (w *dockerJobWatcher) startLogStreaming(ctx context.Context, logger *slog.Logger, workerID string, out chan<- JobEvent) (context.CancelFunc, chan struct{}) {
+func (w *dockerJobWatcher) startLogStreaming(ctx context.Context, logger *slog.Logger, workerID string, out chan<- JobEvent) (cancel context.CancelFunc, done chan struct{}) {
 	logCtx, logCancel := context.WithCancel(ctx)
 	logDone := make(chan struct{})
 	go func() {
