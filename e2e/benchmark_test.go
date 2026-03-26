@@ -399,11 +399,11 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	port := tempServer.Listener.Addr().(*net.TCPAddr).Port
 	callbackProxyURL := fmt.Sprintf("http://host.docker.internal:%d", port)
 
-	store := job.NewStore()
+	
 	emitter := job.NewEventEmitter()
 	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
 
-	orchestrator, err := job.NewOrchestrator(store, emitter, docker.NewOrchestrator(ctx, docker.Config{
+	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{
 		SidecarImage:        "ko.local/job-sidecar:latest",
 		RetentionPeriod:     5 * time.Minute,
 		MaintenanceInterval: 1 * time.Minute,

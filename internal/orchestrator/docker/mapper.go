@@ -12,18 +12,20 @@ import (
 // watchConfig holds everything needed to watch a job's lifecycle.
 // Built from either a job.Request (normal path) or containerState (resume path).
 type watchConfig struct {
-	jobID string
-	image string
-	dest  *callbackDest
+	jobID     string
+	image     string
+	sidecarID string
+	workerID  string
+	dest      *callbackDest
 }
 
 // containerState is the Docker state needed to reconstruct a watchConfig on resume.
 // Collected once via inspectContainers, then mapped purely in memory.
 type containerState struct {
-	jobID        string
+	jobID          string
 	workerExitCode int            // exit code of the worker container
-	workerImage  string           // e.g. "alpine:latest"
-	workerLabels map[string]string // worker container labels (callback config, meta)
+	workerImage    string         // e.g. "alpine:latest"
+	workerLabels   map[string]string // worker container labels (callback config, meta)
 }
 
 // inspectContainers reads the Docker state needed for resume mapping.
@@ -41,11 +43,13 @@ func inspectContainers(ctx context.Context, cli *client.Client, jobID, workerID 
 	return cs
 }
 
-// watchConfigFromRequest maps a job.Request to a watchConfig.
-func watchConfigFromRequest(req *job.Request) *watchConfig {
+// watchConfigFromRequest maps a job.Request and dockerHandle to a watchConfig.
+func watchConfigFromRequest(req *job.Request, h dockerHandle) *watchConfig {
 	cfg := &watchConfig{
-		jobID: req.ID,
-		image: req.Image,
+		jobID:     req.ID,
+		image:     req.Image,
+		sidecarID: h.sidecarContainerID,
+		workerID:  h.jobContainerID,
 	}
 	if req.Callback != nil && req.Callback.URL != "" {
 		cfg.dest = &callbackDest{
@@ -59,13 +63,15 @@ func watchConfigFromRequest(req *job.Request) *watchConfig {
 	return cfg
 }
 
-// watchConfigFromState maps inspected Docker container state to a watchConfig.
+// watchConfigFromState maps inspected Docker container state and a dockerHandle to a watchConfig.
 // This is a pure function — no API calls.
-func watchConfigFromState(cs containerState) *watchConfig {
+func watchConfigFromState(cs containerState, h dockerHandle) *watchConfig {
 	return &watchConfig{
-		jobID: cs.jobID,
-		image: cs.workerImage,
-		dest:  callbackDestFromLabels(cs.jobID, cs.workerLabels),
+		jobID:     cs.jobID,
+		image:     cs.workerImage,
+		sidecarID: h.sidecarContainerID,
+		workerID:  h.jobContainerID,
+		dest:      callbackDestFromLabels(cs.jobID, cs.workerLabels),
 	}
 }
 

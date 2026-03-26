@@ -8,32 +8,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
+
+const defaultDownloadTimeoutSeconds = 300 // 5 minutes
 
 // Download downloads a file from a URL.
 type Download struct {
-	ID      string `json:"id"`
-	In      string `json:"in"`  // URL to download from
-	Out     string `json:"out"` // Path to write to
-	Depends string `json:"depends,omitempty"`
-
-	httpClient *http.Client
-}
-
-// NewDownload creates a Download artifact with the given HTTP client.
-func NewDownload(httpClient *http.Client, id, in, out, depends string) *Download {
-	return &Download{
-		ID:         id,
-		In:         in,
-		Out:        out,
-		Depends:    depends,
-		httpClient: httpClient,
-	}
-}
-
-// SetHTTPClient sets the HTTP client for this artifact.
-func (a *Download) SetHTTPClient(c *http.Client) {
-	a.httpClient = c
+	ID             string `json:"id"`
+	In             string `json:"in"`             // URL to download from
+	Out            string `json:"out"`            // Path to write to
+	Depends        string `json:"depends,omitempty"`
+	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 }
 
 func (a *Download) ArtifactID() string   { return a.ID }
@@ -53,10 +39,11 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create request: %w", err)}
 	}
 
-	client := a.httpClient
-	if client == nil {
-		client = http.DefaultClient
+	timeoutSecs := a.TimeoutSeconds
+	if timeoutSecs <= 0 {
+		timeoutSecs = defaultDownloadTimeoutSeconds
 	}
+	client := &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second}
 
 	resp, err := client.Do(req)
 	if err != nil {

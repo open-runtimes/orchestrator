@@ -16,95 +16,14 @@ func Validate(i int, a Artifact) error {
 		return apperrors.Validation(field+".id", fmt.Sprintf("artifact[%d]: id is required", i))
 	}
 
-	switch art := a.(type) {
-	case *Download:
-		if art.In == "" {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: in (url) is required", i))
-		}
-		if err := validateURL(art.In); err != nil {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: invalid in (url): %v", i, err))
-		}
-		if art.Out == "" {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: out (path) is required", i))
-		}
-		if err := validatePath(art.Out); err != nil {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: invalid out (path): %v", i, err))
-		}
-
-	case *Upload:
-		if art.In == "" {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: in (path) is required", i))
-		}
-		if err := validatePath(art.In); err != nil {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: invalid in (path): %v", i, err))
-		}
-		if art.Out == "" {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: out (url) is required", i))
-		}
-		if err := validateURL(art.Out); err != nil {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: invalid out (url): %v", i, err))
-		}
-
-	case *Write:
-		if art.Out == "" {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: out (path) is required", i))
-		}
-		if err := validatePath(art.Out); err != nil {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: invalid out (path): %v", i, err))
-		}
-		if art.In == "" {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: in (content) is required", i))
-		}
-
-	case *Read:
-		if art.In == "" {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: in (path) is required", i))
-		}
-		if err := validatePath(art.In); err != nil {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: invalid in (path): %v", i, err))
-		}
-
-	case *Archive:
-		if art.In == "" {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: in (path) is required", i))
-		}
-		if err := validatePath(art.In); err != nil {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: invalid in (path): %v", i, err))
-		}
-		if art.Out == "" {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: out (dest) is required", i))
-		}
-		if err := validatePath(art.Out); err != nil {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: invalid out (dest): %v", i, err))
-		}
-		if art.Format != "tar.gz" {
-			return apperrors.Validation(field+".format", fmt.Sprintf("artifact[%d]: format must be \"tar.gz\"", i))
-		}
-
-	case *Unarchive:
-		if art.In == "" {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: in (path) is required", i))
-		}
-		if err := validatePath(art.In); err != nil {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: invalid in (path): %v", i, err))
-		}
-		if art.Out == "" {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: out (dest) is required", i))
-		}
-		if err := validatePath(art.Out); err != nil {
-			return apperrors.Validation(field+".out", fmt.Sprintf("artifact[%d]: invalid out (dest): %v", i, err))
-		}
-
-	case *List:
-		if art.In == "" {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: in (path) is required", i))
-		}
-		if err := validatePath(art.In); err != nil {
-			return apperrors.Validation(field+".in", fmt.Sprintf("artifact[%d]: invalid in (path): %v", i, err))
-		}
+	td, ok := globalRegistry[a.ArtifactType()]
+	if !ok {
+		return fmt.Errorf("artifact[%d]: unknown type %q", i, a.ArtifactType())
 	}
-
-	return nil
+	if td.Validate == nil {
+		return nil
+	}
+	return td.Validate(field, a)
 }
 
 func validateURL(rawURL string) error {

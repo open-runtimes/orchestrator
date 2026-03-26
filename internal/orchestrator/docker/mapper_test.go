@@ -11,14 +11,21 @@ import (
 func TestWatchConfigFromRequest_NoCallback(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-1", Image: "alpine:latest"}
+	h := dockerHandle{sidecarContainerID: "sc-1", jobContainerID: "jc-1"}
 
-	cfg := watchConfigFromRequest(req)
+	cfg := watchConfigFromRequest(req, h)
 
 	if cfg.jobID != "job-1" {
 		t.Errorf("jobID: want job-1, got %s", cfg.jobID)
 	}
 	if cfg.image != "alpine:latest" {
 		t.Errorf("image: want alpine:latest, got %s", cfg.image)
+	}
+	if cfg.sidecarID != "sc-1" {
+		t.Errorf("sidecarID: want sc-1, got %s", cfg.sidecarID)
+	}
+	if cfg.workerID != "jc-1" {
+		t.Errorf("workerID: want jc-1, got %s", cfg.workerID)
 	}
 	if cfg.dest != nil {
 		t.Error("dest: want nil when no callback configured")
@@ -29,7 +36,7 @@ func TestWatchConfigFromRequest_NilCallback(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-1", Image: "alpine:latest", Callback: nil}
 
-	cfg := watchConfigFromRequest(req)
+	cfg := watchConfigFromRequest(req, dockerHandle{})
 
 	if cfg.dest != nil {
 		t.Error("dest: want nil when Callback is nil")
@@ -44,7 +51,7 @@ func TestWatchConfigFromRequest_EmptyCallbackURL(t *testing.T) {
 		Callback: &job.Callback{URL: ""},
 	}
 
-	cfg := watchConfigFromRequest(req)
+	cfg := watchConfigFromRequest(req, dockerHandle{})
 
 	if cfg.dest != nil {
 		t.Error("dest: want nil when Callback.URL is empty")
@@ -64,7 +71,7 @@ func TestWatchConfigFromRequest_FullCallback(t *testing.T) {
 		},
 	}
 
-	cfg := watchConfigFromRequest(req)
+	cfg := watchConfigFromRequest(req, dockerHandle{})
 
 	if cfg.dest == nil {
 		t.Fatal("dest: want non-nil")
@@ -94,14 +101,21 @@ func TestWatchConfigFromState_NoCallbackLabels(t *testing.T) {
 		jobID:       "job-1",
 		workerImage: "alpine:latest",
 	}
+	h := dockerHandle{sidecarContainerID: "sc-1", jobContainerID: "jc-1"}
 
-	cfg := watchConfigFromState(cs)
+	cfg := watchConfigFromState(cs, h)
 
 	if cfg.jobID != "job-1" {
 		t.Errorf("jobID: want job-1, got %s", cfg.jobID)
 	}
 	if cfg.image != "alpine:latest" {
 		t.Errorf("image: want alpine:latest, got %s", cfg.image)
+	}
+	if cfg.sidecarID != "sc-1" {
+		t.Errorf("sidecarID: want sc-1, got %s", cfg.sidecarID)
+	}
+	if cfg.workerID != "jc-1" {
+		t.Errorf("workerID: want jc-1, got %s", cfg.workerID)
 	}
 	if cfg.dest != nil {
 		t.Error("dest: want nil when no callback labels")
@@ -119,7 +133,7 @@ func TestWatchConfigFromState_WithCallbackLabels(t *testing.T) {
 		},
 	}
 
-	cfg := watchConfigFromState(cs)
+	cfg := watchConfigFromState(cs, dockerHandle{})
 
 	if cfg.dest == nil {
 		t.Fatal("dest: want non-nil")

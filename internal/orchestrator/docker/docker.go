@@ -29,11 +29,10 @@ type Orchestrator struct {
 	sidecarImage        string
 	retentionPeriod     time.Duration
 	maintenanceInterval time.Duration
-	store               *job.Store
 	emitter             *job.EventEmitter
 	callbackProxyURL    string
 	extraHosts          []string
-	state               *stateRepo
+	registry            *dockerRegistry
 	watcher             JobWatcher
 
 	cancelMaintenance context.CancelFunc
@@ -50,10 +49,9 @@ type Config struct {
 }
 
 // NewOrchestrator returns an OrchestratorFactory that creates a Docker orchestrator.
-// The factory receives the shared Store and EventEmitter when called via job.NewOrchestrator.
 // Register listeners on the emitter before calling Start.
 func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
-	return func(store *job.Store, emitter *job.EventEmitter) (job.Orchestrator, error) {
+	return func(emitter *job.EventEmitter) (job.Orchestrator, error) {
 		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create docker client: %w", err)
@@ -74,11 +72,10 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			sidecarImage:        cfg.SidecarImage,
 			retentionPeriod:     retentionPeriod,
 			maintenanceInterval: maintenanceInterval,
-			store:               store,
 			emitter:             emitter,
 			callbackProxyURL:    cfg.CallbackProxyURL,
 			extraHosts:          cfg.ExtraHosts,
-			state:               newStateRepo(),
+			registry:            newDockerRegistry(),
 			watcher:             newDockerJobWatcher(dockerClient),
 		}, nil
 	}
@@ -99,15 +96,9 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 }
 
 // reconcile scans Docker for existing job containers and resumes watching them.
-// Handles various states:
-// - Sidecar running, worker not started → check health and maybe start worker
-// - Worker running → resume watching
-// - Worker exited, sidecar running → signal sidecar
-// - Both exited → mark completed
 func (o *Orchestrator) reconcile(ctx context.Context) error {
 	logger := slog.With("component", "reconcile")
 
-	// Find all containers managed by this service
 	containers, err := o.client.ContainerList(ctx, container.ListOptions{
 		All: true,
 		Filters: filters.NewArgs(
@@ -131,11 +122,9 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 		if jobID == "" {
 			continue
 		}
-
 		if jobs[jobID] == nil {
 			jobs[jobID] = &jobContainers{}
 		}
-
 		switch c.Labels["job.type"] {
 		case "worker":
 			jobs[jobID].worker = c
@@ -144,74 +133,78 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Rebuild state for each job
 	var reconciled, resumed, completed int
 	for jobID, jc := range jobs {
-		// Must have at least sidecar
 		if jc.sidecar == nil {
 			logger.Warn("Job missing sidecar container", "jobId", jobID)
 			continue
 		}
 
-		js := &jobState{
+		handle := dockerHandle{
 			sidecarContainerID: jc.sidecar.ID,
 			volumeName:         fmt.Sprintf("job-%s-workspace", jobID),
 		}
-
 		if jc.worker != nil {
-			js.jobContainerID = jc.worker.ID
+			handle.jobContainerID = jc.worker.ID
 		}
-
-		o.state.commit(jobID, js)
 		reconciled++
 
-		// Determine job state and resume appropriately
 		sidecarRunning := jc.sidecar.State == "running"
 		workerRunning := jc.worker != nil && jc.worker.State == "running"
 
 		switch {
 		case !sidecarRunning && !workerRunning:
-			// Both exited - job is completed
+			// Both exited — restore with terminal state, no watcher needed.
 			completed++
-			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID)
+			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			exitCode := cs.workerExitCode
+			var t job.Transition
 			if exitCode == 0 {
-				_ = o.store.Set(jobID, job.StateCompleted, job.WithExitCode(exitCode))
+				t = job.ToCompleted(exitCode)
 			} else {
-				_ = o.store.Set(jobID, job.StateFailed, job.WithExitCode(exitCode))
+				t = job.ToFailed(exitCode, "")
 			}
+			_ = o.registry.Restore(jobID, t, handle, nil)
 
 		case sidecarRunning && jc.worker == nil:
-			// Sidecar running, worker not created - shouldn't happen in normal flow
+			// Sidecar running but no worker — shouldn't happen in normal flow.
 			logger.Warn("Job has sidecar but no worker container", "jobId", jobID)
-			_ = o.store.Set(jobID, job.StateAccepted)
-
-		case workerRunning:
-			// Worker is running - resume watching
-			_ = o.store.Set(jobID, job.StateRunning)
 			resumed++
-			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID)
-			cfg := watchConfigFromState(cs)
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			js.cancelWatch = cancelWatch
+			_ = o.registry.Restore(jobID, job.ToRunning(), handle, cancelWatch)
+			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
+			cfg := watchConfigFromState(cs, handle)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg, js)
+				o.runWatchLoop(watchCtx, cfg)
+			}()
+
+		case workerRunning:
+			// Worker is running — restore as running and resume watcher.
+			resumed++
+			watchCtx, cancelWatch := context.WithCancel(context.Background())
+			_ = o.registry.Restore(jobID, job.ToRunning(), handle, cancelWatch)
+			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
+			cfg := watchConfigFromState(cs, handle)
+			o.watchWg.Add(1)
+			go func() {
+				defer o.watchWg.Done()
+				o.runWatchLoop(watchCtx, cfg)
 			}()
 
 		default:
-			// Sidecar running with worker created but not running — accepted state
-			_ = o.store.Set(jobID, job.StateAccepted)
+			// Sidecar running, worker created but not yet running — accepted state.
+			// The watcher will drive the Running transition when the worker starts.
 			resumed++
-			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID)
-			cfg := watchConfigFromState(cs)
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			js.cancelWatch = cancelWatch
+			_ = o.registry.Restore(jobID, job.ToAccepted(), handle, cancelWatch)
+			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
+			cfg := watchConfigFromState(cs, handle)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg, js)
+				o.runWatchLoop(watchCtx, cfg)
 			}()
 		}
 	}
@@ -230,37 +223,27 @@ type callbackDest struct {
 }
 
 // Run creates and starts a job with its sidecar.
-// The flow is event-driven:
-// 1. Create volume, sidecar, and worker containers
-// 2. Start sidecar (processes inputs, writes marker file)
-// 3. Event watcher detects sidecar healthy → starts worker
-// 4. Event watcher detects worker exit → signals sidecar
-// 5. Event watcher detects sidecar exit → job complete
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
-	if err := o.state.reserve(req.ID); err != nil {
-		return err
-	}
-	if err := o.store.Set(req.ID, job.StateAccepted); err != nil {
-		o.state.release(req.ID)
+	if err := o.registry.Reserve(req.ID); err != nil {
 		return err
 	}
 
-	js := &jobState{
+	h := dockerHandle{
 		volumeName: fmt.Sprintf("job-%s-workspace", req.ID),
 	}
 
-	// On failure, clean up resources and release reservation
+	// On failure, release the reservation and clean up any created resources.
 	success := false
 	defer func() {
 		if !success {
-			o.cleanup(ctx, js)
-			o.store.Remove(req.ID)
-			o.state.release(req.ID)
+			if rh, ok := o.registry.Release(req.ID); ok {
+				o.cleanup(ctx, rh.Runtime)
+			}
 		}
 	}()
 
 	// Create shared volume
-	if _, err := o.client.VolumeCreate(ctx, volume.CreateOptions{Name: js.volumeName}); err != nil {
+	if _, err := o.client.VolumeCreate(ctx, volume.CreateOptions{Name: h.volumeName}); err != nil {
 		return apperrors.Internal("docker.createVolume", err)
 	}
 
@@ -272,56 +255,54 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 
 	// Create job container (but don't start yet)
 	var err error
-	if js.jobContainerID, err = o.createJobContainer(ctx, req, js); err != nil {
+	if h.jobContainerID, err = o.createJobContainer(ctx, req, h); err != nil {
 		return apperrors.Internal("docker.createJobContainer", err)
 	}
 
 	// Create sidecar container
-	if js.sidecarContainerID, err = o.createSidecarContainer(ctx, req, js); err != nil {
+	if h.sidecarContainerID, err = o.createSidecarContainer(ctx, req, h); err != nil {
 		return apperrors.Internal("docker.createSidecarContainer", err)
 	}
 
 	// Start sidecar (will process inputs and write marker file)
-	if err := o.client.ContainerStart(ctx, js.sidecarContainerID, container.StartOptions{}); err != nil {
+	if err := o.client.ContainerStart(ctx, h.sidecarContainerID, container.StartOptions{}); err != nil {
 		return apperrors.Internal("docker.startSidecarContainer", err)
 	}
 
-	// Commit the job state
-	o.state.commit(req.ID, js)
+	// Commit runtime handles and start event-driven watcher.
+	watchCtx, cancelWatch := context.WithCancel(context.Background())
+	o.registry.Commit(req.ID, h, cancelWatch)
 	success = true
 
-	// Start event-driven watcher in background
-	watchCtx, cancelWatch := context.WithCancel(context.Background())
-	js.cancelWatch = cancelWatch
-	cfg := watchConfigFromRequest(req)
+	cfg := watchConfigFromRequest(req, h)
 	o.watchWg.Add(1)
 	go func() {
 		defer o.watchWg.Done()
-		o.runWatchLoop(watchCtx, cfg, js)
+		o.runWatchLoop(watchCtx, cfg)
 	}()
 
 	return nil
 }
 
 // runWatchLoop drives job state transitions and callback emission from watcher events.
-func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig, js *jobState) {
-	for e := range o.watcher.Watch(ctx, js.sidecarContainerID, js.jobContainerID) {
+func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig) {
+	for e := range o.watcher.Watch(ctx, cfg.sidecarID, cfg.workerID) {
 		switch ev := e.(type) {
 		case SidecarReady:
-			_ = o.store.Set(cfg.jobID, job.StateRunning)
+			_ = o.registry.Apply(cfg.jobID, job.ToRunning())
 			o.emitStartEvent(cfg)
 
 		case WorkerExited:
 			if ev.ExitCode == 0 {
-				_ = o.store.Set(cfg.jobID, job.StateCompleted, job.WithExitCode(ev.ExitCode))
+				_ = o.registry.Apply(cfg.jobID, job.ToCompleted(ev.ExitCode))
 			} else {
-				_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(ev.ExitCode))
+				_ = o.registry.Apply(cfg.jobID, job.ToFailed(ev.ExitCode, ""))
 			}
 			o.sendExitEvent(cfg.jobID, cfg, ev.ExitCode, ev.Duration.Seconds())
 
 		case SidecarExited:
 			if !ev.WorkerEverStarted {
-				_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(-1))
+				_ = o.registry.Apply(cfg.jobID, job.ToFailed(-1, "sidecar exited before worker started"))
 				o.sendExitEvent(cfg.jobID, cfg, -1, 0)
 			}
 
@@ -342,30 +323,22 @@ func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig, js *j
 
 // Stop stops a running job and cleans up its resources.
 func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
-	js, exists := o.state.release(jobID)
-	if !exists {
+	h, ok := o.registry.Release(jobID)
+	if !ok {
 		return apperrors.NotFound("job", jobID)
 	}
 
-	_ = o.store.Set(jobID, job.StateCancelled) // tolerate error if already terminal
-	o.store.Remove(jobID)
-
-	// Job is reserved but still initializing - nothing to clean up yet
-	if js == nil {
-		return nil
+	if h.CancelWatch != nil {
+		h.CancelWatch()
 	}
 
-	if js.cancelWatch != nil {
-		js.cancelWatch()
-	}
-
-	o.cleanup(ctx, js)
+	o.cleanup(ctx, h.Runtime)
 	return nil
 }
 
 // Status returns the current status of a job.
 func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.Status, error) {
-	entry, exists := o.store.Get(jobID)
+	entry, exists := o.registry.Get(jobID)
 	if !exists {
 		return nil, apperrors.NotFound("job", jobID)
 	}
@@ -374,7 +347,7 @@ func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.Status, e
 
 // List returns the status of all jobs.
 func (o *Orchestrator) List(ctx context.Context) ([]job.Status, error) {
-	entries := o.store.List()
+	entries := o.registry.List()
 	statuses := make([]job.Status, len(entries))
 	for i, e := range entries {
 		statuses[i] = *e.Status()
@@ -388,12 +361,12 @@ func (o *Orchestrator) Close() error {
 		o.cancelMaintenance()
 	}
 
-	// Cancel all watch goroutines and wait for them to finish
-	for _, js := range o.state.list() {
-		if js != nil && js.cancelWatch != nil {
-			js.cancelWatch()
+	// Cancel all watch goroutines and wait for them to finish.
+	o.registry.Each(func(_ string, _ job.Entry, h job.Handle[dockerHandle]) {
+		if h.CancelWatch != nil {
+			h.CancelWatch()
 		}
-	}
+	})
 	o.watchWg.Wait()
 
 	return o.client.Close()
@@ -448,7 +421,7 @@ func (o *Orchestrator) sendExitEvent(jobID string, cfg *watchConfig, exitCode in
 	}
 }
 
-func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request, js *jobState) (string, error) {
+func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request, h dockerHandle) (string, error) {
 	env := make([]string, 0, len(req.Environment))
 	for k, v := range req.Environment {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
@@ -494,7 +467,7 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeVolume,
-				Source: js.volumeName,
+				Source: h.volumeName,
 				Target: req.Workspace,
 			},
 		},
@@ -513,7 +486,7 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 	return resp.ID, nil
 }
 
-func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Request, js *jobState) (string, error) {
+func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Request, h dockerHandle) (string, error) {
 	env := []string{
 		fmt.Sprintf("JOB_ID=%s", req.ID),
 		fmt.Sprintf("TIMEOUT_SECONDS=%d", req.TimeoutSeconds),
@@ -539,7 +512,6 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		}
 		env = append(env, fmt.Sprintf("CALLBACK_URL=%s", callbackURL))
 		if req.Callback.Key != "" {
-			// Sidecar signs events with this key
 			env = append(env, fmt.Sprintf("CALLBACK_KEY=%s", req.Callback.Key))
 		}
 		if len(req.Callback.Events) > 0 {
@@ -555,20 +527,18 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		env = append(env, fmt.Sprintf("JOB_META=%s", string(metaJSON)))
 	}
 
-	// Health check via sidecar binary checking for marker file
-	// Docker will emit health_status events when this passes
 	healthCheck := &container.HealthConfig{
 		Test:        []string{"CMD", "/ko-app/job-sidecar", "-check-ready"},
 		Interval:    200 * time.Millisecond,
 		Timeout:     5 * time.Second,
 		StartPeriod: time.Duration(req.TimeoutSeconds) * time.Second,
-		Retries:     0, // Immediate success on first pass
+		Retries:     0,
 	}
 
 	containerConfig := &container.Config{
 		Image:       o.sidecarImage,
 		Env:         env,
-		User:        "0", // Run as root to write to shared volume
+		User:        "0",
 		Healthcheck: healthCheck,
 		Labels: map[string]string{
 			"job.id":     req.ID,
@@ -581,7 +551,7 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		Mounts: []mount.Mount{
 			{
 				Type:   mount.TypeVolume,
-				Source: js.volumeName,
+				Source: h.volumeName,
 				Target: req.Workspace,
 			},
 		},
@@ -613,14 +583,14 @@ func (o *Orchestrator) pullImageIfNeeded(ctx context.Context, imageName string) 
 	return err
 }
 
-func (o *Orchestrator) cleanup(ctx context.Context, js *jobState) {
+func (o *Orchestrator) cleanup(ctx context.Context, h dockerHandle) {
 	const stopTimeout = 10
 
-	o.removeContainer(ctx, js.sidecarContainerID, stopTimeout)
-	o.removeContainer(ctx, js.jobContainerID, stopTimeout)
+	o.removeContainer(ctx, h.sidecarContainerID, stopTimeout)
+	o.removeContainer(ctx, h.jobContainerID, stopTimeout)
 
-	if js.volumeName != "" {
-		_ = o.client.VolumeRemove(ctx, js.volumeName, true)
+	if h.volumeName != "" {
+		_ = o.client.VolumeRemove(ctx, h.volumeName, true)
 	}
 }
 
@@ -657,23 +627,24 @@ func (o *Orchestrator) cleanupExpiredJobs(ctx context.Context) {
 	now := time.Now()
 	logger := slog.With("component", "maintenance")
 
-	entries := o.store.List()
 	var expired []string
-	for _, e := range entries {
+	o.registry.Each(func(jobID string, e job.Entry, _ job.Handle[dockerHandle]) {
 		if isTerminal(e.State) && now.Sub(e.UpdatedAt) > o.retentionPeriod {
-			expired = append(expired, e.ID)
+			expired = append(expired, jobID)
 		}
-	}
+	})
 
 	if len(expired) == 0 {
 		return
 	}
 
 	for _, jobID := range expired {
-		if js, exists := o.state.release(jobID); exists && js != nil {
-			o.cleanup(ctx, js)
+		if h, ok := o.registry.Release(jobID); ok {
+			if h.CancelWatch != nil {
+				h.CancelWatch()
+			}
+			o.cleanup(ctx, h.Runtime)
 		}
-		o.store.Remove(jobID)
 		logger.Debug("Cleaned up expired job", "jobId", jobID)
 	}
 

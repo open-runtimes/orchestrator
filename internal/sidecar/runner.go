@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
 	"orchestrator/pkg/cloudevent"
@@ -34,8 +33,6 @@ type Runner struct {
 	postJobArtifacts []artifact.Artifact
 	sender           *cloudevent.Sender
 	eventBuilder     *job.EventBuilder
-	httpClient       *http.Client
-	maxRetries       int
 }
 
 // NewRunner creates a new sidecar runner.
@@ -62,11 +59,6 @@ func NewRunner(cfg *Config) (*Runner, error) {
 		_ = json.Unmarshal([]byte(cfg.Meta), &meta)
 	}
 
-	maxRetries := cfg.UploadRetries
-	if maxRetries < 0 {
-		maxRetries = 3
-	}
-
 	return &Runner{
 		config:           cfg,
 		events:           events,
@@ -74,8 +66,6 @@ func NewRunner(cfg *Config) (*Runner, error) {
 		postJobArtifacts: postJob,
 		sender:           cloudevent.NewSender(cfg.CallbackTimeout),
 		eventBuilder:     job.NewEventBuilder(cfg.JobID, "orchestrator/sidecar", meta),
-		httpClient:       &http.Client{Timeout: cfg.UploadTimeout},
-		maxRetries:       maxRetries,
 	}, nil
 }
 
@@ -134,7 +124,7 @@ func (r *Runner) waitForSignal(ctx context.Context) {
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
 		if waitForFiles {
-			if srcPath := getArtifactSourcePath(a); srcPath != "" {
+			if srcPath := artifact.SourcePath(a); srcPath != "" {
 				fullPath := filepath.Join(r.config.SharedVolumePath, srcPath)
 				if err := r.waitForPath(ctx, fullPath); err != nil {
 					r.sendArtifactEvent(ctx, a, "failed", nil, err)
@@ -142,13 +132,6 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 					return err
 				}
 			}
-		}
-
-		switch art := a.(type) {
-		case *artifact.Download:
-			art.SetHTTPClient(r.httpClient)
-		case *artifact.Upload:
-			art.SetHTTPClient(r.httpClient, r.maxRetries)
 		}
 
 		result := a.Apply(ctx, r.config.SharedVolumePath)
@@ -162,22 +145,6 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 
 		return result.Error
 	})
-}
-
-// getArtifactSourcePath returns the source path for artifacts that read from files.
-func getArtifactSourcePath(a artifact.Artifact) string {
-	switch art := a.(type) {
-	case *artifact.Upload:
-		return art.In
-	case *artifact.Read:
-		return art.In
-	case *artifact.Archive:
-		return art.In
-	case *artifact.List:
-		return art.In
-	default:
-		return ""
-	}
 }
 
 func (r *Runner) sendArtifactEvent(ctx context.Context, a artifact.Artifact, status string, content any, err error) {

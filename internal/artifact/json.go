@@ -17,26 +17,12 @@ func UnmarshalArtifact(data []byte) (Artifact, error) {
 		return nil, fmt.Errorf("failed to determine artifact type: %w", err)
 	}
 
-	var artifact Artifact
-	switch env.Type {
-	case "download":
-		artifact = &Download{}
-	case "upload":
-		artifact = &Upload{}
-	case "write":
-		artifact = &Write{}
-	case "read":
-		artifact = &Read{}
-	case "archive":
-		artifact = &Archive{}
-	case "unarchive":
-		artifact = &Unarchive{}
-	case "list":
-		artifact = &List{}
-	default:
+	td, ok := globalRegistry[env.Type]
+	if !ok {
 		return nil, fmt.Errorf("unknown artifact type: %q", env.Type)
 	}
 
+	artifact := td.New()
 	if err := json.Unmarshal(data, artifact); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal %s artifact: %w", env.Type, err)
 	}

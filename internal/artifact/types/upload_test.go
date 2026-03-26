@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestUpload_Interface(t *testing.T) {
@@ -44,7 +43,7 @@ func TestUpload_Apply(t *testing.T) {
 	testContent := "upload test content"
 	os.WriteFile(filepath.Join(tmpDir, "output.txt"), []byte(testContent), 0o644)
 
-	a := NewUpload(&http.Client{Timeout: 30 * time.Second}, 3, "test-upload", "output.txt", server.URL, "")
+	a := &Upload{ID: "test-upload", In: "output.txt", Out: server.URL, Retries: 3}
 
 	result := a.Apply(context.Background(), tmpDir)
 	if result.Error != nil {
@@ -56,5 +55,23 @@ func TestUpload_Apply(t *testing.T) {
 	}
 	if string(uploadContent) != testContent {
 		t.Errorf("Expected content %q, got %q", testContent, string(uploadContent))
+	}
+}
+
+func TestUpload_Apply_CustomConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tmpDir, _ := os.MkdirTemp("", "upload-test")
+	defer os.RemoveAll(tmpDir)
+	os.WriteFile(filepath.Join(tmpDir, "out.txt"), []byte("data"), 0o644)
+
+	a := &Upload{ID: "ul1", In: "out.txt", Out: server.URL, TimeoutSeconds: 30, Retries: 1}
+
+	result := a.Apply(context.Background(), tmpDir)
+	if result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
 	}
 }

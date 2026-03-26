@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestDownload_Interface(t *testing.T) {
@@ -37,7 +36,7 @@ func TestDownload_Apply(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	a := NewDownload(&http.Client{Timeout: 30 * time.Second}, "test-download", server.URL, "subdir/downloaded.txt", "")
+	a := &Download{ID: "test-download", In: server.URL, Out: "subdir/downloaded.txt"}
 
 	result := a.Apply(context.Background(), tmpDir)
 	if result.Error != nil {
@@ -65,7 +64,7 @@ func TestDownload_Apply_Error(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "download-test")
 	defer os.RemoveAll(tmpDir)
 
-	a := NewDownload(&http.Client{Timeout: 30 * time.Second}, "test-download", server.URL, "downloaded.txt", "")
+	a := &Download{ID: "test-download", In: server.URL, Out: "downloaded.txt"}
 
 	result := a.Apply(context.Background(), tmpDir)
 	if result.Error == nil {
@@ -76,18 +75,16 @@ func TestDownload_Apply_Error(t *testing.T) {
 	}
 }
 
-func TestDownload_Apply_DefaultClient(t *testing.T) {
-	expectedContent := "test"
+func TestDownload_Apply_CustomTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(expectedContent))
+		w.Write([]byte("ok"))
 	}))
 	defer server.Close()
 
 	tmpDir, _ := os.MkdirTemp("", "download-test")
 	defer os.RemoveAll(tmpDir)
 
-	// No HTTP client set - should use default
-	a := &Download{ID: "dl1", In: server.URL, Out: "file.txt"}
+	a := &Download{ID: "dl1", In: server.URL, Out: "file.txt", TimeoutSeconds: 30}
 
 	result := a.Apply(context.Background(), tmpDir)
 	if result.Error != nil {

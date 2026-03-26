@@ -59,17 +59,14 @@ type Orchestrator interface {
 }
 
 // OrchestratorFactory builds an Orchestrator with required shared dependencies.
-// Implementations return this from their constructor so that Store and EventEmitter
-// are guaranteed to be provided.
-type OrchestratorFactory func(store *Store, emitter *EventEmitter) (Orchestrator, error)
+// Implementations return this from their constructor so that the EventEmitter
+// is guaranteed to be provided.
+type OrchestratorFactory func(emitter *EventEmitter) (Orchestrator, error)
 
 // NewOrchestrator validates that shared dependencies are non-nil and calls the factory.
-func NewOrchestrator(store *Store, emitter *EventEmitter, factory OrchestratorFactory) (Orchestrator, error) {
-	if store == nil {
-		return nil, fmt.Errorf("store is required")
-	}
+func NewOrchestrator(emitter *EventEmitter, factory OrchestratorFactory) (Orchestrator, error) {
 	if emitter == nil {
 		return nil, fmt.Errorf("emitter is required")
 	}
-	return factory(store, emitter)
+	return factory(emitter)
 }

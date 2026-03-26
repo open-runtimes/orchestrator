@@ -44,13 +44,12 @@ func run() error {
 
 	// Create callback dispatcher and event emitter
 	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
-	store := job.NewStore()
 	emitter := job.NewEventEmitter()
 	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
 	emitter.OnEvent(job.NewMetricsListener(metrics))
 
 	// Create Docker orchestrator
-	orchestrator, err := job.NewOrchestrator(store, emitter, docker.NewOrchestrator(ctx, docker.Config{
+	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{
 		SidecarImage:        svcCfg.SidecarImage,
 		RetentionPeriod:     orchCfg.JobRetention,
 		MaintenanceInterval: orchCfg.MaintenanceInterval,

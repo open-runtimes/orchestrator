@@ -41,11 +41,11 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		Workers:    2,
 	}, nil)
 
-	store := job.NewStore()
+	
 	emitter := job.NewEventEmitter()
 	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
 
-	orchestrator, err := job.NewOrchestrator(store, emitter, docker.NewOrchestrator(context.Background(), docker.Config{
+	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(context.Background(), docker.Config{
 		SidecarImage: "ko.local/job-sidecar:latest",
 	}))
 	if err != nil {

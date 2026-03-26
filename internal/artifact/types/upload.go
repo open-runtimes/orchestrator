@@ -12,36 +12,19 @@ import (
 	"time"
 )
 
+const (
+	defaultUploadTimeoutSeconds = 300 // 5 minutes
+	defaultUploadRetries        = 3
+)
+
 // Upload uploads a file to a URL.
 type Upload struct {
-	ID      string `json:"id"`
-	In      string `json:"in"`  // Path to read from
-	Out     string `json:"out"` // URL to upload to
-	Depends string `json:"depends,omitempty"`
-
-	httpClient *http.Client
-	maxRetries int
-}
-
-// NewUpload creates an Upload artifact with the given HTTP client and retry config.
-func NewUpload(httpClient *http.Client, maxRetries int, id, in, out, depends string) *Upload {
-	if maxRetries < 0 {
-		maxRetries = 3
-	}
-	return &Upload{
-		ID:         id,
-		In:         in,
-		Out:        out,
-		Depends:    depends,
-		httpClient: httpClient,
-		maxRetries: maxRetries,
-	}
-}
-
-// SetHTTPClient sets the HTTP client for this artifact.
-func (a *Upload) SetHTTPClient(c *http.Client, maxRetries int) {
-	a.httpClient = c
-	a.maxRetries = maxRetries
+	ID             string `json:"id"`
+	In             string `json:"in"`             // Path to read from
+	Out            string `json:"out"`            // URL to upload to
+	Depends        string `json:"depends,omitempty"`
+	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
+	Retries        int    `json:"retries,omitempty"`        // Max retry attempts (default 3)
 }
 
 func (a *Upload) ArtifactID() string   { return a.ID }
@@ -58,13 +41,15 @@ func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
 	}
 	size := fileInfo.Size()
 
-	client := a.httpClient
-	if client == nil {
-		client = http.DefaultClient
+	timeoutSecs := a.TimeoutSeconds
+	if timeoutSecs <= 0 {
+		timeoutSecs = defaultUploadTimeoutSeconds
 	}
-	maxRetries := a.maxRetries
-	if maxRetries == 0 {
-		maxRetries = 3
+	client := &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second}
+
+	maxRetries := a.Retries
+	if maxRetries <= 0 {
+		maxRetries = defaultUploadRetries
 	}
 
 	var lastErr error

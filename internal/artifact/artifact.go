@@ -19,10 +19,5 @@ type (
 	List      = types.List
 )
 
-// Re-export constants and constructors
+// Re-export constants
 const JobDependency = types.JobDependency
-
-var (
-	NewDownload = types.NewDownload
-	NewUpload   = types.NewUpload
-)
