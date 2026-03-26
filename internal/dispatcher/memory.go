@@ -34,7 +34,7 @@ type MemoryDispatcher struct {
 
 	wg       sync.WaitGroup
 	shutdown chan struct{}
-	closed   atomic.Bool
+	isClosed atomic.Bool
 }
 
 // MetricsRecorder is an optional interface for recording dispatcher metrics.
@@ -95,7 +95,7 @@ func (d *MemoryDispatcher) reportQueueSize() {
 
 // Dispatch queues an event for async delivery.
 func (d *MemoryDispatcher) Dispatch(event *Event) error {
-	if d.closed.Load() {
+	if d.isClosed.Load() {
 		return fmt.Errorf("dispatcher is closed")
 	}
 
@@ -134,7 +134,7 @@ func (d *MemoryDispatcher) Stats() Stats {
 
 // Close gracefully shuts down the dispatcher.
 func (d *MemoryDispatcher) Close(ctx context.Context) error {
-	if d.closed.Swap(true) {
+	if d.isClosed.Swap(true) {
 		return nil // already closed
 	}
 

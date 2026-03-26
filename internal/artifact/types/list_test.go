@@ -9,15 +9,15 @@ import (
 
 func TestList_Interface(t *testing.T) {
 	recursive := false
-	a := &List{ID: "l1", In: "src", Excludes: []string{"node_modules"}, Recursive: &recursive}
+	a := &List{ID: "l1", In: "src", Excludes: []string{"node_modules"}, IsRecursive: &recursive}
 	if a.ArtifactID() != "l1" {
 		t.Errorf("ArtifactID() = %v, want l1", a.ArtifactID())
 	}
 	if a.ArtifactType() != "list" {
 		t.Errorf("ArtifactType() = %v, want list", a.ArtifactType())
 	}
-	if *a.Recursive != false {
-		t.Errorf("Recursive = %v, want false", *a.Recursive)
+	if *a.IsRecursive != false {
+		t.Errorf("Recursive = %v, want false", *a.IsRecursive)
 	}
 }
 
@@ -91,9 +91,9 @@ func TestList_Apply_NonRecursive(t *testing.T) {
 
 	recursive := false
 	a := &List{
-		ID:        "test-list",
-		In:        "project",
-		Recursive: &recursive,
+		ID:          "test-list",
+		In:          "project",
+		IsRecursive: &recursive,
 	}
 
 	result := a.Apply(context.Background(), tmpDir)

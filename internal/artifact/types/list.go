@@ -11,11 +11,11 @@ import (
 
 // List lists files in a directory.
 type List struct {
-	ID        string   `json:"id"`
-	In        string   `json:"in"`                  // Directory to list
-	Recursive *bool    `json:"recursive,omitempty"` // Default: true
-	Excludes  []string `json:"excludes,omitempty"`  // Glob patterns to exclude
-	Depends   string   `json:"depends,omitempty"`
+	ID          string   `json:"id"`
+	In          string   `json:"in"`                  // Directory to list
+	IsRecursive *bool    `json:"recursive,omitempty"` // Default: true
+	Excludes    []string `json:"excludes,omitempty"`  // Glob patterns to exclude
+	Depends     string   `json:"depends,omitempty"`
 }
 
 func (a *List) ArtifactID() string   { return a.ID }
@@ -25,7 +25,7 @@ func (a *List) DependsOn() string    { return a.Depends }
 // Apply lists files in a directory.
 func (a *List) Apply(ctx context.Context, basePath string) *Result {
 	srcPath := filepath.Join(basePath, a.In)
-	recursive := a.Recursive == nil || *a.Recursive
+	recursive := a.IsRecursive == nil || *a.IsRecursive
 
 	info, err := os.Stat(srcPath)
 	if err != nil {

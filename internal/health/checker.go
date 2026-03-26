@@ -39,10 +39,10 @@ type Checker struct {
 	orchestrator ReadinessChecker
 	timeout      time.Duration
 
-	mu           sync.RWMutex
-	lastCheck    time.Time
-	cachedReady  *Response
-	shuttingDown bool
+	mu             sync.RWMutex
+	lastCheck      time.Time
+	cachedReady    *Response
+	isShuttingDown bool
 }
 
 // NewChecker creates a new health checker.
@@ -68,7 +68,7 @@ func (c *Checker) Liveness(ctx context.Context) *Response {
 func (c *Checker) Readiness(ctx context.Context) *Response {
 	c.mu.RLock()
 	// Return unhealthy immediately if shutting down
-	if c.shuttingDown {
+	if c.isShuttingDown {
 		c.mu.RUnlock()
 		return &Response{
 			Status: StatusUnhealthy,
@@ -146,6 +146,6 @@ func (r *Response) IsHealthy() bool {
 func (c *Checker) SetShuttingDown() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.shuttingDown = true
+	c.isShuttingDown = true
 	c.cachedReady = nil // Clear cache to ensure immediate effect
 }
