@@ -16,7 +16,9 @@ func Validate(i int, a Artifact) error {
 		return apperrors.Validation(field+".id", fmt.Sprintf("artifact[%d]: id is required", i))
 	}
 
+	globalRegistryMu.RLock()
 	td, ok := globalRegistry[a.ArtifactType()]
+	globalRegistryMu.RUnlock()
 	if !ok {
 		return fmt.Errorf("artifact[%d]: unknown type %q", i, a.ArtifactType())
 	}

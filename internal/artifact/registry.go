@@ -1,5 +1,7 @@
 package artifact
 
+import "sync"
+
 // TypeDef describes a single artifact type to the registry.
 // Register one of these per type; nothing else needs to change when adding a new type.
 type TypeDef struct {
@@ -14,11 +16,16 @@ type TypeDef struct {
 	SourcePath func(a Artifact) string
 }
 
-var globalRegistry = map[string]TypeDef{}
+var (
+	globalRegistryMu sync.RWMutex
+	globalRegistry   = map[string]TypeDef{}
+)
 
 // Register adds a TypeDef to the global registry.
 // Panics on duplicate type names so misconfiguration is caught at startup.
 func Register(td TypeDef) {
+	globalRegistryMu.Lock()
+	defer globalRegistryMu.Unlock()
 	if _, exists := globalRegistry[td.Type]; exists {
 		panic("artifact registry: duplicate type " + td.Type)
 	}
@@ -27,7 +34,9 @@ func Register(td TypeDef) {
 
 // SourcePath returns the filesystem source path for an artifact, or "" if none.
 func SourcePath(a Artifact) string {
+	globalRegistryMu.RLock()
 	td, ok := globalRegistry[a.ArtifactType()]
+	globalRegistryMu.RUnlock()
 	if !ok || td.SourcePath == nil {
 		return ""
 	}

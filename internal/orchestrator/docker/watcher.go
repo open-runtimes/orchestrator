@@ -126,7 +126,10 @@ func (w *dockerJobWatcher) run(ctx context.Context, sidecarID, workerID string, 
 // reconcile inspects current container state and syncs watcherState accordingly.
 // Returns true if the job is complete and watching should stop.
 func (w *dockerJobWatcher) reconcile(ctx context.Context, logger *slog.Logger, sidecarID, workerID string, state *watcherState, out chan<- JobEvent) bool {
-	sidecar, err := w.client.ContainerInspect(ctx, sidecarID)
+	inspectCtx, inspectCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer inspectCancel()
+
+	sidecar, err := w.client.ContainerInspect(inspectCtx, sidecarID)
 	if err != nil {
 		logger.Error("Failed to inspect sidecar during reconcile", "error", err)
 		return true
@@ -149,7 +152,7 @@ func (w *dockerJobWatcher) reconcile(ctx context.Context, logger *slog.Logger, s
 		ok        bool
 	}
 	var ws workerSnap
-	if info, err := w.client.ContainerInspect(ctx, workerID); err == nil {
+	if info, err := w.client.ContainerInspect(inspectCtx, workerID); err == nil {
 		ws.ok = true
 		ws.status = info.State.Status
 		ws.running = info.State.Running

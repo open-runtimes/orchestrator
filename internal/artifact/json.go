@@ -17,7 +17,9 @@ func UnmarshalArtifact(data []byte) (Artifact, error) {
 		return nil, fmt.Errorf("failed to determine artifact type: %w", err)
 	}
 
+	globalRegistryMu.RLock()
 	td, ok := globalRegistry[env.Type]
+	globalRegistryMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown artifact type: %q", env.Type)
 	}
