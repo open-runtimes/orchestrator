@@ -86,7 +86,7 @@ func TestRunWatchLoop_HappyPath(t *testing.T) {
 	script := []JobEvent{
 		SidecarReady{},
 		WorkerExited{ExitCode: 0, Duration: 2 * time.Second},
-		SidecarExited{WorkerEverStarted: true},
+		SidecarExited{WorkerHasStarted: true},
 	}
 	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
 	_ = reg.Reserve("job-1")
@@ -119,7 +119,7 @@ func TestRunWatchLoop_WorkerFailure(t *testing.T) {
 	script := []JobEvent{
 		SidecarReady{},
 		WorkerExited{ExitCode: 1, Duration: time.Second},
-		SidecarExited{WorkerEverStarted: true},
+		SidecarExited{WorkerHasStarted: true},
 	}
 	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
 	_ = reg.Reserve("job-1")
@@ -144,7 +144,7 @@ func TestRunWatchLoop_WorkerFailure(t *testing.T) {
 func TestRunWatchLoop_SidecarCrashBeforeWorker(t *testing.T) {
 	t.Parallel()
 	script := []JobEvent{
-		SidecarExited{WorkerEverStarted: false},
+		SidecarExited{WorkerHasStarted: false},
 	}
 	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
 	_ = reg.Reserve("job-1")
@@ -172,7 +172,7 @@ func TestRunWatchLoop_LogDelivered(t *testing.T) {
 		SidecarReady{},
 		LogLine{Stream: "stdout", Lines: []string{"hello", "world"}},
 		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerEverStarted: true},
+		SidecarExited{WorkerHasStarted: true},
 	}
 	// No event filter = all events allowed
 	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
@@ -199,7 +199,7 @@ func TestRunWatchLoop_LogSkippedWhenNoCallback(t *testing.T) {
 		SidecarReady{},
 		LogLine{Stream: "stdout", Lines: []string{"hello"}},
 		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerEverStarted: true},
+		SidecarExited{WorkerHasStarted: true},
 	}
 	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
 	_ = reg.Reserve("job-1")
@@ -219,7 +219,7 @@ func TestRunWatchLoop_LogSkippedWhenFilteredOut(t *testing.T) {
 		SidecarReady{},
 		LogLine{Stream: "stderr", Lines: []string{"warning"}},
 		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerEverStarted: true},
+		SidecarExited{WorkerHasStarted: true},
 	}
 	// Callback configured but log events not in filter
 	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
@@ -241,7 +241,7 @@ func TestRunWatchLoop_ResumeNoSidecarReady(t *testing.T) {
 	// WorkerExited and SidecarExited without a leading SidecarReady.
 	script := []JobEvent{
 		WorkerExited{ExitCode: 0, Duration: 5 * time.Second},
-		SidecarExited{WorkerEverStarted: true},
+		SidecarExited{WorkerHasStarted: true},
 	}
 	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
 	// Outer reconcile already set Running before spawning the goroutine.
@@ -270,12 +270,12 @@ func TestRunWatchLoop_ResumeNoSidecarReady(t *testing.T) {
 
 func TestRunWatchLoop_SidecarExitedAfterWorker(t *testing.T) {
 	t.Parallel()
-	// SidecarExited{WorkerEverStarted: true} should not change state
+	// SidecarExited{WorkerHasStarted: true} should not change state
 	// (worker exit already handled it).
 	script := []JobEvent{
 		SidecarReady{},
 		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerEverStarted: true},
+		SidecarExited{WorkerHasStarted: true},
 	}
 	o, reg, _ := newTestOrchestrator(&fakeWatcher{events: script})
 	_ = reg.Reserve("job-1")

@@ -33,7 +33,7 @@ type WorkerExited struct {
 // SidecarExited is emitted when the sidecar container exits.
 // This is always the final event; the channel is closed afterward.
 type SidecarExited struct {
-	WorkerEverStarted bool
+	WorkerHasStarted bool
 }
 
 // LogLine is emitted for each batch of stdout/stderr lines from the worker.
@@ -77,11 +77,11 @@ func (w *dockerJobWatcher) Watch(ctx context.Context, sidecarID, workerID string
 
 // watcherState tracks mutable state across reconnect iterations.
 type watcherState struct {
-	workerStarted bool
-	workerExited  bool
-	startTime     time.Time
-	logCancel     context.CancelFunc
-	logDone       chan struct{}
+	isWorkerStarted bool
+	isWorkerExited  bool
+	startTime       time.Time
+	logCancel       context.CancelFunc
+	logDone         chan struct{}
 }
 
 func (w *dockerJobWatcher) run(ctx context.Context, sidecarID, workerID string, out chan<- JobEvent) {
@@ -133,10 +133,10 @@ func (w *dockerJobWatcher) reconcile(ctx context.Context, logger *slog.Logger, s
 	}
 
 	if !sidecar.State.Running {
-		if !state.workerStarted {
+		if !state.isWorkerStarted {
 			logger.Error("Sidecar exited before inputs completed")
 		}
-		out <- SidecarExited{WorkerEverStarted: state.workerStarted}
+		out <- SidecarExited{WorkerHasStarted: state.isWorkerStarted}
 		return true
 	}
 
@@ -160,37 +160,37 @@ func (w *dockerJobWatcher) reconcile(ctx context.Context, logger *slog.Logger, s
 	}
 
 	// Detect resume: worker was started in a previous session.
-	if !state.workerStarted && ws.ok {
+	if !state.isWorkerStarted && ws.ok {
 		switch ws.status {
 		case "running", "exited", "dead":
-			state.workerStarted = true
+			state.isWorkerStarted = true
 			state.startTime = ws.startedAt
 		}
 	}
 
 	// Start worker if sidecar is healthy and worker not yet started.
-	if !state.workerStarted && sidecar.State.Health != nil && sidecar.State.Health.Status == "healthy" {
+	if !state.isWorkerStarted && sidecar.State.Health != nil && sidecar.State.Health.Status == "healthy" {
 		logger.Info("Sidecar healthy (reconciled), starting worker")
 		state.startTime = time.Now()
 		if err := w.client.ContainerStart(ctx, workerID, container.StartOptions{}); err != nil {
 			logger.Error("Failed to start worker", "error", err)
 			out <- WorkerExited{ExitCode: -1}
-			out <- SidecarExited{WorkerEverStarted: false}
+			out <- SidecarExited{WorkerHasStarted: false}
 			return true
 		}
-		state.workerStarted = true
+		state.isWorkerStarted = true
 		ws.running = true
 		out <- SidecarReady{}
 	}
 
 	// Start or resume log streaming.
-	if state.workerStarted && state.logCancel == nil && !state.workerExited {
+	if state.isWorkerStarted && state.logCancel == nil && !state.isWorkerExited {
 		state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
 	}
 
 	// Handle worker exit detected via inspection (missed event on reconnect).
-	if ws.ok && state.workerStarted && !state.workerExited && !ws.running {
-		state.workerExited = true
+	if ws.ok && state.isWorkerStarted && !state.isWorkerExited && !ws.running {
+		state.isWorkerExited = true
 		duration := time.Duration(0)
 		if !state.startTime.IsZero() {
 			duration = time.Since(state.startTime)
@@ -226,21 +226,21 @@ func (w *dockerJobWatcher) process(ctx context.Context, logger *slog.Logger, sid
 			}
 
 			switch {
-			case event.Actor.ID == sidecarID && event.Action == "health_status: healthy" && !state.workerStarted:
+			case event.Actor.ID == sidecarID && event.Action == "health_status: healthy" && !state.isWorkerStarted:
 				logger.Info("Sidecar healthy, starting worker")
 				state.startTime = time.Now()
 				if err := w.client.ContainerStart(ctx, workerID, container.StartOptions{}); err != nil {
 					logger.Error("Failed to start worker", "error", err)
 					out <- WorkerExited{ExitCode: -1}
-					out <- SidecarExited{WorkerEverStarted: false}
+					out <- SidecarExited{WorkerHasStarted: false}
 					return true
 				}
-				state.workerStarted = true
+				state.isWorkerStarted = true
 				out <- SidecarReady{}
 				state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
 
-			case event.Actor.ID == workerID && event.Action == "die" && !state.workerExited:
-				state.workerExited = true
+			case event.Actor.ID == workerID && event.Action == "die" && !state.isWorkerExited:
+				state.isWorkerExited = true
 				exitCode := w.parseExitCode(event)
 				duration := time.Duration(0)
 				if !state.startTime.IsZero() {
@@ -257,14 +257,14 @@ func (w *dockerJobWatcher) process(ctx context.Context, logger *slog.Logger, sid
 
 			case event.Actor.ID == sidecarID && event.Action == "die":
 				switch {
-				case !state.workerStarted:
+				case !state.isWorkerStarted:
 					logger.Error("Sidecar exited before inputs completed")
-				case !state.workerExited:
+				case !state.isWorkerExited:
 					logger.Warn("Sidecar exited while worker still running")
 				default:
 					logger.Info("Sidecar exited, job complete")
 				}
-				out <- SidecarExited{WorkerEverStarted: state.workerStarted}
+				out <- SidecarExited{WorkerHasStarted: state.isWorkerStarted}
 				return true
 			}
 		}

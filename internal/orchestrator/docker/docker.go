@@ -301,7 +301,7 @@ func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig) {
 			o.sendExitEvent(cfg.jobID, cfg, ev.ExitCode, ev.Duration.Seconds())
 
 		case SidecarExited:
-			if !ev.WorkerEverStarted {
+			if !ev.WorkerHasStarted {
 				_ = o.registry.Apply(cfg.jobID, job.ToFailed(-1, "sidecar exited before worker started"))
 				o.sendExitEvent(cfg.jobID, cfg, -1, 0)
 			}
