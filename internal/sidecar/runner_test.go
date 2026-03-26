@@ -86,7 +86,7 @@ func TestRunner_WritesReadyMarker(t *testing.T) {
 	<-done
 }
 
-func TestSeparateArtifacts(t *testing.T) {
+func TestPartition(t *testing.T) {
 	artifacts := []artifact.Artifact{
 		&artifact.Download{ID: "download", In: "http://example.com/input.tar.gz", Out: "input.tar.gz"},
 		&artifact.Unarchive{ID: "extract", In: "input.tar.gz", Out: "code", Depends: "download"},
@@ -94,7 +94,7 @@ func TestSeparateArtifacts(t *testing.T) {
 		&artifact.Upload{ID: "upload", In: "output.tar.gz", Out: "http://example.com/upload", Depends: "archive"},
 	}
 
-	preJob, postJob := separateArtifacts(artifacts)
+	preJob, postJob := artifact.Partition(artifacts)
 
 	if len(preJob) != 2 {
 		t.Errorf("Expected 2 pre-job artifacts, got %d", len(preJob))

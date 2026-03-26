@@ -55,7 +55,7 @@ func NewRunner(cfg *Config) (*Runner, error) {
 	}
 
 	// Separate artifacts into pre-job and post-job based on dependencies
-	preJob, postJob := separateArtifacts(artifacts)
+	preJob, postJob := artifact.Partition(artifacts)
 
 	var meta map[string]string
 	if cfg.Meta != "" {
@@ -77,43 +77,6 @@ func NewRunner(cfg *Config) (*Runner, error) {
 		httpClient:       &http.Client{Timeout: cfg.UploadTimeout},
 		maxRetries:       maxRetries,
 	}, nil
-}
-
-// separateArtifacts splits artifacts into pre-job and post-job based on dependencies.
-// An artifact runs post-job if it depends on "job" or transitively depends on something that does.
-func separateArtifacts(artifacts []artifact.Artifact) (preJob, postJob []artifact.Artifact) {
-	// Build dependency graph
-	dependsOnJob := make(map[string]bool)
-
-	// First pass: mark artifacts that directly depend on "job"
-	for _, a := range artifacts {
-		if a.DependsOn() == artifact.JobDependency {
-			dependsOnJob[a.ArtifactID()] = true
-		}
-	}
-
-	// Iteratively mark artifacts that depend on post-job artifacts
-	changed := true
-	for changed {
-		changed = false
-		for _, a := range artifacts {
-			if !dependsOnJob[a.ArtifactID()] && dependsOnJob[a.DependsOn()] {
-				dependsOnJob[a.ArtifactID()] = true
-				changed = true
-			}
-		}
-	}
-
-	// Split based on the computed set
-	for _, a := range artifacts {
-		if dependsOnJob[a.ArtifactID()] {
-			postJob = append(postJob, a)
-		} else {
-			preJob = append(preJob, a)
-		}
-	}
-
-	return preJob, postJob
 }
 
 // Run executes the sidecar flow:
@@ -169,81 +132,36 @@ func (r *Runner) waitForSignal(ctx context.Context) {
 // processArtifacts processes artifacts in dependency order.
 // For post-job artifacts, it waits for files to appear before processing.
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
-	if len(artifacts) == 0 {
-		return nil
-	}
-
-	completed := make(map[string]bool)
-	var lastErr error
-
-	for len(completed) < len(artifacts) {
-		progress := false
-		for _, a := range artifacts {
-			id := a.ArtifactID()
-			if completed[id] {
-				continue
-			}
-
-			// Check if dependencies are satisfied (skip "job" dependency for post-job)
-			dep := a.DependsOn()
-			if dep == artifact.JobDependency {
-				dep = ""
-			}
-			if dep != "" && !completed[dep] {
-				continue
-			}
-
-			// For post-job artifacts, wait for the source file to exist
-			if waitForFiles {
-				if srcPath := getArtifactSourcePath(a); srcPath != "" {
-					fullPath := filepath.Join(r.config.SharedVolumePath, srcPath)
-					if err := r.waitForPath(ctx, fullPath); err != nil {
-						r.sendArtifactEvent(ctx, a, "failed", nil, err)
-						slog.With("artifactId", id, "error", err).Warn("Artifact failed (file not found)")
-						completed[id] = true
-						progress = true
-						continue
-					}
+	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
+		if waitForFiles {
+			if srcPath := getArtifactSourcePath(a); srcPath != "" {
+				fullPath := filepath.Join(r.config.SharedVolumePath, srcPath)
+				if err := r.waitForPath(ctx, fullPath); err != nil {
+					r.sendArtifactEvent(ctx, a, "failed", nil, err)
+					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
+					return err
 				}
 			}
-
-			// Inject HTTP client for types that need it
-			switch art := a.(type) {
-			case *artifact.Download:
-				art.SetHTTPClient(r.httpClient)
-			case *artifact.Upload:
-				art.SetHTTPClient(r.httpClient, r.maxRetries)
-			}
-			result := a.Apply(ctx, r.config.SharedVolumePath)
-			if result.Error != nil {
-				lastErr = result.Error
-			}
-
-			r.sendArtifactEvent(ctx, a, result.Status, result.Content, result.Error)
-
-			logger := slog.With("artifactId", id, "type", a.ArtifactType(), "status", result.Status)
-			if result.Error != nil {
-				logger = logger.With("error", result.Error)
-			}
-			logger.Info("Artifact processed")
-
-			completed[id] = true
-			progress = true
 		}
 
-		if !progress {
-			for _, a := range artifacts {
-				if !completed[a.ArtifactID()] {
-					slog.Warn("Artifact skipped due to unresolved dependency",
-						"artifactId", a.ArtifactID(),
-						"depends", a.DependsOn())
-				}
-			}
-			break
+		switch art := a.(type) {
+		case *artifact.Download:
+			art.SetHTTPClient(r.httpClient)
+		case *artifact.Upload:
+			art.SetHTTPClient(r.httpClient, r.maxRetries)
 		}
-	}
 
-	return lastErr
+		result := a.Apply(ctx, r.config.SharedVolumePath)
+		r.sendArtifactEvent(ctx, a, result.Status, result.Content, result.Error)
+
+		logger := slog.With("artifactId", a.ArtifactID(), "type", a.ArtifactType(), "status", result.Status)
+		if result.Error != nil {
+			logger = logger.With("error", result.Error)
+		}
+		logger.Info("Artifact processed")
+
+		return result.Error
+	})
 }
 
 // getArtifactSourcePath returns the source path for artifacts that read from files.
