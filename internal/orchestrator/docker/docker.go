@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
@@ -35,6 +34,7 @@ type Orchestrator struct {
 	callbackProxyURL    string
 	extraHosts          []string
 	state               *stateRepo
+	watcher             JobWatcher
 
 	cancelMaintenance context.CancelFunc
 	watchWg           sync.WaitGroup
@@ -79,6 +79,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			callbackProxyURL:    cfg.CallbackProxyURL,
 			extraHosts:          cfg.ExtraHosts,
 			state:               newStateRepo(),
+			watcher:             newDockerJobWatcher(dockerClient),
 		}, nil
 	}
 }
@@ -167,13 +168,12 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 		// Determine job state and resume appropriately
 		sidecarRunning := jc.sidecar.State == "running"
 		workerRunning := jc.worker != nil && jc.worker.State == "running"
-		workerCreated := jc.worker != nil
 
 		switch {
 		case !sidecarRunning && !workerRunning:
 			// Both exited - job is completed
 			completed++
-			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID, js.sidecarContainerID)
+			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID)
 			exitCode := cs.workerExitCode
 			if exitCode == 0 {
 				_ = o.store.Set(jobID, job.StateCompleted, job.WithExitCode(exitCode))
@@ -181,37 +181,37 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 				_ = o.store.Set(jobID, job.StateFailed, job.WithExitCode(exitCode))
 			}
 
-		case sidecarRunning && !workerCreated:
+		case sidecarRunning && jc.worker == nil:
 			// Sidecar running, worker not created - shouldn't happen in normal flow
 			logger.Warn("Job has sidecar but no worker container", "jobId", jobID)
 			_ = o.store.Set(jobID, job.StateAccepted)
 
 		case workerRunning:
-			// Worker is running
+			// Worker is running - resume watching
 			_ = o.store.Set(jobID, job.StateRunning)
 			resumed++
-			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID, js.sidecarContainerID)
-			cfg, watchState := watchConfigFromState(cs)
+			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID)
+			cfg := watchConfigFromState(cs)
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
 			js.cancelWatch = cancelWatch
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.watchJobEvents(watchCtx, cfg, js, watchState)
+				o.runWatchLoop(watchCtx, cfg, js)
 			}()
 
 		default:
 			// Sidecar running with worker created but not running — accepted state
 			_ = o.store.Set(jobID, job.StateAccepted)
 			resumed++
-			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID, js.sidecarContainerID)
-			cfg, watchState := watchConfigFromState(cs)
+			cs := inspectContainers(ctx, o.client, jobID, js.jobContainerID)
+			cfg := watchConfigFromState(cs)
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
 			js.cancelWatch = cancelWatch
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.watchJobEvents(watchCtx, cfg, js, watchState)
+				o.runWatchLoop(watchCtx, cfg, js)
 			}()
 		}
 	}
@@ -297,10 +297,47 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	o.watchWg.Add(1)
 	go func() {
 		defer o.watchWg.Done()
-		o.watchJobEvents(watchCtx, cfg, js, &jobWatchState{})
+		o.runWatchLoop(watchCtx, cfg, js)
 	}()
 
 	return nil
+}
+
+// runWatchLoop drives job state transitions and callback emission from watcher events.
+func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig, js *jobState) {
+	for e := range o.watcher.Watch(ctx, js.sidecarContainerID, js.jobContainerID) {
+		switch ev := e.(type) {
+		case SidecarReady:
+			_ = o.store.Set(cfg.jobID, job.StateRunning)
+			o.emitStartEvent(cfg)
+
+		case WorkerExited:
+			if ev.ExitCode == 0 {
+				_ = o.store.Set(cfg.jobID, job.StateCompleted, job.WithExitCode(ev.ExitCode))
+			} else {
+				_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(ev.ExitCode))
+			}
+			o.sendExitEvent(cfg.jobID, cfg, ev.ExitCode, ev.Duration.Seconds())
+
+		case SidecarExited:
+			if !ev.WorkerEverStarted {
+				_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(-1))
+				o.sendExitEvent(cfg.jobID, cfg, -1, 0)
+			}
+
+		case LogLine:
+			if cfg.dest == nil || !job.FilteredEvents(job.EventTypeLog, cfg.dest.events) {
+				continue
+			}
+			builder := job.NewEventBuilder(cfg.jobID, "orchestrator/service", cfg.dest.meta)
+			logEv := builder.BuildLogEvent(ev.Lines, ev.Stream)
+			o.emitter.Emit(&job.Event{
+				Payload:     logEv,
+				CallbackURL: cfg.dest.url,
+				SigningKey:  cfg.dest.key,
+			})
+		}
+	}
 }
 
 // Stop stops a running job and cleans up its resources.
@@ -368,285 +405,20 @@ func (o *Orchestrator) Ready(ctx context.Context) error {
 	return err
 }
 
-// jobWatchState tracks the state of a job being watched.
-type jobWatchState struct {
-	workerStarted bool
-	workerExited  bool
-	startTime     time.Time
-	logCancel     context.CancelFunc
-	logDone       chan struct{}
-}
-
-// watchJobEvents uses Docker events to coordinate the job lifecycle:
-// 1. Sidecar healthy → start worker
-// 2. Worker exit → signal sidecar
-// 3. Sidecar exit → job complete
-//
-// Used for both new and resumed jobs. The initial state parameter allows
-// pre-seeding worker status from container inspection during reconciliation.
-// The watcher reconnects on event stream errors after reconciling current state.
-func (o *Orchestrator) watchJobEvents(ctx context.Context, cfg *watchConfig, js *jobState, state *jobWatchState) {
-	logger := slog.With("jobId", cfg.jobID)
-
-	// Reconnection loop
-	for {
-		// Check if context is cancelled
-		if ctx.Err() != nil {
-			o.cleanupLogStreaming(state)
-			return
-		}
-
-		// Subscribe to events FIRST (before checking state)
-		// This prevents race where health event fires between state check and subscribe
-		eventFilter := filters.NewArgs(
-			filters.Arg("type", string(events.ContainerEventType)),
-			filters.Arg("container", js.sidecarContainerID),
-			filters.Arg("container", js.jobContainerID),
-		)
-		eventCh, errCh := o.client.Events(ctx, events.ListOptions{Filters: eventFilter})
-
-		// NOW reconcile current state (in case we missed events before subscribing)
-		done := o.reconcileJobState(ctx, logger, cfg, js, state)
-		if done {
-			return
-		}
-
-		// Process events until error or completion
-		done = o.processJobEvents(ctx, logger, cfg, js, state, eventCh, errCh)
-		if done {
-			return
-		}
-
-		// Event stream error - wait before reconnecting
-		logger.Warn("Event stream disconnected, reconnecting...")
-		select {
-		case <-ctx.Done():
-			o.cleanupLogStreaming(state)
-			return
-		case <-time.After(time.Second):
-			// Continue to reconnect
-		}
+// emitStartEvent emits the job start event to registered listeners.
+func (o *Orchestrator) emitStartEvent(cfg *watchConfig) {
+	if cfg.dest == nil {
+		return
 	}
-}
-
-// reconcileJobState checks current container states and updates watch state.
-// Returns true if the job is complete and watching should stop.
-func (o *Orchestrator) reconcileJobState(ctx context.Context, logger *slog.Logger, cfg *watchConfig, js *jobState, state *jobWatchState) bool {
-	// Check sidecar state
-	sidecarInspect, err := o.client.ContainerInspect(ctx, js.sidecarContainerID)
-	if err != nil {
-		logger.Error("Failed to inspect sidecar during reconcile", "error", err)
-		return true // Can't continue without sidecar info
+	builder := job.NewEventBuilder(cfg.jobID, "orchestrator/service", cfg.dest.meta)
+	event := builder.BuildStartEvent()
+	if job.FilteredEvents(event.Type, cfg.dest.events) {
+		o.emitter.Emit(&job.Event{
+			Payload:     event,
+			CallbackURL: cfg.dest.url,
+			SigningKey:  cfg.dest.key,
+		})
 	}
-
-	// If sidecar has exited, job is done
-	if !sidecarInspect.State.Running {
-		if !state.workerStarted {
-			logger.Error("Sidecar exited before inputs completed")
-			_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(-1))
-			o.sendExitEvent(cfg.jobID, cfg, -1, 0)
-		}
-		o.cleanupLogStreaming(state)
-		return true
-	}
-
-	// Check if sidecar is healthy and worker not started → start worker
-	if !state.workerStarted && sidecarInspect.State.Health != nil && sidecarInspect.State.Health.Status == "healthy" {
-		logger.Info("Sidecar healthy (reconciled), starting worker")
-		state.startTime = time.Now()
-		var err error
-		state.logCancel, state.logDone, err = o.startWorkerAndLogs(ctx, logger, cfg, js)
-		if err == nil {
-			state.workerStarted = true
-		}
-	}
-
-	// Resume log streaming for already-started workers (e.g. after service restart)
-	if state.workerStarted && state.logCancel == nil && !state.workerExited {
-		logCtx, logCancel := context.WithCancel(ctx)
-		logDone := make(chan struct{})
-		go func() {
-			defer close(logDone)
-			o.streamLogs(logCtx, logger, cfg.jobID, js.jobContainerID, cfg.dest)
-		}()
-		state.logCancel = logCancel
-		state.logDone = logDone
-	}
-
-	// Check worker state if started
-	if state.workerStarted && !state.workerExited {
-		workerInspect, err := o.client.ContainerInspect(ctx, js.jobContainerID)
-		if err != nil {
-			logger.Warn("Failed to inspect worker during reconcile", "error", err)
-		} else if !workerInspect.State.Running {
-			// Worker has exited
-			state.workerExited = true
-			exitCode := workerInspect.State.ExitCode
-			logger.Info("Worker exited (reconciled)", "exitCode", exitCode)
-
-			if exitCode == 0 {
-				_ = o.store.Set(cfg.jobID, job.StateCompleted, job.WithExitCode(exitCode))
-			} else {
-				_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(exitCode))
-			}
-
-			o.cleanupLogStreaming(state)
-
-			var duration float64
-			if !state.startTime.IsZero() {
-				duration = time.Since(state.startTime).Seconds()
-			}
-			o.sendExitEvent(cfg.jobID, cfg, exitCode, duration)
-
-			// Signal sidecar
-			if err := o.client.ContainerKill(ctx, js.sidecarContainerID, "SIGUSR1"); err != nil {
-				logger.Warn("Failed to signal sidecar", "error", err)
-			}
-		}
-	}
-
-	return false
-}
-
-// processJobEvents handles the event stream until completion or error.
-// Returns true if job is complete, false if reconnection is needed.
-func (o *Orchestrator) processJobEvents(ctx context.Context, logger *slog.Logger, cfg *watchConfig, js *jobState, state *jobWatchState, eventCh <-chan events.Message, errCh <-chan error) bool {
-	for {
-		select {
-		case <-ctx.Done():
-			o.cleanupLogStreaming(state)
-			return true
-
-		case err := <-errCh:
-			if err != nil {
-				logger.Warn("Event stream error", "error", err)
-			}
-			return false // Reconnect
-
-		case event, ok := <-eventCh:
-			if !ok {
-				return false // Channel closed, reconnect
-			}
-
-			switch {
-			// Sidecar became healthy → start worker
-			case event.Actor.ID == js.sidecarContainerID &&
-				event.Action == "health_status: healthy" &&
-				!state.workerStarted:
-
-				logger.Info("Sidecar healthy, starting worker")
-				state.startTime = time.Now()
-				var startErr error
-				state.logCancel, state.logDone, startErr = o.startWorkerAndLogs(ctx, logger, cfg, js)
-				if startErr == nil {
-					state.workerStarted = true
-				}
-
-			// Worker exited → signal sidecar
-			case event.Actor.ID == js.jobContainerID &&
-				event.Action == "die" &&
-				!state.workerExited:
-
-				state.workerExited = true
-				exitCode := o.getExitCode(event)
-				logger.Info("Worker exited", "exitCode", exitCode)
-
-				if exitCode == 0 {
-					_ = o.store.Set(cfg.jobID, job.StateCompleted, job.WithExitCode(exitCode))
-				} else {
-					_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(exitCode))
-				}
-
-				// Give logs a moment to flush
-				time.Sleep(500 * time.Millisecond)
-				o.cleanupLogStreaming(state)
-
-				// Send exit event
-				var duration float64
-				if !state.startTime.IsZero() {
-					duration = time.Since(state.startTime).Seconds()
-				}
-				o.sendExitEvent(cfg.jobID, cfg, exitCode, duration)
-
-				// Signal sidecar to process outputs
-				if err := o.client.ContainerKill(ctx, js.sidecarContainerID, "SIGUSR1"); err != nil {
-					logger.Warn("Failed to signal sidecar", "error", err)
-				}
-
-			// Sidecar exited → job complete (or failed if worker never started)
-			case event.Actor.ID == js.sidecarContainerID && event.Action == "die":
-				switch {
-				case !state.workerStarted:
-					logger.Error("Sidecar exited before inputs completed")
-					_ = o.store.Set(cfg.jobID, job.StateFailed, job.WithExitCode(-1))
-					o.sendExitEvent(cfg.jobID, cfg, -1, 0)
-				case !state.workerExited:
-					logger.Warn("Sidecar exited while worker still running")
-				default:
-					logger.Info("Sidecar exited, job complete")
-				}
-				return true
-			}
-		}
-	}
-}
-
-// cleanupLogStreaming stops log streaming if active.
-func (o *Orchestrator) cleanupLogStreaming(state *jobWatchState) {
-	if state.logCancel != nil {
-		state.logCancel()
-		<-state.logDone
-		state.logCancel = nil
-		state.logDone = nil
-	}
-}
-
-// startWorkerAndLogs starts the worker container, emits the start event, and begins log streaming.
-// Returns error if worker fails to start.
-func (o *Orchestrator) startWorkerAndLogs(ctx context.Context, logger *slog.Logger, cfg *watchConfig, js *jobState) (context.CancelFunc, chan struct{}, error) {
-	// Start worker container
-	if err := o.client.ContainerStart(ctx, js.jobContainerID, container.StartOptions{}); err != nil {
-		logger.Error("Failed to start worker", "error", err)
-		// Send failure event
-		o.sendExitEvent(cfg.jobID, cfg, -1, 0)
-		return nil, nil, err
-	}
-
-	_ = o.store.Set(cfg.jobID, job.StateRunning)
-
-	// Emit start event
-	if cfg.dest != nil {
-		builder := job.NewEventBuilder(cfg.jobID, "orchestrator/service", cfg.dest.meta)
-		event := builder.BuildStartEvent()
-		if job.FilteredEvents(event.Type, cfg.dest.events) {
-			o.emitter.Emit(&job.Event{
-				Payload:     event,
-				CallbackURL: cfg.dest.url,
-				SigningKey:  cfg.dest.key,
-			})
-		}
-	}
-
-	// Start log streaming
-	logCtx, logCancel := context.WithCancel(ctx)
-	logDone := make(chan struct{})
-	go func() {
-		defer close(logDone)
-		o.streamLogs(logCtx, logger, cfg.jobID, js.jobContainerID, cfg.dest)
-	}()
-
-	return logCancel, logDone, nil
-}
-
-// getExitCode extracts exit code from a container die event.
-func (o *Orchestrator) getExitCode(event events.Message) int {
-	if code, ok := event.Actor.Attributes["exitCode"]; ok {
-		var exitCode int
-		if _, err := fmt.Sscanf(code, "%d", &exitCode); err == nil {
-			return exitCode
-		}
-	}
-	return -1
 }
 
 // sendExitEvent emits the job exit event.
@@ -674,90 +446,6 @@ func (o *Orchestrator) sendExitEvent(jobID string, cfg *watchConfig, exitCode in
 			SigningKey:  signingKey,
 		})
 	}
-}
-
-func (o *Orchestrator) streamLogs(ctx context.Context, logger *slog.Logger, jobID, containerID string, dest *callbackDest) {
-	// Skip log streaming if no callback destination or log events not requested
-	if dest == nil || !job.FilteredEvents(job.EventTypeLog, dest.events) {
-		o.waitForContainerLogs(ctx, containerID)
-		return
-	}
-
-	logs, err := o.client.ContainerLogs(ctx, containerID, container.LogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Follow:     true,
-		Timestamps: true,
-	})
-	if err != nil {
-		logger.Error("Failed to get container logs", "error", err)
-		return
-	}
-	defer logs.Close()
-
-	builder := job.NewEventBuilder(jobID, "orchestrator/service", dest.meta)
-	header := make([]byte, 8)
-
-	for ctx.Err() == nil {
-		if _, err := io.ReadFull(logs, header); err != nil {
-			if err != io.EOF && ctx.Err() == nil {
-				logger.Debug("Log stream ended", "error", err)
-			}
-			return
-		}
-
-		size := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
-		if size == 0 {
-			continue
-		}
-
-		payload := make([]byte, size)
-		if _, err := io.ReadFull(logs, payload); err != nil {
-			logger.Debug("Failed to read log payload", "error", err)
-			return
-		}
-
-		stream := "stdout"
-		if header[0] == 2 {
-			stream = "stderr"
-		}
-
-		if lines := splitLines(string(payload)); len(lines) > 0 {
-			event := builder.BuildLogEvent(lines, stream)
-			o.emitter.Emit(&job.Event{
-				Payload:     event,
-				CallbackURL: dest.url,
-				SigningKey:  dest.key,
-			})
-		}
-	}
-}
-
-// waitForContainerLogs consumes logs without sending them (for jobs without log callbacks).
-func (o *Orchestrator) waitForContainerLogs(ctx context.Context, containerID string) {
-	logs, err := o.client.ContainerLogs(ctx, containerID, container.LogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Follow:     true,
-	})
-	if err != nil {
-		return
-	}
-	defer logs.Close()
-
-	// Consume logs to prevent Docker from buffering
-	_, _ = io.Copy(io.Discard, logs)
-}
-
-func splitLines(s string) []string {
-	var lines []string
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines
 }
 
 func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request, js *jobState) (string, error) {

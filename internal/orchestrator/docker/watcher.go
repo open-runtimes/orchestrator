@@ -1,0 +1,355 @@
+package docker
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/client"
+)
+
+// JobEvent is a sealed lifecycle event emitted by a JobWatcher.
+type JobEvent interface {
+	jobEvent()
+}
+
+// SidecarReady is emitted when the sidecar's health check passes and the worker
+// has been started. Not emitted for resumed jobs where the worker was already running.
+type SidecarReady struct{}
+
+// WorkerExited is emitted when the worker container exits.
+// The sidecar is signaled with SIGUSR1 before this event is sent.
+type WorkerExited struct {
+	ExitCode int
+	Duration time.Duration
+}
+
+// SidecarExited is emitted when the sidecar container exits.
+// This is always the final event; the channel is closed afterward.
+type SidecarExited struct {
+	WorkerEverStarted bool
+}
+
+// LogLine is emitted for each batch of stdout/stderr lines from the worker.
+type LogLine struct {
+	Stream string // "stdout" or "stderr"
+	Lines  []string
+}
+
+func (SidecarReady) jobEvent()  {}
+func (WorkerExited) jobEvent()  {}
+func (SidecarExited) jobEvent() {}
+func (LogLine) jobEvent()       {}
+
+// JobWatcher watches a sidecar+worker container pair and emits typed lifecycle events.
+type JobWatcher interface {
+	// Watch starts a background goroutine monitoring the given container pair.
+	// Events arrive in order: optionally SidecarReady, then WorkerExited, then
+	// SidecarExited. LogLine events may be interleaved after SidecarReady.
+	// The channel is closed after SidecarExited is sent or ctx is cancelled.
+	Watch(ctx context.Context, sidecarID, workerID string) <-chan JobEvent
+}
+
+// dockerJobWatcher implements JobWatcher using the Docker API.
+type dockerJobWatcher struct {
+	client *client.Client
+}
+
+func newDockerJobWatcher(cli *client.Client) JobWatcher {
+	return &dockerJobWatcher{client: cli}
+}
+
+// Watch starts monitoring the container pair and returns a channel of lifecycle events.
+func (w *dockerJobWatcher) Watch(ctx context.Context, sidecarID, workerID string) <-chan JobEvent {
+	ch := make(chan JobEvent, 256)
+	go func() {
+		defer close(ch)
+		w.run(ctx, sidecarID, workerID, ch)
+	}()
+	return ch
+}
+
+// watcherState tracks mutable state across reconnect iterations.
+type watcherState struct {
+	workerStarted bool
+	workerExited  bool
+	startTime     time.Time
+	logCancel     context.CancelFunc
+	logDone       chan struct{}
+}
+
+func (w *dockerJobWatcher) run(ctx context.Context, sidecarID, workerID string, out chan<- JobEvent) {
+	logger := slog.With("sidecarID", sidecarID)
+	state := &watcherState{}
+
+	defer func() {
+		w.stopLogStreaming(state)
+	}()
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		// Subscribe to events BEFORE inspecting state to prevent a race where a
+		// health_status event fires between the state check and the subscription.
+		eventFilter := filters.NewArgs(
+			filters.Arg("type", string(events.ContainerEventType)),
+			filters.Arg("container", sidecarID),
+			filters.Arg("container", workerID),
+		)
+		eventCh, errCh := w.client.Events(ctx, events.ListOptions{Filters: eventFilter})
+
+		if done := w.reconcile(ctx, logger, sidecarID, workerID, state, out); done {
+			return
+		}
+
+		if done := w.process(ctx, logger, sidecarID, workerID, state, out, eventCh, errCh); done {
+			return
+		}
+
+		logger.Warn("Event stream disconnected, reconnecting...")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// reconcile inspects current container state and syncs watcherState accordingly.
+// Returns true if the job is complete and watching should stop.
+func (w *dockerJobWatcher) reconcile(ctx context.Context, logger *slog.Logger, sidecarID, workerID string, state *watcherState, out chan<- JobEvent) bool {
+	sidecar, err := w.client.ContainerInspect(ctx, sidecarID)
+	if err != nil {
+		logger.Error("Failed to inspect sidecar during reconcile", "error", err)
+		return true
+	}
+
+	if !sidecar.State.Running {
+		if !state.workerStarted {
+			logger.Error("Sidecar exited before inputs completed")
+		}
+		out <- SidecarExited{WorkerEverStarted: state.workerStarted}
+		return true
+	}
+
+	// Inspect the worker once for both resume detection and exit checking.
+	type workerSnap struct {
+		status    string
+		running   bool
+		exitCode  int
+		startedAt time.Time
+		ok        bool
+	}
+	var ws workerSnap
+	if info, err := w.client.ContainerInspect(ctx, workerID); err == nil {
+		ws.ok = true
+		ws.status = info.State.Status
+		ws.running = info.State.Running
+		ws.exitCode = info.State.ExitCode
+		if t, parseErr := time.Parse(time.RFC3339Nano, info.State.StartedAt); parseErr == nil {
+			ws.startedAt = t
+		}
+	}
+
+	// Detect resume: worker was started in a previous session.
+	if !state.workerStarted && ws.ok {
+		switch ws.status {
+		case "running", "exited", "dead":
+			state.workerStarted = true
+			state.startTime = ws.startedAt
+		}
+	}
+
+	// Start worker if sidecar is healthy and worker not yet started.
+	if !state.workerStarted && sidecar.State.Health != nil && sidecar.State.Health.Status == "healthy" {
+		logger.Info("Sidecar healthy (reconciled), starting worker")
+		state.startTime = time.Now()
+		if err := w.client.ContainerStart(ctx, workerID, container.StartOptions{}); err != nil {
+			logger.Error("Failed to start worker", "error", err)
+			out <- WorkerExited{ExitCode: -1}
+			out <- SidecarExited{WorkerEverStarted: false}
+			return true
+		}
+		state.workerStarted = true
+		ws.running = true
+		out <- SidecarReady{}
+	}
+
+	// Start or resume log streaming.
+	if state.workerStarted && state.logCancel == nil && !state.workerExited {
+		state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
+	}
+
+	// Handle worker exit detected via inspection (missed event on reconnect).
+	if ws.ok && state.workerStarted && !state.workerExited && !ws.running {
+		state.workerExited = true
+		duration := time.Duration(0)
+		if !state.startTime.IsZero() {
+			duration = time.Since(state.startTime)
+		}
+		logger.Info("Worker exited (reconciled)", "exitCode", ws.exitCode)
+		w.stopLogStreaming(state)
+		if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
+			logger.Warn("Failed to signal sidecar", "error", err)
+		}
+		out <- WorkerExited{ExitCode: ws.exitCode, Duration: duration}
+	}
+
+	return false
+}
+
+// process drains the event stream until job completion or a stream error.
+// Returns true if the job is complete, false if reconnection is needed.
+func (w *dockerJobWatcher) process(ctx context.Context, logger *slog.Logger, sidecarID, workerID string, state *watcherState, out chan<- JobEvent, eventCh <-chan events.Message, errCh <-chan error) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return true
+
+		case err := <-errCh:
+			if err != nil {
+				logger.Warn("Event stream error", "error", err)
+			}
+			return false // reconnect
+
+		case event, ok := <-eventCh:
+			if !ok {
+				return false // channel closed; reconnect
+			}
+
+			switch {
+			case event.Actor.ID == sidecarID && event.Action == "health_status: healthy" && !state.workerStarted:
+				logger.Info("Sidecar healthy, starting worker")
+				state.startTime = time.Now()
+				if err := w.client.ContainerStart(ctx, workerID, container.StartOptions{}); err != nil {
+					logger.Error("Failed to start worker", "error", err)
+					out <- WorkerExited{ExitCode: -1}
+					out <- SidecarExited{WorkerEverStarted: false}
+					return true
+				}
+				state.workerStarted = true
+				out <- SidecarReady{}
+				state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
+
+			case event.Actor.ID == workerID && event.Action == "die" && !state.workerExited:
+				state.workerExited = true
+				exitCode := w.parseExitCode(event)
+				duration := time.Duration(0)
+				if !state.startTime.IsZero() {
+					duration = time.Since(state.startTime)
+				}
+				logger.Info("Worker exited", "exitCode", exitCode)
+				// Give logs a moment to flush before stopping the stream.
+				time.Sleep(500 * time.Millisecond)
+				w.stopLogStreaming(state)
+				if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
+					logger.Warn("Failed to signal sidecar", "error", err)
+				}
+				out <- WorkerExited{ExitCode: exitCode, Duration: duration}
+
+			case event.Actor.ID == sidecarID && event.Action == "die":
+				if !state.workerStarted {
+					logger.Error("Sidecar exited before inputs completed")
+				} else if !state.workerExited {
+					logger.Warn("Sidecar exited while worker still running")
+				} else {
+					logger.Info("Sidecar exited, job complete")
+				}
+				out <- SidecarExited{WorkerEverStarted: state.workerStarted}
+				return true
+			}
+		}
+	}
+}
+
+func (w *dockerJobWatcher) startLogStreaming(ctx context.Context, logger *slog.Logger, workerID string, out chan<- JobEvent) (context.CancelFunc, chan struct{}) {
+	logCtx, logCancel := context.WithCancel(ctx)
+	logDone := make(chan struct{})
+	go func() {
+		defer close(logDone)
+		w.streamLogs(logCtx, logger, workerID, out)
+	}()
+	return logCancel, logDone
+}
+
+func (w *dockerJobWatcher) stopLogStreaming(state *watcherState) {
+	if state.logCancel != nil {
+		state.logCancel()
+		<-state.logDone
+		state.logCancel = nil
+		state.logDone = nil
+	}
+}
+
+func (w *dockerJobWatcher) streamLogs(ctx context.Context, logger *slog.Logger, containerID string, out chan<- JobEvent) {
+	logs, err := w.client.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Timestamps: true,
+	})
+	if err != nil {
+		logger.Error("Failed to get container logs", "error", err)
+		return
+	}
+	defer logs.Close()
+
+	header := make([]byte, 8)
+	for ctx.Err() == nil {
+		if _, err := io.ReadFull(logs, header); err != nil {
+			if err != io.EOF && ctx.Err() == nil {
+				logger.Debug("Log stream ended", "error", err)
+			}
+			return
+		}
+
+		size := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
+		if size == 0 {
+			continue
+		}
+
+		payload := make([]byte, size)
+		if _, err := io.ReadFull(logs, payload); err != nil {
+			logger.Debug("Failed to read log payload", "error", err)
+			return
+		}
+
+		stream := "stdout"
+		if header[0] == 2 {
+			stream = "stderr"
+		}
+
+		if lines := splitLines(string(payload)); len(lines) > 0 {
+			out <- LogLine{Stream: stream, Lines: lines}
+		}
+	}
+}
+
+func (w *dockerJobWatcher) parseExitCode(event events.Message) int {
+	if code, ok := event.Actor.Attributes["exitCode"]; ok {
+		var exitCode int
+		if _, err := fmt.Sscanf(code, "%d", &exitCode); err == nil {
+			return exitCode
+		}
+	}
+	return -1
+}
+
+func splitLines(s string) []string {
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
