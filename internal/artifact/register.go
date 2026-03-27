@@ -2,8 +2,10 @@ package artifact
 
 import "orchestrator/internal/apperrors"
 
-func init() {
-	Register(TypeDef{
+// Built-in TypeDef variables. Pass these to NewRegistry to build a Registry
+// containing only the types you need — useful in tests.
+var (
+	DownloadDef = TypeDef{
 		Type: "download",
 		New:  func() Artifact { return &Download{} },
 		Validate: TypedValidator(func(field string, a *Download) error {
@@ -21,9 +23,9 @@ func init() {
 			}
 			return nil
 		}),
-	})
+	}
 
-	Register(TypeDef{
+	UploadDef = TypeDef{
 		Type: "upload",
 		New:  func() Artifact { return &Upload{} },
 		Validate: TypedValidator(func(field string, a *Upload) error {
@@ -42,9 +44,9 @@ func init() {
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Upload) string { return a.In }),
-	})
+	}
 
-	Register(TypeDef{
+	WriteDef = TypeDef{
 		Type: "write",
 		New:  func() Artifact { return &Write{} },
 		Validate: TypedValidator(func(field string, a *Write) error {
@@ -59,9 +61,9 @@ func init() {
 			}
 			return nil
 		}),
-	})
+	}
 
-	Register(TypeDef{
+	ReadDef = TypeDef{
 		Type: "read",
 		New:  func() Artifact { return &Read{} },
 		Validate: TypedValidator(func(field string, a *Read) error {
@@ -74,9 +76,9 @@ func init() {
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Read) string { return a.In }),
-	})
+	}
 
-	Register(TypeDef{
+	ArchiveDef = TypeDef{
 		Type: "archive",
 		New:  func() Artifact { return &Archive{} },
 		Validate: TypedValidator(func(field string, a *Archive) error {
@@ -98,9 +100,9 @@ func init() {
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Archive) string { return a.In }),
-	})
+	}
 
-	Register(TypeDef{
+	UnarchiveDef = TypeDef{
 		Type: "unarchive",
 		New:  func() Artifact { return &Unarchive{} },
 		Validate: TypedValidator(func(field string, a *Unarchive) error {
@@ -119,9 +121,9 @@ func init() {
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Unarchive) string { return a.In }),
-	})
+	}
 
-	Register(TypeDef{
+	ListDef = TypeDef{
 		Type: "list",
 		New:  func() Artifact { return &List{} },
 		Validate: TypedValidator(func(field string, a *List) error {
@@ -134,5 +136,5 @@ func init() {
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *List) string { return a.In }),
-	})
-}
+	}
+)

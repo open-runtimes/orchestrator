@@ -33,10 +33,11 @@ type Runner struct {
 	postJobArtifacts []artifact.Artifact
 	sender           *cloudevent.Sender
 	eventBuilder     *job.EventBuilder
+	registry         *artifact.Registry
 }
 
 // NewRunner creates a new sidecar runner.
-func NewRunner(cfg *Config) (*Runner, error) {
+func NewRunner(cfg *Config, reg *artifact.Registry) (*Runner, error) {
 	var events []string
 	if cfg.CallbackEvents != "" {
 		events = strings.Split(cfg.CallbackEvents, ",")
@@ -45,7 +46,7 @@ func NewRunner(cfg *Config) (*Runner, error) {
 	var artifacts []artifact.Artifact
 	if cfg.ArtifactsJSON != "" && cfg.ArtifactsJSON != "[]" {
 		var err error
-		artifacts, err = artifact.UnmarshalArtifacts([]byte(cfg.ArtifactsJSON))
+		artifacts, err = reg.Unmarshal([]byte(cfg.ArtifactsJSON))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse artifacts: %w", err)
 		}
@@ -66,6 +67,7 @@ func NewRunner(cfg *Config) (*Runner, error) {
 		postJobArtifacts: postJob,
 		sender:           cloudevent.NewSender(cfg.CallbackTimeout),
 		eventBuilder:     job.NewEventBuilder(cfg.JobID, "orchestrator/sidecar", meta),
+		registry:         reg,
 	}, nil
 }
 
@@ -124,7 +126,7 @@ func (r *Runner) waitForSignal(ctx context.Context) {
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
 		if waitForFiles {
-			if srcPath := artifact.SourcePath(a); srcPath != "" {
+			if srcPath := r.registry.SourcePath(a); srcPath != "" {
 				fullPath := filepath.Join(r.config.SharedVolumePath, srcPath)
 				if err := r.waitForPath(ctx, fullPath); err != nil {
 					r.sendArtifactEvent(ctx, a, "failed", nil, err)

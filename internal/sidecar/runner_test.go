@@ -48,7 +48,7 @@ func TestRunner_WritesReadyMarker(t *testing.T) {
 		SharedVolumePath: tmpDir,
 	}
 
-	runner, err := NewRunner(cfg)
+	runner, err := NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Failed to create runner: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestRunner_ArtifactDependencyOrder(t *testing.T) {
 		ArtifactsJSON:    `[{"id":"extract","type":"unarchive","in":"code.tar.gz","out":"code"}]`,
 	}
 
-	runner, err := NewRunner(cfg)
+	runner, err := NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Failed to create runner: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestRunner_ArtifactChainedDependencies(t *testing.T) {
 		ArtifactsJSON:    `[{"id":"file1","type":"write","in":"hello","out":"a.txt"},{"id":"file2","type":"write","in":"world","out":"b.txt","depends":"file1"}]`,
 	}
 
-	runner, err := NewRunner(cfg)
+	runner, err := NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Failed to create runner: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestRunner_ArtifactCircularDependency(t *testing.T) {
 		ArtifactsJSON:    `[{"id":"a","type":"write","in":"a","out":"a.txt","depends":"b"},{"id":"b","type":"write","in":"b","out":"b.txt","depends":"a"}]`,
 	}
 
-	runner, err := NewRunner(cfg)
+	runner, err := NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Failed to create runner: %v", err)
 	}

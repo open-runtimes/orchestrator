@@ -8,7 +8,7 @@ import (
 
 func TestValidate(t *testing.T) {
 	t.Parallel()
-	svc := &Service{}
+	svc := &Service{artifacts: artifact.DefaultRegistry()}
 
 	tests := []struct {
 		name    string
@@ -138,7 +138,7 @@ func TestApplyDefaults_PreservesExisting(t *testing.T) {
 
 func TestValidate_Artifacts(t *testing.T) {
 	t.Parallel()
-	svc := &Service{}
+	svc := &Service{artifacts: artifact.DefaultRegistry()}
 
 	tests := []struct {
 		name    string

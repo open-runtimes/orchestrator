@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/testutil"
 	"os"
@@ -112,7 +113,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 		ArtifactsJSON:    `[{"id":"result","type":"read","in":"output.txt","depends":"job"}]`,
 	}
 
-	runner, err := sidecar.NewRunner(cfg)
+	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Failed to create sidecar runner: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 		SharedVolumePath: sharedDir,
 	}
 
-	runner, err := sidecar.NewRunner(cfg)
+	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Failed to create sidecar runner: %v", err)
 	}
@@ -396,7 +397,7 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		ArtifactsJSON:    artifactsJSON,
 	}
 
-	runner, err := sidecar.NewRunner(cfg)
+	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		t.Fatalf("Failed to create sidecar runner: %v", err)
 	}

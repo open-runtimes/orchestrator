@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/sidecar"
 	"os"
 	"os/signal"
@@ -44,7 +45,7 @@ func run() error {
 	}
 
 	// Create runner
-	runner, err := sidecar.NewRunner(cfg)
+	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/api"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
@@ -72,7 +73,7 @@ func run() error {
 	healthChecker := health.NewChecker(orchestrator)
 
 	// Create job service
-	jobService := job.NewService(orchestrator, metrics)
+	jobService := job.NewService(orchestrator, metrics, artifact.DefaultRegistry())
 
 	// Create API router
 	router := api.NewRouter(api.RouterConfig{

@@ -1,54 +1,15 @@
 package artifact
 
-import (
-	"encoding/json"
-	"fmt"
-)
-
-// envelope is used for initial JSON unmarshaling to determine the artifact type.
-type envelope struct {
-	Type string `json:"type"`
-}
+import "encoding/json"
 
 // UnmarshalArtifact unmarshals a JSON artifact into the appropriate concrete type.
 func UnmarshalArtifact(data []byte) (Artifact, error) {
-	var env envelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, fmt.Errorf("failed to determine artifact type: %w", err)
-	}
-
-	globalRegistryMu.RLock()
-	td, ok := globalRegistry[env.Type]
-	globalRegistryMu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("unknown artifact type: %q", env.Type)
-	}
-
-	artifact := td.New()
-	if err := json.Unmarshal(data, artifact); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal %s artifact: %w", env.Type, err)
-	}
-
-	return artifact, nil
+	return DefaultRegistry().unmarshalOne(data)
 }
 
 // UnmarshalArtifacts unmarshals a JSON array of artifacts.
 func UnmarshalArtifacts(data []byte) ([]Artifact, error) {
-	var rawArtifacts []json.RawMessage
-	if err := json.Unmarshal(data, &rawArtifacts); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal artifacts array: %w", err)
-	}
-
-	artifacts := make([]Artifact, 0, len(rawArtifacts))
-	for i, raw := range rawArtifacts {
-		artifact, err := UnmarshalArtifact(raw)
-		if err != nil {
-			return nil, fmt.Errorf("artifact[%d]: %w", i, err)
-		}
-		artifacts = append(artifacts, artifact)
-	}
-
-	return artifacts, nil
+	return DefaultRegistry().Unmarshal(data)
 }
 
 // MarshalArtifact marshals an artifact with its type field included.

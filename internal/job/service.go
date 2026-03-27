@@ -38,13 +38,15 @@ var jobIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 type Service struct {
 	orchestrator Orchestrator
 	metrics      *observability.Metrics
+	artifacts    *artifact.Registry
 }
 
 // NewService creates a new job service.
-func NewService(orchestrator Orchestrator, metrics *observability.Metrics) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artifacts *artifact.Registry) *Service {
 	return &Service{
 		orchestrator: orchestrator,
 		metrics:      metrics,
+		artifacts:    artifacts,
 	}
 }
 
@@ -163,7 +165,7 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
 	}
 	for i, a := range req.Artifacts {
-		if err := artifact.Validate(i, a); err != nil {
+		if err := s.artifacts.Validate(i, a); err != nil {
 			return err
 		}
 	}

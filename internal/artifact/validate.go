@@ -3,29 +3,13 @@ package artifact
 import (
 	"fmt"
 	"net/url"
-	"orchestrator/internal/apperrors"
 	"path/filepath"
 	"strings"
 )
 
-// Validate validates an artifact at the given index.
+// Validate validates an artifact at the given index using the default registry.
 func Validate(i int, a Artifact) error {
-	field := fmt.Sprintf("artifacts[%d]", i)
-
-	if a.ArtifactID() == "" {
-		return apperrors.Validation(field+".id", fmt.Sprintf("artifact[%d]: id is required", i))
-	}
-
-	globalRegistryMu.RLock()
-	td, ok := globalRegistry[a.ArtifactType()]
-	globalRegistryMu.RUnlock()
-	if !ok {
-		return fmt.Errorf("artifact[%d]: unknown type %q", i, a.ArtifactType())
-	}
-	if td.Validate == nil {
-		return nil
-	}
-	return td.Validate(field, a)
+	return DefaultRegistry().Validate(i, a)
 }
 
 func validateURL(rawURL string) error {
