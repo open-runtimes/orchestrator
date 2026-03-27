@@ -38,41 +38,18 @@ func ToFailed(exitCode int, reason string) Transition {
 // ToCancelled is used by Stop.
 func ToCancelled() Transition { return Transition{state: StateCancelled} }
 
+// TransitionForExit returns ToCompleted for exit code 0, ToFailed otherwise.
+// This is the canonical mapping from a container exit code to a job terminal state.
+func TransitionForExit(exitCode int) Transition {
+	if exitCode == 0 {
+		return ToCompleted(exitCode)
+	}
+	return ToFailed(exitCode, "")
+}
+
 // Handle pairs a cancel function with a runtime-specific handle T.
 // Returned by Release so the caller can stop the watcher and clean up resources.
 type Handle[T any] struct {
 	CancelWatch context.CancelFunc
 	Runtime     T
-}
-
-// Registry is the unified state store for job lifecycle management.
-// T is the runtime handle type (e.g. dockerHandle in the docker package).
-//
-// Lifecycle: Reserve → Commit → Apply (via watcher) → Release.
-type Registry[T any] interface {
-	// Reserve atomically claims a job ID and sets the initial state to Accepted.
-	// Returns an error if the ID is already taken.
-	Reserve(jobID string) error
-
-	// Commit stores the runtime handle and cancel function after backend resources
-	// are created. Must only be called after a successful Reserve.
-	Commit(jobID string, runtime T, cancelWatch context.CancelFunc)
-
-	// Apply drives an FSM-validated state transition. This is the only method
-	// the watcher loop calls. Returns an error if the transition is invalid.
-	Apply(jobID string, t Transition) error
-
-	// Release atomically removes a job and returns its handle for cleanup.
-	// Returns (zero, false) if the job does not exist.
-	Release(jobID string) (Handle[T], bool)
-
-	// Get returns a snapshot of the job entry. Used by the HTTP Status handler.
-	Get(jobID string) (Entry, bool)
-
-	// List returns snapshots of all entries. Used by the HTTP List handler.
-	List() []Entry
-
-	// Each calls f for every job. A snapshot is taken before the walk so
-	// Release calls inside f are safe.
-	Each(f func(jobID string, e Entry, h Handle[T]))
 }

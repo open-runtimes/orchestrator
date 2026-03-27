@@ -53,12 +53,12 @@ func (c *captureListener) types() []string {
 
 // helpers
 
-func newTestOrchestrator(w JobWatcher) (*Orchestrator, *dockerRegistry, *captureListener) {
-	reg := newDockerRegistry()
+func newTestOrchestrator(w JobWatcher) (*Orchestrator, *job.StoreController[dockerHandle], *captureListener) {
+	ctrl := job.NewStoreController[dockerHandle]()
 	emitter := job.NewEventEmitter()
 	capture := &captureListener{}
 	emitter.OnEvent(capture)
-	return &Orchestrator{registry: reg, emitter: emitter, watcher: w}, reg, capture
+	return &Orchestrator{ctrl: ctrl, emitter: emitter, watcher: w}, ctrl, capture
 }
 
 func testCfgNoCallback(jobID string) *watchConfig {
@@ -88,13 +88,14 @@ func TestRunWatchLoop_HappyPath(t *testing.T) {
 		WorkerExited{ExitCode: 0, Duration: 2 * time.Second},
 		SidecarExited{WorkerHasStarted: true},
 	}
-	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = reg.Reserve("job-1")
+	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 	cfg := testCfgWithCallback("job-1")
 
-	o.runWatchLoop(context.Background(), cfg)
+	o.runWatchLoop(context.Background(), cfg, n)
 
-	entry, _ := reg.Get("job-1")
+	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateCompleted {
 		t.Errorf("want StateCompleted, got %s", entry.State)
 	}
@@ -121,13 +122,14 @@ func TestRunWatchLoop_WorkerFailure(t *testing.T) {
 		WorkerExited{ExitCode: 1, Duration: time.Second},
 		SidecarExited{WorkerHasStarted: true},
 	}
-	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = reg.Reserve("job-1")
+	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 	cfg := testCfgWithCallback("job-1")
 
-	o.runWatchLoop(context.Background(), cfg)
+	o.runWatchLoop(context.Background(), cfg, n)
 
-	entry, _ := reg.Get("job-1")
+	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateFailed {
 		t.Errorf("want StateFailed, got %s", entry.State)
 	}
@@ -146,13 +148,14 @@ func TestRunWatchLoop_SidecarCrashBeforeWorker(t *testing.T) {
 	script := []JobEvent{
 		SidecarExited{WorkerHasStarted: false},
 	}
-	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = reg.Reserve("job-1")
+	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 	cfg := testCfgWithCallback("job-1")
 
-	o.runWatchLoop(context.Background(), cfg)
+	o.runWatchLoop(context.Background(), cfg, n)
 
-	entry, _ := reg.Get("job-1")
+	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateFailed {
 		t.Errorf("want StateFailed, got %s", entry.State)
 	}
@@ -175,11 +178,12 @@ func TestRunWatchLoop_LogDelivered(t *testing.T) {
 		SidecarExited{WorkerHasStarted: true},
 	}
 	// No event filter = all events allowed
-	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = reg.Reserve("job-1")
+	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 	cfg := testCfgWithCallback("job-1")
 
-	o.runWatchLoop(context.Background(), cfg)
+	o.runWatchLoop(context.Background(), cfg, n)
 
 	got := capture.types()
 	want := []string{job.EventTypeStart, job.EventTypeLog, job.EventTypeExit}
@@ -201,10 +205,11 @@ func TestRunWatchLoop_LogSkippedWhenNoCallback(t *testing.T) {
 		WorkerExited{ExitCode: 0},
 		SidecarExited{WorkerHasStarted: true},
 	}
-	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = reg.Reserve("job-1")
+	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 
-	o.runWatchLoop(context.Background(), testCfgNoCallback("job-1"))
+	o.runWatchLoop(context.Background(), testCfgNoCallback("job-1"), n)
 
 	for _, e := range capture.all() {
 		if e.Payload.Type == job.EventTypeLog {
@@ -222,11 +227,12 @@ func TestRunWatchLoop_LogSkippedWhenFilteredOut(t *testing.T) {
 		SidecarExited{WorkerHasStarted: true},
 	}
 	// Callback configured but log events not in filter
-	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = reg.Reserve("job-1")
+	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 	cfg := testCfgWithCallback("job-1", job.EventTypeStart, job.EventTypeExit)
 
-	o.runWatchLoop(context.Background(), cfg)
+	o.runWatchLoop(context.Background(), cfg, n)
 
 	for _, e := range capture.all() {
 		if e.Payload.Type == job.EventTypeLog {
@@ -243,14 +249,14 @@ func TestRunWatchLoop_ResumeNoSidecarReady(t *testing.T) {
 		WorkerExited{ExitCode: 0, Duration: 5 * time.Second},
 		SidecarExited{WorkerHasStarted: true},
 	}
-	o, reg, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
 	// Outer reconcile already set Running before spawning the goroutine.
-	_ = reg.Restore("job-1", job.ToRunning(), dockerHandle{}, nil)
+	n, _ := ctrl.Restore("job-1", job.ToRunning(), dockerHandle{}, nil)
 	cfg := testCfgWithCallback("job-1")
 
-	o.runWatchLoop(context.Background(), cfg)
+	o.runWatchLoop(context.Background(), cfg, n)
 
-	entry, _ := reg.Get("job-1")
+	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateCompleted {
 		t.Errorf("want StateCompleted, got %s", entry.State)
 	}
@@ -277,12 +283,13 @@ func TestRunWatchLoop_SidecarExitedAfterWorker(t *testing.T) {
 		WorkerExited{ExitCode: 0},
 		SidecarExited{WorkerHasStarted: true},
 	}
-	o, reg, _ := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = reg.Reserve("job-1")
+	o, ctrl, _ := newTestOrchestrator(&fakeWatcher{events: script})
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 
-	o.runWatchLoop(context.Background(), testCfgNoCallback("job-1"))
+	o.runWatchLoop(context.Background(), testCfgNoCallback("job-1"), n)
 
-	entry, _ := reg.Get("job-1")
+	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateCompleted {
 		t.Errorf("want StateCompleted, got %s", entry.State)
 	}
@@ -291,14 +298,15 @@ func TestRunWatchLoop_SidecarExitedAfterWorker(t *testing.T) {
 func TestRunWatchLoop_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	blocking := &blockingWatcher{}
-	o, reg, _ := newTestOrchestrator(blocking)
-	_ = reg.Reserve("job-1")
+	o, ctrl, _ := newTestOrchestrator(blocking)
+	_ = ctrl.Reserve("job-1")
+	n := ctrl.Commit("job-1", dockerHandle{}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		o.runWatchLoop(ctx, testCfgNoCallback("job-1"))
+		o.runWatchLoop(ctx, testCfgNoCallback("job-1"), n)
 	}()
 
 	cancel()

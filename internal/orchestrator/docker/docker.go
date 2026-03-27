@@ -23,6 +23,13 @@ import (
 	"github.com/docker/docker/client"
 )
 
+// dockerHandle carries the Docker infrastructure identifiers for a running job.
+type dockerHandle struct {
+	sidecarContainerID string
+	jobContainerID     string
+	volumeName         string
+}
+
 // Orchestrator implements job.Orchestrator using Docker.
 type Orchestrator struct {
 	client              *client.Client
@@ -32,7 +39,7 @@ type Orchestrator struct {
 	emitter             *job.EventEmitter
 	callbackProxyURL    string
 	extraHosts          []string
-	registry            *dockerRegistry
+	ctrl                *job.StoreController[dockerHandle]
 	watcher             JobWatcher
 
 	cancelMaintenance context.CancelFunc
@@ -75,7 +82,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			emitter:             emitter,
 			callbackProxyURL:    cfg.CallbackProxyURL,
 			extraHosts:          cfg.ExtraHosts,
-			registry:            newDockerRegistry(),
+			ctrl:                job.NewStoreController[dockerHandle](),
 			watcher:             newDockerJobWatcher(dockerClient),
 		}, nil
 	}
@@ -157,40 +164,33 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			// Both exited — restore with terminal state, no watcher needed.
 			completed++
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
-			exitCode := cs.workerExitCode
-			var t job.Transition
-			if exitCode == 0 {
-				t = job.ToCompleted(exitCode)
-			} else {
-				t = job.ToFailed(exitCode, "")
-			}
-			_ = o.registry.Restore(jobID, t, handle, nil)
+			_, _ = o.ctrl.Restore(jobID, job.TransitionForExit(cs.workerExitCode), handle, nil)
 
 		case sidecarRunning && jc.worker == nil:
 			// Sidecar running but no worker — shouldn't happen in normal flow.
 			logger.Warn("Job has sidecar but no worker container", "jobId", jobID)
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			_ = o.registry.Restore(jobID, job.ToRunning(), handle, cancelWatch)
+			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg)
+				o.runWatchLoop(watchCtx, cfg, n)
 			}()
 
 		case workerRunning:
 			// Worker is running — restore as running and resume watcher.
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			_ = o.registry.Restore(jobID, job.ToRunning(), handle, cancelWatch)
+			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg)
+				o.runWatchLoop(watchCtx, cfg, n)
 			}()
 
 		default:
@@ -198,13 +198,13 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			// The watcher will drive the Running transition when the worker starts.
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			_ = o.registry.Restore(jobID, job.ToAccepted(), handle, cancelWatch)
+			n, _ := o.ctrl.Restore(jobID, job.ToAccepted(), handle, cancelWatch)
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg)
+				o.runWatchLoop(watchCtx, cfg, n)
 			}()
 		}
 	}
@@ -224,7 +224,7 @@ type callbackDest struct {
 
 // Run creates and starts a job with its sidecar.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
-	if err := o.registry.Reserve(req.ID); err != nil {
+	if err := o.ctrl.Reserve(req.ID); err != nil {
 		return err
 	}
 
@@ -236,7 +236,7 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	success := false
 	defer func() {
 		if !success {
-			if rh, ok := o.registry.Release(req.ID); ok {
+			if rh, ok := o.ctrl.Release(req.ID); ok {
 				o.cleanup(ctx, rh.Runtime)
 			}
 		}
@@ -271,38 +271,34 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 
 	// Commit runtime handles and start event-driven watcher.
 	watchCtx, cancelWatch := context.WithCancel(context.Background())
-	o.registry.Commit(req.ID, h, cancelWatch)
+	n := o.ctrl.Commit(req.ID, h, cancelWatch)
 	success = true
 
 	cfg := watchConfigFromRequest(req, h)
 	o.watchWg.Add(1)
 	go func() {
 		defer o.watchWg.Done()
-		o.runWatchLoop(watchCtx, cfg)
+		o.runWatchLoop(watchCtx, cfg, n)
 	}()
 
 	return nil
 }
 
 // runWatchLoop drives job state transitions and callback emission from watcher events.
-func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig) {
+func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig, n job.Notifier) {
 	for e := range o.watcher.Watch(ctx, cfg.sidecarID, cfg.workerID) {
 		switch ev := e.(type) {
 		case SidecarReady:
-			_ = o.registry.Apply(cfg.jobID, job.ToRunning())
+			_ = n.Notify(job.ToRunning())
 			o.emitStartEvent(cfg)
 
 		case WorkerExited:
-			if ev.ExitCode == 0 {
-				_ = o.registry.Apply(cfg.jobID, job.ToCompleted(ev.ExitCode))
-			} else {
-				_ = o.registry.Apply(cfg.jobID, job.ToFailed(ev.ExitCode, ""))
-			}
+			_ = n.Notify(job.TransitionForExit(ev.ExitCode))
 			o.sendExitEvent(cfg.jobID, cfg, ev.ExitCode, ev.Duration.Seconds())
 
 		case SidecarExited:
 			if !ev.WorkerHasStarted {
-				_ = o.registry.Apply(cfg.jobID, job.ToFailed(-1, "sidecar exited before worker started"))
+				_ = n.Notify(job.ToFailed(-1, "sidecar exited before worker started"))
 				o.sendExitEvent(cfg.jobID, cfg, -1, 0)
 			}
 
@@ -323,7 +319,7 @@ func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig) {
 
 // Stop stops a running job and cleans up its resources.
 func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
-	h, ok := o.registry.Release(jobID)
+	h, ok := o.ctrl.Release(jobID)
 	if !ok {
 		return apperrors.NotFound("job", jobID)
 	}
@@ -338,7 +334,7 @@ func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
 
 // Status returns the current status of a job.
 func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.Status, error) {
-	entry, exists := o.registry.Get(jobID)
+	entry, exists := o.ctrl.Get(jobID)
 	if !exists {
 		return nil, apperrors.NotFound("job", jobID)
 	}
@@ -347,7 +343,7 @@ func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.Status, e
 
 // List returns the status of all jobs.
 func (o *Orchestrator) List(ctx context.Context) ([]job.Status, error) {
-	entries := o.registry.List()
+	entries := o.ctrl.List()
 	statuses := make([]job.Status, len(entries))
 	for i, e := range entries {
 		statuses[i] = *e.Status()
@@ -362,7 +358,7 @@ func (o *Orchestrator) Close() error {
 	}
 
 	// Cancel all watch goroutines and wait for them to finish.
-	o.registry.Each(func(_ string, _ job.Entry, h job.Handle[dockerHandle]) {
+	o.ctrl.Each(func(_ string, _ job.Entry, h job.Handle[dockerHandle]) {
 		if h.CancelWatch != nil {
 			h.CancelWatch()
 		}
@@ -628,7 +624,7 @@ func (o *Orchestrator) cleanupExpiredJobs(ctx context.Context) {
 	logger := slog.With("component", "maintenance")
 
 	var expired []string
-	o.registry.Each(func(jobID string, e job.Entry, _ job.Handle[dockerHandle]) {
+	o.ctrl.Each(func(jobID string, e job.Entry, _ job.Handle[dockerHandle]) {
 		if isTerminal(e.State) && now.Sub(e.UpdatedAt) > o.retentionPeriod {
 			expired = append(expired, jobID)
 		}
@@ -639,7 +635,7 @@ func (o *Orchestrator) cleanupExpiredJobs(ctx context.Context) {
 	}
 
 	for _, jobID := range expired {
-		if h, ok := o.registry.Release(jobID); ok {
+		if h, ok := o.ctrl.Release(jobID); ok {
 			if h.CancelWatch != nil {
 				h.CancelWatch()
 			}
