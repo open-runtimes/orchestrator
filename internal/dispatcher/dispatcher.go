@@ -10,9 +10,9 @@ import (
 // ErrBufferFull is returned when the dispatcher's buffer is full and the event is dropped.
 var ErrBufferFull = errors.New("dispatcher buffer full, event dropped")
 
-// Dispatcher handles async delivery of events.
+// Queue handles async delivery of events.
 // Implementations may use in-memory buffering, message queues, etc.
-type Dispatcher interface {
+type Queue interface {
 	// Dispatch queues an event for async delivery. Non-blocking.
 	// Returns ErrBufferFull if the event cannot be queued.
 	Dispatch(event *Event) error
@@ -27,7 +27,7 @@ type Dispatcher interface {
 
 // Event is an event to be delivered to a destination.
 type Event struct {
-	Payload     *cloudevent.CloudEvent
+	Payload     *cloudevent.Event
 	Destination string // callback URL
 	SigningKey  string // HMAC key for signing, empty = no signing
 	Signature   string // Pre-computed signature, takes precedence over SigningKey

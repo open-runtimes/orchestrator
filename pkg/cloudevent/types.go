@@ -3,8 +3,8 @@ package cloudevent
 
 import "time"
 
-// CloudEvent represents a CloudEvents 1.0 specification event
-type CloudEvent struct {
+// Event represents a CloudEvents 1.0 specification event
+type Event struct {
 	SpecVersion     string         `json:"specversion"`
 	Type            string         `json:"type"`
 	Source          string         `json:"source"`
@@ -15,9 +15,9 @@ type CloudEvent struct {
 	Data            map[string]any `json:"data"`
 }
 
-// New creates a new CloudEvent with default values
-func New(eventType, source, subject, id string, data map[string]any) *CloudEvent {
-	return &CloudEvent{
+// New creates a new Event with default values
+func New(eventType, source, subject, id string, data map[string]any) *Event {
+	return &Event{
 		SpecVersion:     "1.0",
 		Type:            eventType,
 		Source:          source,

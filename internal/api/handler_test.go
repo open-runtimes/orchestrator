@@ -2,13 +2,12 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
-	"orchestrator/pkg/cloudevent"
+	"orchestrator/internal/job"
+	"sync"
 	"testing"
 )
 
@@ -292,81 +291,81 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 	}
 }
 
-// mockDispatcher records dispatched events for testing.
-type mockDispatcher struct {
-	events []*dispatcher.Event
+// mockArtifactEmitter records EmitArtifactEvent calls for testing.
+type mockArtifactEmitter struct {
+	mu      sync.Mutex
+	reports []job.ArtifactReport
 }
 
-func (m *mockDispatcher) Dispatch(event *dispatcher.Event) error {
-	m.events = append(m.events, event)
-	return nil
+func (m *mockArtifactEmitter) EmitArtifactEvent(r job.ArtifactReport) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reports = append(m.reports, r)
 }
 
-func (m *mockDispatcher) Stats() dispatcher.Stats {
-	return dispatcher.Stats{}
-}
-
-func (m *mockDispatcher) Close(ctx context.Context) error {
-	return nil
-}
-
-func TestHandler_ProxyEvent(t *testing.T) {
+func TestHandler_ReportArtifact(t *testing.T) {
 	t.Parallel()
-	mock := &mockDispatcher{}
-	handler := &Handler{dispatcher: mock}
+	mock := &mockArtifactEmitter{}
+	handler := &Handler{artifactEmitter: mock}
 
-	event := cloudevent.New("test.event", "test-source", "job-123", "evt-1", nil)
-	body, _ := json.Marshal(event)
+	report := job.ArtifactReport{
+		ArtifactID:   "a1",
+		ArtifactType: "upload",
+		Status:       "success",
+	}
+	body, _ := json.Marshal(report)
 
-	// Sidecar sends pre-signed events with signature in header
-	req := httptest.NewRequest(http.MethodPost, "/internal/events?url=https://example.com/webhook", bytes.NewReader(body))
-	req.Header.Set("X-Signature-256", "sha256=abc123")
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewReader(body))
+	req.SetPathValue("jobId", "job-123")
 	w := httptest.NewRecorder()
 
-	handler.ProxyEvent(w, req)
+	handler.ReportArtifact(w, req)
 
 	if w.Code != http.StatusAccepted {
 		t.Errorf("Expected status %d, got %d", http.StatusAccepted, w.Code)
 	}
 
-	if len(mock.events) != 1 {
-		t.Fatalf("Expected 1 event, got %d", len(mock.events))
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.reports) != 1 {
+		t.Fatalf("Expected 1 report, got %d", len(mock.reports))
 	}
-
-	dispatched := mock.events[0]
-	if dispatched.Destination != "https://example.com/webhook" {
-		t.Errorf("Expected destination https://example.com/webhook, got %s", dispatched.Destination)
+	r := mock.reports[0]
+	if r.JobID != "job-123" {
+		t.Errorf("Expected JobID 'job-123', got %q", r.JobID)
 	}
-	if dispatched.Signature != "sha256=abc123" {
-		t.Errorf("Expected signature 'sha256=abc123', got %s", dispatched.Signature)
+	if r.ArtifactID != "a1" {
+		t.Errorf("Expected ArtifactID 'a1', got %q", r.ArtifactID)
 	}
-	if dispatched.Payload.Type != "test.event" {
-		t.Errorf("Expected event type test.event, got %s", dispatched.Payload.Type)
+	if r.Status != "success" {
+		t.Errorf("Expected Status 'success', got %q", r.Status)
 	}
 }
 
-func TestHandler_ProxyEvent_MissingURL(t *testing.T) {
+func TestHandler_ReportArtifact_InvalidJSON(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{}
+	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/internal/events", bytes.NewBufferString("{}"))
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewBufferString("invalid"))
+	req.SetPathValue("jobId", "job-123")
 	w := httptest.NewRecorder()
 
-	handler.ProxyEvent(w, req)
+	handler.ReportArtifact(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
 	}
 }
 
-func TestHandler_ProxyEvent_InvalidJSON(t *testing.T) {
+func TestHandler_ReportArtifact_MissingJobID(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{dispatcher: &mockDispatcher{}}
+	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/internal/events?url=https://example.com", bytes.NewBufferString("invalid"))
+	req := httptest.NewRequest(http.MethodPost, "/internal/jobs//artifact", bytes.NewBufferString("{}"))
+	// No SetPathValue — jobId will be empty string
 	w := httptest.NewRecorder()
 
-	handler.ProxyEvent(w, req)
+	handler.ReportArtifact(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)

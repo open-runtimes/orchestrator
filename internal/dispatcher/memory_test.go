@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestMemoryDispatcher_Dispatch(t *testing.T) {
+func TestMemoryQueue_Dispatch(t *testing.T) {
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
@@ -54,7 +54,7 @@ func TestMemoryDispatcher_Dispatch(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryDispatcher_BufferFull(t *testing.T) {
+func TestMemoryQueue_BufferFull(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
@@ -90,7 +90,7 @@ func TestMemoryDispatcher_BufferFull(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryDispatcher_Retry(t *testing.T) {
+func TestMemoryQueue_Retry(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count := attempts.Add(1)
@@ -133,7 +133,7 @@ func TestMemoryDispatcher_Retry(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryDispatcher_NoRetryOn4xx(t *testing.T) {
+func TestMemoryQueue_NoRetryOn4xx(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -167,7 +167,7 @@ func TestMemoryDispatcher_NoRetryOn4xx(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryDispatcher_CircuitBreaker(t *testing.T) {
+func TestMemoryQueue_CircuitBreaker(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -210,7 +210,7 @@ func TestMemoryDispatcher_CircuitBreaker(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryDispatcher_CloudEventHeaders(t *testing.T) {
+func TestMemoryQueue_CloudEventHeaders(t *testing.T) {
 	var mu sync.Mutex
 	var headers http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +256,7 @@ func TestMemoryDispatcher_CloudEventHeaders(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryDispatcher_Signature(t *testing.T) {
+func TestMemoryQueue_Signature(t *testing.T) {
 	var mu sync.Mutex
 	var signature string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -298,7 +298,7 @@ func TestMemoryDispatcher_Signature(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryDispatcher_GracefulShutdown(t *testing.T) {
+func TestMemoryQueue_GracefulShutdown(t *testing.T) {
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
@@ -332,63 +332,69 @@ func TestMemoryDispatcher_GracefulShutdown(t *testing.T) {
 	}
 }
 
-func TestMemoryDispatcher_CircuitBreakerRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping circuit breaker recovery test in short mode")
-	}
-
-	const numEvents = 1000
-
-	var requests, failures atomic.Int64
-	failUntil := time.Now().Add(3 * time.Second)
+func TestMemoryQueue_CircuitBreakerRecovery(t *testing.T) {
+	var serving atomic.Bool // false = 503, true = 200
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		if time.Now().Before(failUntil) {
-			failures.Add(1)
+		if serving.Load() {
+			w.WriteHeader(http.StatusOK)
+		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			return
 		}
-		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
+	const (
+		cooldown  = 200 * time.Millisecond
+		numEvents = 10
+	)
+
 	d := NewMemory(MemoryConfig{
-		BufferSize:  numEvents,
-		Workers:     20,
-		HTTPTimeout: 1 * time.Second,
+		BufferSize:      numEvents,
+		Workers:         2,
+		HTTPTimeout:     500 * time.Millisecond,
+		BreakerCooldown: cooldown,
 	}, nil)
 	defer d.Close(context.Background())
 
+	event := &Event{
+		Payload:     cloudevent.New("test.breaker", "test", "job", "evt", nil),
+		Destination: server.URL,
+	}
 	for i := 0; i < numEvents; i++ {
-		event := &Event{
-			Payload:     cloudevent.New("test.breaker", "test", "job", time.Now().Format("150405.000000"), nil),
-			Destination: server.URL,
-		}
 		d.Dispatch(event)
 	}
 
-	// Wait for delivery to stabilize (circuit should recover and deliver remaining events)
-	// Circuit breaker cooldown is 30s, requeued events may need two cycles to succeed
-	testutil.WaitFor(t, func() bool {
+	// Wait for circuit to open: at least one event requeued
+	testutil.MustWaitFor(t, func() bool {
+		return d.Stats().Requeued > 0
+	}, testutil.WithTimeout(10*time.Second))
+
+	// Allow the server to succeed so the circuit can recover
+	serving.Store(true)
+
+	// Wait for all events to settle: every dispatched event must end up
+	// as delivered, failed, or dropped — no silent loss.
+	testutil.MustWaitFor(t, func() bool {
 		stats := d.Stats()
-		return stats.Delivered > 0 && (stats.Delivered+stats.Failed+stats.Dropped) >= int64(numEvents/2)
-	}, testutil.WithTimeout(75*time.Second))
+		return stats.Delivered+stats.Failed+stats.Dropped == numEvents
+	}, testutil.WithTimeout(5*time.Second))
 
 	stats := d.Stats()
-
-	t.Logf("Events sent: %d", numEvents)
-	t.Logf("HTTP requests: %d", requests.Load())
-	t.Logf("Server failures: %d", failures.Load())
-	t.Logf("Delivered: %d", stats.Delivered)
-	t.Logf("Failed: %d", stats.Failed)
-	t.Logf("Requeued: %d", stats.Requeued)
-
 	if stats.Requeued == 0 {
-		t.Error("Expected some events to be requeued due to open circuit")
+		t.Error("expected requeues when circuit is open")
 	}
-
 	if stats.Delivered == 0 {
-		t.Error("Expected some successful deliveries after circuit recovery")
+		t.Error("expected deliveries after circuit recovery")
+	}
+	// With threshold=5, at least 5 events must have failed to open the circuit.
+	// Fewer would mean the circuit never actually opened.
+	if stats.Failed < defaultBreakerThreshold {
+		t.Errorf("expected at least %d failures to open circuit, got %d", defaultBreakerThreshold, stats.Failed)
+	}
+	// All events must be accounted for.
+	if total := stats.Delivered + stats.Failed + stats.Dropped; total != numEvents {
+		t.Errorf("event accounting: delivered=%d + failed=%d + dropped=%d = %d, want %d",
+			stats.Delivered, stats.Failed, stats.Dropped, total, numEvents)
 	}
 }

@@ -41,13 +41,13 @@ func NewEventBuilder(jobID, source string, meta map[string]string) *EventBuilder
 }
 
 // Build creates a new CloudEvent with the given type and data.
-func (b *EventBuilder) Build(eventType string, data map[string]any) *cloudevent.CloudEvent {
+func (b *EventBuilder) Build(eventType string, data map[string]any) *cloudevent.Event {
 	eventID := fmt.Sprintf("%s-%d", b.subject, time.Now().UnixNano())
 	return cloudevent.New(eventType, b.source, b.subject, eventID, data)
 }
 
 // BuildStartEvent creates a job start event.
-func (b *EventBuilder) BuildStartEvent() *cloudevent.CloudEvent {
+func (b *EventBuilder) BuildStartEvent() *cloudevent.Event {
 	data := map[string]any{
 		"jobId": b.subject,
 		"meta":  b.meta,
@@ -56,7 +56,7 @@ func (b *EventBuilder) BuildStartEvent() *cloudevent.CloudEvent {
 }
 
 // BuildArtifactEvent creates an artifact event.
-func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status string, content any, err error) *cloudevent.CloudEvent {
+func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status string, content any, err error) *cloudevent.Event {
 	data := map[string]any{
 		"jobId":        b.subject,
 		"artifactId":   artifactID,
@@ -74,7 +74,7 @@ func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status strin
 }
 
 // BuildLogEvent creates a log event.
-func (b *EventBuilder) BuildLogEvent(lines []string, stream string) *cloudevent.CloudEvent {
+func (b *EventBuilder) BuildLogEvent(lines []string, stream string) *cloudevent.Event {
 	data := map[string]any{
 		"jobId":  b.subject,
 		"lines":  lines,
@@ -85,7 +85,7 @@ func (b *EventBuilder) BuildLogEvent(lines []string, stream string) *cloudevent.
 }
 
 // BuildExitEvent creates an exit event.
-func (b *EventBuilder) BuildExitEvent(exitCode int, image string, durationSeconds float64, err error) *cloudevent.CloudEvent {
+func (b *EventBuilder) BuildExitEvent(exitCode int, image string, durationSeconds float64, err error) *cloudevent.Event {
 	data := map[string]any{
 		"jobId":           b.subject,
 		"exitCode":        exitCode,

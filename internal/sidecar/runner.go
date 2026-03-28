@@ -1,13 +1,14 @@
 package sidecar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
-	"orchestrator/pkg/cloudevent"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -21,28 +22,48 @@ import (
 // Kubernetes uses startup probes on this file for native sidecar containers.
 const ReadyFile = ".ready"
 
+// SignalFunc blocks until the worker has finished, then returns.
+// ctx is passed so the implementation can respect cancellation/timeout.
+// The default implementation waits for SIGUSR1 or SIGTERM from the worker process.
+type SignalFunc func(ctx context.Context)
+
+// ArtifactReporterFunc reports an artifact result to the orchestrator.
+// The default implementation POSTs a job.ArtifactReport to the orchestrator's internal endpoint.
+type ArtifactReporterFunc func(ctx context.Context, report job.ArtifactReport) error
+
+// Option configures a Runner. Applied after production defaults are set in NewRunner.
+type Option func(*Runner)
+
+// WithSignalFunc replaces the default OS signal handler with fn.
+// Used in tests to inject a channel-based trigger instead of SIGUSR1/SIGTERM.
+func WithSignalFunc(fn SignalFunc) Option {
+	return func(r *Runner) { r.waitFn = fn }
+}
+
+// WithArtifactReporter replaces the default HTTP reporter with fn.
+// Used in tests to capture artifact reports without making real HTTP calls.
+func WithArtifactReporter(fn ArtifactReporterFunc) Option {
+	return func(r *Runner) { r.reportFn = fn }
+}
+
 // Runner orchestrates the sidecar flow.
 // The sidecar handles artifact processing (downloads, uploads, archives, etc.)
-// with callbacks for each artifact.
+// and reports results to the orchestrator, which dispatches the corresponding events.
 //
 // Log streaming, start, and exit events are handled by the supervisor.
 type Runner struct {
 	config           *Config
-	events           []string // parsed from config
+	meta             map[string]string
 	preJobArtifacts  []artifact.Artifact
 	postJobArtifacts []artifact.Artifact
-	sender           *cloudevent.Sender
-	eventBuilder     *job.EventBuilder
 	registry         *artifact.Registry
+	waitFn           SignalFunc
+	reportFn         ArtifactReporterFunc
 }
 
-// NewRunner creates a new sidecar runner.
-func NewRunner(cfg *Config, reg *artifact.Registry) (*Runner, error) {
-	var events []string
-	if cfg.CallbackEvents != "" {
-		events = strings.Split(cfg.CallbackEvents, ",")
-	}
-
+// NewRunner creates a new sidecar runner. Production callers pass no options.
+// Tests pass WithSignalFunc and/or WithArtifactReporter to replace OS-level seams.
+func NewRunner(cfg *Config, reg *artifact.Registry, opts ...Option) (*Runner, error) {
 	var artifacts []artifact.Artifact
 	if cfg.ArtifactsJSON != "" && cfg.ArtifactsJSON != "[]" {
 		var err error
@@ -56,19 +77,57 @@ func NewRunner(cfg *Config, reg *artifact.Registry) (*Runner, error) {
 	preJob, postJob := artifact.Partition(artifacts)
 
 	var meta map[string]string
-	if cfg.Meta != "" {
+	if cfg.Meta != "" && cfg.Meta != "{}" {
 		_ = json.Unmarshal([]byte(cfg.Meta), &meta)
 	}
 
-	return &Runner{
+	httpClient := &http.Client{Timeout: cfg.ArtifactTimeout}
+
+	r := &Runner{
 		config:           cfg,
-		events:           events,
+		meta:             meta,
 		preJobArtifacts:  preJob,
 		postJobArtifacts: postJob,
-		sender:           cloudevent.NewSender(cfg.CallbackTimeout),
-		eventBuilder:     job.NewEventBuilder(cfg.JobID, "orchestrator/sidecar", meta),
 		registry:         reg,
-	}, nil
+		waitFn: func(ctx context.Context) {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGTERM)
+			defer signal.Stop(sigCh)
+			select {
+			case <-ctx.Done():
+			case <-sigCh:
+			}
+		},
+		reportFn: func(ctx context.Context, report job.ArtifactReport) error {
+			if cfg.ArtifactEndpoint == "" {
+				return nil
+			}
+			data, err := json.Marshal(report)
+			if err != nil {
+				return fmt.Errorf("failed to marshal report: %w", err)
+			}
+			url := fmt.Sprintf("%s/internal/jobs/%s/artifact", cfg.ArtifactEndpoint, cfg.JobID)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				return fmt.Errorf("artifact report failed: HTTP %d", resp.StatusCode)
+			}
+			return nil
+		},
+	}
+
+	for _, o := range opts {
+		o(r)
+	}
+	return r, nil
 }
 
 // Run executes the sidecar flow:
@@ -99,7 +158,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Wait for worker completion signal
 	logger.Info("Waiting for worker completion signal")
-	r.waitForSignal(ctx)
+	r.waitFn(ctx)
 	logger.Info("Received worker completion signal")
 
 	// Process post-job artifacts (uploads, reads, etc.)
@@ -107,18 +166,6 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	logger.Info("Sidecar completed")
 	return nil
-}
-
-// waitForSignal blocks until a completion signal is received or context is cancelled.
-func (r *Runner) waitForSignal(ctx context.Context) {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-
-	select {
-	case <-ctx.Done():
-	case <-sigCh:
-	}
 }
 
 // processArtifacts processes artifacts in dependency order.
@@ -129,7 +176,7 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 			if srcPath := r.registry.SourcePath(a); srcPath != "" {
 				fullPath := filepath.Join(r.config.SharedVolumePath, srcPath)
 				if err := r.waitForPath(ctx, fullPath); err != nil {
-					r.sendArtifactEvent(ctx, a, "failed", nil, err)
+					r.reportArtifact(ctx, a, "failed", nil, err)
 					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
 					return err
 				}
@@ -137,7 +184,7 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 		}
 
 		result := a.Apply(ctx, r.config.SharedVolumePath)
-		r.sendArtifactEvent(ctx, a, result.Status, result.Content, result.Error)
+		r.reportArtifact(ctx, a, result.Status, result.Content, result.Error)
 
 		logger := slog.With("artifactId", a.ArtifactID(), "type", a.ArtifactType(), "status", result.Status)
 		if result.Error != nil {
@@ -149,31 +196,26 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 	})
 }
 
-func (r *Runner) sendArtifactEvent(ctx context.Context, a artifact.Artifact, status string, content any, err error) {
-	event := r.eventBuilder.BuildArtifactEvent(a.ArtifactID(), a.ArtifactType(), status, content, err)
-	if sendErr := r.sendEvent(ctx, event); sendErr != nil {
-		slog.With("artifactId", a.ArtifactID(), "callbackError", sendErr).Warn("Failed to send artifact event")
+func (r *Runner) reportArtifact(ctx context.Context, a artifact.Artifact, status string, content any, err error) {
+	report := job.ArtifactReport{
+		JobID:        r.config.JobID,
+		ArtifactID:   a.ArtifactID(),
+		ArtifactType: a.ArtifactType(),
+		Status:       status,
+		Content:      content,
+		CallbackURL:  r.config.CallbackURL,
+		CallbackKey:  r.config.CallbackKey,
+		Meta:         r.meta,
 	}
-}
-
-func (r *Runner) sendEvent(ctx context.Context, event *cloudevent.CloudEvent) error {
-	if r.config.CallbackURL == "" {
-		return nil
+	if r.config.CallbackEvents != "" {
+		report.CallbackEvents = strings.Split(r.config.CallbackEvents, ",")
 	}
-	if !job.FilteredEvents(event.Type, r.events) {
-		return nil
+	if err != nil {
+		report.Error = err.Error()
 	}
-
-	opts := cloudevent.SendOptions{}
-	if r.config.CallbackKey != "" {
-		signature, err := cloudevent.Sign(event, r.config.CallbackKey)
-		if err != nil {
-			return fmt.Errorf("failed to sign event: %w", err)
-		}
-		opts.Signature = signature
+	if reportErr := r.reportFn(ctx, report); reportErr != nil {
+		slog.With("artifactId", a.ArtifactID(), "error", reportErr).Warn("Failed to report artifact")
 	}
-
-	return r.sender.Send(ctx, r.config.CallbackURL, event, opts)
 }
 
 func (r *Runner) waitForPath(ctx context.Context, path string) error {

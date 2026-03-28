@@ -38,7 +38,7 @@ type SendOptions struct {
 }
 
 // Send delivers a CloudEvent via HTTP POST.
-func (s *Sender) Send(ctx context.Context, url string, event *CloudEvent, opts SendOptions) error {
+func (s *Sender) Send(ctx context.Context, url string, event *Event, opts SendOptions) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
@@ -80,7 +80,7 @@ func (s *Sender) Send(ctx context.Context, url string, event *CloudEvent, opts S
 }
 
 // Sign computes HMAC-SHA256 signature for a CloudEvent.
-func Sign(event *CloudEvent, key string) (string, error) {
+func Sign(event *Event, key string) (string, error) {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal event: %w", err)

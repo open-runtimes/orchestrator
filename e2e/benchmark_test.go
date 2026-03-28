@@ -401,13 +401,22 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	callbackProxyURL := fmt.Sprintf("http://host.docker.internal:%d", port)
 
 	emitter := job.NewEventEmitter()
-	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
+	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+		if e.CallbackURL == "" {
+			return
+		}
+		_ = eventDispatcher.Dispatch(&dispatcher.Event{
+			Payload:     e.Payload,
+			Destination: e.CallbackURL,
+			SigningKey:  e.SigningKey,
+		})
+	}))
 
 	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{
 		SidecarImage:        "ko.local/job-sidecar:latest",
 		RetentionPeriod:     5 * time.Minute,
 		MaintenanceInterval: 1 * time.Minute,
-		CallbackProxyURL:    callbackProxyURL,
+		ArtifactEndpoint:    callbackProxyURL,
 	}))
 	if err != nil {
 		tempServer.Close()
@@ -417,12 +426,15 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	svc := job.NewService(orchestrator, metrics, artifact.DefaultRegistry())
 	healthChecker := health.NewChecker(orchestrator)
 
-	router := api.NewRouter(api.RouterConfig{
+	routerCfg := api.RouterConfig{
 		JobService:    svc,
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
-		Dispatcher:    eventDispatcher,
-	})
+	}
+	if ae, ok := orchestrator.(api.ArtifactEmitter); ok {
+		routerCfg.ArtifactEmitter = ae
+	}
+	router := api.NewRouter(routerCfg)
 
 	// Assign the router and start the server
 	tempServer.Config.Handler = router
@@ -437,6 +449,6 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	return tempServer.URL, cleanup
 }
 
-func newTestEvent(id string) *cloudevent.CloudEvent {
+func newTestEvent(id string) *cloudevent.Event {
 	return cloudevent.New("test.benchmark", "benchmark", "test", id, map[string]any{"test": true})
 }

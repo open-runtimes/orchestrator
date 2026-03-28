@@ -2,10 +2,10 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
-	"orchestrator/pkg/backoff"
 	"orchestrator/pkg/circuitbreaker"
 	"orchestrator/pkg/cloudevent"
 	"sync"
@@ -13,12 +13,12 @@ import (
 	"time"
 )
 
-// MemoryDispatcher is an in-memory async event dispatcher.
+// MemoryQueue is an in-memory async event dispatcher.
 // Events are queued in a bounded channel and delivered by a worker pool.
 // If the buffer is full, events are dropped (logged + metric incremented).
-type MemoryDispatcher struct {
+type MemoryQueue struct {
 	queue    chan *Event
-	sender   *cloudevent.Sender
+	chain    DeliveryFunc
 	breakers *circuitbreaker.Registry
 	config   MemoryConfig
 	logger   *slog.Logger
@@ -47,21 +47,34 @@ type MetricsRecorder interface {
 }
 
 // NewMemory creates a new in-memory dispatcher.
-func NewMemory(cfg MemoryConfig, metrics MetricsRecorder) *MemoryDispatcher {
+func NewMemory(cfg MemoryConfig, metrics MetricsRecorder) *MemoryQueue {
 	cfg = cfg.withDefaults()
 
-	d := &MemoryDispatcher{
-		queue:  make(chan *Event, cfg.BufferSize),
-		sender: cloudevent.NewSender(cfg.HTTPTimeout),
-		breakers: circuitbreaker.NewRegistry(circuitbreaker.Config{
-			Threshold: defaultBreakerThreshold,
-			Cooldown:  defaultBreakerCooldown,
-		}),
+	breakers := circuitbreaker.NewRegistry(circuitbreaker.Config{
+		Threshold: defaultBreakerThreshold,
+		Cooldown:  cfg.BreakerCooldown,
+	})
+
+	d := &MemoryQueue{
+		queue:    make(chan *Event, cfg.BufferSize),
+		breakers: breakers,
 		config:   cfg,
 		logger:   slog.With("component", "dispatcher"),
 		metrics:  metrics,
 		shutdown: make(chan struct{}),
 	}
+
+	// Assemble the delivery chain: circuit breaker → retry → HTTP send.
+	// The onRetry callback increments the retry counter on d.
+	d.chain = WithCircuitBreaker(
+		WithRetry(
+			HTTPSender(cloudevent.NewSender(cfg.HTTPTimeout)),
+			defaultMaxRetries,
+			nil,
+			func() { d.retriesTotal.Add(1) },
+		),
+		breakers,
+	)
 
 	// Start workers
 	d.wg.Add(cfg.Workers)
@@ -79,7 +92,7 @@ func NewMemory(cfg MemoryConfig, metrics MetricsRecorder) *MemoryDispatcher {
 }
 
 // reportQueueSize periodically reports the queue size metric.
-func (d *MemoryDispatcher) reportQueueSize() {
+func (d *MemoryQueue) reportQueueSize() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -94,7 +107,7 @@ func (d *MemoryDispatcher) reportQueueSize() {
 }
 
 // Dispatch queues an event for async delivery.
-func (d *MemoryDispatcher) Dispatch(event *Event) error {
+func (d *MemoryQueue) Dispatch(event *Event) error {
 	if d.isClosed.Load() {
 		return fmt.Errorf("dispatcher is closed")
 	}
@@ -117,7 +130,7 @@ func (d *MemoryDispatcher) Dispatch(event *Event) error {
 }
 
 // Stats returns current dispatcher statistics.
-func (d *MemoryDispatcher) Stats() Stats {
+func (d *MemoryQueue) Stats() Stats {
 	breakerStats := d.breakers.Stats()
 	return Stats{
 		QueueDepth:    len(d.queue),
@@ -133,7 +146,7 @@ func (d *MemoryDispatcher) Stats() Stats {
 }
 
 // Close gracefully shuts down the dispatcher.
-func (d *MemoryDispatcher) Close(ctx context.Context) error {
+func (d *MemoryQueue) Close(ctx context.Context) error {
 	if d.isClosed.Swap(true) {
 		return nil // already closed
 	}
@@ -165,7 +178,7 @@ func (d *MemoryDispatcher) Close(ctx context.Context) error {
 }
 
 // worker processes events from the queue.
-func (d *MemoryDispatcher) worker() {
+func (d *MemoryQueue) worker() {
 	defer d.wg.Done()
 
 	for {
@@ -181,7 +194,7 @@ func (d *MemoryDispatcher) worker() {
 }
 
 // drainQueue delivers remaining events after shutdown signal.
-func (d *MemoryDispatcher) drainQueue() {
+func (d *MemoryQueue) drainQueue() {
 	for {
 		select {
 		case event := <-d.queue:
@@ -192,39 +205,37 @@ func (d *MemoryDispatcher) drainQueue() {
 	}
 }
 
-// deliver attempts to deliver an event with retry and circuit breaker.
-func (d *MemoryDispatcher) deliver(event *Event) {
-	host := extractHost(event.Destination)
-	breaker := d.breakers.Get(host)
-
-	if !breaker.Allow() {
-		d.requeue(event, host)
-		return
-	}
-
+// deliver runs the event through the delivery chain and handles the outcome.
+func (d *MemoryQueue) deliver(event *Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	start := time.Now()
-	if err := d.sendWithRetry(ctx, event); err != nil {
-		breaker.RecordFailure()
+	err := d.chain(ctx, event)
+
+	switch {
+	case err == nil:
+		d.delivered.Add(1)
+		if d.metrics != nil {
+			d.metrics.RecordDispatcherDelivered(ctx, time.Since(start).Seconds())
+		}
+	case errors.Is(err, ErrCircuitOpen):
+		d.requeue(event, extractHost(event.Destination))
+	default:
 		d.failed.Add(1)
 		if d.metrics != nil {
 			d.metrics.RecordDispatcherFailed(ctx)
 		}
-		d.logger.Warn("Delivery failed", "destination", host, "type", event.Payload.Type, "error", err)
-		return
-	}
-
-	breaker.RecordSuccess()
-	d.delivered.Add(1)
-	if d.metrics != nil {
-		d.metrics.RecordDispatcherDelivered(ctx, time.Since(start).Seconds())
+		d.logger.Warn("Delivery failed",
+			"destination", extractHost(event.Destination),
+			"type", event.Payload.Type,
+			"error", err,
+		)
 	}
 }
 
 // requeue puts an event back in the queue after a delay when circuit is open.
-func (d *MemoryDispatcher) requeue(event *Event, host string) {
+func (d *MemoryQueue) requeue(event *Event, host string) {
 	if event.Requeues >= defaultMaxRequeues {
 		d.dropped.Add(1)
 		if d.metrics != nil {
@@ -238,8 +249,10 @@ func (d *MemoryDispatcher) requeue(event *Event, host string) {
 		return
 	}
 
-	event.Requeues++
-	requeues := event.Requeues // capture for goroutine
+	// Clone the event with an incremented requeue count so the goroutine below
+	// owns its own copy and workers never race on the Requeues field.
+	next := *event
+	next.Requeues++
 	d.requeued.Add(1)
 	if d.metrics != nil {
 		d.metrics.RecordDispatcherRequeued(context.Background())
@@ -250,12 +263,12 @@ func (d *MemoryDispatcher) requeue(event *Event, host string) {
 		select {
 		case <-d.shutdown:
 			return
-		case <-time.After(defaultBreakerCooldown):
+		case <-time.After(d.config.BreakerCooldown):
 		}
 
 		select {
-		case d.queue <- event:
-			d.logger.Debug("Event requeued", "destination", host, "type", event.Payload.Type, "requeues", requeues)
+		case d.queue <- &next:
+			d.logger.Debug("Event requeued", "destination", host, "type", next.Payload.Type, "requeues", next.Requeues)
 		case <-d.shutdown:
 		default:
 			// Buffer full, drop
@@ -263,37 +276,9 @@ func (d *MemoryDispatcher) requeue(event *Event, host string) {
 			if d.metrics != nil {
 				d.metrics.RecordDispatcherDropped(context.Background())
 			}
-			d.logger.Warn("Event dropped on requeue, buffer full", "destination", host, "type", event.Payload.Type)
+			d.logger.Warn("Event dropped on requeue, buffer full", "destination", host, "type", next.Payload.Type)
 		}
 	}()
-}
-
-func (d *MemoryDispatcher) sendWithRetry(ctx context.Context, event *Event) error {
-	opts := cloudevent.SendOptions{
-		SigningKey: event.SigningKey,
-		Signature:  event.Signature,
-	}
-
-	var lastErr error
-	for attempt := range defaultMaxRetries + 1 {
-		if attempt > 0 {
-			d.retriesTotal.Add(1)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff.Exponential(attempt, nil)):
-			}
-		}
-
-		lastErr = d.sender.Send(ctx, event.Destination, event.Payload, opts)
-		if lastErr == nil {
-			return nil
-		}
-		if cloudevent.IsClientError(lastErr) {
-			return lastErr
-		}
-	}
-	return lastErr
 }
 
 // extractHost extracts the host from a URL for circuit breaker keying.
@@ -305,5 +290,5 @@ func extractHost(rawURL string) string {
 	return parsed.Host
 }
 
-// Verify MemoryDispatcher implements Dispatcher
-var _ Dispatcher = (*MemoryDispatcher)(nil)
+// Verify MemoryQueue implements Queue
+var _ Queue = (*MemoryQueue)(nil)

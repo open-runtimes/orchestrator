@@ -17,9 +17,10 @@ const (
 
 // MemoryConfig holds configuration for the in-memory dispatcher.
 type MemoryConfig struct {
-	BufferSize  int           // pending events buffer (default: 10000)
-	Workers     int           // concurrent delivery goroutines (default: 10)
-	HTTPTimeout time.Duration // per-request timeout (default: 10s)
+	BufferSize      int           // pending events buffer (default: 10000)
+	Workers         int           // concurrent delivery goroutines (default: 10)
+	HTTPTimeout     time.Duration // per-request timeout (default: 10s)
+	BreakerCooldown time.Duration // circuit breaker cooldown before retry (default: 30s)
 }
 
 // LoadConfigFromEnv loads dispatcher configuration from environment variables.
@@ -42,6 +43,9 @@ func (c MemoryConfig) withDefaults() MemoryConfig {
 	}
 	if c.HTTPTimeout <= 0 {
 		c.HTTPTimeout = 10 * time.Second
+	}
+	if c.BreakerCooldown <= 0 {
+		c.BreakerCooldown = defaultBreakerCooldown
 	}
 	return c
 }

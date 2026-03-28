@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/job"
 	"strings"
@@ -37,7 +36,7 @@ type Orchestrator struct {
 	retentionPeriod     time.Duration
 	maintenanceInterval time.Duration
 	emitter             *job.EventEmitter
-	callbackProxyURL    string
+	artifactEndpoint    string
 	extraHosts          []string
 	ctrl                *job.StoreController[dockerHandle]
 	watcher             JobWatcher
@@ -51,7 +50,7 @@ type Config struct {
 	SidecarImage        string
 	RetentionPeriod     time.Duration // How long to keep completed jobs (default 15m)
 	MaintenanceInterval time.Duration // How often to run cleanup (default 1m)
-	CallbackProxyURL    string        // Internal URL for sidecar callbacks (e.g., http://host.docker.internal:8080)
+	ArtifactEndpoint    string        // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
 	ExtraHosts          []string      // Extra /etc/hosts entries for containers (e.g., ["appwrite.test:host-gateway"])
 }
 
@@ -80,7 +79,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			retentionPeriod:     retentionPeriod,
 			maintenanceInterval: maintenanceInterval,
 			emitter:             emitter,
-			callbackProxyURL:    cfg.CallbackProxyURL,
+			artifactEndpoint:    cfg.ArtifactEndpoint,
 			extraHosts:          cfg.ExtraHosts,
 			ctrl:                job.NewStoreController[dockerHandle](),
 			watcher:             newDockerJobWatcher(dockerClient),
@@ -171,9 +170,9 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			logger.Warn("Job has sidecar but no worker container", "jobId", jobID)
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
+			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
@@ -184,9 +183,9 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			// Worker is running — restore as running and resume watcher.
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
+			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
@@ -198,9 +197,9 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			// The watcher will drive the Running transition when the worker starts.
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			n, _ := o.ctrl.Restore(jobID, job.ToAccepted(), handle, cancelWatch)
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
+			n, _ := o.ctrl.Restore(jobID, job.ToAccepted(), handle, cancelWatch)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
@@ -269,12 +268,12 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 		return apperrors.Internal("docker.startSidecarContainer", err)
 	}
 
+	cfg := watchConfigFromRequest(req, h)
+
 	// Commit runtime handles and start event-driven watcher.
 	watchCtx, cancelWatch := context.WithCancel(context.Background())
 	n := o.ctrl.Commit(req.ID, h, cancelWatch)
 	success = true
-
-	cfg := watchConfigFromRequest(req, h)
 	o.watchWg.Add(1)
 	go func() {
 		defer o.watchWg.Done()
@@ -497,16 +496,12 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		env = append(env, fmt.Sprintf("ARTIFACTS_JSON=%s", string(artifactsJSON)))
 	}
 
+	if o.artifactEndpoint != "" {
+		env = append(env, fmt.Sprintf("ARTIFACT_ENDPOINT=%s", o.artifactEndpoint))
+	}
+
 	if req.Callback != nil && req.Callback.URL != "" {
-		callbackURL := req.Callback.URL
-		// If proxy URL is configured, route callbacks through orchestrator
-		if o.callbackProxyURL != "" {
-			callbackURL = fmt.Sprintf("%s/internal/events?url=%s",
-				o.callbackProxyURL,
-				url.QueryEscape(req.Callback.URL),
-			)
-		}
-		env = append(env, fmt.Sprintf("CALLBACK_URL=%s", callbackURL))
+		env = append(env, fmt.Sprintf("CALLBACK_URL=%s", req.Callback.URL))
 		if req.Callback.Key != "" {
 			env = append(env, fmt.Sprintf("CALLBACK_KEY=%s", req.Callback.Key))
 		}
@@ -645,6 +640,26 @@ func (o *Orchestrator) cleanupExpiredJobs(ctx context.Context) {
 	}
 
 	logger.Info("Maintenance complete", "cleaned", len(expired))
+}
+
+// EmitArtifactEvent receives an artifact result from the sidecar and dispatches
+// the corresponding CloudEvent through the orchestrator's delivery pipeline.
+// It is a no-op if the job has no callback configured or has already been released.
+func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
+	if r.CallbackURL == "" || !job.FilteredEvents(job.EventTypeArtifact, r.CallbackEvents) {
+		return
+	}
+	builder := job.NewEventBuilder(r.JobID, "orchestrator/service", r.Meta)
+	var errVal error
+	if r.Error != "" {
+		errVal = fmt.Errorf("%s", r.Error)
+	}
+	event := builder.BuildArtifactEvent(r.ArtifactID, r.ArtifactType, r.Status, r.Content, errVal)
+	o.emitter.Emit(&job.Event{
+		Payload:     event,
+		CallbackURL: r.CallbackURL,
+		SigningKey:  r.CallbackKey,
+	})
 }
 
 // Verify Orchestrator implements job.Orchestrator

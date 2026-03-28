@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/job"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/testutil"
 	"os"
@@ -25,9 +26,29 @@ import (
 	"github.com/docker/docker/client"
 )
 
-// TestSidecar_FullFlow tests the sidecar's artifact handling.
-// Note: start/exit events are now handled by the Docker orchestrator, not the sidecar.
-// The sidecar only handles artifact processing (downloads, uploads, etc.).
+// mockOrchestratorServer returns a test server that captures ArtifactReports posted
+// by the sidecar to /internal/jobs/{jobId}/artifact.
+func mockOrchestratorServer(t *testing.T, count *atomic.Int64, mu *sync.Mutex, reports *[]job.ArtifactReport) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var report job.ArtifactReport
+		if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+			t.Logf("Failed to decode artifact report: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		t.Logf("Received artifact report: id=%s type=%s status=%s", report.ArtifactID, report.ArtifactType, report.Status)
+		mu.Lock()
+		*reports = append(*reports, report)
+		mu.Unlock()
+		count.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+}
+
+// TestSidecar_FullFlow tests that the sidecar processes a post-job artifact and
+// posts an ArtifactReport to the orchestrator endpoint with the correct fields,
+// including callback config that the orchestrator will use for dispatch.
 func TestSidecar_FullFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -44,29 +65,11 @@ func TestSidecar_FullFlow(t *testing.T) {
 	}
 	defer os.RemoveAll(sharedDir)
 
-	var eventCount atomic.Int64
+	var reportCount atomic.Int64
 	var mu sync.Mutex
-	receivedEvents := make([]map[string]any, 0)
-
-	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var event map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-			t.Logf("Failed to decode callback: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		mu.Lock()
-		receivedEvents = append(receivedEvents, event)
-		if eventType, ok := event["type"].(string); ok {
-			t.Logf("Received callback: %s", eventType)
-		}
-		mu.Unlock()
-		eventCount.Add(1)
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer callbackServer.Close()
+	var receivedReports []job.ArtifactReport
+	orchestratorServer := mockOrchestratorServer(t, &reportCount, &mu, &receivedReports)
+	defer orchestratorServer.Close()
 
 	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", image.PullOptions{})
 	if err != nil {
@@ -78,22 +81,15 @@ func TestSidecar_FullFlow(t *testing.T) {
 	jobID := fmt.Sprintf("sidecar-test-%d", time.Now().UnixNano())
 	containerName := fmt.Sprintf("job-%s-worker", jobID)
 
-	containerConfig := &container.Config{
+	resp, err := dockerClient.ContainerCreate(ctx, &container.Config{
 		Image: "alpine:latest",
 		Cmd:   []string{"/bin/sh", "-c", "echo 'hello from job' > /workspace/output.txt && sleep 1"},
-	}
-
-	hostConfig := &container.HostConfig{
-		Binds: []string{
-			fmt.Sprintf("%s:/workspace", sharedDir),
-		},
-	}
-
-	resp, err := dockerClient.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	}, &container.HostConfig{
+		Binds: []string{fmt.Sprintf("%s:/workspace", sharedDir)},
+	}, nil, nil, containerName)
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
 	}
-
 	defer func() {
 		timeout := 5
 		_ = dockerClient.ContainerStop(ctx, resp.ID, container.StopOptions{Timeout: &timeout})
@@ -106,7 +102,8 @@ func TestSidecar_FullFlow(t *testing.T) {
 
 	cfg := &sidecar.Config{
 		JobID:            jobID,
-		CallbackURL:      callbackServer.URL,
+		ArtifactEndpoint: orchestratorServer.URL,
+		CallbackURL:      "http://example.com/callback",
 		CallbackEvents:   "orchestrator.job.artifact",
 		TimeoutSeconds:   60,
 		SharedVolumePath: sharedDir,
@@ -119,13 +116,9 @@ func TestSidecar_FullFlow(t *testing.T) {
 	}
 	defer runner.Close()
 
-	// Run sidecar in goroutine since it will block waiting for signal
 	sidecarDone := make(chan error, 1)
-	go func() {
-		sidecarDone <- runner.Run(ctx)
-	}()
+	go func() { sidecarDone <- runner.Run(ctx) }()
 
-	// Wait for container to exit, then signal sidecar
 	statusCh, errCh := dockerClient.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	select {
 	case <-statusCh:
@@ -133,40 +126,37 @@ func TestSidecar_FullFlow(t *testing.T) {
 		t.Fatalf("Error waiting for container: %v", err)
 	}
 
-	// Signal sidecar that worker is done
 	syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 
-	// Wait for sidecar to finish
 	if err := <-sidecarDone; err != nil {
 		t.Errorf("Sidecar run failed: %v", err)
 	}
 
-	// Wait for at least one callback event
-	testutil.MustWaitForCount(t, &eventCount, 1, testutil.WithTimeout(10*time.Second))
+	testutil.MustWaitForCount(t, &reportCount, 1, testutil.WithTimeout(10*time.Second))
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(receivedEvents) == 0 {
-		t.Error("No callback events received")
+	if len(receivedReports) == 0 {
+		t.Fatal("No artifact reports received")
 	}
-
-	// Verify we received the artifact event
-	hasArtifactEvent := false
-	for _, event := range receivedEvents {
-		if event["type"] == "orchestrator.job.artifact" {
-			hasArtifactEvent = true
-			break
-		}
+	r := receivedReports[0]
+	if r.ArtifactID != "result" {
+		t.Errorf("ArtifactID: got %q, want %q", r.ArtifactID, "result")
 	}
-
-	if !hasArtifactEvent {
-		t.Error("Missing expected artifact event")
+	if r.Status != "success" {
+		t.Errorf("Status: got %q, want %q", r.Status, "success")
 	}
-
-	t.Logf("Received %d callback events", len(receivedEvents))
+	if r.CallbackURL != "http://example.com/callback" {
+		t.Errorf("CallbackURL: got %q, want %q", r.CallbackURL, "http://example.com/callback")
+	}
+	if len(r.CallbackEvents) != 1 || r.CallbackEvents[0] != "orchestrator.job.artifact" {
+		t.Errorf("CallbackEvents: got %v, want [orchestrator.job.artifact]", r.CallbackEvents)
+	}
 }
 
+// TestSidecar_InputDownload tests that the sidecar downloads a pre-job artifact
+// and reports the result to the orchestrator endpoint.
 func TestSidecar_InputDownload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -189,18 +179,11 @@ func TestSidecar_InputDownload(t *testing.T) {
 	}))
 	defer inputServer.Close()
 
+	var reportCount atomic.Int64
 	var mu sync.Mutex
-	receivedEvents := make([]map[string]any, 0)
-
-	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var event map[string]any
-		json.NewDecoder(r.Body).Decode(&event)
-		mu.Lock()
-		receivedEvents = append(receivedEvents, event)
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer callbackServer.Close()
+	var receivedReports []job.ArtifactReport
+	orchestratorServer := mockOrchestratorServer(t, &reportCount, &mu, &receivedReports)
+	defer orchestratorServer.Close()
 
 	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", image.PullOptions{})
 	if err != nil {
@@ -212,22 +195,15 @@ func TestSidecar_InputDownload(t *testing.T) {
 	jobID := fmt.Sprintf("sidecar-input-%d", time.Now().UnixNano())
 	containerName := fmt.Sprintf("job-%s-worker", jobID)
 
-	containerConfig := &container.Config{
+	resp, err := dockerClient.ContainerCreate(ctx, &container.Config{
 		Image: "alpine:latest",
 		Cmd:   []string{"/bin/sh", "-c", "sleep 2 && cat /workspace/input.txt"},
-	}
-
-	hostConfig := &container.HostConfig{
-		Binds: []string{
-			fmt.Sprintf("%s:/workspace", sharedDir),
-		},
-	}
-
-	resp, err := dockerClient.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	}, &container.HostConfig{
+		Binds: []string{fmt.Sprintf("%s:/workspace", sharedDir)},
+	}, nil, nil, containerName)
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
 	}
-
 	defer func() {
 		timeout := 5
 		_ = dockerClient.ContainerStop(ctx, resp.ID, container.StopOptions{Timeout: &timeout})
@@ -238,12 +214,10 @@ func TestSidecar_InputDownload(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	artifactsJSON := fmt.Sprintf(`[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL)
 	cfg := &sidecar.Config{
 		JobID:            jobID,
-		ArtifactsJSON:    artifactsJSON,
-		CallbackURL:      callbackServer.URL,
-		CallbackEvents:   "orchestrator.job.artifact",
+		ArtifactEndpoint: orchestratorServer.URL,
+		ArtifactsJSON:    fmt.Sprintf(`[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL),
 		TimeoutSeconds:   60,
 		SharedVolumePath: sharedDir,
 	}
@@ -254,56 +228,50 @@ func TestSidecar_InputDownload(t *testing.T) {
 	}
 	defer runner.Close()
 
-	// Run sidecar in goroutine since it will block waiting for signal
 	sidecarDone := make(chan error, 1)
-	go func() {
-		sidecarDone <- runner.Run(ctx)
-	}()
+	go func() { sidecarDone <- runner.Run(ctx) }()
 
-	// Wait for ready marker (pre-job artifacts complete)
+	// Wait for pre-job artifacts to complete (ready marker written)
 	readyPath := filepath.Join(sharedDir, sidecar.ReadyFile)
 	testutil.MustWaitFor(t, func() bool {
 		_, err := os.Stat(readyPath)
 		return err == nil
 	}, testutil.WithTimeout(10*time.Second))
 
-	// Signal sidecar that worker is done (no actual worker in this test)
 	syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 
-	// Wait for sidecar to finish
 	if err := <-sidecarDone; err != nil {
 		t.Errorf("Sidecar run failed: %v", err)
 	}
 
-	downloadedPath := filepath.Join(sharedDir, "input.txt")
-	content, err := os.ReadFile(downloadedPath)
+	// Verify the file was downloaded
+	content, err := os.ReadFile(filepath.Join(sharedDir, "input.txt"))
 	if err != nil {
 		t.Errorf("Failed to read downloaded input: %v", err)
 	} else if string(content) != inputContent {
 		t.Errorf("Downloaded content mismatch: got %q, want %q", string(content), inputContent)
 	}
 
+	// Verify the artifact report was sent
+	testutil.MustWaitForCount(t, &reportCount, 1, testutil.WithTimeout(10*time.Second))
+
 	mu.Lock()
 	defer mu.Unlock()
 
-	hasArtifactEvent := false
-	for _, event := range receivedEvents {
-		if event["type"] == "orchestrator.job.artifact" {
-			hasArtifactEvent = true
-			if data, ok := event["data"].(map[string]any); ok {
-				if data["status"] != "success" {
-					t.Errorf("Artifact event status: got %v, want 'success'", data["status"])
-				}
-			}
-			break
-		}
+	if len(receivedReports) == 0 {
+		t.Fatal("No artifact reports received")
 	}
-
-	if !hasArtifactEvent {
-		t.Error("No artifact event received")
+	r := receivedReports[0]
+	if r.ArtifactID != "input-1" {
+		t.Errorf("ArtifactID: got %q, want %q", r.ArtifactID, "input-1")
+	}
+	if r.Status != "success" {
+		t.Errorf("Status: got %q, want %q", r.Status, "success")
 	}
 }
 
+// TestSidecar_OutputUpload tests that the sidecar uploads a post-job artifact
+// and reports the result to the orchestrator endpoint.
 func TestSidecar_OutputUpload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -323,7 +291,6 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	var uploadedContent []byte
 	var uploadMu sync.Mutex
 	var uploadCount atomic.Int64
-
 	uploadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
 			uploadMu.Lock()
@@ -335,20 +302,11 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	}))
 	defer uploadServer.Close()
 
-	var eventCount atomic.Int64
+	var reportCount atomic.Int64
 	var mu sync.Mutex
-	receivedEvents := make([]map[string]any, 0)
-
-	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var event map[string]any
-		json.NewDecoder(r.Body).Decode(&event)
-		mu.Lock()
-		receivedEvents = append(receivedEvents, event)
-		mu.Unlock()
-		eventCount.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer callbackServer.Close()
+	var receivedReports []job.ArtifactReport
+	orchestratorServer := mockOrchestratorServer(t, &reportCount, &mu, &receivedReports)
+	defer orchestratorServer.Close()
 
 	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", image.PullOptions{})
 	if err != nil {
@@ -361,22 +319,15 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	containerName := fmt.Sprintf("job-%s-worker", jobID)
 
 	outputContent := "this is the job output"
-	containerConfig := &container.Config{
+	resp, err := dockerClient.ContainerCreate(ctx, &container.Config{
 		Image: "alpine:latest",
 		Cmd:   []string{"/bin/sh", "-c", fmt.Sprintf("echo -n '%s' > /workspace/result.txt", outputContent)},
-	}
-
-	hostConfig := &container.HostConfig{
-		Binds: []string{
-			fmt.Sprintf("%s:/workspace", sharedDir),
-		},
-	}
-
-	resp, err := dockerClient.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	}, &container.HostConfig{
+		Binds: []string{fmt.Sprintf("%s:/workspace", sharedDir)},
+	}, nil, nil, containerName)
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
 	}
-
 	defer func() {
 		timeout := 5
 		_ = dockerClient.ContainerStop(ctx, resp.ID, container.StopOptions{Timeout: &timeout})
@@ -387,14 +338,12 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	artifactsJSON := fmt.Sprintf(`[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL)
 	cfg := &sidecar.Config{
 		JobID:            jobID,
-		CallbackURL:      callbackServer.URL,
-		CallbackEvents:   "orchestrator.job.artifact",
+		ArtifactEndpoint: orchestratorServer.URL,
 		TimeoutSeconds:   60,
 		SharedVolumePath: sharedDir,
-		ArtifactsJSON:    artifactsJSON,
+		ArtifactsJSON:    fmt.Sprintf(`[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL),
 	}
 
 	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
@@ -403,13 +352,9 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	}
 	defer runner.Close()
 
-	// Run sidecar in goroutine since it will block waiting for signal
 	sidecarDone := make(chan error, 1)
-	go func() {
-		sidecarDone <- runner.Run(ctx)
-	}()
+	go func() { sidecarDone <- runner.Run(ctx) }()
 
-	// Wait for container to exit, then signal sidecar
 	statusCh, errCh := dockerClient.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	select {
 	case <-statusCh:
@@ -417,17 +362,14 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		t.Fatalf("Error waiting for container: %v", err)
 	}
 
-	// Signal sidecar that worker is done
 	syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
 
-	// Wait for sidecar to finish
 	if err := <-sidecarDone; err != nil {
 		t.Errorf("Sidecar run failed: %v", err)
 	}
 
-	// Wait for upload and callback
 	testutil.MustWaitForCount(t, &uploadCount, 1, testutil.WithTimeout(10*time.Second))
-	testutil.MustWaitForCount(t, &eventCount, 1, testutil.WithTimeout(10*time.Second))
+	testutil.MustWaitForCount(t, &reportCount, 1, testutil.WithTimeout(10*time.Second))
 
 	uploadMu.Lock()
 	if string(uploadedContent) != outputContent {
@@ -438,23 +380,17 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	hasArtifactEvent := false
-	for _, event := range receivedEvents {
-		if event["type"] == "orchestrator.job.artifact" {
-			hasArtifactEvent = true
-			if data, ok := event["data"].(map[string]any); ok {
-				if data["status"] != "success" {
-					t.Errorf("Artifact event status: got %v, want 'success'", data["status"])
-				}
-			}
-			break
-		}
+	if len(receivedReports) == 0 {
+		t.Fatal("No artifact reports received")
 	}
-
-	if !hasArtifactEvent {
-		t.Error("No artifact event received")
+	r := receivedReports[0]
+	if r.ArtifactID != "result" {
+		t.Errorf("ArtifactID: got %q, want %q", r.ArtifactID, "result")
+	}
+	if r.Status != "success" {
+		t.Errorf("Status: got %q, want %q", r.Status, "success")
 	}
 }
 
-// Note: Job failure (exit code) monitoring is now handled by the Docker orchestrator,
+// Note: Job failure (exit code) monitoring is handled by the Docker orchestrator,
 // not the sidecar. See internal/docker/docker_integration_test.go for exit code tests.

@@ -43,7 +43,16 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 	}, nil)
 
 	emitter := job.NewEventEmitter()
-	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
+	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+		if e.CallbackURL == "" {
+			return
+		}
+		_ = eventDispatcher.Dispatch(&dispatcher.Event{
+			Payload:     e.Payload,
+			Destination: e.CallbackURL,
+			SigningKey:  e.SigningKey,
+		})
+	}))
 
 	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(context.Background(), docker.Config{
 		SidecarImage: "ko.local/job-sidecar:latest",
@@ -55,11 +64,14 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 	svc := job.NewService(orchestrator, nil, artifact.DefaultRegistry())
 	healthChecker := health.NewChecker(orchestrator)
 
-	router := api.NewRouter(api.RouterConfig{
+	routerCfg := api.RouterConfig{
 		JobService:    svc,
 		HealthChecker: healthChecker,
-		Dispatcher:    eventDispatcher,
-	})
+	}
+	if ae, ok := orchestrator.(api.ArtifactEmitter); ok {
+		routerCfg.ArtifactEmitter = ae
+	}
+	router := api.NewRouter(routerCfg)
 
 	server := httptest.NewServer(router)
 

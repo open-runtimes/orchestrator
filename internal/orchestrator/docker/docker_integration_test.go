@@ -155,7 +155,16 @@ func TestOrchestrator_CallbackEvents(t *testing.T) {
 	defer d.Close(ctx)
 
 	emitter := job.NewEventEmitter()
-	emitter.OnEvent(dispatcher.NewCallbackListener(d))
+	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+		if e.CallbackURL == "" {
+			return
+		}
+		_ = d.Dispatch(&dispatcher.Event{
+			Payload:     e.Payload,
+			Destination: e.CallbackURL,
+			SigningKey:  e.SigningKey,
+		})
+	}))
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -464,7 +473,16 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 	// Phase 1: Start job with orchestrator A (with callbacks)
 	dA := dispatcher.NewMemory(dispatcher.MemoryConfig{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
 	emitterA := job.NewEventEmitter()
-	emitterA.OnEvent(dispatcher.NewCallbackListener(dA))
+	emitterA.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+		if e.CallbackURL == "" {
+			return
+		}
+		_ = dA.Dispatch(&dispatcher.Event{
+			Payload:     e.Payload,
+			Destination: e.CallbackURL,
+			SigningKey:  e.SigningKey,
+		})
+	}))
 
 	orchestratorA, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -516,7 +534,16 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 	dB := dispatcher.NewMemory(dispatcher.MemoryConfig{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
 	defer dB.Close(ctx)
 	emitterB := job.NewEventEmitter()
-	emitterB.OnEvent(dispatcher.NewCallbackListener(dB))
+	emitterB.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+		if e.CallbackURL == "" {
+			return
+		}
+		_ = dB.Dispatch(&dispatcher.Event{
+			Payload:     e.Payload,
+			Destination: e.CallbackURL,
+			SigningKey:  e.SigningKey,
+		})
+	}))
 
 	orchestratorB, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,

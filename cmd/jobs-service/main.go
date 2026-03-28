@@ -46,15 +46,40 @@ func run() error {
 	// Create callback dispatcher and event emitter
 	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
 	emitter := job.NewEventEmitter()
-	emitter.OnEvent(dispatcher.NewCallbackListener(eventDispatcher))
-	emitter.OnEvent(job.NewMetricsListener(metrics))
+	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+		if e.CallbackURL == "" {
+			return
+		}
+		if err := eventDispatcher.Dispatch(&dispatcher.Event{
+			Payload:     e.Payload,
+			Destination: e.CallbackURL,
+			SigningKey:  e.SigningKey,
+		}); err != nil {
+			slog.Warn("Failed to dispatch job event", "type", e.Payload.Type, "error", err)
+		}
+	}))
+	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+		if metrics == nil || e.Payload == nil || e.Payload.Type != job.EventTypeExit {
+			return
+		}
+		image, _ := e.Payload.Data["image"].(string)
+		exitCode := -1
+		if code, ok := e.Payload.Data["exitCode"].(int); ok {
+			exitCode = code
+		}
+		var duration float64
+		if d, ok := e.Payload.Data["durationSeconds"].(float64); ok {
+			duration = d
+		}
+		metrics.RecordJobCompleted(context.Background(), image, exitCode == 0, duration)
+	}))
 
 	// Create Docker orchestrator
 	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{
 		SidecarImage:        svcCfg.SidecarImage,
 		RetentionPeriod:     orchCfg.JobRetention,
 		MaintenanceInterval: orchCfg.MaintenanceInterval,
-		CallbackProxyURL:    orchCfg.CallbackProxyURL,
+		ArtifactEndpoint:    orchCfg.ArtifactEndpoint,
 		ExtraHosts:          orchCfg.ExtraHosts,
 	}))
 	if err != nil {
@@ -76,13 +101,16 @@ func run() error {
 	jobService := job.NewService(orchestrator, metrics, artifact.DefaultRegistry())
 
 	// Create API router
-	router := api.NewRouter(api.RouterConfig{
+	routerCfg := api.RouterConfig{
 		JobService:    jobService,
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
-		Dispatcher:    eventDispatcher,
 		APIKey:        svcCfg.APIKey,
-	})
+	}
+	if ae, ok := orchestrator.(api.ArtifactEmitter); ok {
+		routerCfg.ArtifactEmitter = ae
+	}
+	router := api.NewRouter(routerCfg)
 
 	if svcCfg.APIKey != "" {
 		slog.Info("API authentication enabled")

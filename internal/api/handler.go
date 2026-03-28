@@ -6,31 +6,35 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/cloudevent"
 )
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
 const maxRequestBodySize = 1 << 20 // 1 MB
 
+// ArtifactEmitter receives artifact results from the sidecar and dispatches
+// the corresponding CloudEvents through the delivery pipeline.
+type ArtifactEmitter interface {
+	EmitArtifactEvent(report job.ArtifactReport)
+}
+
 // Handler contains HTTP handlers for the jobs API
 type Handler struct {
-	svc        *job.Service
-	metrics    *observability.Metrics
-	health     *health.Checker
-	dispatcher dispatcher.Dispatcher
+	svc             *job.Service
+	metrics         *observability.Metrics
+	health          *health.Checker
+	artifactEmitter ArtifactEmitter
 }
 
 // NewHandler creates a new API handler
-func NewHandler(svc *job.Service, metrics *observability.Metrics, healthChecker *health.Checker, d dispatcher.Dispatcher) *Handler {
+func NewHandler(svc *job.Service, metrics *observability.Metrics, healthChecker *health.Checker, ae ArtifactEmitter) *Handler {
 	return &Handler{
-		svc:        svc,
-		metrics:    metrics,
-		health:     healthChecker,
-		dispatcher: d,
+		svc:             svc,
+		metrics:         metrics,
+		health:          healthChecker,
+		artifactEmitter: ae,
 	}
 }
 
@@ -144,34 +148,25 @@ func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error)
 	h.writeError(w, status, err.Error())
 }
 
-// ProxyEvent handles POST /internal/events - proxies sidecar callbacks through dispatcher.
-// Query params: url (required)
-// Events arrive pre-signed by the sidecar (X-Signature-256 header).
-func (h *Handler) ProxyEvent(w http.ResponseWriter, r *http.Request) {
-	destURL := r.URL.Query().Get("url")
-	if destURL == "" {
-		h.writeError(w, http.StatusBadRequest, "url parameter is required")
+// ReportArtifact handles POST /internal/jobs/{jobId}/artifact.
+// Called by the sidecar to report the result of an artifact operation.
+// The orchestrator constructs the CloudEvent and dispatches it via the delivery pipeline.
+func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("jobId")
+	if jobID == "" {
+		h.writeError(w, http.StatusBadRequest, "job ID is required")
 		return
 	}
 
-	// Extract pre-computed signature from sidecar
-	signature := r.Header.Get("X-Signature-256")
-
-	// Parse CloudEvent from body
-	var event cloudevent.CloudEvent
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-		h.writeError(w, http.StatusBadRequest, "invalid CloudEvent: "+err.Error())
+	var report job.ArtifactReport
+	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid artifact report: "+err.Error())
 		return
 	}
+	report.JobID = jobID
 
-	// Dispatch via the robust dispatcher with pre-computed signature
-	if err := h.dispatcher.Dispatch(&dispatcher.Event{
-		Payload:     &event,
-		Destination: destURL,
-		Signature:   signature,
-	}); err != nil {
-		slog.Warn("Failed to dispatch proxied event", "error", err, "destination", destURL)
-		// Still return OK - event was received, dispatch is async
+	if h.artifactEmitter != nil {
+		h.artifactEmitter.EmitArtifactEvent(report)
 	}
 
 	w.WriteHeader(http.StatusAccepted)

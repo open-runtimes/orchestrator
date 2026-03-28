@@ -9,13 +9,14 @@ import (
 type Config struct {
 	JobID            string
 	ArtifactsJSON    string
-	CallbackURL      string
-	CallbackEvents   string
-	CallbackKey      string
-	CallbackTimeout  time.Duration
+	ArtifactEndpoint string        // Base URL of the orchestrator (e.g., http://host.docker.internal:8080)
+	ArtifactTimeout  time.Duration // Per-request timeout for artifact reporting
 	TimeoutSeconds   int
 	SharedVolumePath string
 	Meta             string
+	CallbackURL      string
+	CallbackKey      string
+	CallbackEvents   string // comma-separated event type filter
 }
 
 // LoadConfigFromEnv loads sidecar configuration from environment variables.
@@ -23,12 +24,13 @@ func LoadConfigFromEnv() *Config {
 	return &Config{
 		JobID:            config.GetEnv("JOB_ID", ""),
 		ArtifactsJSON:    config.GetEnv("ARTIFACTS_JSON", "[]"),
-		CallbackURL:      config.GetEnv("CALLBACK_URL", ""),
-		CallbackEvents:   config.GetEnv("CALLBACK_EVENTS", ""),
-		CallbackKey:      config.GetEnv("CALLBACK_KEY", ""),
-		CallbackTimeout:  config.GetDurationEnv("CALLBACK_TIMEOUT", 30*time.Second),
+		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", ""),
+		ArtifactTimeout:  config.GetDurationEnv("ARTIFACT_TIMEOUT", 30*time.Second),
 		TimeoutSeconds:   config.GetIntEnv("TIMEOUT_SECONDS", 1800),
 		SharedVolumePath: config.GetEnv("SHARED_VOLUME_PATH", "/workspace"),
 		Meta:             config.GetEnv("JOB_META", "{}"),
+		CallbackURL:      config.GetEnv("CALLBACK_URL", ""),
+		CallbackKey:      config.GetEnv("CALLBACK_KEY", ""),
+		CallbackEvents:   config.GetEnv("CALLBACK_EVENTS", ""),
 	}
 }

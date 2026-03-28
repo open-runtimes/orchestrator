@@ -117,6 +117,24 @@ type ListResponse struct {
 	Jobs []Status `json:"jobs"`
 }
 
+// ArtifactReport is posted by the sidecar to report the result of a single artifact operation.
+// The orchestrator uses it to construct and dispatch the corresponding CloudEvent.
+// Callback config is passed through from the sidecar so the orchestrator does not need to
+// duplicate it in its own state.
+type ArtifactReport struct {
+	JobID        string `json:"jobId"`
+	ArtifactID   string `json:"artifactId"`
+	ArtifactType string `json:"artifactType"`
+	Status       string `json:"status"`
+	Content      any    `json:"content,omitempty"`
+	Error        string `json:"error,omitempty"`
+
+	CallbackURL    string            `json:"callbackUrl,omitempty"`
+	CallbackKey    string            `json:"callbackKey,omitempty"`
+	CallbackEvents []string          `json:"callbackEvents,omitempty"`
+	Meta           map[string]string `json:"meta,omitempty"`
+}
+
 // State constants
 const (
 	StateAccepted  = "accepted"

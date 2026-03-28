@@ -4,7 +4,7 @@ import "orchestrator/pkg/cloudevent"
 
 // Event represents a job lifecycle event emitted by the orchestrator.
 type Event struct {
-	Payload     *cloudevent.CloudEvent
+	Payload     *cloudevent.Event
 	CallbackURL string
 	SigningKey  string
 }
@@ -13,6 +13,11 @@ type Event struct {
 type EventListener interface {
 	OnJobEvent(event *Event)
 }
+
+// EventListenerFunc is a function that implements EventListener.
+type EventListenerFunc func(event *Event)
+
+func (f EventListenerFunc) OnJobEvent(event *Event) { f(event) }
 
 // EventEmitter fans out job events to registered listeners.
 type EventEmitter struct {

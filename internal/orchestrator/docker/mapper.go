@@ -76,7 +76,7 @@ func watchConfigFromState(cs containerState, h dockerHandle) *watchConfig {
 }
 
 // callbackDestFromLabels parses callback destination from worker container labels.
-// The original (non-proxy-rewritten) callback URL is stored here at creation time.
+// Callback config is stored as labels at creation time so it survives service restarts.
 func callbackDestFromLabels(jobID string, labels map[string]string) *callbackDest {
 	callbackURL := labels["job.callback.url"]
 	if callbackURL == "" {
