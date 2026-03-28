@@ -104,14 +104,22 @@ func (r *Registry) SourcePath(a Artifact) string {
 // TypedValidator wraps a type-safe validate function, hiding the type assertion.
 func TypedValidator[T Artifact](fn func(field string, a T) error) func(field string, a Artifact) error {
 	return func(field string, a Artifact) error {
-		return fn(field, a.(T))
+		typed, ok := a.(T)
+		if !ok {
+			return fmt.Errorf("artifact type mismatch: expected %T, got %T", *new(T), a)
+		}
+		return fn(field, typed)
 	}
 }
 
 // TypedSourcePath wraps a type-safe source path function, hiding the type assertion.
 func TypedSourcePath[T Artifact](fn func(a T) string) func(a Artifact) string {
 	return func(a Artifact) string {
-		return fn(a.(T))
+		typed, ok := a.(T)
+		if !ok {
+			return ""
+		}
+		return fn(typed)
 	}
 }
 

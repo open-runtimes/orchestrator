@@ -33,12 +33,11 @@ type captureReporter struct {
 	reports []job.ArtifactReport
 }
 
-func (c *captureReporter) fn() ArtifactReporterFunc {
-	return func(_ context.Context, r job.ArtifactReport) error {
+func (c *captureReporter) fn() func(job.ArtifactReport) {
+	return func(r job.ArtifactReport) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.reports = append(c.reports, r)
-		return nil
 	}
 }
 
@@ -110,30 +109,25 @@ func TestRunner_FullLifecycle(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	captured := &captureReporter{}
 
-	cfg := &Config{
-		JobID:            "test-job",
-		TimeoutSeconds:   10,
-		SharedVolumePath: tmpDir,
-		ArtifactsJSON: `[
-			{"id":"pre-write","type":"write","in":"hello","out":"pre.txt"},
-			{"id":"post-write","type":"write","in":"world","out":"post.txt","depends":"job"}
-		]`,
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[
+		{"id":"pre-write","type":"write","in":"hello","out":"pre.txt"},
+		{"id":"post-write","type":"write","in":"world","out":"post.txt","depends":"job"}
+	]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := NewRunner(cfg, artifact.DefaultRegistry(),
+	runner := NewRunner("test-job", tmpDir, 10, reg,
 		WithSignalFunc(sigFn),
-		WithArtifactReporter(captured.fn()),
+		WithArtifactListener(captured.fn()),
 	)
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
-	defer runner.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- runner.Run(ctx) }()
+	go func() { done <- runner.Run(ctx, artifacts) }()
 
 	// Wait for ready marker — proves pre-job artifacts ran
 	deadline := time.Now().Add(2 * time.Second)
@@ -169,9 +163,6 @@ func TestRunner_FullLifecycle(t *testing.T) {
 	captured.mu.Lock()
 	defer captured.mu.Unlock()
 	for _, r := range captured.reports {
-		if r.JobID != "test-job" {
-			t.Errorf("expected JobID 'test-job', got %q", r.JobID)
-		}
 		if r.Status != "success" {
 			t.Errorf("artifact %s: expected status 'success', got %q", r.ID, r.Status)
 		}
@@ -188,22 +179,18 @@ func TestRunner_PreJobDependencyOrder(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	triggerDone() // fire immediately — we only care about pre-job
 
-	cfg := &Config{
-		JobID:            "test-job",
-		TimeoutSeconds:   10,
-		SharedVolumePath: tmpDir,
-		ArtifactsJSON:    `[{"id":"extract","type":"unarchive","in":"code.tar.gz","out":"code"}]`,
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"extract","type":"unarchive","in":"code.tar.gz","out":"code"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := NewRunner(cfg, artifact.DefaultRegistry(), WithSignalFunc(sigFn))
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
+	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := runner.Run(ctx); err != nil {
+	if err := runner.Run(ctx, artifacts); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -223,22 +210,18 @@ func TestRunner_ChainedDependencies(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	triggerDone()
 
-	cfg := &Config{
-		JobID:            "test-job",
-		TimeoutSeconds:   10,
-		SharedVolumePath: tmpDir,
-		ArtifactsJSON:    `[{"id":"file1","type":"write","in":"hello","out":"a.txt"},{"id":"file2","type":"write","in":"world","out":"b.txt","depends":"file1"}]`,
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"file1","type":"write","in":"hello","out":"a.txt"},{"id":"file2","type":"write","in":"world","out":"b.txt","depends":"file1"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := NewRunner(cfg, artifact.DefaultRegistry(), WithSignalFunc(sigFn))
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
+	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := runner.Run(ctx); err != nil {
+	if err := runner.Run(ctx, artifacts); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -263,24 +246,20 @@ func TestRunner_CircularDependency(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	triggerDone()
 
-	cfg := &Config{
-		JobID:            "test-job",
-		TimeoutSeconds:   5,
-		SharedVolumePath: tmpDir,
-		ArtifactsJSON:    `[{"id":"a","type":"write","in":"a","out":"a.txt","depends":"b"},{"id":"b","type":"write","in":"b","out":"b.txt","depends":"a"}]`,
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"a","type":"write","in":"a","out":"a.txt","depends":"b"},{"id":"b","type":"write","in":"b","out":"b.txt","depends":"a"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := NewRunner(cfg, artifact.DefaultRegistry(), WithSignalFunc(sigFn))
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
+	runner := NewRunner("test-job", tmpDir, 5, reg, WithSignalFunc(sigFn))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		runner.Run(ctx) //nolint:errcheck
+		runner.Run(ctx, artifacts)
 		close(done)
 	}()
 
@@ -292,34 +271,29 @@ func TestRunner_CircularDependency(t *testing.T) {
 	}
 }
 
-// TestRunner_ReportsArtifactToEndpoint verifies that the default reportFn POSTs
-// to the configured ArtifactEndpoint.
-func TestRunner_ReportsArtifactToEndpoint(t *testing.T) {
+// TestRunner_ReportsArtifact verifies that artifact results are reported with the correct fields.
+func TestRunner_ReportsArtifact(t *testing.T) {
 	tmpDir := t.TempDir()
 	sigFn, triggerDone := triggerSignal()
 	triggerDone()
 
 	captured := &captureReporter{}
 
-	cfg := &Config{
-		JobID:            "test-job",
-		TimeoutSeconds:   5,
-		SharedVolumePath: tmpDir,
-		ArtifactsJSON:    `[{"id":"w","type":"write","in":"data","out":"out.txt"}]`,
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"w","type":"write","in":"data","out":"out.txt"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := NewRunner(cfg, artifact.DefaultRegistry(),
+	runner := NewRunner("test-job", tmpDir, 5, reg,
 		WithSignalFunc(sigFn),
-		WithArtifactReporter(captured.fn()),
+		WithArtifactListener(captured.fn()),
 	)
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := runner.Run(ctx); err != nil {
+	if err := runner.Run(ctx, artifacts); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
@@ -331,16 +305,13 @@ func TestRunner_ReportsArtifactToEndpoint(t *testing.T) {
 	defer captured.mu.Unlock()
 	r := captured.reports[0]
 	if r.ID != "w" {
-		t.Errorf("expected ArtifactID 'w', got %q", r.ID)
+		t.Errorf("expected ID 'w', got %q", r.ID)
 	}
 	if r.Type != "write" {
-		t.Errorf("expected ArtifactType 'write', got %q", r.Type)
+		t.Errorf("expected Type 'write', got %q", r.Type)
 	}
 	if r.Status != "success" {
 		t.Errorf("expected Status 'success', got %q", r.Status)
-	}
-	if r.JobID != "test-job" {
-		t.Errorf("expected JobID 'test-job', got %q", r.JobID)
 	}
 }
 

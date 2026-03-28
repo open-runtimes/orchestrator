@@ -8,7 +8,6 @@ import (
 // Config holds configuration for the job sidecar.
 type Config struct {
 	JobID            string
-	ArtifactsJSON    string
 	ArtifactEndpoint string        // Base URL of the orchestrator (e.g., http://host.docker.internal:8080)
 	ArtifactTimeout  time.Duration // Per-request timeout for artifact reporting
 	TimeoutSeconds   int
@@ -23,7 +22,6 @@ type Config struct {
 func LoadConfigFromEnv() *Config {
 	return &Config{
 		JobID:            config.GetEnv("JOB_ID", ""),
-		ArtifactsJSON:    config.GetEnv("ARTIFACTS_JSON", "[]"),
 		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", ""),
 		ArtifactTimeout:  config.GetDurationEnv("ARTIFACT_TIMEOUT", 30*time.Second),
 		TimeoutSeconds:   config.GetIntEnv("TIMEOUT_SECONDS", 1800),

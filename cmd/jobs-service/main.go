@@ -46,7 +46,7 @@ func run() error {
 	// Create callback dispatcher and event emitter
 	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
 	emitter := job.NewEventEmitter()
-	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+	emitter.Register(func(e *job.Event) {
 		if e.CallbackURL == "" {
 			return
 		}
@@ -57,8 +57,8 @@ func run() error {
 		}); err != nil {
 			slog.Warn("Failed to dispatch job event", "type", e.Payload.Type, "error", err)
 		}
-	}))
-	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+	})
+	emitter.Register(func(e *job.Event) {
 		if metrics == nil || e.Payload == nil || e.Payload.Type != job.EventTypeExit {
 			return
 		}
@@ -72,7 +72,7 @@ func run() error {
 			duration = d
 		}
 		metrics.RecordJobCompleted(context.Background(), image, exitCode == 0, duration)
-	}))
+	})
 
 	// Create Docker orchestrator
 	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{

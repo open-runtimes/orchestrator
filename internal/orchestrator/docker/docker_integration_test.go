@@ -155,7 +155,7 @@ func TestOrchestrator_CallbackEvents(t *testing.T) {
 	defer d.Close(ctx)
 
 	emitter := job.NewEventEmitter()
-	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+	emitter.Register(func(e *job.Event) {
 		if e.CallbackURL == "" {
 			return
 		}
@@ -473,7 +473,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 	// Phase 1: Start job with orchestrator A (with callbacks)
 	dA := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
 	emitterA := job.NewEventEmitter()
-	emitterA.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+	emitterA.Register(func(e *job.Event) {
 		if e.CallbackURL == "" {
 			return
 		}
@@ -534,7 +534,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 	dB := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
 	defer dB.Close(ctx)
 	emitterB := job.NewEventEmitter()
-	emitterB.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+	emitterB.Register(func(e *job.Event) {
 		if e.CallbackURL == "" {
 			return
 		}

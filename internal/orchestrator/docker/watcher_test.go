@@ -28,7 +28,7 @@ type captureListener struct {
 	events []*job.Event
 }
 
-func (c *captureListener) OnJobEvent(e *job.Event) {
+func (c *captureListener) record(e *job.Event) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, e)
@@ -57,7 +57,7 @@ func newTestOrchestrator(w JobWatcher) (*Orchestrator, *job.MemoryStore[dockerHa
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	emitter := job.NewEventEmitter()
 	capture := &captureListener{}
-	emitter.OnEvent(capture)
+	emitter.Register(capture.record)
 	return &Orchestrator{ctrl: ctrl, emitter: emitter, watcher: w}, ctrl, capture
 }
 

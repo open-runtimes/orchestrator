@@ -100,24 +100,21 @@ func TestSidecar_FullFlow(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	cfg := &sidecar.Config{
-		JobID:            jobID,
-		ArtifactEndpoint: orchestratorServer.URL,
-		CallbackURL:      "http://example.com/callback",
-		CallbackEvents:   "orchestrator.job.artifact",
-		TimeoutSeconds:   60,
-		SharedVolumePath: sharedDir,
-		ArtifactsJSON:    `[{"id":"result","type":"read","in":"output.txt","depends":"job"}]`,
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"result","type":"read","in":"output.txt","depends":"job"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
-	if err != nil {
-		t.Fatalf("Failed to create sidecar runner: %v", err)
-	}
-	defer runner.Close()
+	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second,
+		"http://example.com/callback", "", []string{"orchestrator.job.artifact"}, nil)
+
+	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
+		sidecar.WithArtifactListener(reporter),
+	)
 
 	sidecarDone := make(chan error, 1)
-	go func() { sidecarDone <- runner.Run(ctx) }()
+	go func() { sidecarDone <- runner.Run(ctx, artifacts) }()
 
 	statusCh, errCh := dockerClient.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	select {
@@ -214,22 +211,20 @@ func TestSidecar_InputDownload(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	cfg := &sidecar.Config{
-		JobID:            jobID,
-		ArtifactEndpoint: orchestratorServer.URL,
-		ArtifactsJSON:    fmt.Sprintf(`[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL),
-		TimeoutSeconds:   60,
-		SharedVolumePath: sharedDir,
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(fmt.Sprintf(`[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL)))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
-	if err != nil {
-		t.Fatalf("Failed to create sidecar runner: %v", err)
-	}
-	defer runner.Close()
+	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second, "", "", nil, nil)
+
+	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
+		sidecar.WithArtifactListener(reporter),
+	)
 
 	sidecarDone := make(chan error, 1)
-	go func() { sidecarDone <- runner.Run(ctx) }()
+	go func() { sidecarDone <- runner.Run(ctx, artifacts) }()
 
 	// Wait for pre-job artifacts to complete (ready marker written)
 	readyPath := filepath.Join(sharedDir, sidecar.ReadyFile)
@@ -338,22 +333,20 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	cfg := &sidecar.Config{
-		JobID:            jobID,
-		ArtifactEndpoint: orchestratorServer.URL,
-		TimeoutSeconds:   60,
-		SharedVolumePath: sharedDir,
-		ArtifactsJSON:    fmt.Sprintf(`[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL),
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(fmt.Sprintf(`[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL)))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
-	if err != nil {
-		t.Fatalf("Failed to create sidecar runner: %v", err)
-	}
-	defer runner.Close()
+	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second, "", "", nil, nil)
+
+	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
+		sidecar.WithArtifactListener(reporter),
+	)
 
 	sidecarDone := make(chan error, 1)
-	go func() { sidecarDone <- runner.Run(ctx) }()
+	go func() { sidecarDone <- runner.Run(ctx, artifacts) }()
 
 	statusCh, errCh := dockerClient.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
 	select {

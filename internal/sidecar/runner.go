@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
+	"orchestrator/pkg/emitter"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -27,10 +27,6 @@ const ReadyFile = ".ready"
 // The default implementation waits for SIGUSR1 or SIGTERM from the worker process.
 type SignalFunc func(ctx context.Context)
 
-// ArtifactReporterFunc reports an artifact result to the orchestrator.
-// The default implementation POSTs a job.ArtifactReport to the orchestrator's internal endpoint.
-type ArtifactReporterFunc func(ctx context.Context, report job.ArtifactReport) error
-
 // Option configures a Runner. Applied after production defaults are set in NewRunner.
 type Option func(*Runner)
 
@@ -40,10 +36,10 @@ func WithSignalFunc(fn SignalFunc) Option {
 	return func(r *Runner) { r.waitFn = fn }
 }
 
-// WithArtifactReporter replaces the default HTTP reporter with fn.
-// Used in tests to capture artifact reports without making real HTTP calls.
-func WithArtifactReporter(fn ArtifactReporterFunc) Option {
-	return func(r *Runner) { r.reportFn = fn }
+// WithArtifactListener registers a listener that receives artifact reports.
+// Multiple listeners can be registered; each receives every report.
+func WithArtifactListener(fn func(job.ArtifactReport)) Option {
+	return func(r *Runner) { r.emitter.Register(fn) }
 }
 
 // Runner orchestrates the sidecar flow.
@@ -52,82 +48,77 @@ func WithArtifactReporter(fn ArtifactReporterFunc) Option {
 //
 // Log streaming, start, and exit events are handled by the supervisor.
 type Runner struct {
-	config           *Config
-	meta             map[string]string
-	preJobArtifacts  []artifact.Artifact
-	postJobArtifacts []artifact.Artifact
+	jobID            string
+	sharedVolumePath string
+	timeoutSeconds   int
 	registry         *artifact.Registry
 	waitFn           SignalFunc
-	reportFn         ArtifactReporterFunc
+	emitter          emitter.Emitter[job.ArtifactReport]
 }
 
-// NewRunner creates a new sidecar runner. Production callers pass no options.
-// Tests pass WithSignalFunc and/or WithArtifactReporter to replace OS-level seams.
-func NewRunner(cfg *Config, reg *artifact.Registry, opts ...Option) (*Runner, error) {
-	var artifacts []artifact.Artifact
-	if cfg.ArtifactsJSON != "" && cfg.ArtifactsJSON != "[]" {
-		var err error
-		artifacts, err = reg.Unmarshal([]byte(cfg.ArtifactsJSON))
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse artifacts: %w", err)
-		}
-	}
-
-	// Separate artifacts into pre-job and post-job based on dependencies
-	preJob, postJob := artifact.Partition(artifacts)
-
-	var meta map[string]string
-	if cfg.Meta != "" && cfg.Meta != "{}" {
-		_ = json.Unmarshal([]byte(cfg.Meta), &meta)
-	}
-
-	httpClient := &http.Client{Timeout: cfg.ArtifactTimeout}
-
+// NewRunner creates a new sidecar runner. Production callers pass WithArtifactListener.
+// Tests pass WithSignalFunc and/or WithArtifactListener to replace OS-level seams.
+func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, reg *artifact.Registry, opts ...Option) *Runner {
 	r := &Runner{
-		config:           cfg,
-		meta:             meta,
-		preJobArtifacts:  preJob,
-		postJobArtifacts: postJob,
+		jobID:            jobID,
+		sharedVolumePath: sharedVolumePath,
+		timeoutSeconds:   timeoutSeconds,
 		registry:         reg,
-		waitFn: func(ctx context.Context) {
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGTERM)
-			defer signal.Stop(sigCh)
-			select {
-			case <-ctx.Done():
-			case <-sigCh:
-			}
-		},
-		reportFn: func(ctx context.Context, report job.ArtifactReport) error {
-			if cfg.ArtifactEndpoint == "" {
-				return nil
-			}
-			data, err := json.Marshal(report)
-			if err != nil {
-				return fmt.Errorf("failed to marshal report: %w", err)
-			}
-			url := fmt.Sprintf("%s/internal/jobs/%s/artifact", cfg.ArtifactEndpoint, cfg.JobID)
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-			if err != nil {
-				return err
-			}
-			req.Header.Set("Content-Type", "application/json")
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode >= 400 {
-				return fmt.Errorf("artifact report failed: HTTP %d", resp.StatusCode)
-			}
-			return nil
-		},
+		waitFn:           waitForSignal,
 	}
-
 	for _, o := range opts {
 		o(r)
 	}
-	return r, nil
+	return r
+}
+
+// NewHTTPSink returns an emitter listener that POSTs artifact results to the orchestrator.
+// It captures all job-level fields (callback config, meta) and merges them into each report.
+// The HTTP client timeout governs per-request cancellation.
+func NewHTTPSink(jobID, endpoint string, timeout time.Duration, callbackURL, callbackKey string, callbackEvents []string, meta map[string]string) func(job.ArtifactReport) {
+	client := &http.Client{Timeout: timeout}
+	return func(report job.ArtifactReport) {
+		if endpoint == "" {
+			return
+		}
+		report.JobID = jobID
+		report.CallbackURL = callbackURL
+		report.CallbackKey = callbackKey
+		report.CallbackEvents = callbackEvents
+		report.Meta = meta
+		data, err := json.Marshal(report)
+		if err != nil {
+			slog.With("artifactId", report.ID, "error", err).Warn("Failed to marshal artifact report")
+			return
+		}
+		url := fmt.Sprintf("%s/internal/jobs/%s/artifact", endpoint, jobID)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			slog.With("artifactId", report.ID, "error", err).Warn("Failed to build artifact report request")
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			slog.With("artifactId", report.ID, "error", err).Warn("Failed to send artifact report")
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			slog.With("artifactId", report.ID, "status", resp.StatusCode).Warn("Artifact report rejected")
+		}
+	}
+}
+
+// waitForSignal blocks until SIGUSR1 or SIGTERM is received, or ctx is done.
+func waitForSignal(ctx context.Context) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	select {
+	case <-ctx.Done():
+	case <-sigCh:
+	}
 }
 
 // Run executes the sidecar flow:
@@ -136,20 +127,22 @@ func NewRunner(cfg *Config, reg *artifact.Registry, opts ...Option) (*Runner, er
 // 3. Process post-job artifacts (uploads, events, etc.)
 //
 // If any pre-job artifact fails, the sidecar exits with an error.
-func (r *Runner) Run(ctx context.Context) error {
-	logger := slog.With("jobId", r.config.JobID, "preJob", len(r.preJobArtifacts), "postJob", len(r.postJobArtifacts))
+func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
+	preJob, postJob := artifact.Partition(artifacts)
+
+	logger := slog.With("jobId", r.jobID, "preJob", len(preJob), "postJob", len(postJob))
 	logger.Info("Sidecar starting")
 
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.config.TimeoutSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
 	defer cancel()
 
-	if err := r.processArtifacts(ctx, r.preJobArtifacts, false); err != nil {
+	if err := r.processArtifacts(ctx, preJob, false); err != nil {
 		logger.Error("Pre-job artifact processing failed, aborting job", "error", err)
 		return fmt.Errorf("pre-job artifact processing failed: %w", err)
 	}
 
 	// Write marker file to signal pre-job artifacts are ready
-	markerPath := filepath.Join(r.config.SharedVolumePath, ReadyFile)
+	markerPath := filepath.Join(r.sharedVolumePath, ReadyFile)
 	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
 		logger.Error("Failed to write ready marker", "error", err)
 		return fmt.Errorf("failed to write ready marker: %w", err)
@@ -162,7 +155,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	logger.Info("Received worker completion signal")
 
 	// Process post-job artifacts (uploads, reads, etc.)
-	_ = r.processArtifacts(ctx, r.postJobArtifacts, true)
+	if err := r.processArtifacts(ctx, postJob, true); err != nil {
+		logger.Warn("Post-job artifact processing failed", "error", err)
+	}
 
 	logger.Info("Sidecar completed")
 	return nil
@@ -174,17 +169,17 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
 		if waitForFiles {
 			if srcPath := r.registry.SourcePath(a); srcPath != "" {
-				fullPath := filepath.Join(r.config.SharedVolumePath, srcPath)
+				fullPath := filepath.Join(r.sharedVolumePath, srcPath)
 				if err := r.waitForPath(ctx, fullPath); err != nil {
-					r.reportArtifact(ctx, a, "failed", nil, err)
+					r.emitArtifact(a, "failed", nil, err)
 					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
 					return err
 				}
 			}
 		}
 
-		result := a.Apply(ctx, r.config.SharedVolumePath)
-		r.reportArtifact(ctx, a, result.Status, result.Content, result.Error)
+		result := a.Apply(ctx, r.sharedVolumePath)
+		r.emitArtifact(a, result.Status, result.Content, result.Error)
 
 		logger := slog.With("artifactId", a.ArtifactID(), "type", a.ArtifactType(), "status", result.Status)
 		if result.Error != nil {
@@ -196,26 +191,17 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 	})
 }
 
-func (r *Runner) reportArtifact(ctx context.Context, a artifact.Artifact, status string, content any, err error) {
+func (r *Runner) emitArtifact(a artifact.Artifact, status string, content any, err error) {
 	report := job.ArtifactReport{
-		JobID:        r.config.JobID,
-		ID:   a.ArtifactID(),
-		Type: a.ArtifactType(),
-		Status:       status,
-		Content:      content,
-		CallbackURL:  r.config.CallbackURL,
-		CallbackKey:  r.config.CallbackKey,
-		Meta:         r.meta,
-	}
-	if r.config.CallbackEvents != "" {
-		report.CallbackEvents = strings.Split(r.config.CallbackEvents, ",")
+		ID:      a.ArtifactID(),
+		Type:    a.ArtifactType(),
+		Status:  status,
+		Content: content,
 	}
 	if err != nil {
 		report.Error = err.Error()
 	}
-	if reportErr := r.reportFn(ctx, report); reportErr != nil {
-		slog.With("artifactId", a.ArtifactID(), "error", reportErr).Warn("Failed to report artifact")
-	}
+	r.emitter.Emit(report)
 }
 
 func (r *Runner) waitForPath(ctx context.Context, path string) error {
@@ -232,11 +218,6 @@ func (r *Runner) waitForPath(ctx context.Context, path string) error {
 			}
 		}
 	}
-}
-
-// Close releases resources.
-func (r *Runner) Close() error {
-	return nil
 }
 
 // CheckReady checks if the ready marker file exists.

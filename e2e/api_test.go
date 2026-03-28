@@ -43,7 +43,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 	}, nil)
 
 	emitter := job.NewEventEmitter()
-	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
+	emitter.Register(func(e *job.Event) {
 		if e.CallbackURL == "" {
 			return
 		}

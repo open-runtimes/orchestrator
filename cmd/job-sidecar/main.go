@@ -3,11 +3,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/sidecar"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -36,7 +38,6 @@ func main() {
 }
 
 func run() error {
-	// Load configuration
 	cfg := sidecar.LoadConfigFromEnv()
 
 	if cfg.JobID == "" {
@@ -44,18 +45,39 @@ func run() error {
 		return nil // Exit cleanly to avoid double error message
 	}
 
-	// Create runner
-	runner, err := sidecar.NewRunner(cfg, artifact.DefaultRegistry())
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(os.Getenv("ARTIFACTS_JSON")))
 	if err != nil {
 		return err
 	}
-	defer runner.Close()
 
-	// Create context with cancellation
+	var meta map[string]string
+	if cfg.Meta != "" && cfg.Meta != "{}" {
+		_ = json.Unmarshal([]byte(cfg.Meta), &meta)
+	}
+
+	var callbackEvents []string
+	if cfg.CallbackEvents != "" {
+		callbackEvents = strings.Split(cfg.CallbackEvents, ",")
+	}
+
+	reporter := sidecar.NewHTTPSink(
+		cfg.JobID,
+		cfg.ArtifactEndpoint,
+		cfg.ArtifactTimeout,
+		cfg.CallbackURL,
+		cfg.CallbackKey,
+		callbackEvents,
+		meta,
+	)
+
+	runner := sidecar.NewRunner(cfg.JobID, cfg.SharedVolumePath, cfg.TimeoutSeconds, reg,
+		sidecar.WithArtifactListener(reporter),
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle shutdown signals
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -63,6 +85,5 @@ func run() error {
 		cancel()
 	}()
 
-	// Run the sidecar (logs completion internally)
-	return runner.Run(ctx)
+	return runner.Run(ctx, artifacts)
 }

@@ -5,14 +5,6 @@ import (
 	"testing"
 )
 
-type recordingListener struct {
-	events []*Event
-}
-
-func (r *recordingListener) OnJobEvent(event *Event) {
-	r.events = append(r.events, event)
-}
-
 func TestEventEmitter_NoListeners(t *testing.T) {
 	t.Parallel()
 	emitter := NewEventEmitter()
@@ -27,8 +19,9 @@ func TestEventEmitter_NoListeners(t *testing.T) {
 func TestEventEmitter_SingleListener(t *testing.T) {
 	t.Parallel()
 	emitter := NewEventEmitter()
-	listener := &recordingListener{}
-	emitter.OnEvent(listener)
+
+	var received []*Event
+	emitter.Register(func(e *Event) { received = append(received, e) })
 
 	event := &Event{
 		Payload:     cloudevent.New("test.event", "src", "job-1", "id", nil),
@@ -37,27 +30,27 @@ func TestEventEmitter_SingleListener(t *testing.T) {
 	}
 	emitter.Emit(event)
 
-	if len(listener.events) != 1 {
-		t.Fatalf("Expected 1 event, got %d", len(listener.events))
+	if len(received) != 1 {
+		t.Fatalf("Expected 1 event, got %d", len(received))
 	}
-	if listener.events[0].CallbackURL != "http://example.com/webhook" {
-		t.Errorf("Expected callback URL http://example.com/webhook, got %s", listener.events[0].CallbackURL)
+	if received[0].CallbackURL != "http://example.com/webhook" {
+		t.Errorf("Expected callback URL http://example.com/webhook, got %s", received[0].CallbackURL)
 	}
-	if listener.events[0].SigningKey != "secret" {
-		t.Errorf("Expected signing key 'secret', got %s", listener.events[0].SigningKey)
+	if received[0].SigningKey != "secret" {
+		t.Errorf("Expected signing key 'secret', got %s", received[0].SigningKey)
 	}
-	if listener.events[0].Payload.Type != "test.event" {
-		t.Errorf("Expected event type test.event, got %s", listener.events[0].Payload.Type)
+	if received[0].Payload.Type != "test.event" {
+		t.Errorf("Expected event type test.event, got %s", received[0].Payload.Type)
 	}
 }
 
 func TestEventEmitter_MultipleListeners(t *testing.T) {
 	t.Parallel()
 	emitter := NewEventEmitter()
-	a := &recordingListener{}
-	b := &recordingListener{}
-	emitter.OnEvent(a)
-	emitter.OnEvent(b)
+
+	var a, b []*Event
+	emitter.Register(func(e *Event) { a = append(a, e) })
+	emitter.Register(func(e *Event) { b = append(b, e) })
 
 	emitter.Emit(&Event{
 		Payload:     cloudevent.New("test.first", "src", "sub", "id1", nil),
@@ -68,10 +61,10 @@ func TestEventEmitter_MultipleListeners(t *testing.T) {
 		CallbackURL: "http://b.com",
 	})
 
-	if len(a.events) != 2 {
-		t.Errorf("Listener A: expected 2 events, got %d", len(a.events))
+	if len(a) != 2 {
+		t.Errorf("Listener A: expected 2 events, got %d", len(a))
 	}
-	if len(b.events) != 2 {
-		t.Errorf("Listener B: expected 2 events, got %d", len(b.events))
+	if len(b) != 2 {
+		t.Errorf("Listener B: expected 2 events, got %d", len(b))
 	}
 }
