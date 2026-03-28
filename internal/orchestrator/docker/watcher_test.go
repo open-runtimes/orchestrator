@@ -53,8 +53,8 @@ func (c *captureListener) types() []string {
 
 // helpers
 
-func newTestOrchestrator(w JobWatcher) (*Orchestrator, *job.StoreController[dockerHandle], *captureListener) {
-	ctrl := job.NewStoreController[dockerHandle]()
+func newTestOrchestrator(w JobWatcher) (*Orchestrator, *job.MemoryStore[dockerHandle], *captureListener) {
+	ctrl := job.NewMemoryStore[dockerHandle]()
 	emitter := job.NewEventEmitter()
 	capture := &captureListener{}
 	emitter.OnEvent(capture)

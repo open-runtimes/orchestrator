@@ -7,11 +7,11 @@ import (
 
 // newTestController is a convenience helper for tests that don't care about
 // the runtime handle type.
-func newTestController() *StoreController[struct{}] {
-	return NewStoreController[struct{}]()
+func newTestController() *MemoryStore[struct{}] {
+	return NewMemoryStore[struct{}]()
 }
 
-func TestStoreController_Reserve_CreatesAccepted(t *testing.T) {
+func TestMemoryStore_Reserve_CreatesAccepted(t *testing.T) {
 	c := newTestController()
 
 	if err := c.Reserve("job-1"); err != nil {
@@ -36,7 +36,7 @@ func TestStoreController_Reserve_CreatesAccepted(t *testing.T) {
 	}
 }
 
-func TestStoreController_Reserve_Duplicate(t *testing.T) {
+func TestMemoryStore_Reserve_Duplicate(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 
@@ -45,9 +45,9 @@ func TestStoreController_Reserve_Duplicate(t *testing.T) {
 	}
 }
 
-func TestStoreController_Commit_StoresHandle(t *testing.T) {
+func TestMemoryStore_Commit_StoresHandle(t *testing.T) {
 	type handle struct{ id string }
-	c := NewStoreController[handle]()
+	c := NewMemoryStore[handle]()
 
 	_ = c.Reserve("job-1")
 	cancelled := false
@@ -69,7 +69,7 @@ func TestStoreController_Commit_StoresHandle(t *testing.T) {
 	}
 }
 
-func TestStoreController_Notify_ValidTransitions(t *testing.T) {
+func TestMemoryStore_Notify_ValidTransitions(t *testing.T) {
 	transitions := []struct {
 		from string
 		via  []Transition
@@ -103,7 +103,7 @@ func TestStoreController_Notify_ValidTransitions(t *testing.T) {
 	}
 }
 
-func TestStoreController_Notify_InvalidTransitions(t *testing.T) {
+func TestMemoryStore_Notify_InvalidTransitions(t *testing.T) {
 	invalid := []struct {
 		name string
 		via  []Transition
@@ -132,7 +132,7 @@ func TestStoreController_Notify_InvalidTransitions(t *testing.T) {
 	}
 }
 
-func TestStoreController_Notify_SetsExitCodeAndError(t *testing.T) {
+func TestMemoryStore_Notify_SetsExitCodeAndError(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 	n := c.Commit("job-1", struct{}{}, nil)
@@ -151,7 +151,7 @@ func TestStoreController_Notify_SetsExitCodeAndError(t *testing.T) {
 	}
 }
 
-func TestStoreController_Notify_AfterRelease(t *testing.T) {
+func TestMemoryStore_Notify_AfterRelease(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 	n := c.Commit("job-1", struct{}{}, nil)
@@ -162,7 +162,7 @@ func TestStoreController_Notify_AfterRelease(t *testing.T) {
 	}
 }
 
-func TestStoreController_Restore_CreatesEntry(t *testing.T) {
+func TestMemoryStore_Restore_CreatesEntry(t *testing.T) {
 	c := newTestController()
 
 	n, err := c.Restore("job-1", ToCompleted(0), struct{}{}, nil)
@@ -185,7 +185,7 @@ func TestStoreController_Restore_CreatesEntry(t *testing.T) {
 	}
 }
 
-func TestStoreController_Restore_Duplicate(t *testing.T) {
+func TestMemoryStore_Restore_Duplicate(t *testing.T) {
 	c := newTestController()
 	_, _ = c.Restore("job-1", ToCompleted(0), struct{}{}, nil)
 
@@ -194,7 +194,7 @@ func TestStoreController_Restore_Duplicate(t *testing.T) {
 	}
 }
 
-func TestStoreController_Restore_NotifierWorks(t *testing.T) {
+func TestMemoryStore_Restore_NotifierWorks(t *testing.T) {
 	c := newTestController()
 	n, _ := c.Restore("job-1", ToAccepted(), struct{}{}, nil)
 
@@ -208,7 +208,7 @@ func TestStoreController_Restore_NotifierWorks(t *testing.T) {
 	}
 }
 
-func TestStoreController_Release_RemovesEntry(t *testing.T) {
+func TestMemoryStore_Release_RemovesEntry(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 
@@ -227,7 +227,7 @@ func TestStoreController_Release_RemovesEntry(t *testing.T) {
 	}
 }
 
-func TestStoreController_Get_NotFound(t *testing.T) {
+func TestMemoryStore_Get_NotFound(t *testing.T) {
 	c := newTestController()
 	_, ok := c.Get("nonexistent")
 	if ok {
@@ -235,7 +235,7 @@ func TestStoreController_Get_NotFound(t *testing.T) {
 	}
 }
 
-func TestStoreController_Get_ReturnsCopy(t *testing.T) {
+func TestMemoryStore_Get_ReturnsCopy(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 
@@ -248,14 +248,14 @@ func TestStoreController_Get_ReturnsCopy(t *testing.T) {
 	}
 }
 
-func TestStoreController_List_Empty(t *testing.T) {
+func TestMemoryStore_List_Empty(t *testing.T) {
 	c := newTestController()
 	if entries := c.List(); len(entries) != 0 {
 		t.Errorf("List: want 0 entries, got %d", len(entries))
 	}
 }
 
-func TestStoreController_List_Populated(t *testing.T) {
+func TestMemoryStore_List_Populated(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 	_ = c.Reserve("job-2")
@@ -274,7 +274,7 @@ func TestStoreController_List_Populated(t *testing.T) {
 	}
 }
 
-func TestStoreController_Each_VisitsAll(t *testing.T) {
+func TestMemoryStore_Each_VisitsAll(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 	_ = c.Reserve("job-2")
@@ -288,7 +288,7 @@ func TestStoreController_Each_VisitsAll(t *testing.T) {
 	}
 }
 
-func TestStoreController_Each_ReleaseSafe(t *testing.T) {
+func TestMemoryStore_Each_ReleaseSafe(t *testing.T) {
 	c := newTestController()
 	_ = c.Reserve("job-1")
 	_ = c.Reserve("job-2")
@@ -303,7 +303,7 @@ func TestStoreController_Each_ReleaseSafe(t *testing.T) {
 	}
 }
 
-func TestStoreController_ConcurrentReserve(t *testing.T) {
+func TestMemoryStore_ConcurrentReserve(t *testing.T) {
 	t.Parallel()
 	c := newTestController()
 
@@ -331,7 +331,7 @@ func TestStoreController_ConcurrentReserve(t *testing.T) {
 	}
 }
 
-func TestStoreController_ConcurrentReadWrite(t *testing.T) {
+func TestMemoryStore_ConcurrentReadWrite(t *testing.T) {
 	t.Parallel()
 	c := newTestController()
 

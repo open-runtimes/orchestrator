@@ -37,7 +37,7 @@ func getTestURL(t *testing.T) (string, func()) {
 }
 
 func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
-	eventDispatcher := dispatcher.NewMemory(dispatcher.MemoryConfig{
+	eventDispatcher := dispatcher.NewMemoryDispatcher(dispatcher.MemoryConfig{
 		BufferSize: 100,
 		Workers:    2,
 	}, nil)

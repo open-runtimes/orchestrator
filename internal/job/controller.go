@@ -14,12 +14,12 @@ type Viewer interface {
 	List() []Entry
 }
 
-// Controller is the full lifecycle surface for an orchestrator backend.
+// Store is the full lifecycle surface for an orchestrator backend.
 // T is the runtime handle type (e.g. dockerHandle in the docker package).
 //
 // Lifecycle: Reserve → Commit → [Notifier.Notify via watcher] → Release
 // Reconcile: Restore → [Notifier.Notify via watcher] → Release
-type Controller[T any] interface {
+type Store[T any] interface {
 	Viewer
 	Reserve(jobID string) error
 	Commit(jobID string, runtime T, cancelWatch context.CancelFunc) Notifier
@@ -29,13 +29,13 @@ type Controller[T any] interface {
 }
 
 // Notifier is the pre-bound write handle given to a watcher goroutine.
-// It does not expose the full Controller; it can only drive FSM transitions
+// It does not expose the full Store; it can only drive FSM transitions
 // for the single job it was bound to at Commit or Restore time.
 type Notifier interface {
 	Notify(t Transition) error
 }
 
-// controllerEntry is the internal record in StoreController.
+// controllerEntry is the internal record in MemoryStore.
 type controllerEntry[T any] struct {
 	jobEntry    Entry
 	handle      T
@@ -76,21 +76,21 @@ func (n *notifier[T]) Notify(t Transition) error {
 	return nil
 }
 
-// StoreController implements Controller[T].
+// MemoryStore implements Store[T].
 // It is the single source of truth for job lifecycle state and runtime handles.
-type StoreController[T any] struct {
+type MemoryStore[T any] struct {
 	mu   sync.RWMutex
 	jobs map[string]*controllerEntry[T]
 }
 
-// NewStoreController creates a new StoreController.
-func NewStoreController[T any]() *StoreController[T] {
-	return &StoreController[T]{jobs: make(map[string]*controllerEntry[T])}
+// NewMemoryStore creates a new MemoryStore.
+func NewMemoryStore[T any]() *MemoryStore[T] {
+	return &MemoryStore[T]{jobs: make(map[string]*controllerEntry[T])}
 }
 
 // Reserve atomically claims a job ID and seeds it at StateAccepted.
 // Returns a conflict error if the ID is already taken.
-func (c *StoreController[T]) Reserve(jobID string) error {
+func (c *MemoryStore[T]) Reserve(jobID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -112,7 +112,7 @@ func (c *StoreController[T]) Reserve(jobID string) error {
 
 // Commit stores the runtime handle and returns a Notifier pre-bound to this job.
 // If the job does not exist, a dead Notifier is returned (always errors on Notify).
-func (c *StoreController[T]) Commit(jobID string, runtime T, cancelWatch context.CancelFunc) Notifier {
+func (c *MemoryStore[T]) Commit(jobID string, runtime T, cancelWatch context.CancelFunc) Notifier {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -128,7 +128,7 @@ func (c *StoreController[T]) Commit(jobID string, runtime T, cancelWatch context
 // Restore seeds the controller with a job recovered at startup.
 // Unlike Reserve+Commit, the initial state is taken directly from t.
 // Pass nil cancelWatch for terminal jobs.
-func (c *StoreController[T]) Restore(jobID string, t Transition, runtime T, cancelWatch context.CancelFunc) (Notifier, error) {
+func (c *MemoryStore[T]) Restore(jobID string, t Transition, runtime T, cancelWatch context.CancelFunc) (Notifier, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -160,7 +160,7 @@ func (c *StoreController[T]) Restore(jobID string, t Transition, runtime T, canc
 
 // Release atomically removes a job and returns its handle for cleanup.
 // Returns (zero, false) if the job does not exist.
-func (c *StoreController[T]) Release(jobID string) (Handle[T], bool) {
+func (c *MemoryStore[T]) Release(jobID string) (Handle[T], bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -174,7 +174,7 @@ func (c *StoreController[T]) Release(jobID string) (Handle[T], bool) {
 }
 
 // Get returns a snapshot of the entry for the given job ID.
-func (c *StoreController[T]) Get(jobID string) (Entry, bool) {
+func (c *MemoryStore[T]) Get(jobID string) (Entry, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -186,7 +186,7 @@ func (c *StoreController[T]) Get(jobID string) (Entry, bool) {
 }
 
 // List returns snapshots of all entries.
-func (c *StoreController[T]) List() []Entry {
+func (c *MemoryStore[T]) List() []Entry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -199,7 +199,7 @@ func (c *StoreController[T]) List() []Entry {
 
 // Each calls f for every job. A snapshot is taken before the walk so
 // Release calls inside f are safe.
-func (c *StoreController[T]) Each(f func(string, Entry, Handle[T])) {
+func (c *MemoryStore[T]) Each(f func(string, Entry, Handle[T])) {
 	c.mu.RLock()
 	type snap struct {
 		id string
@@ -230,7 +230,7 @@ func (d *deadNotifier) Notify(_ Transition) error {
 
 // Compile-time interface checks.
 var (
-	_ Controller[struct{}] = (*StoreController[struct{}])(nil)
+	_ Store[struct{}] = (*MemoryStore[struct{}])(nil)
 	_ Notifier             = (*notifier[struct{}])(nil)
 	_ Notifier             = (*deadNotifier)(nil)
 )

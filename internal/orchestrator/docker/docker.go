@@ -38,7 +38,7 @@ type Orchestrator struct {
 	emitter             *job.EventEmitter
 	artifactEndpoint    string
 	extraHosts          []string
-	ctrl                *job.StoreController[dockerHandle]
+	ctrl                *job.MemoryStore[dockerHandle]
 	watcher             JobWatcher
 
 	cancelMaintenance context.CancelFunc
@@ -81,7 +81,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			emitter:             emitter,
 			artifactEndpoint:    cfg.ArtifactEndpoint,
 			extraHosts:          cfg.ExtraHosts,
-			ctrl:                job.NewStoreController[dockerHandle](),
+			ctrl:                job.NewMemoryStore[dockerHandle](),
 			watcher:             newDockerJobWatcher(dockerClient),
 		}, nil
 	}

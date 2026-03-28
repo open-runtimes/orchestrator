@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestMemoryQueue_Dispatch(t *testing.T) {
+func TestMemoryDispatcher_Dispatch(t *testing.T) {
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
@@ -20,7 +20,7 @@ func TestMemoryQueue_Dispatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  100,
 		Workers:     2,
 		HTTPTimeout: 5 * time.Second,
@@ -54,14 +54,14 @@ func TestMemoryQueue_Dispatch(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryQueue_BufferFull(t *testing.T) {
+func TestMemoryDispatcher_BufferFull(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  2,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -90,7 +90,7 @@ func TestMemoryQueue_BufferFull(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryQueue_Retry(t *testing.T) {
+func TestMemoryDispatcher_Retry(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count := attempts.Add(1)
@@ -102,7 +102,7 @@ func TestMemoryQueue_Retry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -133,7 +133,7 @@ func TestMemoryQueue_Retry(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryQueue_NoRetryOn4xx(t *testing.T) {
+func TestMemoryDispatcher_NoRetryOn4xx(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -141,7 +141,7 @@ func TestMemoryQueue_NoRetryOn4xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -167,7 +167,7 @@ func TestMemoryQueue_NoRetryOn4xx(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryQueue_CircuitBreaker(t *testing.T) {
+func TestMemoryDispatcher_CircuitBreaker(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -175,7 +175,7 @@ func TestMemoryQueue_CircuitBreaker(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -210,7 +210,7 @@ func TestMemoryQueue_CircuitBreaker(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryQueue_CloudEventHeaders(t *testing.T) {
+func TestMemoryDispatcher_CloudEventHeaders(t *testing.T) {
 	var mu sync.Mutex
 	var headers http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +221,7 @@ func TestMemoryQueue_CloudEventHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -256,7 +256,7 @@ func TestMemoryQueue_CloudEventHeaders(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryQueue_Signature(t *testing.T) {
+func TestMemoryDispatcher_Signature(t *testing.T) {
 	var mu sync.Mutex
 	var signature string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +267,7 @@ func TestMemoryQueue_Signature(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -298,7 +298,7 @@ func TestMemoryQueue_Signature(t *testing.T) {
 	d.Close(ctx)
 }
 
-func TestMemoryQueue_GracefulShutdown(t *testing.T) {
+func TestMemoryDispatcher_GracefulShutdown(t *testing.T) {
 	var received atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
@@ -306,7 +306,7 @@ func TestMemoryQueue_GracefulShutdown(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:  100,
 		Workers:     2,
 		HTTPTimeout: 5 * time.Second,
@@ -332,7 +332,7 @@ func TestMemoryQueue_GracefulShutdown(t *testing.T) {
 	}
 }
 
-func TestMemoryQueue_CircuitBreakerRecovery(t *testing.T) {
+func TestMemoryDispatcher_CircuitBreakerRecovery(t *testing.T) {
 	var serving atomic.Bool // false = 503, true = 200
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +349,7 @@ func TestMemoryQueue_CircuitBreakerRecovery(t *testing.T) {
 		numEvents = 10
 	)
 
-	d := NewMemory(MemoryConfig{
+	d := NewMemoryDispatcher(MemoryConfig{
 		BufferSize:      numEvents,
 		Workers:         2,
 		HTTPTimeout:     500 * time.Millisecond,

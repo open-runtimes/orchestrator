@@ -103,7 +103,7 @@ func TestCallbackThroughput(t *testing.T) {
 	}))
 	defer callbackServer.Close()
 
-	d := dispatcher.NewMemory(dispatcher.MemoryConfig{
+	d := dispatcher.NewMemoryDispatcher(dispatcher.MemoryConfig{
 		BufferSize:  numCallbacks,
 		Workers:     concurrency,
 		HTTPTimeout: 5 * time.Second,
@@ -304,7 +304,7 @@ func TestDispatcherUnderLoad(t *testing.T) {
 	}))
 	defer callbackServer.Close()
 
-	d := dispatcher.NewMemory(dispatcher.MemoryConfig{
+	d := dispatcher.NewMemoryDispatcher(dispatcher.MemoryConfig{
 		BufferSize:  totalEvents,
 		Workers:     50,
 		HTTPTimeout: 2 * time.Second,
@@ -389,7 +389,7 @@ func createBenchServer(tb testing.TB) (string, func()) {
 		tb.Fatalf("Failed to create metrics: %v", err)
 	}
 
-	eventDispatcher := dispatcher.NewMemory(dispatcher.MemoryConfig{
+	eventDispatcher := dispatcher.NewMemoryDispatcher(dispatcher.MemoryConfig{
 		BufferSize:  10000,
 		Workers:     50,
 		HTTPTimeout: 5 * time.Second,
