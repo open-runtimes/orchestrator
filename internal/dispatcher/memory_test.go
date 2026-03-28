@@ -20,7 +20,7 @@ func TestMemoryDispatcher_Dispatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  100,
 		Workers:     2,
 		HTTPTimeout: 5 * time.Second,
@@ -61,7 +61,7 @@ func TestMemoryDispatcher_BufferFull(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  2,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -102,7 +102,7 @@ func TestMemoryDispatcher_Retry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -141,7 +141,7 @@ func TestMemoryDispatcher_NoRetryOn4xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -175,7 +175,7 @@ func TestMemoryDispatcher_CircuitBreaker(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -221,7 +221,7 @@ func TestMemoryDispatcher_CloudEventHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -267,7 +267,7 @@ func TestMemoryDispatcher_Signature(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  100,
 		Workers:     1,
 		HTTPTimeout: 5 * time.Second,
@@ -306,7 +306,7 @@ func TestMemoryDispatcher_GracefulShutdown(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:  100,
 		Workers:     2,
 		HTTPTimeout: 5 * time.Second,
@@ -349,7 +349,7 @@ func TestMemoryDispatcher_CircuitBreakerRecovery(t *testing.T) {
 		numEvents = 10
 	)
 
-	d := NewMemoryDispatcher(MemoryConfig{
+	d := NewMemory(Config{
 		BufferSize:      numEvents,
 		Workers:         2,
 		HTTPTimeout:     500 * time.Millisecond,

@@ -199,8 +199,8 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 func (r *Runner) reportArtifact(ctx context.Context, a artifact.Artifact, status string, content any, err error) {
 	report := job.ArtifactReport{
 		JobID:        r.config.JobID,
-		ArtifactID:   a.ArtifactID(),
-		ArtifactType: a.ArtifactType(),
+		ID:   a.ArtifactID(),
+		Type: a.ArtifactType(),
 		Status:       status,
 		Content:      content,
 		CallbackURL:  r.config.CallbackURL,

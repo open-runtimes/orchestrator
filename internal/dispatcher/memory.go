@@ -13,14 +13,14 @@ import (
 	"time"
 )
 
-// MemoryDispatcher is an in-memory async event dispatcher.
+// Memory is an in-memory async event dispatcher.
 // Events are queued in a bounded channel and delivered by a worker pool.
 // If the buffer is full, events are dropped (logged + metric incremented).
-type MemoryDispatcher struct {
+type Memory struct {
 	queue    chan *Event
 	chain    DeliveryFunc
 	breakers *circuitbreaker.Registry
-	config   MemoryConfig
+	config   Config
 	logger   *slog.Logger
 	metrics  MetricsRecorder
 
@@ -47,7 +47,7 @@ type MetricsRecorder interface {
 }
 
 // NewMemory creates a new in-memory dispatcher.
-func NewMemoryDispatcher(cfg MemoryConfig, metrics MetricsRecorder) *MemoryDispatcher {
+func NewMemory(cfg Config, metrics MetricsRecorder) *Memory {
 	cfg = cfg.withDefaults()
 
 	breakers := circuitbreaker.NewRegistry(circuitbreaker.Config{
@@ -55,7 +55,7 @@ func NewMemoryDispatcher(cfg MemoryConfig, metrics MetricsRecorder) *MemoryDispa
 		Cooldown:  cfg.BreakerCooldown,
 	})
 
-	d := &MemoryDispatcher{
+	d := &Memory{
 		queue:    make(chan *Event, cfg.BufferSize),
 		breakers: breakers,
 		config:   cfg,
@@ -92,7 +92,7 @@ func NewMemoryDispatcher(cfg MemoryConfig, metrics MetricsRecorder) *MemoryDispa
 }
 
 // reportQueueSize periodically reports the queue size metric.
-func (d *MemoryDispatcher) reportQueueSize() {
+func (d *Memory) reportQueueSize() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -107,7 +107,7 @@ func (d *MemoryDispatcher) reportQueueSize() {
 }
 
 // Dispatch queues an event for async delivery.
-func (d *MemoryDispatcher) Dispatch(event *Event) error {
+func (d *Memory) Dispatch(event *Event) error {
 	if d.isClosed.Load() {
 		return fmt.Errorf("dispatcher is closed")
 	}
@@ -130,7 +130,7 @@ func (d *MemoryDispatcher) Dispatch(event *Event) error {
 }
 
 // Stats returns current dispatcher statistics.
-func (d *MemoryDispatcher) Stats() Stats {
+func (d *Memory) Stats() Stats {
 	breakerStats := d.breakers.Stats()
 	return Stats{
 		QueueDepth:    len(d.queue),
@@ -146,7 +146,7 @@ func (d *MemoryDispatcher) Stats() Stats {
 }
 
 // Close gracefully shuts down the dispatcher.
-func (d *MemoryDispatcher) Close(ctx context.Context) error {
+func (d *Memory) Close(ctx context.Context) error {
 	if d.isClosed.Swap(true) {
 		return nil // already closed
 	}
@@ -178,7 +178,7 @@ func (d *MemoryDispatcher) Close(ctx context.Context) error {
 }
 
 // worker processes events from the queue.
-func (d *MemoryDispatcher) worker() {
+func (d *Memory) worker() {
 	defer d.wg.Done()
 
 	for {
@@ -194,7 +194,7 @@ func (d *MemoryDispatcher) worker() {
 }
 
 // drainQueue delivers remaining events after shutdown signal.
-func (d *MemoryDispatcher) drainQueue() {
+func (d *Memory) drainQueue() {
 	for {
 		select {
 		case event := <-d.queue:
@@ -206,7 +206,7 @@ func (d *MemoryDispatcher) drainQueue() {
 }
 
 // deliver runs the event through the delivery chain and handles the outcome.
-func (d *MemoryDispatcher) deliver(event *Event) {
+func (d *Memory) deliver(event *Event) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -235,7 +235,7 @@ func (d *MemoryDispatcher) deliver(event *Event) {
 }
 
 // requeue puts an event back in the queue after a delay when circuit is open.
-func (d *MemoryDispatcher) requeue(event *Event, host string) {
+func (d *Memory) requeue(event *Event, host string) {
 	if event.Requeues >= defaultMaxRequeues {
 		d.dropped.Add(1)
 		if d.metrics != nil {
@@ -290,5 +290,5 @@ func extractHost(rawURL string) string {
 	return parsed.Host
 }
 
-// Verify MemoryDispatcher implements Queue
-var _ Queue = (*MemoryDispatcher)(nil)
+// Verify Memory implements Queue
+var _ Queue = (*Memory)(nil)

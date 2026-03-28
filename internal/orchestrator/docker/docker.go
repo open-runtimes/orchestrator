@@ -654,7 +654,7 @@ func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
 	if r.Error != "" {
 		errVal = fmt.Errorf("%s", r.Error)
 	}
-	event := builder.BuildArtifactEvent(r.ArtifactID, r.ArtifactType, r.Status, r.Content, errVal)
+	event := builder.BuildArtifactEvent(r.ID, r.Type, r.Status, r.Content, errVal)
 	o.emitter.Emit(&job.Event{
 		Payload:     event,
 		CallbackURL: r.CallbackURL,

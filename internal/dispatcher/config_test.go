@@ -9,7 +9,7 @@ func TestLoadConfigFromEnv_Defaults(t *testing.T) {
 	t.Parallel()
 	// LoadConfigFromEnv reads from env, but with no env vars set,
 	// it should use defaults
-	cfg := MemoryConfig{}.withDefaults()
+	cfg := Config{}.withDefaults()
 
 	if cfg.BufferSize != 10000 {
 		t.Errorf("Expected BufferSize 10000, got %d", cfg.BufferSize)
@@ -24,7 +24,7 @@ func TestLoadConfigFromEnv_Defaults(t *testing.T) {
 
 func TestMemoryConfig_WithDefaults_ZeroValues(t *testing.T) {
 	t.Parallel()
-	cfg := MemoryConfig{}.withDefaults()
+	cfg := Config{}.withDefaults()
 
 	if cfg.BufferSize != 10000 {
 		t.Errorf("Expected BufferSize 10000, got %d", cfg.BufferSize)
@@ -39,7 +39,7 @@ func TestMemoryConfig_WithDefaults_ZeroValues(t *testing.T) {
 
 func TestMemoryConfig_WithDefaults_NegativeValues(t *testing.T) {
 	t.Parallel()
-	cfg := MemoryConfig{
+	cfg := Config{
 		BufferSize:  -1,
 		Workers:     -1,
 		HTTPTimeout: -1,
@@ -58,7 +58,7 @@ func TestMemoryConfig_WithDefaults_NegativeValues(t *testing.T) {
 
 func TestMemoryConfig_WithDefaults_PreservesValidValues(t *testing.T) {
 	t.Parallel()
-	cfg := MemoryConfig{
+	cfg := Config{
 		BufferSize:  500,
 		Workers:     5,
 		HTTPTimeout: 20 * time.Second,

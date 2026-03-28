@@ -173,7 +173,7 @@ func TestRunner_FullLifecycle(t *testing.T) {
 			t.Errorf("expected JobID 'test-job', got %q", r.JobID)
 		}
 		if r.Status != "success" {
-			t.Errorf("artifact %s: expected status 'success', got %q", r.ArtifactID, r.Status)
+			t.Errorf("artifact %s: expected status 'success', got %q", r.ID, r.Status)
 		}
 	}
 }
@@ -330,11 +330,11 @@ func TestRunner_ReportsArtifactToEndpoint(t *testing.T) {
 	captured.mu.Lock()
 	defer captured.mu.Unlock()
 	r := captured.reports[0]
-	if r.ArtifactID != "w" {
-		t.Errorf("expected ArtifactID 'w', got %q", r.ArtifactID)
+	if r.ID != "w" {
+		t.Errorf("expected ArtifactID 'w', got %q", r.ID)
 	}
-	if r.ArtifactType != "write" {
-		t.Errorf("expected ArtifactType 'write', got %q", r.ArtifactType)
+	if r.Type != "write" {
+		t.Errorf("expected ArtifactType 'write', got %q", r.Type)
 	}
 	if r.Status != "success" {
 		t.Errorf("expected Status 'success', got %q", r.Status)

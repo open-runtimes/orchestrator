@@ -309,8 +309,8 @@ func TestHandler_ReportArtifact(t *testing.T) {
 	handler := &Handler{artifactEmitter: mock}
 
 	report := job.ArtifactReport{
-		ArtifactID:   "a1",
-		ArtifactType: "upload",
+		ID:   "a1",
+		Type: "upload",
 		Status:       "success",
 	}
 	body, _ := json.Marshal(report)
@@ -334,8 +334,8 @@ func TestHandler_ReportArtifact(t *testing.T) {
 	if r.JobID != "job-123" {
 		t.Errorf("Expected JobID 'job-123', got %q", r.JobID)
 	}
-	if r.ArtifactID != "a1" {
-		t.Errorf("Expected ArtifactID 'a1', got %q", r.ArtifactID)
+	if r.ID != "a1" {
+		t.Errorf("Expected ArtifactID 'a1', got %q", r.ID)
 	}
 	if r.Status != "success" {
 		t.Errorf("Expected Status 'success', got %q", r.Status)

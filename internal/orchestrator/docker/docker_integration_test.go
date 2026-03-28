@@ -151,7 +151,7 @@ func TestOrchestrator_CallbackEvents(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := dispatcher.NewMemoryDispatcher(dispatcher.MemoryConfig{BufferSize: 100, Workers: 2}, nil)
+	d := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2}, nil)
 	defer d.Close(ctx)
 
 	emitter := job.NewEventEmitter()
@@ -471,7 +471,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 	defer server.Close()
 
 	// Phase 1: Start job with orchestrator A (with callbacks)
-	dA := dispatcher.NewMemoryDispatcher(dispatcher.MemoryConfig{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
+	dA := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
 	emitterA := job.NewEventEmitter()
 	emitterA.OnEvent(job.EventListenerFunc(func(e *job.Event) {
 		if e.CallbackURL == "" {
@@ -531,7 +531,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 	mu.Unlock()
 
 	// Create orchestrator B with its own dispatcher + emitter
-	dB := dispatcher.NewMemoryDispatcher(dispatcher.MemoryConfig{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
+	dB := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
 	defer dB.Close(ctx)
 	emitterB := job.NewEventEmitter()
 	emitterB.OnEvent(job.EventListenerFunc(func(e *job.Event) {

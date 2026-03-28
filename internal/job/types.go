@@ -123,8 +123,8 @@ type ListResponse struct {
 // duplicate it in its own state.
 type ArtifactReport struct {
 	JobID        string `json:"jobId"`
-	ArtifactID   string `json:"artifactId"`
-	ArtifactType string `json:"artifactType"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
 	Status       string `json:"status"`
 	Content      any    `json:"content,omitempty"`
 	Error        string `json:"error,omitempty"`

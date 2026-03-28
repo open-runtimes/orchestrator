@@ -44,7 +44,7 @@ func run() error {
 	}
 
 	// Create callback dispatcher and event emitter
-	eventDispatcher := dispatcher.NewMemoryDispatcher(dispatcherCfg, metrics)
+	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
 	emitter := job.NewEventEmitter()
 	emitter.OnEvent(job.EventListenerFunc(func(e *job.Event) {
 		if e.CallbackURL == "" {
