@@ -129,16 +129,15 @@ task kind:up     # create the kind-orchestrator-dev cluster
 task dev:k8s     # tilt up: live-reload the chart on source change
 ```
 
-For production:
+For production, install directly from the OCI registry (requires Helm 3.8+):
 
 ```bash
-helm install orchestrator ./charts/orchestrator \
-  --namespace orchestrator --create-namespace \
-  --set image.repository=ghcr.io/<your-org>/orchestrator \
-  --set sidecarImage.repository=ghcr.io/<your-org>/job-sidecar
+helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
+  --version <X.Y.Z> \
+  --namespace orchestrator --create-namespace
 ```
 
-K8s jobs run as `batch/v1.Job` with a native sidecar (requires K8s 1.29+).
+The chart and container images are published to GHCR on every `v*` tag. K8s jobs run as `batch/v1.Job` with a native sidecar (requires K8s 1.29+).
 
 ## Documentation
 
