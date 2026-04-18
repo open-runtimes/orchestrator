@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/pkg/job"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,21 +19,32 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// Orchestrator implements job.Orchestrator using Kubernetes.
+// Orchestrator implements job.Orchestrator using Kubernetes. No in-memory
+// state is authoritative: Status/List derive from the K8s API and dedup of
+// concurrent Run calls is enforced by K8s name uniqueness. The only local
+// state is a map of active watcher cancellation functions used so Close and
+// Stop can tear watchers down — that map is not consulted for correctness.
 type Orchestrator struct {
-	client              kubernetes.Interface
-	namespace           string
-	sidecarImage        string
-	cfg                 OrchestratorConfig
-	retentionPeriod     time.Duration
-	maintenanceInterval time.Duration
-	emitter             *job.CallbackEmitter
-	ctrl                *job.MemoryStore[kubernetesHandle]
-	watcher             LifecycleWatcher
-	statusCache         *statusCache
+	client       kubernetes.Interface
+	namespace    string
+	sidecarImage string
+	cfg          OrchestratorConfig
+	emitter      *job.CallbackEmitter
+	watcher      LifecycleWatcher
+	statusCache  *statusCache
 
-	cancelMaintenance context.CancelFunc
-	watchWg           sync.WaitGroup
+	watchersMu   sync.Mutex
+	watchers     map[string]*watcherEntry
+	watcherIDGen atomic.Uint64
+	watchWg      sync.WaitGroup
+}
+
+// watcherEntry pairs a context cancel with a unique id so that concurrent
+// spawnWatcher/stopWatcher calls for the same jobID can tell whether a map
+// entry still belongs to them when tearing down on goroutine exit.
+type watcherEntry struct {
+	cancel context.CancelFunc
+	id     uint64
 }
 
 // Config holds configuration for the Kubernetes orchestrator.
@@ -63,14 +75,6 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			return nil, fmt.Errorf("failed to create kube client: %w", err)
 		}
 
-		retention := cfg.RetentionPeriod
-		if retention <= 0 {
-			retention = 15 * time.Minute
-		}
-		maint := cfg.MaintenanceInterval
-		if maint <= 0 {
-			maint = 1 * time.Minute
-		}
 		ns := cfg.Namespace
 		if ns == "" {
 			ns = "orchestrator"
@@ -83,6 +87,10 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 		if grace <= 0 {
 			grace = 600
 		}
+		retention := cfg.RetentionPeriod
+		if retention <= 0 {
+			retention = 15 * time.Minute
+		}
 
 		ocfg := OrchestratorConfig{
 			Namespace:                     ns,
@@ -91,22 +99,19 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			WorkerImagePullPolicy:         cfg.WorkerImagePullPolicy,
 			SidecarImagePullPolicy:        cfg.SidecarImagePullPolicy,
 			JobRetention:                  retention,
-			MaintenanceInterval:           maint,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: grace,
 		}
 
 		return &Orchestrator{
-			client:              cs,
-			namespace:           ns,
-			sidecarImage:        cfg.SidecarImage,
-			cfg:                 ocfg,
-			retentionPeriod:     retention,
-			maintenanceInterval: maint,
-			emitter:             emitter,
-			ctrl:                job.NewMemoryStore[kubernetesHandle](),
-			watcher:             newK8sLifecycleWatcher(cs, ns),
-			statusCache:         newStatusCache(),
+			client:       cs,
+			namespace:    ns,
+			sidecarImage: cfg.SidecarImage,
+			cfg:          ocfg,
+			emitter:      emitter,
+			watcher:      newK8sLifecycleWatcher(cs, ns),
+			statusCache:  newStatusCache(),
+			watchers:     make(map[string]*watcherEntry),
 		}, nil
 	}
 }
@@ -125,18 +130,18 @@ func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
 }
 
-// Start reconciles pre-existing jobs and begins background maintenance.
+// Start resumes watching any pre-existing non-terminal Jobs so callbacks keep
+// flowing after a service restart. There's no maintenance loop: K8s
+// ttlSecondsAfterFinished on the Job spec handles terminal-Job GC centrally.
 func (o *Orchestrator) Start(ctx context.Context) error {
 	if err := o.reconcile(ctx); err != nil {
 		slog.Warn("Failed to reconcile jobs", "error", err)
 	}
-	maintCtx, cancel := context.WithCancel(context.Background())
-	o.cancelMaintenance = cancel
-	go o.runMaintenance(maintCtx, o.maintenanceInterval)
 	return nil
 }
 
-// reconcile lists pre-existing batch/v1.Jobs with our managed-by label and resumes watching them.
+// reconcile lists existing managed Jobs and spawns a watcher for each
+// non-terminal one so lifecycle callbacks resume after a service restart.
 func (o *Orchestrator) reconcile(ctx context.Context) error {
 	logger := slog.With("component", "k8s.reconcile")
 	jobs, err := o.client.BatchV1().Jobs(o.namespace).List(ctx, metav1.ListOptions{
@@ -146,97 +151,95 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 		return fmt.Errorf("failed to list jobs: %w", err)
 	}
 
-	var reconciled, resumed, completed int
+	var resumed int
 	for i := range jobs.Items {
 		j := &jobs.Items[i]
+		if j.Status.Succeeded > 0 || j.Status.Failed > 0 {
+			continue
+		}
 		jobID := j.Labels[LabelJobID]
 		if jobID == "" {
 			continue
 		}
-		handle := kubernetesHandle{namespace: o.namespace, jobName: j.Name}
-		reconciled++
-
-		terminal := j.Status.Succeeded > 0 || j.Status.Failed > 0
-
-		if terminal {
-			completed++
-			_ = o.ctrl.Reserve(jobID)
-			o.ctrl.Commit(jobID, handle, nil)
-			_ = o.ctrl.Apply(jobID, job.Started{})
-			exitCode := 0
-			if j.Status.Failed > 0 {
-				exitCode = 1
-			}
-			_ = o.ctrl.Apply(jobID, job.Exited{ExitCode: exitCode})
-			continue
-		}
-
+		o.spawnWatcher(watchConfigFromJob(j))
 		resumed++
-		watchCtx, cancelWatch := context.WithCancel(context.Background())
-		cfg := watchConfigFromJob(j, handle)
-		_ = o.ctrl.Reserve(jobID)
-		o.ctrl.Commit(jobID, handle, cancelWatch)
-		o.watchWg.Go(func() {
-			o.watcher.Watch(watchCtx, cfg.namespace, cfg.jobID, func(s job.Signal) {
-				_ = o.ctrl.Apply(cfg.jobID, s)
-				job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
-			})
-		})
 	}
 
-	logger.Info("Reconciliation complete", "reconciled", reconciled, "resumed", resumed, "completed", completed)
+	logger.Info("Reconciliation complete", "resumed", resumed, "total", len(jobs.Items))
 	return nil
 }
 
-// Run creates a batch/v1.Job and starts watching its lifecycle.
+// Run creates a batch/v1.Job and spawns a local lifecycle watcher. Dedup on
+// concurrent creates is enforced by K8s name uniqueness: two replicas racing
+// to create the same jobID will see one succeed and the other receive an
+// AlreadyExists which we translate into a Conflict error.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
-	if err := o.ctrl.Reserve(req.ID); err != nil {
-		return err
-	}
-	h := kubernetesHandle{
-		namespace: o.namespace,
-		jobName:   jobNameFor(req.ID),
-	}
-
-	success := false
-	defer func() {
-		if !success {
-			if rh, ok := o.ctrl.Release(req.ID); ok {
-				o.cleanup(ctx, rh.Runtime)
-			}
-		}
-	}()
-
 	jobSpec := buildJob(req, o.cfg, o.sidecarImage)
 	if _, err := o.client.BatchV1().Jobs(o.namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return apperrors.Conflict("job", req.ID, "job already exists")
+		}
 		return apperrors.Internal("kubernetes.createJob", err)
 	}
+	o.spawnWatcher(watchConfigFromRequest(req))
+	return nil
+}
 
-	watchCtx, cancelWatch := context.WithCancel(context.Background())
-	cfg := watchConfigFromRequest(req, h)
-	o.ctrl.Commit(req.ID, h, cancelWatch)
-	success = true
+// Stop deletes the K8s Job (cascades to its Pod). Idempotent at the K8s layer;
+// a second call against a non-existent Job returns our NotFound error.
+func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
+	prop := metav1.DeletePropagationForeground
+	err := o.client.BatchV1().Jobs(o.namespace).Delete(ctx, jobNameFor(jobID), metav1.DeleteOptions{
+		PropagationPolicy: &prop,
+	})
+	if apierrors.IsNotFound(err) {
+		return apperrors.NotFound("job", jobID)
+	}
+	if err != nil {
+		return apperrors.Internal("kubernetes.deleteJob", err)
+	}
+	o.cancelWatcher(jobID)
+	o.statusCache.invalidate(jobID)
+	return nil
+}
+
+// spawnWatcher registers and starts a watcher goroutine for jobID. If a
+// watcher is already running for this jobID (e.g. resume after reconcile
+// followed by Run), the previous one is cancelled first.
+func (o *Orchestrator) spawnWatcher(cfg *watchConfig) {
+	watchCtx, cancel := context.WithCancel(context.Background())
+	id := o.watcherIDGen.Add(1)
+	entry := &watcherEntry{cancel: cancel, id: id}
+
+	o.watchersMu.Lock()
+	if prev, ok := o.watchers[cfg.jobID]; ok {
+		prev.cancel()
+	}
+	o.watchers[cfg.jobID] = entry
+	o.watchersMu.Unlock()
+
 	o.watchWg.Go(func() {
-		o.watcher.Watch(watchCtx, cfg.namespace, cfg.jobID, func(s job.Signal) {
-			_ = o.ctrl.Apply(cfg.jobID, s)
+		defer func() {
+			o.watchersMu.Lock()
+			if cur, ok := o.watchers[cfg.jobID]; ok && cur.id == id {
+				delete(o.watchers, cfg.jobID)
+			}
+			o.watchersMu.Unlock()
+		}()
+		o.watcher.Watch(watchCtx, o.namespace, cfg.jobID, func(s job.Signal) {
 			job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
 		})
 	})
-	return nil
 }
 
-// Stop deletes the K8s Job (cascades to its Pod) and releases state.
-func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
-	h, ok := o.ctrl.Release(jobID)
-	if !ok {
-		return apperrors.NotFound("job", jobID)
+// cancelWatcher stops the watcher for jobID if one is running. No-op otherwise.
+func (o *Orchestrator) cancelWatcher(jobID string) {
+	o.watchersMu.Lock()
+	defer o.watchersMu.Unlock()
+	if e, ok := o.watchers[jobID]; ok {
+		e.cancel()
+		delete(o.watchers, jobID)
 	}
-	if h.CancelWatch != nil {
-		h.CancelWatch()
-	}
-	o.cleanup(ctx, h.Runtime)
-	o.statusCache.invalidate(jobID)
-	return nil
 }
 
 // Status returns the current state of a job, derived from the K8s Job (+ Pod
@@ -293,69 +296,18 @@ func (o *Orchestrator) Ready(ctx context.Context) error {
 	return err
 }
 
-// Close stops background goroutines and waits for watchers to finish.
-// Running K8s Jobs are NOT deleted — they continue independently.
+// Close cancels all in-flight watchers and waits for their goroutines to exit.
+// Running K8s Jobs are NOT deleted — they continue independently and will be
+// picked up by the next orchestrator start via reconcile().
 func (o *Orchestrator) Close() error {
-	if o.cancelMaintenance != nil {
-		o.cancelMaintenance()
+	o.watchersMu.Lock()
+	for _, e := range o.watchers {
+		e.cancel()
 	}
-	o.ctrl.Each(func(_ string, _ job.Entry, h job.Handle[kubernetesHandle]) {
-		if h.CancelWatch != nil {
-			h.CancelWatch()
-		}
-	})
+	o.watchers = make(map[string]*watcherEntry)
+	o.watchersMu.Unlock()
 	o.watchWg.Wait()
 	return nil
-}
-
-func (o *Orchestrator) cleanup(ctx context.Context, h kubernetesHandle) {
-	prop := metav1.DeletePropagationForeground
-	err := o.client.BatchV1().Jobs(h.namespace).Delete(ctx, h.jobName, metav1.DeleteOptions{
-		PropagationPolicy: &prop,
-	})
-	if err != nil && !apierrors.IsNotFound(err) {
-		slog.Warn("Failed to delete K8s Job", "jobName", h.jobName, "error", err)
-	}
-}
-
-func (o *Orchestrator) runMaintenance(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			o.cleanupExpired(ctx)
-		}
-	}
-}
-
-// cleanupExpired removes store entries for jobs that completed more than retentionPeriod ago.
-// The K8s Job itself is GC'd by kubelet via ttlSecondsAfterFinished.
-func (o *Orchestrator) cleanupExpired(ctx context.Context) {
-	now := time.Now()
-	var expired []string
-	o.ctrl.Each(func(jobID string, e job.Entry, _ job.Handle[kubernetesHandle]) {
-		if isTerminal(e.State) && now.Sub(e.UpdatedAt) > o.retentionPeriod {
-			expired = append(expired, jobID)
-		}
-	})
-	if len(expired) == 0 {
-		return
-	}
-	for _, id := range expired {
-		if h, ok := o.ctrl.Release(id); ok {
-			if h.CancelWatch != nil {
-				h.CancelWatch()
-			}
-			o.cleanup(ctx, h.Runtime)
-		}
-	}
-}
-
-func isTerminal(state string) bool {
-	return state == job.StateCompleted || state == job.StateFailed || state == job.StateCancelled
 }
 
 // EmitArtifactEvent receives an artifact result from the sidecar and dispatches

@@ -29,21 +29,19 @@ const (
 	VolumeWorkspace       = "workspace"
 )
 
-// watchConfig holds everything needed to watch a job's lifecycle.
+// watchConfig holds the per-job values a watcher needs to emit callbacks.
+// Namespace and K8s Job name are fixed / derivable (single namespace per
+// orchestrator; job name is jobNameFor(jobID)) so they're not carried here.
 type watchConfig struct {
-	jobID     string
-	image     string
-	namespace string
-	jobName   string
-	dest      *job.CallbackDest
+	jobID string
+	image string
+	dest  *job.CallbackDest
 }
 
-func watchConfigFromRequest(req *job.Request, h kubernetesHandle) *watchConfig {
+func watchConfigFromRequest(req *job.Request) *watchConfig {
 	cfg := &watchConfig{
-		jobID:     req.ID,
-		image:     req.Image,
-		namespace: h.namespace,
-		jobName:   h.jobName,
+		jobID: req.ID,
+		image: req.Image,
 	}
 	if req.Callback != nil && req.Callback.URL != "" {
 		cfg.dest = &job.CallbackDest{
@@ -56,11 +54,9 @@ func watchConfigFromRequest(req *job.Request, h kubernetesHandle) *watchConfig {
 	return cfg
 }
 
-func watchConfigFromJob(j *batchv1.Job, h kubernetesHandle) *watchConfig {
+func watchConfigFromJob(j *batchv1.Job) *watchConfig {
 	cfg := &watchConfig{
-		jobID:     j.Labels[LabelJobID],
-		namespace: h.namespace,
-		jobName:   h.jobName,
+		jobID: j.Labels[LabelJobID],
 	}
 	for _, c := range j.Spec.Template.Spec.Containers {
 		if c.Name == ContainerWorker {

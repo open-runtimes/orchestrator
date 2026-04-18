@@ -48,21 +48,18 @@ func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator,
 		Namespace:                     "orchestrator",
 		ServiceAccount:                "job-sidecar",
 		JobRetention:                  15 * time.Minute,
-		MaintenanceInterval:           1 * time.Minute,
 		ArtifactEndpoint:              "http://jobs-service.orchestrator.svc:8080",
 		TerminationGracePeriodSeconds: 600,
 	}
 	o := &Orchestrator{
-		client:              cs,
-		namespace:           cfg.Namespace,
-		sidecarImage:        "sidecar:latest",
-		cfg:                 cfg,
-		retentionPeriod:     cfg.JobRetention,
-		maintenanceInterval: cfg.MaintenanceInterval,
-		emitter:             job.NewCallbackEmitter(),
-		ctrl:                job.NewMemoryStore[kubernetesHandle](),
-		watcher:             watcher,
-		statusCache:         newStatusCache(),
+		client:       cs,
+		namespace:    cfg.Namespace,
+		sidecarImage: "sidecar:latest",
+		cfg:          cfg,
+		emitter:      job.NewCallbackEmitter(),
+		watcher:      watcher,
+		statusCache:  newStatusCache(),
+		watchers:     make(map[string]*watcherEntry),
 	}
 	return o, cs
 }
@@ -240,21 +237,18 @@ func orchestratorWithEmitter(t *testing.T, watcher LifecycleWatcher, emitter *jo
 		Namespace:                     "orchestrator",
 		ServiceAccount:                "job-sidecar",
 		JobRetention:                  15 * time.Minute,
-		MaintenanceInterval:           1 * time.Minute,
 		ArtifactEndpoint:              "http://jobs-service.orchestrator.svc:8080",
 		TerminationGracePeriodSeconds: 600,
 	}
 	return &Orchestrator{
-		client:              cs,
-		namespace:           cfg.Namespace,
-		sidecarImage:        "sidecar:latest",
-		cfg:                 cfg,
-		retentionPeriod:     cfg.JobRetention,
-		maintenanceInterval: cfg.MaintenanceInterval,
-		emitter:             emitter,
-		ctrl:                job.NewMemoryStore[kubernetesHandle](),
-		watcher:             watcher,
-		statusCache:         newStatusCache(),
+		client:       cs,
+		namespace:    cfg.Namespace,
+		sidecarImage: "sidecar:latest",
+		cfg:          cfg,
+		emitter:      emitter,
+		watcher:      watcher,
+		statusCache:  newStatusCache(),
+		watchers:     make(map[string]*watcherEntry),
 	}
 }
 
@@ -276,14 +270,13 @@ func TestReconcile_ResumesRunning(t *testing.T) {
 		},
 	)
 	o := &Orchestrator{
-		client:          cs,
-		namespace:       "orchestrator",
-		cfg:             OrchestratorConfig{Namespace: "orchestrator"},
-		retentionPeriod: 15 * time.Minute,
-		emitter:         job.NewCallbackEmitter(),
-		ctrl:            job.NewMemoryStore[kubernetesHandle](),
-		watcher:         newScriptedWatcher(job.Started{}),
-		statusCache:     newStatusCache(),
+		client:      cs,
+		namespace:   "orchestrator",
+		cfg:         OrchestratorConfig{Namespace: "orchestrator"},
+		emitter:     job.NewCallbackEmitter(),
+		watcher:     newScriptedWatcher(job.Started{}),
+		statusCache: newStatusCache(),
+		watchers:    make(map[string]*watcherEntry),
 	}
 	defer o.Close()
 
@@ -361,14 +354,13 @@ func reconcileHarness(t *testing.T, seed *batchv1.Job) *Orchestrator {
 	t.Helper()
 	cs := fake.NewClientset(seed)
 	return &Orchestrator{
-		client:          cs,
-		namespace:       "orchestrator",
-		cfg:             OrchestratorConfig{Namespace: "orchestrator"},
-		retentionPeriod: 15 * time.Minute,
-		emitter:         job.NewCallbackEmitter(),
-		ctrl:            job.NewMemoryStore[kubernetesHandle](),
-		watcher:         blockingWatcher{},
-		statusCache:     newStatusCache(),
+		client:      cs,
+		namespace:   "orchestrator",
+		cfg:         OrchestratorConfig{Namespace: "orchestrator"},
+		emitter:     job.NewCallbackEmitter(),
+		watcher:     blockingWatcher{},
+		statusCache: newStatusCache(),
+		watchers:    make(map[string]*watcherEntry),
 	}
 }
 

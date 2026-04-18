@@ -17,21 +17,14 @@ import (
 func TestWatchConfigFromRequest_NoCallback(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-1", Image: "alpine:latest"}
-	h := kubernetesHandle{namespace: "ns", jobName: "job-job-1"}
 
-	cfg := watchConfigFromRequest(req, h)
+	cfg := watchConfigFromRequest(req)
 
 	if cfg.jobID != "job-1" {
 		t.Errorf("jobID: want job-1, got %s", cfg.jobID)
 	}
 	if cfg.image != "alpine:latest" {
 		t.Errorf("image: want alpine:latest, got %s", cfg.image)
-	}
-	if cfg.namespace != "ns" {
-		t.Errorf("namespace: want ns, got %s", cfg.namespace)
-	}
-	if cfg.jobName != "job-job-1" {
-		t.Errorf("jobName: want job-job-1, got %s", cfg.jobName)
 	}
 	if cfg.dest != nil {
 		t.Error("dest: want nil when no callback configured")
@@ -50,7 +43,7 @@ func TestWatchConfigFromRequest_WithCallback(t *testing.T) {
 			Events: []string{"job.start", "job.exit"},
 		},
 	}
-	cfg := watchConfigFromRequest(req, kubernetesHandle{})
+	cfg := watchConfigFromRequest(req)
 	if cfg.dest == nil {
 		t.Fatal("dest: want non-nil")
 	}
@@ -276,9 +269,8 @@ func TestBuildJob_WatchConfigRoundTrip(t *testing.T) {
 		},
 	}
 	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
-	h := kubernetesHandle{namespace: "orchestrator", jobName: j.Name}
 
-	cfg := watchConfigFromJob(j, h)
+	cfg := watchConfigFromJob(j)
 	if cfg.jobID != "job-3" {
 		t.Errorf("jobID: got %s", cfg.jobID)
 	}
