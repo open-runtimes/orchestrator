@@ -313,6 +313,22 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		return true
 	}
 
+	// Pod failed after the worker started (node loss, preemption, OOM-at-pod-
+	// level). kubelet may mark the Pod Failed before the container-status
+	// update lands, so we key off pod.Status.Phase here rather than waiting
+	// for worker.State.Terminated.
+	if t.state.isStarted && !t.state.isExited && pod.Status.Phase == corev1.PodFailed {
+		reason := pod.Status.Reason
+		if reason == "" {
+			reason = "pod failed"
+		}
+		t.state.isExited = true
+		t.logger.Info("Pod failed during job", "reason", reason)
+		t.stopLogsLocked()
+		t.emit(job.Failed{Reason: reason})
+		return true
+	}
+
 	return false
 }
 

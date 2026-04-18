@@ -83,10 +83,14 @@ func setup(t *testing.T) (*Orchestrator, *job.CallbackEmitter, func()) {
 		t.Fatalf("Start: %v", err)
 	}
 
+	// closeOnly tears down the Orchestrator without touching K8s Jobs. Use
+	// when another Orchestrator takes over on the same cluster state (e.g.
+	// rolling deployment test).
+	closeOnly := func() { orch.Close() }
+	// teardown additionally deletes all managed Jobs (and their child Pods
+	// via background propagation) so successive test runs don't pollute
+	// each other.
 	teardown := func() {
-		// Drop all test Jobs AND their child Pods. Background propagation
-		// (rather than Orphan, which is the Delete default) prevents stuck
-		// Pods from lingering across test runs.
 		prop := metav1.DeletePropagationBackground
 		_ = o.client.BatchV1().Jobs(testNamespace).DeleteCollection(
 			context.Background(),
@@ -95,7 +99,19 @@ func setup(t *testing.T) (*Orchestrator, *job.CallbackEmitter, func()) {
 		)
 		orch.Close()
 	}
+	_ = closeOnly // exposed via setupNoCleanup below
 	return o, emitter, teardown
+}
+
+// setupNoCleanup is like setup but returns a teardown that does NOT delete
+// Jobs, for tests that simulate multi-orchestrator takeover against shared
+// cluster state.
+func setupNoCleanup(t *testing.T) (*Orchestrator, *job.CallbackEmitter, func()) {
+	t.Helper()
+	o, emitter, teardown := setup(t)
+	_ = teardown
+	closeOnly := func() { o.Close() }
+	return o, emitter, closeOnly
 }
 
 func nsObject(name string) *corev1.Namespace {
@@ -215,6 +231,196 @@ func TestIntegration_NonZeroExit(t *testing.T) {
 	testutil.MustWaitFor(t, func() bool {
 		return events.has(job.CallbackTypeStart) && events.has(job.CallbackTypeExit)
 	}, testutil.WithTimeout(10*time.Second))
+}
+
+// --- rolling deployment ---
+
+// TestIntegration_RollingHandoff simulates a rolling orchestrator deploy: o1
+// starts and begins a long-running job, o1 graceful-shutdowns mid-job, a fresh
+// o2 starts against the same namespace, and we verify the Exit callback still
+// lands (emitted by o2's watcher after its informer picks up the in-flight Pod).
+func TestIntegration_RollingHandoff(t *testing.T) {
+	events, callbackURL, closeCallback := startCallbackServer(t)
+	defer closeCallback()
+
+	o1, emitter1, closeO1 := setupNoCleanup(t)
+	d1 := wireDispatcher(t, emitter1)
+
+	jobID := fmt.Sprintf("rolling-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:             jobID,
+		Image:          "alpine:3.20",
+		Command:        "echo phase-1 && sleep 10 && echo phase-2",
+		TimeoutSeconds: 60,
+		Workspace:      "/workspace",
+		Callback:       &job.Callback{URL: callbackURL},
+	}
+	if err := o1.Run(t.Context(), req); err != nil {
+		t.Fatalf("o1 Run: %v", err)
+	}
+
+	// Wait for Running on o1.
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o1.Status(t.Context(), jobID)
+		return err == nil && s.State == job.StateRunning
+	}, testutil.WithTimeout(30*time.Second), testutil.WithInterval(500*time.Millisecond))
+
+	testutil.MustWaitFor(t, func() bool {
+		return events.has(job.CallbackTypeStart)
+	}, testutil.WithTimeout(5*time.Second))
+
+	// Graceful shutdown of o1 — leaves the Job behind.
+	closeO1()
+	d1.Close(context.Background())
+
+	// Fresh orchestrator takes over. teardown2 deletes the Job at the end.
+	o2, emitter2, teardown2 := setup(t)
+	defer teardown2()
+	d2 := wireDispatcher(t, emitter2)
+	defer d2.Close(context.Background())
+
+	// Job should complete; o2's informer sees the in-flight Pod and picks up
+	// where the state machine left off.
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o2.Status(t.Context(), jobID)
+		return err == nil && (s.State == job.StateCompleted || s.State == job.StateFailed)
+	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(time.Second))
+
+	s, err := o2.Status(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("final Status: %v", err)
+	}
+	if s.State != job.StateCompleted {
+		t.Errorf("state: want completed, got %s", s.State)
+	}
+
+	// Exit callback must land on the server, emitted by o2.
+	testutil.MustWaitFor(t, func() bool {
+		return events.has(job.CallbackTypeExit)
+	}, testutil.WithTimeout(10*time.Second))
+}
+
+// --- mid-job leader failover ---
+
+// TestIntegration_LeaderFailoverMidJob runs two orchestrators with leader
+// election enabled, sharing the cluster. The leader runs a job; we kill the
+// leader mid-flight and verify the surviving replica takes over and delivers
+// the Exit callback when the job finishes.
+func TestIntegration_LeaderFailoverMidJob(t *testing.T) {
+	events, callbackURL, closeCallback := startCallbackServer(t)
+	defer closeCallback()
+
+	emitter := job.NewCallbackEmitter()
+	d := wireDispatcher(t, emitter)
+	defer d.Close(context.Background())
+
+	mkOrch := func(id string) *Orchestrator {
+		factory := NewOrchestrator(t.Context(), Config{
+			SidecarImage:           sidecarImage,
+			Context:                "kind-orchestrator-dev",
+			Namespace:              testNamespace,
+			SidecarImagePullPolicy: "Never",
+			LeaderElection: LeaderElectionConfig{
+				Enabled:       true,
+				LeaseName:     "test-handoff-lease",
+				Identity:      id,
+				LeaseDuration: 2 * time.Second,
+				RenewDeadline: 1 * time.Second,
+				RetryPeriod:   200 * time.Millisecond,
+			},
+		})
+		orch, err := factory(emitter)
+		if err != nil {
+			t.Fatalf("NewOrchestrator(%s): %v", id, err)
+		}
+		return orch.(*Orchestrator)
+	}
+
+	o1 := mkOrch("replica-1")
+	o2 := mkOrch("replica-2")
+
+	// Ensure namespace + job-sidecar SA exist (normally setup() handles it).
+	ctx := t.Context()
+	_, err := o1.client.CoreV1().Namespaces().Get(ctx, testNamespace, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, _ = o1.client.CoreV1().Namespaces().Create(ctx, nsObject(testNamespace), metav1.CreateOptions{})
+	}
+	_, err = o1.client.CoreV1().ServiceAccounts(testNamespace).Get(ctx, "job-sidecar", metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, _ = o1.client.CoreV1().ServiceAccounts(testNamespace).Create(ctx, &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "job-sidecar", Namespace: testNamespace},
+		}, metav1.CreateOptions{})
+	}
+
+	if err := o1.Start(ctx); err != nil {
+		t.Fatalf("o1.Start: %v", err)
+	}
+	if err := o2.Start(ctx); err != nil {
+		t.Fatalf("o2.Start: %v", err)
+	}
+	defer func() {
+		o1.Close()
+		o2.Close()
+		prop := metav1.DeletePropagationBackground
+		_ = o1.client.BatchV1().Jobs(testNamespace).DeleteCollection(
+			context.Background(),
+			metav1.DeleteOptions{PropagationPolicy: &prop},
+			metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + ManagedByValue},
+		)
+	}()
+
+	// Wait until the lease has been claimed so we know a leader is live.
+	testutil.MustWaitFor(t, func() bool {
+		lease, err := o1.client.CoordinationV1().Leases(testNamespace).Get(ctx, "test-handoff-lease", metav1.GetOptions{})
+		return err == nil && lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity != ""
+	}, testutil.WithTimeout(10*time.Second))
+
+	lease, _ := o1.client.CoordinationV1().Leases(testNamespace).Get(ctx, "test-handoff-lease", metav1.GetOptions{})
+	leaderID := *lease.Spec.HolderIdentity
+	t.Logf("initial leader: %s", leaderID)
+
+	// Either replica can accept Run (it's stateless). Use o1.
+	jobID := fmt.Sprintf("failover-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:             jobID,
+		Image:          "alpine:3.20",
+		Command:        "echo phase-1 && sleep 8 && echo phase-2",
+		TimeoutSeconds: 60,
+		Workspace:      "/workspace",
+		Callback:       &job.Callback{URL: callbackURL},
+	}
+	if err := o1.Run(ctx, req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Wait for Started — confirms the current leader's watcher is emitting.
+	testutil.MustWaitFor(t, func() bool {
+		return events.has(job.CallbackTypeStart)
+	}, testutil.WithTimeout(30*time.Second))
+
+	// Kill the leader. Close releases the lease (ReleaseOnCancel=true).
+	if leaderID == "replica-1" {
+		o1.Close()
+	} else {
+		o2.Close()
+	}
+
+	// Wait for lease to transfer.
+	testutil.MustWaitFor(t, func() bool {
+		lease, err := o2.client.CoordinationV1().Leases(testNamespace).Get(ctx, "test-handoff-lease", metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		if lease.Spec.HolderIdentity == nil {
+			return false
+		}
+		return *lease.Spec.HolderIdentity != leaderID
+	}, testutil.WithTimeout(15*time.Second))
+
+	// The surviving replica must observe the job completing and emit Exit.
+	testutil.MustWaitFor(t, func() bool {
+		return events.has(job.CallbackTypeExit)
+	}, testutil.WithTimeout(30*time.Second))
 }
 
 // --- stop ---
