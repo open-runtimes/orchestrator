@@ -2,44 +2,23 @@ package kubernetes
 
 import (
 	"context"
-	"orchestrator/internal/testutil"
 	"orchestrator/pkg/job"
-	"sync"
 	"testing"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// scriptedWatcher emits a fixed signal sequence for every Watch call and returns.
-// Each call is independent, so the same instance is safe to reuse across jobs.
-type scriptedWatcher struct {
-	signals []job.Signal
-}
+// noopWatcher satisfies LifecycleWatcher without doing any work; used by tests
+// that exercise the orchestrator's HTTP surface (Run/Stop/Status/List) rather
+// than lifecycle events. The watcher's own tests live in watcher_test.go.
+type noopWatcher struct{}
 
-func newScriptedWatcher(signals ...job.Signal) *scriptedWatcher {
-	return &scriptedWatcher{signals: signals}
-}
-
-func (s *scriptedWatcher) Watch(ctx context.Context, _, _ string, emit func(job.Signal)) {
-	for _, sig := range s.signals {
-		if ctx.Err() != nil {
-			return
-		}
-		emit(sig)
-	}
-}
-
-// blockingWatcher blocks each Watch call on ctx.Done. Used when a test does not
-// care about signals but does care that the watcher is alive while the job lives.
-type blockingWatcher struct{}
-
-func (blockingWatcher) Watch(ctx context.Context, _, _ string, _ func(job.Signal)) {
-	<-ctx.Done()
-}
+func (noopWatcher) Start(ctx context.Context) { <-ctx.Done() }
 
 func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator, *fake.Clientset) {
 	t.Helper()
@@ -59,7 +38,6 @@ func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator,
 		emitter:      job.NewCallbackEmitter(),
 		watcher:      watcher,
 		statusCache:  newStatusCache(),
-		watchers:     make(map[string]*watcherEntry),
 	}
 	return o, cs
 }
@@ -68,7 +46,7 @@ func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator,
 
 func TestRun_CreatesKubernetesJob(t *testing.T) {
 	t.Parallel()
-	o, cs := newTestOrchestrator(t, blockingWatcher{})
+	o, cs := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 
 	req := &job.Request{
@@ -104,7 +82,7 @@ func TestRun_CreatesKubernetesJob(t *testing.T) {
 
 func TestRun_DuplicateIDConflict(t *testing.T) {
 	t.Parallel()
-	o, _ := newTestOrchestrator(t, blockingWatcher{})
+	o, _ := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 
 	req := &job.Request{ID: "dup", Image: "alpine:latest"}
@@ -118,7 +96,7 @@ func TestRun_DuplicateIDConflict(t *testing.T) {
 
 func TestStop_DeletesJobAndReleases(t *testing.T) {
 	t.Parallel()
-	o, cs := newTestOrchestrator(t, blockingWatcher{})
+	o, cs := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 
 	req := &job.Request{ID: "stop-me", Image: "alpine:latest"}
@@ -141,7 +119,7 @@ func TestStop_DeletesJobAndReleases(t *testing.T) {
 
 func TestStop_UnknownJob(t *testing.T) {
 	t.Parallel()
-	o, _ := newTestOrchestrator(t, blockingWatcher{})
+	o, _ := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 
 	if err := o.Stop(context.Background(), "ghost"); err == nil {
@@ -149,218 +127,122 @@ func TestStop_UnknownJob(t *testing.T) {
 	}
 }
 
-// --- Signal application through the store ---
+// --- Status derivation against real K8s objects in the fake clientset ---
 
-func TestRun_AppliesStartedAndExited(t *testing.T) {
+func TestStatus_DerivesCompleted(t *testing.T) {
 	t.Parallel()
-	// Capture callback events emitted by the orchestrator's pipeline.
-	emitter := job.NewCallbackEmitter()
-	var mu sync.Mutex
-	var events []string
-	emitter.Register(func(e *job.CallbackEnvelope) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, e.Payload.Type)
-	})
-
-	o := orchestratorWithEmitter(t, newScriptedWatcher(
-		job.Started{},
-		job.Exited{ExitCode: 0, Duration: time.Second},
-	), emitter)
-	defer o.Close()
-
-	if err := o.Run(context.Background(), &job.Request{
-		ID:       "flow",
-		Image:    "alpine:latest",
-		Callback: &job.Callback{URL: "https://cb.example"},
-	}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	testutil.MustWaitFor(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(events) >= 2
-	}, testutil.WithTimeout(5*time.Second))
-
-	mu.Lock()
-	defer mu.Unlock()
-	if got := events; len(got) < 2 || got[0] != job.CallbackTypeStart || got[1] != job.CallbackTypeExit {
-		t.Errorf("events: want [start, exit], got %v", got)
-	}
-}
-
-func TestRun_FailedBeforeStart(t *testing.T) {
-	t.Parallel()
-	emitter := job.NewCallbackEmitter()
-	var mu sync.Mutex
-	var events []string
-	emitter.Register(func(e *job.CallbackEnvelope) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, e.Payload.Type)
-	})
-
-	o := orchestratorWithEmitter(t, newScriptedWatcher(
-		job.Failed{Reason: "image pull"},
-	), emitter)
-	defer o.Close()
-
-	if err := o.Run(context.Background(), &job.Request{
-		ID:       "fail-early",
-		Image:    "alpine:latest",
-		Callback: &job.Callback{URL: "https://cb.example"},
-	}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	testutil.MustWaitFor(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(events) >= 1
-	}, testutil.WithTimeout(5*time.Second))
-
-	mu.Lock()
-	defer mu.Unlock()
-	// Failed maps to the exit event via EmitCallback.
-	if got := events; len(got) < 1 || got[0] != job.CallbackTypeExit {
-		t.Errorf("events: want [exit] from Failed, got %v", got)
-	}
-}
-
-// orchestratorWithEmitter builds a test Orchestrator wired to the supplied
-// emitter, so tests can observe the callback pipeline directly.
-func orchestratorWithEmitter(t *testing.T, watcher LifecycleWatcher, emitter *job.CallbackEmitter) *Orchestrator {
-	t.Helper()
-	cs := fake.NewClientset()
-	cfg := OrchestratorConfig{
-		Namespace:                     "orchestrator",
-		ServiceAccount:                "job-sidecar",
-		JobRetention:                  15 * time.Minute,
-		ArtifactEndpoint:              "http://jobs-service.orchestrator.svc:8080",
-		TerminationGracePeriodSeconds: 600,
-	}
-	return &Orchestrator{
-		client:       cs,
-		namespace:    cfg.Namespace,
-		sidecarImage: "sidecar:latest",
-		cfg:          cfg,
-		emitter:      emitter,
-		watcher:      watcher,
-		statusCache:  newStatusCache(),
-		watchers:     make(map[string]*watcherEntry),
-	}
-}
-
-// --- Reconciliation ---
-
-func TestReconcile_ResumesRunning(t *testing.T) {
-	t.Parallel()
-	cs := fake.NewClientset(
-		&batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "job-resume-1",
-				Namespace: "orchestrator",
-				Labels: map[string]string{
-					LabelManagedBy: ManagedByValue,
-					LabelJobID:     "resume-1",
-				},
-			},
-			Status: batchv1.JobStatus{Active: 1},
-		},
-	)
-	o := &Orchestrator{
-		client:      cs,
-		namespace:   "orchestrator",
-		cfg:         OrchestratorConfig{Namespace: "orchestrator"},
-		emitter:     job.NewCallbackEmitter(),
-		watcher:     newScriptedWatcher(job.Started{}),
-		statusCache: newStatusCache(),
-		watchers:    make(map[string]*watcherEntry),
-	}
-	defer o.Close()
-
-	if err := o.reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-
-	// Status derives from the K8s Job. Job.Status.Active=1 with no Pod present
-	// in the fake client renders as Accepted (real K8s would have a Pod in
-	// Running by this point; fake client doesn't run the Job controller).
-	status, err := o.Status(context.Background(), "resume-1")
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if status.State != job.StateAccepted {
-		t.Errorf("state: want accepted (no pod in fake client), got %s", status.State)
-	}
-}
-
-func TestReconcile_MarksTerminalCompleted(t *testing.T) {
-	t.Parallel()
-	o := reconcileHarness(t, &batchv1.Job{
+	cs := fake.NewClientset(&batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "job-done-1",
+			Name:      "job-done",
 			Namespace: "orchestrator",
 			Labels: map[string]string{
 				LabelManagedBy: ManagedByValue,
-				LabelJobID:     "done-1",
+				LabelJobID:     "done",
 			},
 		},
 		Status: batchv1.JobStatus{Succeeded: 1},
 	})
+	o := orchestratorWithClient(cs)
 	defer o.Close()
 
-	if err := o.reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	status, err := o.Status(context.Background(), "done-1")
+	status, err := o.Status(context.Background(), "done")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if status.State != job.StateCompleted {
 		t.Errorf("state: want completed, got %s", status.State)
 	}
+	if status.ExitCode == nil || *status.ExitCode != 0 {
+		t.Errorf("exit code: want 0, got %v", status.ExitCode)
+	}
 }
 
-func TestReconcile_MarksTerminalFailed(t *testing.T) {
+func TestStatus_DerivesFailedWithPodReason(t *testing.T) {
 	t.Parallel()
-	o := reconcileHarness(t, &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "job-bad-1",
-			Namespace: "orchestrator",
-			Labels: map[string]string{
-				LabelManagedBy: ManagedByValue,
-				LabelJobID:     "bad-1",
+	cs := fake.NewClientset(
+		&batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "job-bad",
+				Namespace: "orchestrator",
+				Labels: map[string]string{
+					LabelManagedBy: ManagedByValue,
+					LabelJobID:     "bad",
+				},
+			},
+			Status: batchv1.JobStatus{Failed: 1},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "job-bad-xyz",
+				Namespace: "orchestrator",
+				Labels: map[string]string{
+					LabelJobID: "bad",
+				},
+			},
+			Status: corev1.PodStatus{
+				ContainerStatuses: []corev1.ContainerStatus{
+					{
+						Name: ContainerWorker,
+						State: corev1.ContainerState{
+							Terminated: &corev1.ContainerStateTerminated{
+								ExitCode: 137,
+								Reason:   "OOMKilled",
+							},
+						},
+					},
+				},
 			},
 		},
-		Status: batchv1.JobStatus{Failed: 1},
-	})
+	)
+	o := orchestratorWithClient(cs)
 	defer o.Close()
 
-	if err := o.reconcile(context.Background()); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	status, err := o.Status(context.Background(), "bad-1")
+	status, err := o.Status(context.Background(), "bad")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if status.State != job.StateFailed {
 		t.Errorf("state: want failed, got %s", status.State)
 	}
+	if status.ExitCode == nil || *status.ExitCode != 137 {
+		t.Errorf("exit code: want 137, got %v", status.ExitCode)
+	}
+	if status.Error != "OOMKilled" {
+		t.Errorf("error: want OOMKilled, got %q", status.Error)
+	}
 }
 
-func reconcileHarness(t *testing.T, seed *batchv1.Job) *Orchestrator {
-	t.Helper()
-	cs := fake.NewClientset(seed)
-	return &Orchestrator{
-		client:      cs,
-		namespace:   "orchestrator",
-		cfg:         OrchestratorConfig{Namespace: "orchestrator"},
-		emitter:     job.NewCallbackEmitter(),
-		watcher:     blockingWatcher{},
-		statusCache: newStatusCache(),
-		watchers:    make(map[string]*watcherEntry),
+func TestStatus_CacheHit(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset(&batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "job-cached",
+			Namespace: "orchestrator",
+			Labels: map[string]string{
+				LabelManagedBy: ManagedByValue,
+				LabelJobID:     "cached",
+			},
+		},
+		Status: batchv1.JobStatus{Succeeded: 1},
+	})
+	o := orchestratorWithClient(cs)
+	defer o.Close()
+
+	first, err := o.Status(context.Background(), "cached")
+	if err != nil {
+		t.Fatalf("first Status: %v", err)
+	}
+
+	// Delete the underlying Job — a fresh Status would 404, but the cache
+	// should still return the prior completed result within the TTL window.
+	_ = cs.BatchV1().Jobs("orchestrator").Delete(context.Background(), "job-cached", metav1.DeleteOptions{})
+
+	second, err := o.Status(context.Background(), "cached")
+	if err != nil {
+		t.Fatalf("second Status: %v", err)
+	}
+	if first.State != second.State {
+		t.Errorf("cache miss: first=%s second=%s", first.State, second.State)
 	}
 }
 
@@ -368,7 +250,7 @@ func reconcileHarness(t *testing.T, seed *batchv1.Job) *Orchestrator {
 
 func TestList_ReturnsAllEntries(t *testing.T) {
 	t.Parallel()
-	o, _ := newTestOrchestrator(t, blockingWatcher{})
+	o, _ := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 
 	for _, id := range []string{"a", "b", "c"} {
@@ -388,9 +270,22 @@ func TestList_ReturnsAllEntries(t *testing.T) {
 
 func TestReady_ContactsAPIServer(t *testing.T) {
 	t.Parallel()
-	o, _ := newTestOrchestrator(t, blockingWatcher{})
+	o, _ := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 	if err := o.Ready(context.Background()); err != nil {
 		t.Errorf("Ready: %v", err)
+	}
+}
+
+// --- helpers ---
+
+func orchestratorWithClient(cs *fake.Clientset) *Orchestrator {
+	return &Orchestrator{
+		client:      cs,
+		namespace:   "orchestrator",
+		cfg:         OrchestratorConfig{Namespace: "orchestrator"},
+		emitter:     job.NewCallbackEmitter(),
+		watcher:     noopWatcher{},
+		statusCache: newStatusCache(),
 	}
 }

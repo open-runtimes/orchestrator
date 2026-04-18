@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/pkg/job"
+	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,13 +17,18 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/leaderelection"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
-// Orchestrator implements job.Orchestrator using Kubernetes. No in-memory
-// state is authoritative: Status/List derive from the K8s API and dedup of
-// concurrent Run calls is enforced by K8s name uniqueness. The only local
-// state is a map of active watcher cancellation functions used so Close and
-// Stop can tear watchers down — that map is not consulted for correctness.
+// Orchestrator implements job.Orchestrator using Kubernetes. It is HA-ready:
+//
+//   - Status / List / Run / Stop are stateless against the K8s API, so any
+//     replica can serve any request. Dedup of concurrent Runs is handled by
+//     K8s Job name uniqueness (AlreadyExists).
+//   - The lifecycle watcher (which tails Pods and emits callbacks) is
+//     leader-gated via a coordination.k8s.io Lease. Exactly one replica
+//     watches and emits — no duplicate callbacks across replicas.
 type Orchestrator struct {
 	client       kubernetes.Interface
 	namespace    string
@@ -33,18 +38,9 @@ type Orchestrator struct {
 	watcher      LifecycleWatcher
 	statusCache  *statusCache
 
-	watchersMu   sync.Mutex
-	watchers     map[string]*watcherEntry
-	watcherIDGen atomic.Uint64
-	watchWg      sync.WaitGroup
-}
-
-// watcherEntry pairs a context cancel with a unique id so that concurrent
-// spawnWatcher/stopWatcher calls for the same jobID can tell whether a map
-// entry still belongs to them when tearing down on goroutine exit.
-type watcherEntry struct {
-	cancel context.CancelFunc
-	id     uint64
+	mu         sync.Mutex
+	cancelTerm context.CancelFunc // cancels the current leadership term (or single-replica run)
+	termDone   chan struct{}      // closed when the current term fully winds down
 }
 
 // Config holds configuration for the Kubernetes orchestrator.
@@ -60,6 +56,7 @@ type Config struct {
 	MaintenanceInterval           time.Duration
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64
+	LeaderElection                LeaderElectionConfig
 }
 
 // NewOrchestrator returns an OrchestratorFactory that creates a Kubernetes orchestrator.
@@ -92,6 +89,10 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			retention = 15 * time.Minute
 		}
 
+		if cfg.LeaderElection.Enabled {
+			applyLeaderDefaults(&cfg.LeaderElection)
+		}
+
 		ocfg := OrchestratorConfig{
 			Namespace:                     ns,
 			ServiceAccount:                sa,
@@ -101,6 +102,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			JobRetention:                  retention,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: grace,
+			LeaderElection:                cfg.LeaderElection,
 		}
 
 		return &Orchestrator{
@@ -109,10 +111,33 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			sidecarImage: cfg.SidecarImage,
 			cfg:          ocfg,
 			emitter:      emitter,
-			watcher:      newK8sLifecycleWatcher(cs, ns),
+			watcher:      newK8sLifecycleWatcher(cs, ns, emitter),
 			statusCache:  newStatusCache(),
-			watchers:     make(map[string]*watcherEntry),
 		}, nil
+	}
+}
+
+// applyLeaderDefaults fills in sensible defaults for leader-election timing
+// and identity, matching the norms from K8s itself (15s/10s/2s).
+func applyLeaderDefaults(cfg *LeaderElectionConfig) {
+	if cfg.LeaseName == "" {
+		cfg.LeaseName = "jobs-service-leader"
+	}
+	if cfg.Identity == "" {
+		if hn, err := os.Hostname(); err == nil {
+			cfg.Identity = hn
+		} else {
+			cfg.Identity = fmt.Sprintf("unknown-%d", time.Now().UnixNano())
+		}
+	}
+	if cfg.LeaseDuration <= 0 {
+		cfg.LeaseDuration = 15 * time.Second
+	}
+	if cfg.RenewDeadline <= 0 {
+		cfg.RenewDeadline = 10 * time.Second
+	}
+	if cfg.RetryPeriod <= 0 {
+		cfg.RetryPeriod = 2 * time.Second
 	}
 }
 
@@ -130,49 +155,82 @@ func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
 }
 
-// Start resumes watching any pre-existing non-terminal Jobs so callbacks keep
-// flowing after a service restart. There's no maintenance loop: K8s
-// ttlSecondsAfterFinished on the Job spec handles terminal-Job GC centrally.
+// Start begins the lifecycle watcher. With leader election enabled, only the
+// elected leader runs the watcher; non-leaders block trying to acquire the
+// lease. With leader election disabled (single-replica mode), the watcher
+// runs unconditionally in the background.
+//
+// HTTP API handlers (Run/Stop/Status/List) remain active on all replicas
+// regardless of leadership state — Kubernetes is the source of truth.
 func (o *Orchestrator) Start(ctx context.Context) error {
-	if err := o.reconcile(ctx); err != nil {
-		slog.Warn("Failed to reconcile jobs", "error", err)
-	}
+	termCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	o.mu.Lock()
+	o.cancelTerm = cancel
+	o.termDone = done
+	o.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		if o.cfg.LeaderElection.Enabled {
+			o.runLeaderElection(termCtx)
+		} else {
+			o.watcher.Start(termCtx)
+		}
+	}()
 	return nil
 }
 
-// reconcile lists existing managed Jobs and spawns a watcher for each
-// non-terminal one so lifecycle callbacks resume after a service restart.
-func (o *Orchestrator) reconcile(ctx context.Context) error {
-	logger := slog.With("component", "k8s.reconcile")
-	jobs, err := o.client.BatchV1().Jobs(o.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: LabelManagedBy + "=" + ManagedByValue,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to list jobs: %w", err)
-	}
-
-	var resumed int
-	for i := range jobs.Items {
-		j := &jobs.Items[i]
-		if j.Status.Succeeded > 0 || j.Status.Failed > 0 {
-			continue
+// runLeaderElection loops so that if RunOrDie returns (lease lost or ctx
+// cancelled but not released), we retry until ctx is truly cancelled. The
+// inner RunOrDie call drives watcher.Start via OnStartedLeading.
+func (o *Orchestrator) runLeaderElection(ctx context.Context) {
+	logger := slog.With("component", "k8s.leaderelection", "identity", o.cfg.LeaderElection.Identity)
+	for {
+		if ctx.Err() != nil {
+			return
 		}
-		jobID := j.Labels[LabelJobID]
-		if jobID == "" {
-			continue
+		lock := &resourcelock.LeaseLock{
+			LeaseMeta: metav1.ObjectMeta{
+				Name:      o.cfg.LeaderElection.LeaseName,
+				Namespace: o.namespace,
+			},
+			Client: o.client.CoordinationV1(),
+			LockConfig: resourcelock.ResourceLockConfig{
+				Identity: o.cfg.LeaderElection.Identity,
+			},
 		}
-		o.spawnWatcher(watchConfigFromJob(j))
-		resumed++
+		leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+			Lock:            lock,
+			ReleaseOnCancel: true,
+			LeaseDuration:   o.cfg.LeaderElection.LeaseDuration,
+			RenewDeadline:   o.cfg.LeaderElection.RenewDeadline,
+			RetryPeriod:     o.cfg.LeaderElection.RetryPeriod,
+			Callbacks: leaderelection.LeaderCallbacks{
+				OnStartedLeading: func(leaderCtx context.Context) {
+					logger.Info("Acquired leadership; starting watcher")
+					o.watcher.Start(leaderCtx)
+					logger.Info("Watcher stopped; leadership term ended")
+				},
+				OnStoppedLeading: func() {
+					logger.Info("Lost leadership")
+				},
+				OnNewLeader: func(identity string) {
+					if identity != o.cfg.LeaderElection.Identity {
+						logger.Info("New leader elected", "leader", identity)
+					}
+				},
+			},
+		})
 	}
-
-	logger.Info("Reconciliation complete", "resumed", resumed, "total", len(jobs.Items))
-	return nil
 }
 
-// Run creates a batch/v1.Job and spawns a local lifecycle watcher. Dedup on
-// concurrent creates is enforced by K8s name uniqueness: two replicas racing
-// to create the same jobID will see one succeed and the other receive an
-// AlreadyExists which we translate into a Conflict error.
+// Run creates a batch/v1.Job. Dedup on concurrent creates is enforced by K8s
+// name uniqueness: two replicas racing to create the same jobID will see one
+// succeed and the other receive an AlreadyExists translated to a Conflict.
+// The job's watcher will be spawned automatically by the leader's informer
+// when K8s creates the owning Pod.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	jobSpec := buildJob(req, o.cfg, o.sidecarImage)
 	if _, err := o.client.BatchV1().Jobs(o.namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
@@ -181,12 +239,12 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 		}
 		return apperrors.Internal("kubernetes.createJob", err)
 	}
-	o.spawnWatcher(watchConfigFromRequest(req))
 	return nil
 }
 
 // Stop deletes the K8s Job (cascades to its Pod). Idempotent at the K8s layer;
-// a second call against a non-existent Job returns our NotFound error.
+// a second call against a non-existent Job returns our NotFound error. The
+// leader's watcher observes the Pod deletion and tears down its tracker.
 func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
 	prop := metav1.DeletePropagationForeground
 	err := o.client.BatchV1().Jobs(o.namespace).Delete(ctx, jobNameFor(jobID), metav1.DeleteOptions{
@@ -198,48 +256,8 @@ func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
 	if err != nil {
 		return apperrors.Internal("kubernetes.deleteJob", err)
 	}
-	o.cancelWatcher(jobID)
 	o.statusCache.invalidate(jobID)
 	return nil
-}
-
-// spawnWatcher registers and starts a watcher goroutine for jobID. If a
-// watcher is already running for this jobID (e.g. resume after reconcile
-// followed by Run), the previous one is cancelled first.
-func (o *Orchestrator) spawnWatcher(cfg *watchConfig) {
-	watchCtx, cancel := context.WithCancel(context.Background())
-	id := o.watcherIDGen.Add(1)
-	entry := &watcherEntry{cancel: cancel, id: id}
-
-	o.watchersMu.Lock()
-	if prev, ok := o.watchers[cfg.jobID]; ok {
-		prev.cancel()
-	}
-	o.watchers[cfg.jobID] = entry
-	o.watchersMu.Unlock()
-
-	o.watchWg.Go(func() {
-		defer func() {
-			o.watchersMu.Lock()
-			if cur, ok := o.watchers[cfg.jobID]; ok && cur.id == id {
-				delete(o.watchers, cfg.jobID)
-			}
-			o.watchersMu.Unlock()
-		}()
-		o.watcher.Watch(watchCtx, o.namespace, cfg.jobID, func(s job.Signal) {
-			job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
-		})
-	})
-}
-
-// cancelWatcher stops the watcher for jobID if one is running. No-op otherwise.
-func (o *Orchestrator) cancelWatcher(jobID string) {
-	o.watchersMu.Lock()
-	defer o.watchersMu.Unlock()
-	if e, ok := o.watchers[jobID]; ok {
-		e.cancel()
-		delete(o.watchers, jobID)
-	}
 }
 
 // Status returns the current state of a job, derived from the K8s Job (+ Pod
@@ -296,17 +314,21 @@ func (o *Orchestrator) Ready(ctx context.Context) error {
 	return err
 }
 
-// Close cancels all in-flight watchers and waits for their goroutines to exit.
-// Running K8s Jobs are NOT deleted — they continue independently and will be
-// picked up by the next orchestrator start via reconcile().
+// Close cancels the leader-election loop (or single-replica watcher) and
+// waits for it to wind down. Running K8s Jobs are NOT deleted — they
+// continue independently and will be picked up by the next orchestrator
+// start via the watcher's informer.
 func (o *Orchestrator) Close() error {
-	o.watchersMu.Lock()
-	for _, e := range o.watchers {
-		e.cancel()
+	o.mu.Lock()
+	cancel := o.cancelTerm
+	done := o.termDone
+	o.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	o.watchers = make(map[string]*watcherEntry)
-	o.watchersMu.Unlock()
-	o.watchWg.Wait()
+	if done != nil {
+		<-done
+	}
 	return nil
 }
 

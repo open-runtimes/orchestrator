@@ -60,6 +60,7 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string)
 			MaintenanceInterval:           cfg.MaintenanceInterval,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: cfg.TerminationGracePeriodSeconds,
+			LeaderElection:                cfg.LeaderElection,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)

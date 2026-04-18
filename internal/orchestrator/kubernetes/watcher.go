@@ -13,166 +13,168 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
 
-// LifecycleWatcher watches a K8s job's worker container and emits backend-agnostic
-// signals. Implementations adapt their native signals into job.Signals.
+// LifecycleWatcher observes managed-job Pods cluster-wide and emits callbacks
+// for Started / Exited / Failed / LogLine signals. It is self-contained: the
+// orchestrator's only interaction is Start(ctx) — tracker lifecycle, callback
+// emission, and log streaming are all handled internally.
+//
+// Start blocks until ctx cancels, at which point all in-flight trackers are
+// torn down and the informer stops. A single watcher instance is reusable via
+// repeated Start calls with fresh contexts (each call is a fresh leadership
+// term in the leader-elected deployment).
 type LifecycleWatcher interface {
-	// Watch blocks until the job completes or ctx is cancelled, calling emit
-	// for each signal: optionally Started, then Exited or Failed.
-	// LogLine signals may be interleaved after Started.
-	Watch(ctx context.Context, namespace, jobID string, emit func(job.Signal))
+	Start(ctx context.Context)
 }
 
-// k8sLifecycleWatcher uses a single SharedInformer over managed pods in the
-// configured namespace and dispatches events to per-job trackers. This avoids
-// opening a separate Watch stream per running job.
+// k8sLifecycleWatcher runs a SharedInformer over Pods labelled as managed-by
+// jobs-service and materialises a jobTracker for each unique job.id. Trackers
+// drive the per-job state machine and emit callbacks directly via the shared
+// emitter.
 type k8sLifecycleWatcher struct {
 	client    kubernetes.Interface
 	namespace string
-
-	startOnce sync.Once
-	factory   informers.SharedInformerFactory
-	synced    chan struct{}
+	emitter   *job.CallbackEmitter
 
 	mu       sync.Mutex
 	trackers map[string]*jobTracker
 }
 
-func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string) *k8sLifecycleWatcher {
+func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter) *k8sLifecycleWatcher {
 	return &k8sLifecycleWatcher{
 		client:    client,
 		namespace: namespace,
+		emitter:   emitter,
 		trackers:  make(map[string]*jobTracker),
-		synced:    make(chan struct{}),
 	}
 }
 
-// start spins up the SharedInformer on first use. Safe to call from many
-// goroutines; only the first call does the work.
-func (w *k8sLifecycleWatcher) start(ctx context.Context) {
-	w.startOnce.Do(func() {
-		labelSelector := LabelManagedBy + "=" + ManagedByValue
-		factory := informers.NewSharedInformerFactoryWithOptions(
-			w.client,
-			30*time.Second,
-			informers.WithNamespace(w.namespace),
-			informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
-				opts.LabelSelector = labelSelector
-			}),
-		)
-		w.factory = factory
+// Start runs the informer until ctx cancels, then tears down all trackers.
+// Safe to call repeatedly (e.g. on each leader-acquire) because a new
+// informer factory is built per call.
+func (w *k8sLifecycleWatcher) Start(ctx context.Context) {
+	labelSelector := LabelManagedBy + "=" + ManagedByValue
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		w.client,
+		30*time.Second,
+		informers.WithNamespace(w.namespace),
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			opts.LabelSelector = labelSelector
+		}),
+	)
 
-		informer := factory.Core().V1().Pods().Informer()
-		_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj any) {
-				if pod, ok := obj.(*corev1.Pod); ok {
-					w.dispatch(ctx, pod, false)
-				}
-			},
-			UpdateFunc: func(_, newObj any) {
-				if pod, ok := newObj.(*corev1.Pod); ok {
-					w.dispatch(ctx, pod, false)
-				}
-			},
-			DeleteFunc: func(obj any) {
-				if pod, ok := obj.(*corev1.Pod); ok {
-					w.dispatch(ctx, pod, true)
-				}
-			},
-		})
-
-		stopCh := make(chan struct{})
-		go func() {
-			<-ctx.Done()
-			close(stopCh)
-		}()
-		factory.Start(stopCh)
-		factory.WaitForCacheSync(stopCh)
-		close(w.synced)
+	informer := factory.Core().V1().Pods().Informer()
+	_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			if pod, ok := obj.(*corev1.Pod); ok {
+				w.handle(ctx, pod, false)
+			}
+		},
+		UpdateFunc: func(_, newObj any) {
+			if pod, ok := newObj.(*corev1.Pod); ok {
+				w.handle(ctx, pod, false)
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if pod, ok := obj.(*corev1.Pod); ok {
+				w.handle(ctx, pod, true)
+			}
+		},
 	})
+
+	stopCh := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(stopCh)
+	}()
+	factory.Start(stopCh)
+	factory.WaitForCacheSync(stopCh)
+
+	<-stopCh
+
+	// Leadership term ended (or Close called). Cancel all in-flight trackers
+	// so their log-streaming goroutines exit and no more callbacks fire.
+	w.mu.Lock()
+	for _, t := range w.trackers {
+		t.close()
+	}
+	w.trackers = make(map[string]*jobTracker)
+	w.mu.Unlock()
 }
 
-// dispatch routes a pod event to its tracker (if any).
-func (w *k8sLifecycleWatcher) dispatch(ctx context.Context, pod *corev1.Pod, deleted bool) {
+// handle routes a pod event to its tracker, creating one on first observation.
+func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, deleted bool) {
 	jobID := pod.Labels[LabelJobID]
 	if jobID == "" {
 		return
 	}
+
 	w.mu.Lock()
 	t, ok := w.trackers[jobID]
-	w.mu.Unlock()
 	if !ok {
-		return
+		if deleted {
+			// Pod deleted and we never saw it — nothing to do.
+			w.mu.Unlock()
+			return
+		}
+		t = newJobTracker(w, watchConfigFromPod(pod))
+		w.trackers[jobID] = t
 	}
+	w.mu.Unlock()
+
 	if deleted {
 		t.handleDelete()
+		w.removeTracker(jobID, t)
 		return
 	}
-	t.handleUpdate(ctx, pod)
+	if done := t.handleUpdate(ctx, pod); done {
+		w.removeTracker(jobID, t)
+	}
 }
 
-// Watch registers a tracker for jobID, replays any pod already in the informer
-// cache, and blocks until the tracker observes terminal state or ctx cancels.
-// The namespace argument is ignored; the watcher uses the namespace it was
-// configured with (all managed jobs live in that single namespace).
-func (w *k8sLifecycleWatcher) Watch(ctx context.Context, _, jobID string, emit func(job.Signal)) {
-	w.start(ctx)
-	select {
-	case <-w.synced:
-	case <-ctx.Done():
-		return
-	}
-
-	t := newJobTracker(w, jobID, emit)
-
+func (w *k8sLifecycleWatcher) removeTracker(jobID string, t *jobTracker) {
 	w.mu.Lock()
-	w.trackers[jobID] = t
-	w.mu.Unlock()
-	defer func() {
-		w.mu.Lock()
+	if cur, ok := w.trackers[jobID]; ok && cur == t {
 		delete(w.trackers, jobID)
-		w.mu.Unlock()
-		t.stopLogs()
-	}()
+	}
+	w.mu.Unlock()
+}
 
-	// Replay any pod already in the informer cache so callers entering Watch
-	// after a Pod has been observed still see the full transition history.
-	podLister := w.factory.Core().V1().Pods().Lister().Pods(w.namespace)
-	selector := labels.SelectorFromSet(map[string]string{LabelJobID: jobID})
-	if pods, err := podLister.List(selector); err == nil {
-		for _, pod := range pods {
-			t.handleUpdate(ctx, pod)
+// watchConfigFromPod derives the callback destination from a Pod's annotations
+// and labels. Mirrors watchConfigFromJob; used when the watcher first observes
+// a Pod and needs to know where to dispatch callbacks for its job.
+func watchConfigFromPod(pod *corev1.Pod) *watchConfig {
+	cfg := &watchConfig{jobID: pod.Labels[LabelJobID]}
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		if c.Name == ContainerWorker {
+			cfg.image = c.Image
+			break
 		}
 	}
-
-	select {
-	case <-ctx.Done():
-	case <-t.done:
-	}
+	cfg.dest = callbackDestFromAnnotations(pod.Annotations)
+	return cfg
 }
 
-// jobTracker owns the per-job state machine driven by pod events from the
-// shared informer. Serialized via the mutex; handleUpdate/handleDelete may be
-// called concurrently by informer goroutines.
+// jobTracker owns the per-job state machine. Events arriving via
+// handleUpdate/handleDelete drive FSM transitions and callback emission.
 type jobTracker struct {
 	watcher *k8sLifecycleWatcher
-	jobID   string
-	emit    func(job.Signal)
+	cfg     *watchConfig
 	logger  *slog.Logger
-	done    chan struct{}
 
-	mu     sync.Mutex
-	state  watcherState
-	closed bool
+	mu         sync.Mutex
+	state      trackerState
+	closed     bool
+	closedOnce sync.Once
 }
 
-// watcherState is the per-job mutable state. Guarded by jobTracker.mu.
-type watcherState struct {
+// trackerState is the per-job mutable state. Guarded by jobTracker.mu.
+type trackerState struct {
 	isStarted bool
 	isExited  bool
 	startTime time.Time
@@ -180,25 +182,27 @@ type watcherState struct {
 	logDone   chan struct{}
 }
 
-func newJobTracker(w *k8sLifecycleWatcher, jobID string, emit func(job.Signal)) *jobTracker {
+func newJobTracker(w *k8sLifecycleWatcher, cfg *watchConfig) *jobTracker {
 	return &jobTracker{
 		watcher: w,
-		jobID:   jobID,
-		emit:    emit,
-		logger:  slog.With("namespace", w.namespace, "jobId", jobID),
-		done:    make(chan struct{}),
+		cfg:     cfg,
+		logger:  slog.With("namespace", w.namespace, "jobId", cfg.jobID),
 	}
 }
 
-func (t *jobTracker) handleUpdate(ctx context.Context, pod *corev1.Pod) {
+// handleUpdate advances the state machine for a pod update. Returns true when
+// the job has reached terminal state and the tracker should be discarded.
+func (t *jobTracker) handleUpdate(ctx context.Context, pod *corev1.Pod) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		return
+		return true
 	}
-	if done := t.applyPodStateLocked(ctx, pod); done {
+	if t.applyPodStateLocked(ctx, pod) {
 		t.closeLocked()
+		return true
 	}
+	return false
 }
 
 func (t *jobTracker) handleDelete() {
@@ -213,17 +217,27 @@ func (t *jobTracker) handleDelete() {
 	t.closeLocked()
 }
 
+// close tears the tracker down; used when the watcher's context is cancelled
+// (leadership lost / orchestrator closed).
+func (t *jobTracker) close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closeLocked()
+}
+
 func (t *jobTracker) closeLocked() {
-	if t.closed {
-		return
-	}
-	t.closed = true
-	close(t.done)
+	t.closedOnce.Do(func() {
+		t.closed = true
+		t.stopLogsLocked()
+	})
+}
+
+func (t *jobTracker) emit(s job.Signal) {
+	job.EmitCallback(t.watcher.emitter, t.cfg.jobID, t.cfg.image, t.cfg.dest, s)
 }
 
 // applyPodStateLocked advances the state machine for one pod update.
-// Returns true when the job reaches terminal state and the tracker should stop.
-// Caller must hold t.mu.
+// Returns true when the job reaches terminal state. Caller must hold t.mu.
 func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) bool {
 	var worker *corev1.ContainerStatus
 	for i := range pod.Status.ContainerStatuses {
@@ -298,13 +312,6 @@ func (t *jobTracker) startLogsLocked(ctx context.Context, podName string) {
 	t.state.logDone = done
 }
 
-// stopLogs cancels log streaming if active. Public entry; acquires the mutex.
-func (t *jobTracker) stopLogs() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.stopLogsLocked()
-}
-
 func (t *jobTracker) stopLogsLocked() {
 	if t.state.logCancel == nil {
 		return
@@ -314,8 +321,6 @@ func (t *jobTracker) stopLogsLocked() {
 	t.state.logCancel = nil
 	t.state.logDone = nil
 	if done != nil {
-		// Release the mutex while waiting so log-streaming goroutines that
-		// still need to check t.state (none today, but defensive) don't deadlock.
 		t.mu.Unlock()
 		<-done
 		t.mu.Lock()
@@ -335,7 +340,6 @@ func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 	}
 	defer stream.Close()
 
-	// The K8s logs API returns a single stream; stdout/stderr are interleaved.
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var batch []string
