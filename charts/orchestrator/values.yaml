@@ -3,10 +3,12 @@
 # or apply a Namespace manifest separately.
 
 # Image for the jobs-service Deployment.
+# CI publishes ghcr.io/open-runtimes/orchestrator/jobs-service on every main push,
+# tagged with both :latest and the commit SHA (plus the semver on release tags).
 image:
   # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
   ref: ""
-  repository: ghcr.io/loks0n/orchestrator
+  repository: ghcr.io/open-runtimes/orchestrator/jobs-service
   tag: latest
   pullPolicy: IfNotPresent
 
@@ -14,7 +16,7 @@ image:
 # Passed to jobs-service via SIDECAR_IMAGE so it can stamp it into every Job spec.
 sidecarImage:
   ref: ""
-  repository: ghcr.io/loks0n/job-sidecar
+  repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
   tag: latest
 
 replicaCount: 1
