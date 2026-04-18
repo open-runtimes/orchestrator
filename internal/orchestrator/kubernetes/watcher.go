@@ -107,6 +107,10 @@ func (w *k8sLifecycleWatcher) Start(ctx context.Context) {
 }
 
 // handle routes a pod event to its tracker, creating one on first observation.
+// Trackers stay in the map after reaching terminal state (marked closed) so
+// that post-terminal Pod updates — which K8s emits routinely (status tweaks,
+// resyncs) — don't cause a new tracker to be created and the state machine to
+// replay. The tracker is only evicted when the Pod itself is deleted.
 func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, deleted bool) {
 	jobID := pod.Labels[LabelJobID]
 	if jobID == "" {
@@ -128,20 +132,14 @@ func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, delet
 
 	if deleted {
 		t.handleDelete()
-		w.removeTracker(jobID, t)
+		w.mu.Lock()
+		if cur, ok := w.trackers[jobID]; ok && cur == t {
+			delete(w.trackers, jobID)
+		}
+		w.mu.Unlock()
 		return
 	}
-	if done := t.handleUpdate(ctx, pod); done {
-		w.removeTracker(jobID, t)
-	}
-}
-
-func (w *k8sLifecycleWatcher) removeTracker(jobID string, t *jobTracker) {
-	w.mu.Lock()
-	if cur, ok := w.trackers[jobID]; ok && cur == t {
-		delete(w.trackers, jobID)
-	}
-	w.mu.Unlock()
+	t.handleUpdate(ctx, pod)
 }
 
 // watchConfigFromPod derives the callback destination from a Pod's annotations
@@ -190,19 +188,17 @@ func newJobTracker(w *k8sLifecycleWatcher, cfg *watchConfig) *jobTracker {
 	}
 }
 
-// handleUpdate advances the state machine for a pod update. Returns true when
-// the job has reached terminal state and the tracker should be discarded.
-func (t *jobTracker) handleUpdate(ctx context.Context, pod *corev1.Pod) bool {
+// handleUpdate advances the state machine for a pod update. Once terminal
+// state is reached, the tracker closes itself — subsequent calls are no-ops.
+func (t *jobTracker) handleUpdate(ctx context.Context, pod *corev1.Pod) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		return true
+		return
 	}
 	if t.applyPodStateLocked(ctx, pod) {
 		t.closeLocked()
-		return true
 	}
-	return false
 }
 
 func (t *jobTracker) handleDelete() {
@@ -274,11 +270,15 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		t.startLogsLocked(ctx, pod.Name)
 	}
 
-	// Resume path: worker already terminated when we first observe it.
+	// If we observe a Pod already in terminal state on first sight, assume a
+	// previous leader (or the previous incarnation of this process before a
+	// restart) already emitted Started + Exited callbacks. Mark the tracker
+	// finished so subsequent events on this Pod are ignored — duplicates on
+	// leader failover would otherwise double-fire the callback pipeline.
 	if !t.state.isStarted && worker.State.Terminated != nil {
 		t.state.isStarted = true
-		t.state.startTime = worker.State.Terminated.StartedAt.Time
-		t.emit(job.Started{})
+		t.state.isExited = true
+		return true
 	}
 
 	if t.state.isStarted && !t.state.isExited && worker.State.Terminated != nil {
