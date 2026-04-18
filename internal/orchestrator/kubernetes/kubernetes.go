@@ -104,7 +104,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			maintenanceInterval: maint,
 			emitter:             emitter,
 			ctrl:                job.NewMemoryStore[kubernetesHandle](),
-			watcher:             newK8sLifecycleWatcher(cs),
+			watcher:             newK8sLifecycleWatcher(cs, ns),
 		}, nil
 	}
 }
