@@ -199,3 +199,37 @@ jobs:
 
       - name: Run e2e tests
         run: go test -race -tags=e2e -timeout=10m ./...
+
+  k8s-integration:
+    needs: [lint, helm, test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: ko-build/setup-ko@v0.9
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: orchestrator-dev
+          config: hack/kind-config.yaml
+
+      - name: Build and load images into kind
+        run: |
+          KO_DOCKER_REPO=ko.local/jobs-service ko build --local --bare ./cmd/jobs-service
+          KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
+          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest --name orchestrator-dev
+
+      - name: Preload worker image
+        # Speeds up tests by avoiding kubelet pulling alpine from upstream during each run.
+        run: |
+          docker pull alpine:3.20
+          kind load docker-image alpine:3.20 --name orchestrator-dev
+
+      - name: Run K8s integration tests
+        run: go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/...
