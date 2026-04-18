@@ -1,0 +1,17 @@
+# Helm value overrides for local development (applied on top of charts/orchestrator/values.yaml).
+# Used by the Tiltfile when running against the kind-orchestrator-dev cluster.
+image:
+  repository: ko.local/jobs-service
+  tag: latest
+  pullPolicy: Never
+
+sidecarImage:
+  repository: ko.local/job-sidecar
+  tag: latest
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi

@@ -18,10 +18,27 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false # golangci-lint-action manages its own cache
 
-      - name: golangci-lint
-        run: go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8 run
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.11.4
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: helm lint charts/orchestrator
+
+      - name: Helm template (default values)
+        run: helm template orchestrator charts/orchestrator --namespace orchestrator > /dev/null
+
+      - name: Helm template (dev values)
+        run: helm template orchestrator charts/orchestrator --namespace orchestrator --values hack/dev-values.yaml > /dev/null
 
   test:
     runs-on: ubuntu-latest
@@ -58,7 +75,7 @@ jobs:
           go build -o /dev/null ./cmd/job-sidecar
 
   images:
-    needs: [lint, test, build]
+    needs: [lint, helm, test, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -100,7 +117,7 @@ jobs:
             --platform=linux/amd64,linux/arm64
 
   integration:
-    needs: [lint, test, build]
+    needs: [lint, helm, test, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +139,7 @@ jobs:
         run: go test -race -tags=integration -timeout=10m ./...
 
   e2e:
-    needs: [lint, test, build]
+    needs: [lint, helm, test, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

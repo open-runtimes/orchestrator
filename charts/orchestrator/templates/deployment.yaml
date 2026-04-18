@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orchestrator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "orchestrator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "orchestrator.serviceAccountName" . }}
+      containers:
+        - name: jobs-service
+          image: {{ include "orchestrator.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.service.apiPort }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          env:
+            - name: ORCHESTRATOR_BACKEND
+              value: kubernetes
+            - name: PORT
+              value: {{ .Values.service.apiPort | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.service.metricsPort | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: KUBE_JOB_SERVICE_ACCOUNT
+              value: {{ .Values.serviceAccount.jobSidecarName | quote }}
+            - name: SIDECAR_IMAGE
+              value: {{ include "orchestrator.sidecarImage" . | quote }}
+            - name: ARTIFACT_ENDPOINT
+              value: {{ include "orchestrator.artifactEndpoint" . | quote }}
+            - name: JOB_RETENTION
+              value: {{ .Values.orchestrator.jobRetention | quote }}
+            - name: MAINTENANCE_INTERVAL
+              value: {{ .Values.orchestrator.maintenanceInterval | quote }}
+            - name: KUBE_TERMINATION_GRACE_SECONDS
+              value: {{ .Values.orchestrator.terminationGracePeriodSeconds | quote }}
+            - name: SHUTDOWN_DRAIN_WAIT
+              value: "0s"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

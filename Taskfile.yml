@@ -3,9 +3,12 @@ version: "3"
 vars:
   GOARCH:
     sh: go env GOARCH
-  # Pin tool versions explicitly to avoid polluting go.mod
-  KO: go run github.com/google/ko@v0.18.1
-  LINT: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+  # Pinned tools installed by `task tools` into ./bin/.
+  KO: ./bin/ko
+  LINT: ./bin/golangci-lint
+  HELM: ./bin/helm
+  KIND_CLUSTER: orchestrator-dev
+  KIND_CONTEXT: kind-orchestrator-dev
 
 tasks:
   default:
@@ -13,10 +16,21 @@ tasks:
       - go run github.com/go-task/task/v3/cmd/task@v3.48.0 --list-all
     silent: true
 
+  # === Tools ===
+
+  tools:
+    desc: Install pinned ko, golangci-lint, and helm into ./bin/
+    cmds:
+      - bash hack/install-tools.sh
+    status:
+      - test -x ./bin/ko
+      - test -x ./bin/golangci-lint
+      - test -x ./bin/helm
+
   # === Development ===
 
   dev:
-    desc: Run service locally with hot reload
+    desc: Run jobs-service locally with hot reload (Docker backend)
     deps: [build-sidecar]
     env:
       SIDECAR_IMAGE: ko.local/job-sidecar:latest
@@ -26,7 +40,7 @@ tasks:
       - go run github.com/air-verse/air@latest
 
   run:
-    desc: Run service locally (no reload)
+    desc: Run jobs-service locally without reload (Docker backend)
     deps: [build-sidecar]
     env:
       SIDECAR_IMAGE: ko.local/job-sidecar:latest
@@ -45,6 +59,7 @@ tasks:
 
   build-service:
     desc: Build service image
+    deps: [tools]
     cmds:
       - KO_DOCKER_REPO=ko.local/jobs-service {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/jobs-service
     sources:
@@ -55,6 +70,7 @@ tasks:
 
   build-sidecar:
     desc: Build sidecar image
+    deps: [tools]
     cmds:
       - KO_DOCKER_REPO=ko.local/job-sidecar {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/job-sidecar
     sources:
@@ -93,18 +109,65 @@ tasks:
 
   lint:
     desc: Run linter
+    deps: [tools]
     cmds:
       - "{{.LINT}} run"
 
   fmt:
     desc: Format code
+    deps: [tools]
     cmds:
       - "{{.LINT}} run --fix"
+
+  # === Helm chart ===
+
+  helm:lint:
+    desc: Lint the orchestrator Helm chart
+    deps: [tools]
+    cmds:
+      - "{{.HELM}} lint charts/orchestrator"
+
+  helm:template:
+    desc: Render the orchestrator Helm chart with dev-values to stdout
+    deps: [tools]
+    cmds:
+      - "{{.HELM}} template orchestrator charts/orchestrator --namespace orchestrator --values hack/dev-values.yaml"
+
+  # === Kubernetes dev (kind + Tilt) ===
+  # Requires: kind on PATH, ./bin/helm installed (via `task tools`), tilt on PATH.
+  # Cluster context: kind-orchestrator-dev
+
+  kind:up:
+    desc: Create the kind dev cluster
+    cmds:
+      - kind get clusters 2>/dev/null | grep -q '^{{.KIND_CLUSTER}}$' || kind create cluster --name {{.KIND_CLUSTER}} --config hack/kind-config.yaml
+
+  kind:down:
+    desc: Delete the kind dev cluster
+    cmds:
+      - kind delete cluster --name {{.KIND_CLUSTER}}
+
+  dev:k8s:
+    desc: Live-reload K8s dev loop (tilt up against kind-orchestrator-dev)
+    deps: [kind:up, tools]
+    cmds:
+      - tilt up
+
+  k8s:logs:
+    desc: Follow jobs-service logs in the kind cluster
+    cmds:
+      - kubectl --context {{.KIND_CONTEXT}} -n orchestrator logs -f deploy/orchestrator
+
+  k8s:jobs:
+    desc: List job resources managed by the orchestrator
+    cmds:
+      - kubectl --context {{.KIND_CONTEXT}} -n orchestrator get jobs,pods -l managed-by=jobs-service
 
   # === Cleanup ===
 
   clean:
-    desc: Clean caches and built images
+    desc: Clean caches, built images, and the kind cluster
     cmds:
       - go clean -cache -testcache
       - docker rmi ko.local/jobs-service:latest ko.local/job-sidecar:latest 2>/dev/null || true
+      - kind delete cluster --name {{.KIND_CLUSTER}} 2>/dev/null || true

@@ -1,0 +1,60 @@
+# Default values for the orchestrator chart.
+# The chart does NOT create a namespace — install with `helm install -n <ns> --create-namespace`
+# or apply a Namespace manifest separately.
+
+# Image for the jobs-service Deployment.
+image:
+  # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
+  ref: ""
+  repository: ghcr.io/loks0n/orchestrator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Image used by job pods (worker workspace init + native sidecar).
+# Passed to jobs-service via SIDECAR_IMAGE so it can stamp it into every Job spec.
+sidecarImage:
+  ref: ""
+  repository: ghcr.io/loks0n/job-sidecar
+  tag: latest
+
+replicaCount: 1
+
+serviceAccount:
+  # ServiceAccount for the jobs-service Deployment itself — needs RBAC to manage Jobs+Pods.
+  create: true
+  name: ""
+  # ServiceAccount used by every job pod. Intentionally has no RoleBindings; the sidecar
+  # does not call the K8s API (it catches SIGTERM from kubelet).
+  jobSidecarCreate: true
+  jobSidecarName: job-sidecar
+
+rbac:
+  create: true
+
+service:
+  type: ClusterIP
+  apiPort: 8080
+  metricsPort: 9090
+
+# Orchestrator runtime config.
+orchestrator:
+  # Full URL the sidecar POSTs artifact reports to. Empty auto-derives from release+namespace.
+  artifactEndpoint: ""
+  jobRetention: 15m
+  maintenanceInterval: 1m
+  # How long kubelet waits for the post-sidecar to finish after sending SIGTERM.
+  terminationGracePeriodSeconds: 600
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podAnnotations: {}
+
+# Arbitrary extra env vars on the jobs-service container.
+# Each entry is a raw corev1.EnvVar (supports .value, .valueFrom, etc.).
+extraEnv: []

@@ -1,0 +1,16 @@
+# Kind cluster config for local orchestrator development.
+# K8s 1.29+ is required for native sidecar containers (restartPolicy: Always on init).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: orchestrator-dev
+nodes:
+  - role: control-plane
+    # K8s 1.30 — well within the 1.29+ native-sidecar floor.
+    image: kindest/node:v1.30.4
+    extraPortMappings:
+      # Map kind node port 30080 → localhost 8080 so curl can reach jobs-service
+      # via a NodePort (see deploy/kubernetes/service-nodeport.yaml below if wanted),
+      # or use `task k8s:port-forward` instead (preferred).
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP
