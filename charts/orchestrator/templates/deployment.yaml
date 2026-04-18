@@ -58,6 +58,22 @@ spec:
             - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
               value: {{ .Values.orchestrator.sidecarImagePullPolicy | quote }}
             {{- end }}
+            {{- if .Values.leaderElection.enabled }}
+            - name: KUBE_LEADER_ELECTION
+              value: "true"
+            - name: KUBE_LEADER_LEASE_NAME
+              value: {{ include "orchestrator.leaseName" . | quote }}
+            - name: KUBE_LEADER_IDENTITY
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KUBE_LEADER_LEASE_DURATION
+              value: {{ printf "%ds" (int .Values.leaderElection.leaseDurationSeconds) | quote }}
+            - name: KUBE_LEADER_RENEW_DEADLINE
+              value: {{ printf "%ds" (int .Values.leaderElection.renewDeadlineSeconds) | quote }}
+            - name: KUBE_LEADER_RETRY_PERIOD
+              value: {{ printf "%ds" (int .Values.leaderElection.retryPeriodSeconds) | quote }}
+            {{- end }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
             {{- with .Values.extraEnv }}

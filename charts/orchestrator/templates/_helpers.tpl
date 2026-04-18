@@ -42,6 +42,14 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.leaseName" -}}
+{{- if .Values.leaderElection.leaseName -}}
+{{- .Values.leaderElection.leaseName -}}
+{{- else -}}
+{{- printf "%s-leader" (include "orchestrator.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.labels" -}}
 app.kubernetes.io/name: {{ include "orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}

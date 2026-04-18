@@ -21,6 +21,18 @@ sidecarImage:
 
 replicaCount: 1
 
+# Leader election coordinates watcher ownership across replicas. Required when
+# replicaCount > 1 to avoid duplicate lifecycle callbacks; optional at
+# replicaCount == 1 (and cheap — the lone candidate just always wins).
+leaderElection:
+  enabled: false
+  # Empty = Helm release-derived "<fullname>-leader". Override only if you run
+  # multiple releases in the same namespace.
+  leaseName: ""
+  leaseDurationSeconds: 15
+  renewDeadlineSeconds: 10
+  retryPeriodSeconds: 2
+
 serviceAccount:
   # ServiceAccount for the jobs-service Deployment itself — needs RBAC to manage Jobs+Pods.
   create: true
