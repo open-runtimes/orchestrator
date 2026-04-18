@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"orchestrator/internal/observability"
 	"orchestrator/pkg/job"
 	"strings"
 	"sync"
@@ -39,16 +40,18 @@ type k8sLifecycleWatcher struct {
 	client    kubernetes.Interface
 	namespace string
 	emitter   *job.CallbackEmitter
+	metrics   *observability.Metrics // may be nil in tests
 
 	mu       sync.Mutex
 	trackers map[string]*jobTracker
 }
 
-func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter) *k8sLifecycleWatcher {
+func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter, metrics *observability.Metrics) *k8sLifecycleWatcher {
 	return &k8sLifecycleWatcher{
 		client:    client,
 		namespace: namespace,
 		emitter:   emitter,
+		metrics:   metrics,
 		trackers:  make(map[string]*jobTracker),
 	}
 }
@@ -99,11 +102,15 @@ func (w *k8sLifecycleWatcher) Start(ctx context.Context) {
 	// Leadership term ended (or Close called). Cancel all in-flight trackers
 	// so their log-streaming goroutines exit and no more callbacks fire.
 	w.mu.Lock()
+	dropped := int64(len(w.trackers))
 	for _, t := range w.trackers {
 		t.close()
 	}
 	w.trackers = make(map[string]*jobTracker)
 	w.mu.Unlock()
+	if dropped > 0 && w.metrics != nil {
+		w.metrics.RecordTrackerDelta(context.Background(), -dropped)
+	}
 }
 
 // handle routes a pod event to its tracker, creating one on first observation.
@@ -119,6 +126,7 @@ func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, delet
 
 	w.mu.Lock()
 	t, ok := w.trackers[jobID]
+	created := false
 	if !ok {
 		if deleted {
 			// Pod deleted and we never saw it — nothing to do.
@@ -127,16 +135,26 @@ func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, delet
 		}
 		t = newJobTracker(w, watchConfigFromPod(pod))
 		w.trackers[jobID] = t
+		created = true
 	}
 	w.mu.Unlock()
+
+	if created && w.metrics != nil {
+		w.metrics.RecordTrackerDelta(ctx, 1)
+	}
 
 	if deleted {
 		t.handleDelete()
 		w.mu.Lock()
+		removed := false
 		if cur, ok := w.trackers[jobID]; ok && cur == t {
 			delete(w.trackers, jobID)
+			removed = true
 		}
 		w.mu.Unlock()
+		if removed && w.metrics != nil {
+			w.metrics.RecordTrackerDelta(ctx, -1)
+		}
 		return
 	}
 	t.handleUpdate(ctx, pod)

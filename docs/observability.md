@@ -50,7 +50,20 @@ Metrics follow Google's Golden 4 Signals pattern: Latency, Traffic, Errors, Satu
 | Errors | `dispatcher_failed_total`, `dispatcher_dropped_total` |
 | Saturation | `dispatcher_queue_size`, `dispatcher_requeued_total` |
 
-See: `internal/observability/metrics.go`
+**Kubernetes Backend Metrics:**
+
+Only populated when `ORCHESTRATOR_BACKEND=kubernetes`; for the Docker backend these stay at zero.
+
+| Signal | Metrics |
+|--------|---------|
+| Leadership | `orchestrator_leader{identity}` gauge, `orchestrator_leader_transitions_total{identity}` counter |
+| Cache | `orchestrator_status_cache_hits_total`, `orchestrator_status_cache_misses_total` |
+| Saturation | `orchestrator_trackers` (in-flight per-job lifecycle watchers on the leader) |
+| K8s API | `k8s_api_request_duration_seconds{verb,resource}`, `k8s_api_errors_total{verb,resource,status}` |
+
+The K8s API metrics cover every call the orchestrator makes to the apiserver — `Run`/`Stop`/`Status`/`List` and the informer's list+watch — instrumented via a `rest.Config.Wrap` transport.
+
+See: `internal/observability/metrics.go`, `internal/orchestrator/kubernetes/transport.go`
 
 ### Dispatcher Statistics
 

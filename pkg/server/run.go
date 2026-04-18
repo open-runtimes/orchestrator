@@ -30,10 +30,12 @@ import (
 // shutdown.
 //
 // The factory provides the chosen backend (Docker, Kubernetes, or any other
-// implementation of job.Orchestrator). Config is loaded from environment
-// variables by the various internal packages; add attributes to slog.Default
-// before calling Run if you want them attached to every log line.
-func Run(ctx context.Context, factory job.OrchestratorFactory) error {
+// implementation of job.Orchestrator). metrics must be the same instance the
+// factory was built against so recorders on both sides share the same meter.
+// Config is loaded from environment variables by the various internal
+// packages; add attributes to slog.Default before calling Run if you want
+// them attached to every log line.
+func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observability.Metrics, metricsHandler http.Handler) error {
 	// Route client-go / leaderelection / apimachinery logs (which go through
 	// klog) via slog, so everything in the container's stdout is one ndjson
 	// stream. Must run before any klog-using library is invoked.
@@ -41,11 +43,6 @@ func Run(ctx context.Context, factory job.OrchestratorFactory) error {
 
 	svcCfg := config.LoadServiceConfig()
 	dispatcherCfg := dispatcher.LoadConfigFromEnv()
-
-	metrics, metricsHandler, err := observability.NewMetrics(ctx)
-	if err != nil {
-		return err
-	}
 
 	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
 	emitter := job.NewCallbackEmitter()

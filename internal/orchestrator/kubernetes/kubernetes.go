@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/observability"
 	"orchestrator/pkg/job"
 	"os"
 	"sync"
@@ -37,6 +38,7 @@ type Orchestrator struct {
 	emitter      *job.CallbackEmitter
 	watcher      LifecycleWatcher
 	statusCache  *statusCache
+	metrics      *observability.Metrics // may be nil in tests
 
 	mu         sync.Mutex
 	cancelTerm context.CancelFunc // cancels the current leadership term (or single-replica run)
@@ -57,6 +59,10 @@ type Config struct {
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64
 	LeaderElection                LeaderElectionConfig
+	// Metrics wires backend-specific recorders (leadership, status cache,
+	// tracker saturation, K8s API latency). Optional — when nil, recording
+	// is skipped.
+	Metrics *observability.Metrics
 }
 
 // NewOrchestrator returns an OrchestratorFactory that creates a Kubernetes orchestrator.
@@ -66,6 +72,9 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 		restCfg, err := buildRestConfig(cfg.Kubeconfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build kube config: %w", err)
+		}
+		if cfg.Metrics != nil {
+			restCfg.Wrap(newMetricsTransport(cfg.Metrics))
 		}
 		cs, err := kubernetes.NewForConfig(restCfg)
 		if err != nil {
@@ -111,8 +120,9 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			sidecarImage: cfg.SidecarImage,
 			cfg:          ocfg,
 			emitter:      emitter,
-			watcher:      newK8sLifecycleWatcher(cs, ns, emitter),
+			watcher:      newK8sLifecycleWatcher(cs, ns, emitter, cfg.Metrics),
 			statusCache:  newStatusCache(),
+			metrics:      cfg.Metrics,
 		}, nil
 	}
 }
@@ -175,8 +185,21 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		defer close(done)
 		if o.cfg.LeaderElection.Enabled {
 			o.runLeaderElection(termCtx)
-		} else {
-			o.watcher.Start(termCtx)
+			return
+		}
+		// Single-replica mode: this process is effectively always the leader,
+		// so report it as such. identity is the hostname (or pod name) so the
+		// dashboard panel still has a label to display.
+		identity, _ := os.Hostname()
+		if identity == "" {
+			identity = "single-replica"
+		}
+		if o.metrics != nil {
+			o.metrics.RecordLeadership(termCtx, identity, true)
+		}
+		o.watcher.Start(termCtx)
+		if o.metrics != nil {
+			o.metrics.RecordLeadership(context.Background(), identity, false)
 		}
 	}()
 	return nil
@@ -210,11 +233,17 @@ func (o *Orchestrator) runLeaderElection(ctx context.Context) {
 			Callbacks: leaderelection.LeaderCallbacks{
 				OnStartedLeading: func(leaderCtx context.Context) {
 					logger.Info("Acquired leadership; starting watcher")
+					if o.metrics != nil {
+						o.metrics.RecordLeadership(leaderCtx, o.cfg.LeaderElection.Identity, true)
+					}
 					o.watcher.Start(leaderCtx)
 					logger.Info("Watcher stopped; leadership term ended")
 				},
 				OnStoppedLeading: func() {
 					logger.Info("Lost leadership")
+					if o.metrics != nil {
+						o.metrics.RecordLeadership(context.Background(), o.cfg.LeaderElection.Identity, false)
+					}
 				},
 				OnNewLeader: func(identity string) {
 					if identity != o.cfg.LeaderElection.Identity {
@@ -266,8 +295,14 @@ func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
 // Results are cached for statusCacheTTL to absorb read bursts.
 func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusResponse, error) {
 	if cached, ok := o.statusCache.get(jobID); ok {
+		if o.metrics != nil {
+			o.metrics.RecordStatusCacheHit(ctx)
+		}
 		out := cached
 		return &out, nil
+	}
+	if o.metrics != nil {
+		o.metrics.RecordStatusCacheMiss(ctx)
 	}
 
 	j, err := o.client.BatchV1().Jobs(o.namespace).Get(ctx, jobNameFor(jobID), metav1.GetOptions{})

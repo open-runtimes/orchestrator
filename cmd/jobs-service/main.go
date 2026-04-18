@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/config"
+	"orchestrator/internal/observability"
 	"orchestrator/internal/orchestrator/docker"
 	"orchestrator/internal/orchestrator/kubernetes"
 	"orchestrator/pkg/job"
@@ -20,13 +21,22 @@ func main() {
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("backend", backend))
 
-	factory, err := buildOrchestratorFactory(ctx, backend, svcCfg.SidecarImage)
+	// Metrics live at the top of main so the same instance is shared by both
+	// the backend factory (for backend-specific recorders) and server.Run
+	// (for HTTP / dispatcher recorders and the /metrics handler).
+	metrics, metricsHandler, err := observability.NewMetrics(ctx)
+	if err != nil {
+		slog.Error("Failed to init metrics", "error", err)
+		os.Exit(1)
+	}
+
+	factory, err := buildOrchestratorFactory(ctx, backend, svcCfg.SidecarImage, metrics)
 	if err != nil {
 		slog.Error("Failed to build orchestrator factory", "error", err)
 		os.Exit(1)
 	}
 
-	if err := server.Run(ctx, factory); err != nil {
+	if err := server.Run(ctx, factory, metrics, metricsHandler); err != nil {
 		slog.Error("Service failed", "error", err)
 		os.Exit(1)
 	}
@@ -35,7 +45,7 @@ func main() {
 // buildOrchestratorFactory selects a backend. When the Kubernetes backend moves
 // to a private module, this function in the public main shrinks to just the
 // docker case; the private repo supplies its own main.go that wires kubernetes.
-func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string) (job.OrchestratorFactory, error) {
+func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string, metrics *observability.Metrics) (job.OrchestratorFactory, error) {
 	switch backend {
 	case "docker":
 		cfg := docker.LoadConfigFromEnv()
@@ -61,6 +71,7 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string)
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: cfg.TerminationGracePeriodSeconds,
 			LeaderElection:                cfg.LeaderElection,
+			Metrics:                       metrics,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)

@@ -10,11 +10,14 @@ import (
 
 // Attribute keys
 const (
-	attrMethod  = "method"
-	attrPath    = "path"
-	attrStatus  = "status"
-	attrImage   = "image"
-	attrSuccess = "success"
+	attrMethod   = "method"
+	attrPath     = "path"
+	attrStatus   = "status"
+	attrImage    = "image"
+	attrSuccess  = "success"
+	attrIdentity = "identity"
+	attrVerb     = "verb"
+	attrResource = "resource"
 )
 
 func methodAttr(method string) attribute.KeyValue {
@@ -41,6 +44,18 @@ func imageAttr(image string) attribute.KeyValue {
 
 func successAttr(success bool) attribute.KeyValue {
 	return attribute.Bool(attrSuccess, success)
+}
+
+func identityAttr(identity string) attribute.KeyValue {
+	return attribute.String(attrIdentity, identity)
+}
+
+func verbAttr(verb string) attribute.KeyValue {
+	return attribute.String(attrVerb, verb)
+}
+
+func resourceAttr(resource string) attribute.KeyValue {
+	return attribute.String(attrResource, resource)
 }
 
 // normalizePath replaces dynamic path segments with placeholders.

@@ -38,6 +38,26 @@ type Metrics struct {
 	DispatcherRequeued   metric.Int64Counter
 	DispatcherQueueSize  metric.Int64Gauge
 	DispatcherBufferSize int64 // config value for saturation calculation
+
+	// Leadership (K8s backend; zero everywhere else). Gauge is 1 on the leader
+	// replica and 0 (or absent) on followers, labelled with the identity so
+	// operators can see who's holding the lease at a glance.
+	LeaderGauge            metric.Int64Gauge
+	LeaderTransitionsTotal metric.Int64Counter
+
+	// Status cache effectiveness (K8s backend).
+	StatusCacheHits   metric.Int64Counter
+	StatusCacheMisses metric.Int64Counter
+
+	// Tracker saturation (K8s backend): number of in-flight per-job trackers
+	// the leader currently owns. The practical concurrent-jobs ceiling.
+	Trackers metric.Int64UpDownCounter
+
+	// K8s API cost: every Run/Stop/Status/List and every informer list+watch
+	// goes through the apiserver. When latency rises here, our HTTP latency
+	// rises with it — surface the cause.
+	K8sAPIDuration metric.Float64Histogram
+	K8sAPIErrors   metric.Int64Counter
 }
 
 // NewMetrics creates and registers all metrics with a Prometheus exporter.
@@ -166,6 +186,65 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 		return nil, nil, err
 	}
 
+	// Leadership (K8s backend).
+	m.LeaderGauge, err = meter.Int64Gauge(
+		"orchestrator_leader",
+		metric.WithDescription("1 on the replica currently holding the leader lease, 0 otherwise"),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	m.LeaderTransitionsTotal, err = meter.Int64Counter(
+		"orchestrator_leader_transitions_total",
+		metric.WithDescription("Total leader acquisitions observed by this replica"),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Status cache.
+	m.StatusCacheHits, err = meter.Int64Counter(
+		"orchestrator_status_cache_hits_total",
+		metric.WithDescription("Total Status calls served from the TTL cache"),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	m.StatusCacheMisses, err = meter.Int64Counter(
+		"orchestrator_status_cache_misses_total",
+		metric.WithDescription("Total Status calls that missed the cache and hit the K8s API"),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Tracker saturation.
+	m.Trackers, err = meter.Int64UpDownCounter(
+		"orchestrator_trackers",
+		metric.WithDescription("In-flight per-job lifecycle trackers on the leader (saturation)"),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// K8s API.
+	m.K8sAPIDuration, err = meter.Float64Histogram(
+		"k8s_api_request_duration_seconds",
+		metric.WithDescription("K8s API request latency in seconds, by verb and resource"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	m.K8sAPIErrors, err = meter.Int64Counter(
+		"k8s_api_errors_total",
+		metric.WithDescription("Total K8s API responses with status >= 400 (or transport errors)"),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	return m, promhttp.Handler(), nil
 }
 
@@ -233,4 +312,42 @@ func (m *Metrics) RecordDispatcherRequeued(ctx context.Context) {
 // RecordDispatcherQueueSize records the current queue size.
 func (m *Metrics) RecordDispatcherQueueSize(ctx context.Context, size int64) {
 	m.DispatcherQueueSize.Record(ctx, size)
+}
+
+// RecordLeadership sets this replica's leader gauge and, when acquired, bumps
+// the transitions counter. identity labels both metrics.
+func (m *Metrics) RecordLeadership(ctx context.Context, identity string, acquired bool) {
+	attrs := metric.WithAttributes(identityAttr(identity))
+	if acquired {
+		m.LeaderGauge.Record(ctx, 1, attrs)
+		m.LeaderTransitionsTotal.Add(ctx, 1, attrs)
+	} else {
+		m.LeaderGauge.Record(ctx, 0, attrs)
+	}
+}
+
+// RecordStatusCacheHit bumps the Status cache-hit counter.
+func (m *Metrics) RecordStatusCacheHit(ctx context.Context) {
+	m.StatusCacheHits.Add(ctx, 1)
+}
+
+// RecordStatusCacheMiss bumps the Status cache-miss counter.
+func (m *Metrics) RecordStatusCacheMiss(ctx context.Context) {
+	m.StatusCacheMisses.Add(ctx, 1)
+}
+
+// RecordTrackerDelta adjusts the in-flight tracker gauge by delta (+1 / -1).
+func (m *Metrics) RecordTrackerDelta(ctx context.Context, delta int64) {
+	m.Trackers.Add(ctx, delta)
+}
+
+// RecordK8sAPIRequest records a K8s API call's latency and, if it returned a
+// 4xx/5xx or failed in transport, increments the error counter.
+func (m *Metrics) RecordK8sAPIRequest(ctx context.Context, verb, resource string, durationSeconds float64, status int) {
+	attrs := metric.WithAttributes(verbAttr(verb), resourceAttr(resource))
+	m.K8sAPIDuration.Record(ctx, durationSeconds, attrs)
+	if status < 0 || status >= 400 {
+		errAttrs := metric.WithAttributes(verbAttr(verb), resourceAttr(resource), statusAttr(status))
+		m.K8sAPIErrors.Add(ctx, 1, errAttrs)
+	}
 }
