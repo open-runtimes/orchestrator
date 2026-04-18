@@ -35,7 +35,7 @@ type Orchestrator struct {
 	sidecarImage        string
 	retentionPeriod     time.Duration
 	maintenanceInterval time.Duration
-	emitter             *job.EventEmitter
+	emitter             *job.CallbackEmitter
 	artifactEndpoint    string
 	extraHosts          []string
 	ctrl                *job.MemoryStore[dockerHandle]
@@ -57,7 +57,7 @@ type Config struct {
 // NewOrchestrator returns an OrchestratorFactory that creates a Docker orchestrator.
 // Register listeners on the emitter before calling Start.
 func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
-	return func(emitter *job.EventEmitter) (job.Orchestrator, error) {
+	return func(emitter *job.CallbackEmitter) (job.Orchestrator, error) {
 		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create docker client: %w", err)
@@ -302,20 +302,20 @@ func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
 }
 
 // Status returns the current status of a job.
-func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.Status, error) {
+func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusResponse, error) {
 	entry, exists := o.ctrl.Get(jobID)
 	if !exists {
 		return nil, apperrors.NotFound("job", jobID)
 	}
-	return entry.Status(), nil
+	return entry.StatusResponse(), nil
 }
 
 // List returns the status of all jobs.
-func (o *Orchestrator) List(ctx context.Context) ([]job.Status, error) {
+func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
 	entries := o.ctrl.List()
-	statuses := make([]job.Status, len(entries))
+	statuses := make([]job.StatusResponse, len(entries))
 	for i, e := range entries {
-		statuses[i] = *e.Status()
+		statuses[i] = *e.StatusResponse()
 	}
 	return statuses, nil
 }
@@ -571,16 +571,16 @@ func (o *Orchestrator) cleanupExpiredJobs(ctx context.Context) {
 // the corresponding CloudEvent through the orchestrator's delivery pipeline.
 // It is a no-op if the job has no callback configured or has already been released.
 func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
-	if r.CallbackURL == "" || !job.FilteredEvents(job.EventTypeArtifact, r.CallbackEvents) {
+	if r.CallbackURL == "" || !job.MatchesCallbackFilter(job.CallbackTypeArtifact, r.CallbackEvents) {
 		return
 	}
 	builder := job.NewEventBuilder(r.JobID, "orchestrator/service", r.Meta)
 	var errVal error
-	if r.Error != "" {
-		errVal = fmt.Errorf("%s", r.Error)
+	if r.FailureReason != "" {
+		errVal = fmt.Errorf("%s", r.FailureReason)
 	}
 	event := builder.BuildArtifactEvent(r.ID, r.Type, r.Status, r.Content, errVal)
-	o.emitter.Emit(&job.Event{
+	o.emitter.Emit(&job.CallbackEnvelope{
 		Payload:     event,
 		CallbackURL: r.CallbackURL,
 		SigningKey:  r.CallbackKey,

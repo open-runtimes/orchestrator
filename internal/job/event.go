@@ -7,17 +7,17 @@ import (
 	"time"
 )
 
-// Event types for job lifecycle callbacks
+// Callback types (CloudEvent type strings) for job lifecycle
 const (
-	EventTypeStart    = "orchestrator.job.start"
-	EventTypeArtifact = "orchestrator.job.artifact"
-	EventTypeLog      = "orchestrator.job.log"
-	EventTypeExit     = "orchestrator.job.exit"
+	CallbackTypeStart    = "orchestrator.job.start"
+	CallbackTypeArtifact = "orchestrator.job.artifact"
+	CallbackTypeLog      = "orchestrator.job.log"
+	CallbackTypeExit     = "orchestrator.job.exit"
 )
 
-// FilteredEvents returns true if the event type should be sent based on the filter.
+// MatchesCallbackFilter returns true if the event type should be sent based on the filter.
 // If the filter is empty, all events are allowed.
-func FilteredEvents(eventType string, filter []string) bool {
+func MatchesCallbackFilter(eventType string, filter []string) bool {
 	if len(filter) == 0 {
 		return true
 	}
@@ -52,7 +52,7 @@ func (b *EventBuilder) BuildStartEvent() *cloudevent.Event {
 		"jobId": b.subject,
 		"meta":  b.meta,
 	}
-	return b.Build(EventTypeStart, data)
+	return b.Build(CallbackTypeStart, data)
 }
 
 // BuildArtifactEvent creates an artifact event.
@@ -70,7 +70,7 @@ func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status strin
 	if err != nil {
 		data["error"] = err.Error()
 	}
-	return b.Build(EventTypeArtifact, data)
+	return b.Build(CallbackTypeArtifact, data)
 }
 
 // BuildLogEvent creates a log event.
@@ -81,7 +81,7 @@ func (b *EventBuilder) BuildLogEvent(lines []string, stream string) *cloudevent.
 		"stream": stream,
 		"meta":   b.meta,
 	}
-	return b.Build(EventTypeLog, data)
+	return b.Build(CallbackTypeLog, data)
 }
 
 // BuildExitEvent creates an exit event.
@@ -96,5 +96,5 @@ func (b *EventBuilder) BuildExitEvent(exitCode int, image string, durationSecond
 	if err != nil {
 		data["error"] = err.Error()
 	}
-	return b.Build(EventTypeExit, data)
+	return b.Build(CallbackTypeExit, data)
 }

@@ -5,17 +5,17 @@ import (
 	"orchestrator/pkg/emitter"
 )
 
-// Event represents a job lifecycle event emitted by the orchestrator.
-type Event struct {
+// CallbackEnvelope represents an outbound callback emitted by the orchestrator.
+type CallbackEnvelope struct {
 	Payload     *cloudevent.Event
 	CallbackURL string
 	SigningKey  string
 }
 
-// EventEmitter fans out job events to registered listeners.
-type EventEmitter = emitter.Emitter[*Event]
+// CallbackEmitter fans out outbound callbacks to registered listeners.
+type CallbackEmitter = emitter.Emitter[*CallbackEnvelope]
 
-// NewEventEmitter creates a new EventEmitter.
-func NewEventEmitter() *EventEmitter {
-	return &EventEmitter{}
+// NewCallbackEmitter creates a new CallbackEmitter.
+func NewCallbackEmitter() *CallbackEmitter {
+	return &CallbackEmitter{}
 }

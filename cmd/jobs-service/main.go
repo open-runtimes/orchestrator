@@ -45,8 +45,8 @@ func run() error {
 
 	// Create callback dispatcher and event emitter
 	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
-	emitter := job.NewEventEmitter()
-	emitter.Register(func(e *job.Event) {
+	emitter := job.NewCallbackEmitter()
+	emitter.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
 		}
@@ -58,8 +58,8 @@ func run() error {
 			slog.Warn("Failed to dispatch job event", "type", e.Payload.Type, "error", err)
 		}
 	})
-	emitter.Register(func(e *job.Event) {
-		if metrics == nil || e.Payload == nil || e.Payload.Type != job.EventTypeExit {
+	emitter.Register(func(e *job.CallbackEnvelope) {
+		if metrics == nil || e.Payload == nil || e.Payload.Type != job.CallbackTypeExit {
 			return
 		}
 		image, _ := e.Payload.Data["image"].(string)

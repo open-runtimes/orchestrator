@@ -74,13 +74,13 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Response, error) {
 	logger.Info("Job created")
 
 	return &Response{
-		ID:     req.ID,
-		Status: StateAccepted,
+		ID:    req.ID,
+		State: StateAccepted,
 	}, nil
 }
 
 // Get returns the status of a job.
-func (s *Service) Get(ctx context.Context, jobID string) (*Status, error) {
+func (s *Service) Get(ctx context.Context, jobID string) (*StatusResponse, error) {
 	return s.orchestrator.Status(ctx, jobID)
 }
 

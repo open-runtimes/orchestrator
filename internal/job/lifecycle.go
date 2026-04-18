@@ -51,7 +51,7 @@ type CallbackDest struct {
 // EmitCallback translates a Signal into an outbound CloudEvent callback.
 // FSM state must be updated (via Store.Apply) before calling this so that
 // the callback reflects the new state.
-func EmitCallback(em *EventEmitter, jobID, image string, dest *CallbackDest, s Signal) {
+func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, s Signal) {
 	switch ev := s.(type) {
 	case Started:
 		if dest == nil {
@@ -59,8 +59,8 @@ func EmitCallback(em *EventEmitter, jobID, image string, dest *CallbackDest, s S
 		}
 		builder := NewEventBuilder(jobID, "orchestrator/service", dest.Meta)
 		event := builder.BuildStartEvent()
-		if FilteredEvents(event.Type, dest.Events) {
-			em.Emit(&Event{
+		if MatchesCallbackFilter(event.Type, dest.Events) {
+			em.Emit(&CallbackEnvelope{
 				Payload:     event,
 				CallbackURL: dest.URL,
 				SigningKey:  dest.Key,
@@ -71,11 +71,11 @@ func EmitCallback(em *EventEmitter, jobID, image string, dest *CallbackDest, s S
 	case Failed:
 		emitExitCallback(em, jobID, image, dest, -1, 0)
 	case LogLine:
-		if dest == nil || !FilteredEvents(EventTypeLog, dest.Events) {
+		if dest == nil || !MatchesCallbackFilter(CallbackTypeLog, dest.Events) {
 			return
 		}
 		builder := NewEventBuilder(jobID, "orchestrator/service", dest.Meta)
-		em.Emit(&Event{
+		em.Emit(&CallbackEnvelope{
 			Payload:     builder.BuildLogEvent(ev.Lines, ev.Stream),
 			CallbackURL: dest.URL,
 			SigningKey:  dest.Key,
@@ -83,7 +83,7 @@ func EmitCallback(em *EventEmitter, jobID, image string, dest *CallbackDest, s S
 	}
 }
 
-func emitExitCallback(em *EventEmitter, jobID, image string, dest *CallbackDest, exitCode int, durationSeconds float64) {
+func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, exitCode int, durationSeconds float64) {
 	var exitErr error
 	if exitCode != 0 {
 		exitErr = fmt.Errorf("exit code %d", exitCode)
@@ -101,8 +101,8 @@ func emitExitCallback(em *EventEmitter, jobID, image string, dest *CallbackDest,
 
 	builder := NewEventBuilder(jobID, "orchestrator/service", meta)
 	event := builder.BuildExitEvent(exitCode, image, durationSeconds, exitErr)
-	if FilteredEvents(event.Type, eventFilter) {
-		em.Emit(&Event{
+	if MatchesCallbackFilter(event.Type, eventFilter) {
+		em.Emit(&CallbackEnvelope{
 			Payload:     event,
 			CallbackURL: callbackURL,
 			SigningKey:  signingKey,

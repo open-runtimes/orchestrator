@@ -7,10 +7,10 @@ import (
 
 func TestEventEmitter_NoListeners(t *testing.T) {
 	t.Parallel()
-	emitter := NewEventEmitter()
+	emitter := NewCallbackEmitter()
 
 	// Should not panic
-	emitter.Emit(&Event{
+	emitter.Emit(&CallbackEnvelope{
 		Payload:     cloudevent.New("test.event", "src", "sub", "id", nil),
 		CallbackURL: "http://example.com",
 	})
@@ -18,12 +18,12 @@ func TestEventEmitter_NoListeners(t *testing.T) {
 
 func TestEventEmitter_SingleListener(t *testing.T) {
 	t.Parallel()
-	emitter := NewEventEmitter()
+	emitter := NewCallbackEmitter()
 
-	var received []*Event
-	emitter.Register(func(e *Event) { received = append(received, e) })
+	var received []*CallbackEnvelope
+	emitter.Register(func(e *CallbackEnvelope) { received = append(received, e) })
 
-	event := &Event{
+	event := &CallbackEnvelope{
 		Payload:     cloudevent.New("test.event", "src", "job-1", "id", nil),
 		CallbackURL: "http://example.com/webhook",
 		SigningKey:  "secret",
@@ -46,17 +46,17 @@ func TestEventEmitter_SingleListener(t *testing.T) {
 
 func TestEventEmitter_MultipleListeners(t *testing.T) {
 	t.Parallel()
-	emitter := NewEventEmitter()
+	emitter := NewCallbackEmitter()
 
-	var a, b []*Event
-	emitter.Register(func(e *Event) { a = append(a, e) })
-	emitter.Register(func(e *Event) { b = append(b, e) })
+	var a, b []*CallbackEnvelope
+	emitter.Register(func(e *CallbackEnvelope) { a = append(a, e) })
+	emitter.Register(func(e *CallbackEnvelope) { b = append(b, e) })
 
-	emitter.Emit(&Event{
+	emitter.Emit(&CallbackEnvelope{
 		Payload:     cloudevent.New("test.first", "src", "sub", "id1", nil),
 		CallbackURL: "http://a.com",
 	})
-	emitter.Emit(&Event{
+	emitter.Emit(&CallbackEnvelope{
 		Payload:     cloudevent.New("test.second", "src", "sub", "id2", nil),
 		CallbackURL: "http://b.com",
 	})

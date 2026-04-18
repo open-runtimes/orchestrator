@@ -100,12 +100,12 @@ type Callback struct {
 
 // Response represents the response when a job is created
 type Response struct {
-	ID     string `json:"id"`
-	Status string `json:"status"` // "accepted"
+	ID    string `json:"id"`
+	State string `json:"status"` // "accepted"
 }
 
-// Status represents the current status of a job
-type Status struct {
+// StatusResponse represents the current status of a job
+type StatusResponse struct {
 	ID       string `json:"id"`
 	State    string `json:"status"`
 	ExitCode *int   `json:"exitCode,omitempty"`
@@ -114,7 +114,7 @@ type Status struct {
 
 // ListResponse represents the response for listing jobs
 type ListResponse struct {
-	Jobs []Status `json:"jobs"`
+	Jobs []StatusResponse `json:"jobs"`
 }
 
 // ArtifactReport is posted by the sidecar to report the result of a single artifact operation.
@@ -127,7 +127,7 @@ type ArtifactReport struct {
 	Type    string `json:"type"`
 	Status  string `json:"status"`
 	Content any    `json:"content,omitempty"`
-	Error   string `json:"error,omitempty"`
+	FailureReason string `json:"failureReason,omitempty"`
 
 	CallbackURL    string            `json:"callbackUrl,omitempty"`
 	CallbackKey    string            `json:"callbackKey,omitempty"`

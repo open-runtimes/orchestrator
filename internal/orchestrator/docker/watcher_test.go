@@ -29,19 +29,19 @@ func (b *blockingWatcher) Watch(ctx context.Context, _, _ string, _ func(job.Sig
 // captureListener records all emitted job events.
 type captureListener struct {
 	mu     sync.Mutex
-	events []*job.Event
+	events []*job.CallbackEnvelope
 }
 
-func (c *captureListener) record(e *job.Event) {
+func (c *captureListener) record(e *job.CallbackEnvelope) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, e)
 }
 
-func (c *captureListener) all() []*job.Event {
+func (c *captureListener) all() []*job.CallbackEnvelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	result := make([]*job.Event, len(c.events))
+	result := make([]*job.CallbackEnvelope, len(c.events))
 	copy(result, c.events)
 	return result
 }
@@ -62,7 +62,7 @@ func TestLifecycle_HappyPath(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -84,7 +84,7 @@ func TestLifecycle_HappyPath(t *testing.T) {
 		t.Errorf("want exit code 0, got %v", entry.ExitCode)
 	}
 	got := capture.types()
-	want := []string{job.EventTypeStart, job.EventTypeExit}
+	want := []string{job.CallbackTypeStart, job.CallbackTypeExit}
 	if len(got) != len(want) {
 		t.Fatalf("want events %v, got %v", want, got)
 	}
@@ -100,7 +100,7 @@ func TestLifecycle_WorkerFailure(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -122,7 +122,7 @@ func TestLifecycle_WorkerFailure(t *testing.T) {
 		t.Errorf("want exit code 1, got %v", entry.ExitCode)
 	}
 	got := capture.types()
-	if len(got) != 2 || got[0] != job.EventTypeStart || got[1] != job.EventTypeExit {
+	if len(got) != 2 || got[0] != job.CallbackTypeStart || got[1] != job.CallbackTypeExit {
 		t.Errorf("want [start, exit], got %v", got)
 	}
 }
@@ -132,7 +132,7 @@ func TestLifecycle_SidecarCrashBeforeWorker(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -153,7 +153,7 @@ func TestLifecycle_SidecarCrashBeforeWorker(t *testing.T) {
 		t.Errorf("want exit code -1, got %v", entry.ExitCode)
 	}
 	got := capture.types()
-	if len(got) != 1 || got[0] != job.EventTypeExit {
+	if len(got) != 1 || got[0] != job.CallbackTypeExit {
 		t.Errorf("want [exit], got %v", got)
 	}
 }
@@ -163,7 +163,7 @@ func TestLifecycle_LogDelivered(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -180,7 +180,7 @@ func TestLifecycle_LogDelivered(t *testing.T) {
 	})
 
 	got := capture.types()
-	want := []string{job.EventTypeStart, job.EventTypeLog, job.EventTypeExit}
+	want := []string{job.CallbackTypeStart, job.CallbackTypeLog, job.CallbackTypeExit}
 	if len(got) != len(want) {
 		t.Fatalf("want events %v, got %v", want, got)
 	}
@@ -196,7 +196,7 @@ func TestLifecycle_LogSkippedWhenNoCallback(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 
@@ -211,7 +211,7 @@ func TestLifecycle_LogSkippedWhenNoCallback(t *testing.T) {
 	})
 
 	for _, e := range capture.all() {
-		if e.Payload.Type == job.EventTypeLog {
+		if e.Payload.Type == job.CallbackTypeLog {
 			t.Error("log event should not be emitted when no callback is configured")
 		}
 	}
@@ -222,10 +222,10 @@ func TestLifecycle_LogSkippedWhenFilteredOut(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
-	dest := &job.CallbackDest{URL: "http://example.com/cb", Events: []string{job.EventTypeStart, job.EventTypeExit}}
+	dest := &job.CallbackDest{URL: "http://example.com/cb", Events: []string{job.CallbackTypeStart, job.CallbackTypeExit}}
 
 	w := &fakeWatcher{events: []job.Signal{
 		job.Started{},
@@ -238,7 +238,7 @@ func TestLifecycle_LogSkippedWhenFilteredOut(t *testing.T) {
 	})
 
 	for _, e := range capture.all() {
-		if e.Payload.Type == job.EventTypeLog {
+		if e.Payload.Type == job.CallbackTypeLog {
 			t.Error("log event should not be emitted when not in callback filter")
 		}
 	}
@@ -252,7 +252,7 @@ func TestLifecycle_ResumeNoStarted(t *testing.T) {
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
 	_ = ctrl.Apply("job-1", job.Started{})
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -270,12 +270,12 @@ func TestLifecycle_ResumeNoStarted(t *testing.T) {
 		t.Errorf("want StateCompleted, got %s", entry.State)
 	}
 	for _, e := range capture.all() {
-		if e.Payload.Type == job.EventTypeStart {
+		if e.Payload.Type == job.CallbackTypeStart {
 			t.Error("start event should not be emitted for resumed job")
 		}
 	}
 	types := capture.types()
-	if len(types) != 1 || types[0] != job.EventTypeExit {
+	if len(types) != 1 || types[0] != job.CallbackTypeExit {
 		t.Errorf("want [exit] event, got %v", types)
 	}
 }
@@ -285,7 +285,7 @@ func TestLifecycle_ContextCancelled(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewEventEmitter()
+	emitter := job.NewCallbackEmitter()
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})

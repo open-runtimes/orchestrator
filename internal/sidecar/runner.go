@@ -199,7 +199,7 @@ func (r *Runner) emitArtifact(a artifact.Artifact, status string, content any, e
 		Content: content,
 	}
 	if err != nil {
-		report.Error = err.Error()
+		report.FailureReason = err.Error()
 	}
 	r.emitter.Emit(report)
 }

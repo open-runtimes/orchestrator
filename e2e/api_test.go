@@ -45,8 +45,8 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		Workers:    2,
 	}, nil)
 
-	emitter := job.NewEventEmitter()
-	emitter.Register(func(e *job.Event) {
+	emitter := job.NewCallbackEmitter()
+	emitter.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
 		}

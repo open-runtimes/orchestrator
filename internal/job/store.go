@@ -15,9 +15,9 @@ type Entry struct {
 	UpdatedAt time.Time
 }
 
-// Status converts an Entry to a job.Status for API responses.
-func (e *Entry) Status() *Status {
-	s := &Status{
+// StatusResponse converts an Entry to a job.StatusResponse for API responses.
+func (e *Entry) StatusResponse() *StatusResponse {
+	s := &StatusResponse{
 		ID:    e.ID,
 		State: e.State,
 		Error: e.Error,
