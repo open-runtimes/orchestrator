@@ -2,7 +2,10 @@ package kubernetes
 
 import (
 	"context"
+	"orchestrator/internal/testutil"
 	"orchestrator/pkg/job"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,6 +277,166 @@ func TestReady_ContactsAPIServer(t *testing.T) {
 	defer o.Close()
 	if err := o.Ready(context.Background()); err != nil {
 		t.Errorf("Ready: %v", err)
+	}
+}
+
+// --- Watcher: restart recovery ---
+
+// TestWatcher_ResumesExistingPodOnStart verifies that when the watcher starts
+// with a Pod already in Running state (e.g. the service restarted mid-job),
+// the informer's initial List picks it up and a Started callback fires.
+func TestWatcher_ResumesExistingPodOnStart(t *testing.T) {
+	t.Parallel()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "job-resume-worker",
+			Namespace: "orchestrator",
+			Labels: map[string]string{
+				LabelManagedBy: ManagedByValue,
+				LabelJobID:     "resume-me",
+			},
+			Annotations: map[string]string{
+				AnnotationCallbackURL: "https://cb.example",
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: ContainerWorker, Image: "alpine:latest"},
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: ContainerWorker,
+					State: corev1.ContainerState{
+						Running: &corev1.ContainerStateRunning{
+							StartedAt: metav1.Now(),
+						},
+					},
+				},
+			},
+		},
+	}
+	cs := fake.NewClientset(pod)
+
+	emitter := job.NewCallbackEmitter()
+	var mu sync.Mutex
+	var seenStarted bool
+	emitter.Register(func(e *job.CallbackEnvelope) {
+		if e.Payload != nil && e.Payload.Type == job.CallbackTypeStart {
+			mu.Lock()
+			seenStarted = true
+			mu.Unlock()
+		}
+	})
+
+	w := newK8sLifecycleWatcher(cs, "orchestrator", emitter, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go w.Start(ctx)
+
+	testutil.MustWaitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return seenStarted
+	}, testutil.WithTimeout(5*time.Second))
+}
+
+// --- Leader election: failover ---
+
+// TestLeaderElection_Failover verifies that when the current leader releases
+// (or dies), a waiting replica acquires the lease within ~lease-duration.
+func TestLeaderElection_Failover(t *testing.T) {
+	cs := fake.NewClientset()
+	events := make(chan string, 8)
+
+	mkOrch := func(id string) *Orchestrator {
+		return &Orchestrator{
+			client:    cs,
+			namespace: "orchestrator",
+			cfg: OrchestratorConfig{
+				Namespace: "orchestrator",
+				LeaderElection: LeaderElectionConfig{
+					Enabled:       true,
+					LeaseName:     "test-leader",
+					Identity:      id,
+					LeaseDuration: 1 * time.Second,
+					RenewDeadline: 500 * time.Millisecond,
+					RetryPeriod:   100 * time.Millisecond,
+				},
+			},
+			emitter:     job.NewCallbackEmitter(),
+			watcher:     &signalingWatcher{id: id, events: events},
+			statusCache: newStatusCache(),
+		}
+	}
+
+	o1 := mkOrch("replica-1")
+	o2 := mkOrch("replica-2")
+
+	if err := o1.Start(context.Background()); err != nil {
+		t.Fatalf("o1.Start: %v", err)
+	}
+	if err := o2.Start(context.Background()); err != nil {
+		t.Fatalf("o2.Start: %v", err)
+	}
+
+	// Exactly one replica should become leader first.
+	firstLeader := waitForPrefixedEvent(t, events, "started:", 5*time.Second)
+	t.Logf("initial leader: %s", firstLeader)
+
+	// Close the current leader; the other replica should take over.
+	switch firstLeader {
+	case "replica-1":
+		go o1.Close()
+	case "replica-2":
+		go o2.Close()
+	default:
+		t.Fatalf("unexpected initial leader %q", firstLeader)
+	}
+
+	secondLeader := waitForPrefixedEvent(t, events, "started:", 5*time.Second)
+	t.Logf("new leader after failover: %s", secondLeader)
+	if secondLeader == firstLeader {
+		t.Errorf("expected different leader on failover, got %q twice", firstLeader)
+	}
+
+	// Clean up the survivor.
+	if firstLeader == "replica-1" {
+		o2.Close()
+	} else {
+		o1.Close()
+	}
+}
+
+// signalingWatcher implements LifecycleWatcher; it publishes "started:<id>"
+// when Start is called and "stopped:<id>" when it exits. Used to observe
+// which replica is currently driving the watcher.
+type signalingWatcher struct {
+	id     string
+	events chan<- string
+}
+
+func (s *signalingWatcher) Start(ctx context.Context) {
+	s.events <- "started:" + s.id
+	<-ctx.Done()
+	s.events <- "stopped:" + s.id
+}
+
+func waitForPrefixedEvent(t *testing.T, ch <-chan string, prefix string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev := <-ch:
+			if rest, ok := strings.CutPrefix(ev, prefix); ok {
+				return rest
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for event with prefix %q", prefix)
+			return ""
+		}
 	}
 }
 
