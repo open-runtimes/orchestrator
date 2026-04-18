@@ -2,6 +2,15 @@
 # The chart does NOT create a namespace — install with `helm install -n <ns> --create-namespace`
 # or apply a Namespace manifest separately.
 
+# The chart ships one API today (jobs). Future APIs (deployments, statefulsets, ...)
+# will be added as additional Deployments + Services in the same chart, each
+# with its own component name. Resource naming for the jobs API lives under
+# `jobs.fullnameOverride` so it doesn't collide with the release's fullname.
+jobs:
+  # Empty uses "jobs" when the release is named "orchestrator", otherwise
+  # "<release>-jobs" to keep resources scoped to the release.
+  fullnameOverride: ""
+
 # Image for the jobs-service Deployment.
 # CI publishes ghcr.io/open-runtimes/orchestrator/jobs-service on every main push,
 # tagged with both :latest and the commit SHA (plus the semver on release tags).

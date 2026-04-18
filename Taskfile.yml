@@ -156,7 +156,7 @@ tasks:
   k8s:logs:
     desc: Follow jobs-service logs in the kind cluster
     cmds:
-      - kubectl --context {{.KIND_CONTEXT}} -n orchestrator logs -f deploy/orchestrator
+      - kubectl --context {{.KIND_CONTEXT}} -n orchestrator logs -f deploy/jobs
 
   k8s:jobs:
     desc: List job resources managed by the orchestrator

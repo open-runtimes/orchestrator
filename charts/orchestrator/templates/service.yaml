@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "orchestrator.fullname" . }}
+  name: {{ include "orchestrator.jobsName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.labels" . | nindent 4 }}
+    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   selector:
-    {{- include "orchestrator.selectorLabels" . | nindent 4 }}
+    {{- include "orchestrator.jobsSelectorLabels" . | nindent 4 }}
   ports:
     - name: api
       port: {{ .Values.service.apiPort }}

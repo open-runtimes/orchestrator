@@ -10,11 +10,28 @@
 {{- end -}}
 {{- end -}}
 
+{{/*
+  jobsName: resource name for the Deployment, Service, and RBAC that serve the
+  jobs API. Deliberately separate from the release's fullname so other APIs
+  (deployments, statefulsets, …) can coexist in the same chart as distinct
+  Deployments. Defaults to "<release>-jobs" so multiple chart releases in the
+  same namespace don't collide.
+*/}}
+{{- define "orchestrator.jobsName" -}}
+{{- if .Values.jobs.fullnameOverride -}}
+{{- .Values.jobs.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else if eq .Release.Name "orchestrator" -}}
+{{- "jobs" -}}
+{{- else -}}
+{{- printf "%s-jobs" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.serviceAccountName" -}}
 {{- if .Values.serviceAccount.name -}}
 {{- .Values.serviceAccount.name -}}
 {{- else -}}
-{{- include "orchestrator.fullname" . -}}
+{{- include "orchestrator.jobsName" . -}}
 {{- end -}}
 {{- end -}}
 
@@ -38,7 +55,7 @@
 {{- if .Values.orchestrator.artifactEndpoint -}}
 {{- .Values.orchestrator.artifactEndpoint -}}
 {{- else -}}
-{{- printf "http://%s.%s.svc.cluster.local:%d" (include "orchestrator.fullname" .) .Release.Namespace (int .Values.service.apiPort) -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "orchestrator.jobsName" .) .Release.Namespace (int .Values.service.apiPort) -}}
 {{- end -}}
 {{- end -}}
 
@@ -46,7 +63,7 @@
 {{- if .Values.leaderElection.leaseName -}}
 {{- .Values.leaderElection.leaseName -}}
 {{- else -}}
-{{- printf "%s-leader" (include "orchestrator.fullname" .) -}}
+{{- printf "%s-leader" (include "orchestrator.jobsName" .) -}}
 {{- end -}}
 {{- end -}}
 
@@ -57,7 +74,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 {{- end -}}
 
-{{- define "orchestrator.selectorLabels" -}}
+{{/*
+  jobsLabels: labels specific to the jobs API resources; used both on the
+  Deployment/Service metadata and as the selector so they match.
+*/}}
+{{- define "orchestrator.jobsLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: jobs
+{{- end -}}
+
+{{- define "orchestrator.jobsSelectorLabels" -}}
 app.kubernetes.io/name: {{ include "orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: jobs
 {{- end -}}

@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "orchestrator.fullname" . }}
+  name: {{ include "orchestrator.jobsName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.labels" . | nindent 4 }}
+    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "orchestrator.selectorLabels" . | nindent 6 }}
+      {{- include "orchestrator.jobsSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "orchestrator.selectorLabels" . | nindent 8 }}
+        {{- include "orchestrator.jobsSelectorLabels" . | nindent 8 }}
       {{- with .Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}

@@ -20,6 +20,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/go-logr/logr"
+	"k8s.io/klog/v2"
 )
 
 // Run bootstraps the orchestrator service against the supplied backend factory
@@ -31,6 +34,11 @@ import (
 // variables by the various internal packages; add attributes to slog.Default
 // before calling Run if you want them attached to every log line.
 func Run(ctx context.Context, factory job.OrchestratorFactory) error {
+	// Route client-go / leaderelection / apimachinery logs (which go through
+	// klog) via slog, so everything in the container's stdout is one ndjson
+	// stream. Must run before any klog-using library is invoked.
+	klog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+
 	svcCfg := config.LoadServiceConfig()
 	dispatcherCfg := dispatcher.LoadConfigFromEnv()
 

@@ -59,7 +59,7 @@ k8s_yaml(helm(
 ))
 
 k8s_resource(
-    'orchestrator',
+    'jobs',
     port_forwards=[
         port_forward(8080, 8080, name='api'),
         port_forward(9090, 9090, name='metrics'),
@@ -67,10 +67,10 @@ k8s_resource(
     labels=['orchestrator'],
     objects=[
         'orchestrator:namespace',
-        'orchestrator:serviceaccount',
+        'jobs:serviceaccount',
         'job-sidecar:serviceaccount',
-        'orchestrator:role',
-        'orchestrator:rolebinding',
+        'jobs:role',
+        'jobs:rolebinding',
     ],
     links=[
         link('http://localhost:8080/readyz', 'readyz'),
