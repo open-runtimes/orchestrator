@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/api"
@@ -14,11 +15,44 @@ import (
 	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
 	"orchestrator/internal/orchestrator/docker"
+	"orchestrator/internal/orchestrator/kubernetes"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 )
+
+// buildOrchestratorFactory returns the appropriate OrchestratorFactory for the
+// configured backend. The caller wires in the shared CallbackEmitter via
+// job.NewOrchestrator.
+func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string) (job.OrchestratorFactory, error) {
+	switch backend {
+	case "docker":
+		cfg := docker.LoadConfigFromEnv()
+		return docker.NewOrchestrator(ctx, docker.Config{
+			SidecarImage:        sidecarImage,
+			RetentionPeriod:     cfg.JobRetention,
+			MaintenanceInterval: cfg.MaintenanceInterval,
+			ArtifactEndpoint:    cfg.ArtifactEndpoint,
+			ExtraHosts:          cfg.ExtraHosts,
+		}), nil
+	case "kubernetes":
+		cfg := kubernetes.LoadConfigFromEnv()
+		return kubernetes.NewOrchestrator(ctx, kubernetes.Config{
+			SidecarImage:                  sidecarImage,
+			Kubeconfig:                    cfg.Kubeconfig,
+			Namespace:                     cfg.Namespace,
+			ServiceAccount:                cfg.ServiceAccount,
+			ImagePullSecrets:              cfg.ImagePullSecrets,
+			RetentionPeriod:               cfg.JobRetention,
+			MaintenanceInterval:           cfg.MaintenanceInterval,
+			ArtifactEndpoint:              cfg.ArtifactEndpoint,
+			TerminationGracePeriodSeconds: cfg.TerminationGracePeriodSeconds,
+		}), nil
+	default:
+		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
+	}
+}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -34,8 +68,8 @@ func run() error {
 
 	// Load configuration
 	svcCfg := config.LoadServiceConfig()
-	orchCfg := docker.LoadConfigFromEnv()
 	dispatcherCfg := dispatcher.LoadConfigFromEnv()
+	backend := config.GetEnv("ORCHESTRATOR_BACKEND", "docker")
 
 	// Setup metrics
 	metrics, metricsHandler, err := observability.NewMetrics(ctx)
@@ -74,14 +108,12 @@ func run() error {
 		metrics.RecordJobCompleted(context.Background(), image, exitCode == 0, duration)
 	})
 
-	// Create Docker orchestrator
-	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{
-		SidecarImage:        svcCfg.SidecarImage,
-		RetentionPeriod:     orchCfg.JobRetention,
-		MaintenanceInterval: orchCfg.MaintenanceInterval,
-		ArtifactEndpoint:    orchCfg.ArtifactEndpoint,
-		ExtraHosts:          orchCfg.ExtraHosts,
-	}))
+	// Create orchestrator for the configured backend.
+	factory, err := buildOrchestratorFactory(ctx, backend, svcCfg.SidecarImage)
+	if err != nil {
+		return err
+	}
+	orchestrator, err := job.NewOrchestrator(emitter, factory)
 	if err != nil {
 		return err
 	}
@@ -92,7 +124,7 @@ func run() error {
 		return err
 	}
 
-	slog.Info("Connected to Docker daemon")
+	slog.Info("Orchestrator ready", "backend", backend)
 
 	// Create health checker
 	healthChecker := health.NewChecker(orchestrator)

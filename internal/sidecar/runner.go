@@ -121,10 +121,11 @@ func waitForSignal(ctx context.Context) {
 	}
 }
 
-// Run executes the sidecar flow:
+// Run executes the Docker-style sidecar flow:
 // 1. Process pre-job artifacts (downloads, file writes, etc.)
-// 2. Wait for completion signal (SIGUSR1 from Docker, SIGTERM from Kubernetes)
-// 3. Process post-job artifacts (uploads, events, etc.)
+// 2. Write the ready marker so Docker's health check starts the worker
+// 3. Wait for completion signal (SIGUSR1 from Docker, SIGTERM from Kubernetes)
+// 4. Process post-job artifacts (uploads, events, etc.)
 //
 // If any pre-job artifact fails, the sidecar exits with an error.
 func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
@@ -141,25 +142,69 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 		return fmt.Errorf("pre-job artifact processing failed: %w", err)
 	}
 
-	// Write marker file to signal pre-job artifacts are ready
-	markerPath := filepath.Join(r.sharedVolumePath, ReadyFile)
-	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
+	if err := r.writeReadyMarker(); err != nil {
 		logger.Error("Failed to write ready marker", "error", err)
-		return fmt.Errorf("failed to write ready marker: %w", err)
+		return err
 	}
-	logger.Info("Pre-job artifacts ready", "path", markerPath)
 
-	// Wait for worker completion signal
 	logger.Info("Waiting for worker completion signal")
 	r.waitFn(ctx)
 	logger.Info("Received worker completion signal")
 
-	// Process post-job artifacts (uploads, reads, etc.)
 	if err := r.processArtifacts(ctx, postJob, true); err != nil {
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
 
 	logger.Info("Sidecar completed")
+	return nil
+}
+
+// RunPre processes pre-job artifacts and exits. Used by the Kubernetes backend as
+// a regular init container — the worker will not start until this returns successfully.
+func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) error {
+	preJob, _ := artifact.Partition(artifacts)
+	logger := slog.With("jobId", r.jobID, "mode", "pre", "preJob", len(preJob))
+	logger.Info("Sidecar pre-mode starting")
+
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
+	defer cancel()
+
+	if err := r.processArtifacts(ctx, preJob, false); err != nil {
+		logger.Error("Pre-job artifact processing failed, aborting job", "error", err)
+		return fmt.Errorf("pre-job artifact processing failed: %w", err)
+	}
+	logger.Info("Sidecar pre-mode completed")
+	return nil
+}
+
+// RunPost waits for the worker to finish, then processes post-job artifacts.
+// Used by the Kubernetes backend as a native sidecar container — kubelet sends
+// SIGTERM when the worker main container exits, which unblocks waitFn.
+func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) error {
+	_, postJob := artifact.Partition(artifacts)
+	logger := slog.With("jobId", r.jobID, "mode", "post", "postJob", len(postJob))
+	logger.Info("Sidecar post-mode starting — waiting for worker to finish")
+
+	r.waitFn(ctx)
+	logger.Info("Worker finished, processing post-job artifacts")
+
+	// Use a detached context with timeout so a parent cancellation (e.g. from
+	// the SIGTERM we just received) does not short-circuit post-artifact work.
+	postCtx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
+	defer cancel()
+
+	if err := r.processArtifacts(postCtx, postJob, true); err != nil {
+		logger.Warn("Post-job artifact processing failed", "error", err)
+	}
+	logger.Info("Sidecar post-mode completed")
+	return nil
+}
+
+func (r *Runner) writeReadyMarker() error {
+	markerPath := filepath.Join(r.sharedVolumePath, ReadyFile)
+	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
+		return fmt.Errorf("failed to write ready marker: %w", err)
+	}
 	return nil
 }
 
