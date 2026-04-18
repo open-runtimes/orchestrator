@@ -17,7 +17,7 @@ func TestHandler_Livez(t *testing.T) {
 		health: health.NewChecker(nil),
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodGet, "/livez", nil)
 	w := httptest.NewRecorder()
 
 	handler.Livez(w, req)
@@ -40,7 +40,7 @@ func TestHandler_Readyz_NoDocker(t *testing.T) {
 		health: health.NewChecker(nil), // No Docker client
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
 
 	handler.Readyz(w, req)
@@ -62,7 +62,7 @@ func TestHandler_CreateJob_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	handler := &Handler{}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString("invalid json"))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/v1/jobs", bytes.NewBufferString("invalid json"))
 	w := httptest.NewRecorder()
 
 	handler.CreateJob(w, req)
@@ -82,7 +82,7 @@ func TestMiddleware_Logging(t *testing.T) {
 
 	handler := LoggingMiddleware()(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -100,7 +100,7 @@ func TestMiddleware_Recovery(t *testing.T) {
 
 	handler := RecoveryMiddleware()(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
 
 	// Should not panic
@@ -121,7 +121,7 @@ func TestMiddleware_ContentType(t *testing.T) {
 	handler := ContentTypeMiddleware()(inner)
 
 	// Test with wrong content type
-	req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewBufferString("{}"))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/test", bytes.NewBufferString("{}"))
 	req.Header.Set("Content-Type", "text/plain")
 	w := httptest.NewRecorder()
 
@@ -133,7 +133,7 @@ func TestMiddleware_ContentType(t *testing.T) {
 
 	// Test with correct content type
 	called = false
-	req = httptest.NewRequest(http.MethodPost, "/test", bytes.NewBufferString("{}"))
+	req = httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/test", bytes.NewBufferString("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 
@@ -153,7 +153,7 @@ func TestMiddleware_CORS(t *testing.T) {
 	handler := CORSMiddleware()(inner)
 
 	// Test OPTIONS preflight
-	req := httptest.NewRequest(http.MethodOptions, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodOptions, "/test", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -172,7 +172,7 @@ func TestHandler_CreateJob_MissingID(t *testing.T) {
 	handler := &Handler{}
 
 	body := `{"image": "alpine"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -193,7 +193,7 @@ func TestHandler_CreateJob_MissingImage(t *testing.T) {
 	handler := &Handler{}
 
 	body := `{"id": "test-job"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -209,7 +209,7 @@ func TestHandler_CreateJob_EmptyBody(t *testing.T) {
 	t.Parallel()
 	handler := &Handler{}
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(""))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/v1/jobs", bytes.NewBufferString(""))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -225,7 +225,7 @@ func TestHandler_CreateJob_MalformedJSON(t *testing.T) {
 	handler := &Handler{}
 
 	body := `{"id": "test", "image": alpine}` // missing quotes around alpine
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/v1/jobs", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -246,7 +246,7 @@ func TestHandler_GetJob_EmptyID(t *testing.T) {
 	t.Parallel()
 	handler := &Handler{}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodGet, "/v1/jobs/", nil)
 	w := httptest.NewRecorder()
 
 	handler.GetJob(w, req)
@@ -260,7 +260,7 @@ func TestHandler_DeleteJob_EmptyID(t *testing.T) {
 	t.Parallel()
 	handler := &Handler{}
 
-	req := httptest.NewRequest(http.MethodDelete, "/v1/jobs/", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodDelete, "/v1/jobs/", nil)
 	w := httptest.NewRecorder()
 
 	handler.DeleteJob(w, req)
@@ -281,7 +281,7 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 	handler := ContentTypeMiddleware()(inner)
 
 	// GET requests don't need content-type
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -315,7 +315,7 @@ func TestHandler_ReportArtifact(t *testing.T) {
 	}
 	body, _ := json.Marshal(report)
 
-	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewReader(body))
 	req.SetPathValue("jobId", "job-123")
 	w := httptest.NewRecorder()
 
@@ -346,7 +346,7 @@ func TestHandler_ReportArtifact_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewBufferString("invalid"))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewBufferString("invalid"))
 	req.SetPathValue("jobId", "job-123")
 	w := httptest.NewRecorder()
 
@@ -361,7 +361,7 @@ func TestHandler_ReportArtifact_MissingJobID(t *testing.T) {
 	t.Parallel()
 	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/internal/jobs//artifact", bytes.NewBufferString("{}"))
+	req := httptest.NewRequestWithContext(t.Context(),http.MethodPost, "/internal/jobs//artifact", bytes.NewBufferString("{}"))
 	// No SetPathValue — jobId will be empty string
 	w := httptest.NewRecorder()
 

@@ -269,10 +269,10 @@ func TestCallbackDestFromLabels_AllFields(t *testing.T) {
 		t.Fatal("want non-nil dest")
 	}
 	if dest.URL != "https://example.com/cb" {
-		t.Errorf("URL mismatch")
+		t.Error("URL mismatch")
 	}
 	if dest.Key != "secret" {
-		t.Errorf("Key mismatch")
+		t.Error("Key mismatch")
 	}
 	wantEvents := []string{"orchestrator.job.start", "orchestrator.job.log", "orchestrator.job.exit"}
 	if !reflect.DeepEqual(dest.Events, wantEvents) {

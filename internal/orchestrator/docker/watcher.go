@@ -30,7 +30,7 @@ type dockerLifecycleWatcher struct {
 	client *client.Client
 }
 
-func newDockerLifecycleWatcher(cli *client.Client) LifecycleWatcher {
+func newDockerLifecycleWatcher(cli *client.Client) *dockerLifecycleWatcher {
 	return &dockerLifecycleWatcher{client: cli}
 }
 
@@ -311,7 +311,7 @@ func (w *dockerLifecycleWatcher) parseExitCode(event events.Message) int {
 
 func splitLines(s string) []string {
 	var lines []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimSuffix(line, "\r")
 		if line != "" {
 			lines = append(lines, line)

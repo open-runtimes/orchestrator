@@ -178,14 +178,12 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			_ = o.ctrl.Reserve(jobID)
 			o.ctrl.Commit(jobID, handle, cancelWatch)
 			_ = o.ctrl.Apply(jobID, job.Started{})
-			o.watchWg.Add(1)
-			go func() {
-				defer o.watchWg.Done()
+			o.watchWg.Go(func() {
 				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
 					_ = o.ctrl.Apply(cfg.jobID, s)
 					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
 				})
-			}()
+			})
 
 		case workerRunning:
 			// Worker is running — replay running state and resume watcher.
@@ -196,14 +194,12 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			_ = o.ctrl.Reserve(jobID)
 			o.ctrl.Commit(jobID, handle, cancelWatch)
 			_ = o.ctrl.Apply(jobID, job.Started{})
-			o.watchWg.Add(1)
-			go func() {
-				defer o.watchWg.Done()
+			o.watchWg.Go(func() {
 				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
 					_ = o.ctrl.Apply(cfg.jobID, s)
 					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
 				})
-			}()
+			})
 
 		default:
 			// Sidecar running, worker created but not yet started — accepted state.
@@ -214,14 +210,12 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			cfg := watchConfigFromState(cs, handle)
 			_ = o.ctrl.Reserve(jobID)
 			o.ctrl.Commit(jobID, handle, cancelWatch)
-			o.watchWg.Add(1)
-			go func() {
-				defer o.watchWg.Done()
+			o.watchWg.Go(func() {
 				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
 					_ = o.ctrl.Apply(cfg.jobID, s)
 					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
 				})
-			}()
+			})
 		}
 	}
 
@@ -282,14 +276,12 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	watchCtx, cancelWatch := context.WithCancel(context.Background())
 	o.ctrl.Commit(req.ID, h, cancelWatch)
 	success = true
-	o.watchWg.Add(1)
-	go func() {
-		defer o.watchWg.Done()
+	o.watchWg.Go(func() {
 		o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
 			_ = o.ctrl.Apply(cfg.jobID, s)
 			job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
 		})
-	}()
+	})
 
 	return nil
 }

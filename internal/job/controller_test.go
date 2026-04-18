@@ -179,11 +179,9 @@ func TestMemoryStore_Release_ConcurrentSafe(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = c.Apply("job-1", Started{})
-		}()
+		})
 	}
 	wg.Wait()
 }

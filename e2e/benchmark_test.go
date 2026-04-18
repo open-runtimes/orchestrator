@@ -114,20 +114,18 @@ func TestCallbackThroughput(t *testing.T) {
 
 	dispatchStart := time.Now()
 	for i := range numCallbacks {
-		wg.Add(1)
 		semaphore <- struct{}{}
-		go func(id int) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-semaphore }()
 
 			event := &dispatcher.Event{
-				Payload:     newTestEvent(fmt.Sprintf("event-%d", id)),
+				Payload:     newTestEvent(fmt.Sprintf("event-%d", i)),
 				Destination: callbackServer.URL,
 			}
 			if err := d.Dispatch(event); err != nil {
 				t.Logf("Dispatch error: %v", err)
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 	dispatchDuration := time.Since(dispatchStart)
@@ -139,7 +137,7 @@ func TestCallbackThroughput(t *testing.T) {
 	receivedCount := received.Load()
 	avgLatency := float64(totalLatency.Load()) / float64(receivedCount) / 1000.0
 
-	t.Logf("=== Callback Throughput Test ===")
+	t.Log("=== Callback Throughput Test ===")
 	t.Logf("Dispatched:    %d events in %v", numCallbacks, dispatchDuration)
 	t.Logf("Dispatch rate: %.0f events/sec", float64(numCallbacks)/dispatchDuration.Seconds())
 	t.Logf("Received:      %d/%d callbacks", receivedCount, numCallbacks)
@@ -198,13 +196,11 @@ func TestConcurrentJobsWithCallbacks(t *testing.T) {
 
 	start := time.Now()
 	for i := range numJobs {
-		wg.Add(1)
 		semaphore <- struct{}{}
-		go func(id int) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-semaphore }()
 
-			jobID := fmt.Sprintf("concurrent-%d-%d", time.Now().UnixNano(), id)
+			jobID := fmt.Sprintf("concurrent-%d-%d", time.Now().UnixNano(), i)
 			req := job.Request{
 				ID:             jobID,
 				Image:          "alpine:latest",
@@ -229,7 +225,7 @@ func TestConcurrentJobsWithCallbacks(t *testing.T) {
 			} else {
 				failed.Add(1)
 			}
-		}(i)
+		})
 	}
 	wg.Wait()
 	createDuration := time.Since(start)
@@ -246,7 +242,7 @@ func TestConcurrentJobsWithCallbacks(t *testing.T) {
 		return total >= expectedCallbacks
 	}, testutil.WithTimeout(60*time.Second))
 
-	t.Logf("=== Concurrent Jobs Test ===")
+	t.Log("=== Concurrent Jobs Test ===")
 	t.Logf("Jobs created:  %d/%d in %v", created.Load(), numJobs, createDuration)
 	t.Logf("Jobs failed:   %d", failed.Load())
 	t.Logf("Create rate:   %.1f jobs/sec", float64(created.Load())/createDuration.Seconds())
@@ -343,7 +339,7 @@ func TestDispatcherUnderLoad(t *testing.T) {
 	stats := d.Stats()
 	elapsed := time.Since(start)
 
-	t.Logf("=== Dispatcher Load Test ===")
+	t.Log("=== Dispatcher Load Test ===")
 	t.Logf("Target rate:   %d events/sec for %ds", eventRate, duration)
 	t.Logf("Dispatched:    %d events", dispatched.Load())
 	t.Logf("Received:      %d callbacks", received.Load())

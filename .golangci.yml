@@ -23,6 +23,7 @@ linters:
     - errname
     - errorlint
     - exhaustive
+    - exptostd
     - fatcontext
     - forbidigo
     - gochecknoglobals
@@ -30,6 +31,7 @@ linters:
     - gomodguard
     - gomoddirectives
     - goprintffuncname
+    - iface
     - interfacebloat
     - intrange
     - ireturn
@@ -38,9 +40,11 @@ linters:
     - makezero
     - mirror
     - misspell
+    - modernize
     - musttag
     - nestif
     - nilerr
+    - nilnesserr
     - nilnil
     - noctx
     - nolintlint
@@ -79,6 +83,12 @@ linters:
         - empty
         - orchestrator  # our own domain interfaces (Artifact, Orchestrator, etc.)
         - opentelemetry # otel metric options returned by attribute helpers
+    iface:
+      enable:
+        - identical
+        - unused
+        - opaque
+        - unexported
     interfacebloat:
       max: 8
     depguard:
@@ -142,9 +152,14 @@ linters:
         - name: early-return
         - name: errorf
         - name: identical-branches
+        - name: identical-ifelseif-branches
+        - name: identical-ifelseif-conditions
+        - name: identical-switch-branches
+        - name: identical-switch-conditions
         - name: if-return
         - name: indent-error-flow
         - name: superfluous-else
+        - name: unnecessary-if
         - name: unreachable-code
         # Bug prevention
         - name: atomic
@@ -165,14 +180,23 @@ linters:
         - name: empty-block
         - name: empty-lines
         - name: import-shadowing
+        - name: inefficient-map-lookup
         - name: range
         - name: struct-tag
           arguments:
             - "json,inline"
+        - name: unnecessary-format
         - name: unnecessary-stmt
         - name: useless-break
+        - name: useless-fallthrough
         # Modern Go
+        - name: forbidden-call-in-wg-go
+        - name: package-directory-mismatch
+        - name: package-naming
         - name: redundant-build-tag
+        - name: use-fmt-print
+        - name: use-slices-sort
+        - name: use-waitgroup-go
   exclusions:
     rules:
       - linters:

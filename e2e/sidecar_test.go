@@ -204,7 +204,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 	}
 
 	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(fmt.Sprintf(`[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL)))
+	artifacts, err := reg.Unmarshal(fmt.Appendf(nil, `[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	}
 
 	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(fmt.Sprintf(`[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL)))
+	artifacts, err := reg.Unmarshal(fmt.Appendf(nil, `[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}

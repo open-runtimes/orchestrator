@@ -81,9 +81,6 @@ func (b *Breaker) Allow() bool {
 	defer b.mu.Unlock()
 
 	switch b.state {
-	case Closed:
-		return true
-
 	case Open:
 		// Check if cooldown has elapsed
 		if time.Since(b.lastFailure) > b.cooldown {
@@ -91,10 +88,6 @@ func (b *Breaker) Allow() bool {
 			return true
 		}
 		return false
-
-	case HalfOpen:
-		// Only allow one request through to test
-		return true
 
 	default:
 		return true

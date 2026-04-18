@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -45,10 +46,8 @@ func validatePath(path string) error {
 		return errors.New("path traversal not allowed")
 	}
 
-	for _, part := range strings.Split(path, "/") {
-		if part == ".." {
-			return errors.New("path traversal not allowed")
-		}
+	if slices.Contains(strings.Split(path, "/"), "..") {
+		return errors.New("path traversal not allowed")
 	}
 
 	return nil

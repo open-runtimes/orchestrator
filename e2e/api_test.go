@@ -415,16 +415,13 @@ func TestAPI_ConcurrentJobs(t *testing.T) {
 	errors := make(chan error, numJobs)
 
 	for i := range numJobs {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-
-			jobID := fmt.Sprintf("e2e-concurrent-%d-%d", time.Now().UnixNano(), idx)
+		wg.Go(func() {
+			jobID := fmt.Sprintf("e2e-concurrent-%d-%d", time.Now().UnixNano(), i)
 
 			reqBody := map[string]any{
 				"id":             jobID,
 				"image":          "alpine:latest",
-				"command":        fmt.Sprintf("echo 'job %d' && sleep 2", idx),
+				"command":        fmt.Sprintf("echo 'job %d' && sleep 2", i),
 				"cpu":            1,
 				"memory":         128,
 				"timeoutSeconds": 60,
@@ -433,16 +430,16 @@ func TestAPI_ConcurrentJobs(t *testing.T) {
 
 			resp, err := http.Post(baseURL+"/v1/jobs", "application/json", bytes.NewReader(body))
 			if err != nil {
-				errors <- fmt.Errorf("job %d: create failed: %w", idx, err)
+				errors <- fmt.Errorf("job %d: create failed: %w", i, err)
 				return
 			}
 			resp.Body.Close()
 
 			if resp.StatusCode != http.StatusAccepted {
-				errors <- fmt.Errorf("job %d: expected 202, got %d", idx, resp.StatusCode)
+				errors <- fmt.Errorf("job %d: expected 202, got %d", i, resp.StatusCode)
 				return
 			}
-		}(i)
+		})
 	}
 
 	wg.Wait()
