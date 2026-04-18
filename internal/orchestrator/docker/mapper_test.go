@@ -76,20 +76,17 @@ func TestWatchConfigFromRequest_FullCallback(t *testing.T) {
 	if cfg.dest == nil {
 		t.Fatal("dest: want non-nil")
 	}
-	if cfg.dest.jobID != "job-1" {
-		t.Errorf("dest.jobID: want job-1, got %s", cfg.dest.jobID)
+	if cfg.dest.URL != "https://example.com/cb" {
+		t.Errorf("dest.URL: want https://example.com/cb, got %s", cfg.dest.URL)
 	}
-	if cfg.dest.url != "https://example.com/cb" {
-		t.Errorf("dest.url: want https://example.com/cb, got %s", cfg.dest.url)
+	if cfg.dest.Key != "secret" {
+		t.Errorf("dest.Key: want secret, got %s", cfg.dest.Key)
 	}
-	if cfg.dest.key != "secret" {
-		t.Errorf("dest.key: want secret, got %s", cfg.dest.key)
+	if !reflect.DeepEqual(cfg.dest.Events, req.Callback.Events) {
+		t.Errorf("dest.Events: want %v, got %v", req.Callback.Events, cfg.dest.Events)
 	}
-	if !reflect.DeepEqual(cfg.dest.events, req.Callback.Events) {
-		t.Errorf("dest.events: want %v, got %v", req.Callback.Events, cfg.dest.events)
-	}
-	if !reflect.DeepEqual(cfg.dest.meta, req.Meta) {
-		t.Errorf("dest.meta: want %v, got %v", req.Meta, cfg.dest.meta)
+	if !reflect.DeepEqual(cfg.dest.Meta, req.Meta) {
+		t.Errorf("dest.Meta: want %v, got %v", req.Meta, cfg.dest.Meta)
 	}
 }
 
@@ -138,11 +135,11 @@ func TestWatchConfigFromState_WithCallbackLabels(t *testing.T) {
 	if cfg.dest == nil {
 		t.Fatal("dest: want non-nil")
 	}
-	if cfg.dest.url != "https://example.com/cb" {
-		t.Errorf("dest.url: want https://example.com/cb, got %s", cfg.dest.url)
+	if cfg.dest.URL != "https://example.com/cb" {
+		t.Errorf("dest.URL: want https://example.com/cb, got %s", cfg.dest.URL)
 	}
-	if cfg.dest.key != "secret" {
-		t.Errorf("dest.key: want secret, got %s", cfg.dest.key)
+	if cfg.dest.Key != "secret" {
+		t.Errorf("dest.Key: want secret, got %s", cfg.dest.Key)
 	}
 }
 
@@ -151,7 +148,7 @@ func TestWatchConfigFromState_WithCallbackLabels(t *testing.T) {
 func TestCallbackDestFromLabels_NoURL(t *testing.T) {
 	t.Parallel()
 	for _, labels := range []map[string]string{nil, {}, {"job.callback.key": "k"}} {
-		if dest := callbackDestFromLabels("job-1", labels); dest != nil {
+		if dest := callbackDestFromLabels(labels); dest != nil {
 			t.Errorf("want nil when no callback URL, got %+v", dest)
 		}
 	}
@@ -161,25 +158,22 @@ func TestCallbackDestFromLabels_URLOnly(t *testing.T) {
 	t.Parallel()
 	labels := map[string]string{"job.callback.url": "https://example.com/cb"}
 
-	dest := callbackDestFromLabels("job-1", labels)
+	dest := callbackDestFromLabels(labels)
 
 	if dest == nil {
 		t.Fatal("want non-nil dest")
 	}
-	if dest.jobID != "job-1" {
-		t.Errorf("jobID: want job-1, got %s", dest.jobID)
+	if dest.URL != "https://example.com/cb" {
+		t.Errorf("URL: want https://example.com/cb, got %s", dest.URL)
 	}
-	if dest.url != "https://example.com/cb" {
-		t.Errorf("url: want https://example.com/cb, got %s", dest.url)
+	if dest.Key != "" {
+		t.Errorf("Key: want empty, got %s", dest.Key)
 	}
-	if dest.key != "" {
-		t.Errorf("key: want empty, got %s", dest.key)
+	if dest.Events != nil {
+		t.Errorf("Events: want nil, got %v", dest.Events)
 	}
-	if dest.events != nil {
-		t.Errorf("events: want nil, got %v", dest.events)
-	}
-	if dest.meta != nil {
-		t.Errorf("meta: want nil, got %v", dest.meta)
+	if dest.Meta != nil {
+		t.Errorf("Meta: want nil, got %v", dest.Meta)
 	}
 }
 
@@ -190,10 +184,10 @@ func TestCallbackDestFromLabels_WithKey(t *testing.T) {
 		"job.callback.key": "my-secret",
 	}
 
-	dest := callbackDestFromLabels("job-1", labels)
+	dest := callbackDestFromLabels(labels)
 
-	if dest.key != "my-secret" {
-		t.Errorf("key: want my-secret, got %s", dest.key)
+	if dest.Key != "my-secret" {
+		t.Errorf("Key: want my-secret, got %s", dest.Key)
 	}
 }
 
@@ -204,11 +198,11 @@ func TestCallbackDestFromLabels_WithEvents(t *testing.T) {
 		"job.callback.events": "orchestrator.job.start,orchestrator.job.exit",
 	}
 
-	dest := callbackDestFromLabels("job-1", labels)
+	dest := callbackDestFromLabels(labels)
 
 	want := []string{"orchestrator.job.start", "orchestrator.job.exit"}
-	if !reflect.DeepEqual(dest.events, want) {
-		t.Errorf("events: want %v, got %v", want, dest.events)
+	if !reflect.DeepEqual(dest.Events, want) {
+		t.Errorf("Events: want %v, got %v", want, dest.Events)
 	}
 }
 
@@ -219,11 +213,11 @@ func TestCallbackDestFromLabels_SingleEvent(t *testing.T) {
 		"job.callback.events": "orchestrator.job.exit",
 	}
 
-	dest := callbackDestFromLabels("job-1", labels)
+	dest := callbackDestFromLabels(labels)
 
 	want := []string{"orchestrator.job.exit"}
-	if !reflect.DeepEqual(dest.events, want) {
-		t.Errorf("events: want %v, got %v", want, dest.events)
+	if !reflect.DeepEqual(dest.Events, want) {
+		t.Errorf("Events: want %v, got %v", want, dest.Events)
 	}
 }
 
@@ -234,11 +228,11 @@ func TestCallbackDestFromLabels_WithMeta(t *testing.T) {
 		"job.meta":         `{"env":"prod","region":"us-east-1"}`,
 	}
 
-	dest := callbackDestFromLabels("job-1", labels)
+	dest := callbackDestFromLabels(labels)
 
 	want := map[string]string{"env": "prod", "region": "us-east-1"}
-	if !reflect.DeepEqual(dest.meta, want) {
-		t.Errorf("meta: want %v, got %v", want, dest.meta)
+	if !reflect.DeepEqual(dest.Meta, want) {
+		t.Errorf("Meta: want %v, got %v", want, dest.Meta)
 	}
 }
 
@@ -249,14 +243,14 @@ func TestCallbackDestFromLabels_InvalidMetaJSON(t *testing.T) {
 		"job.meta":         `not-valid-json`,
 	}
 
-	dest := callbackDestFromLabels("job-1", labels)
+	dest := callbackDestFromLabels(labels)
 
 	// Invalid JSON should be silently ignored; dest is still returned
 	if dest == nil {
 		t.Fatal("want non-nil dest even with invalid meta JSON")
 	}
-	if dest.meta != nil {
-		t.Errorf("meta: want nil on invalid JSON, got %v", dest.meta)
+	if dest.Meta != nil {
+		t.Errorf("Meta: want nil on invalid JSON, got %v", dest.Meta)
 	}
 }
 
@@ -269,26 +263,23 @@ func TestCallbackDestFromLabels_AllFields(t *testing.T) {
 		"job.meta":            `{"team":"platform"}`,
 	}
 
-	dest := callbackDestFromLabels("job-42", labels)
+	dest := callbackDestFromLabels(labels)
 
 	if dest == nil {
 		t.Fatal("want non-nil dest")
 	}
-	if dest.jobID != "job-42" {
-		t.Errorf("jobID: want job-42, got %s", dest.jobID)
+	if dest.URL != "https://example.com/cb" {
+		t.Errorf("URL mismatch")
 	}
-	if dest.url != "https://example.com/cb" {
-		t.Errorf("url mismatch")
-	}
-	if dest.key != "secret" {
-		t.Errorf("key mismatch")
+	if dest.Key != "secret" {
+		t.Errorf("Key mismatch")
 	}
 	wantEvents := []string{"orchestrator.job.start", "orchestrator.job.log", "orchestrator.job.exit"}
-	if !reflect.DeepEqual(dest.events, wantEvents) {
-		t.Errorf("events: want %v, got %v", wantEvents, dest.events)
+	if !reflect.DeepEqual(dest.Events, wantEvents) {
+		t.Errorf("Events: want %v, got %v", wantEvents, dest.Events)
 	}
 	wantMeta := map[string]string{"team": "platform"}
-	if !reflect.DeepEqual(dest.meta, wantMeta) {
-		t.Errorf("meta: want %v, got %v", wantMeta, dest.meta)
+	if !reflect.DeepEqual(dest.Meta, wantMeta) {
+		t.Errorf("Meta: want %v, got %v", wantMeta, dest.Meta)
 	}
 }

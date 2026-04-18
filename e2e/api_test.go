@@ -52,7 +52,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 			Destination: e.CallbackURL,
 			SigningKey:  e.SigningKey,
 		})
-	}))
+	})
 
 	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(context.Background(), docker.Config{
 		SidecarImage: "ko.local/job-sidecar:latest",

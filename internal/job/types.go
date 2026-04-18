@@ -122,12 +122,12 @@ type ListResponse struct {
 // Callback config is passed through from the sidecar so the orchestrator does not need to
 // duplicate it in its own state.
 type ArtifactReport struct {
-	JobID        string `json:"jobId"`
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Status       string `json:"status"`
-	Content      any    `json:"content,omitempty"`
-	Error        string `json:"error,omitempty"`
+	JobID   string `json:"jobId"`
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Content any    `json:"content,omitempty"`
+	Error   string `json:"error,omitempty"`
 
 	CallbackURL    string            `json:"callbackUrl,omitempty"`
 	CallbackKey    string            `json:"callbackKey,omitempty"`

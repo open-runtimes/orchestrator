@@ -309,9 +309,9 @@ func TestHandler_ReportArtifact(t *testing.T) {
 	handler := &Handler{artifactEmitter: mock}
 
 	report := job.ArtifactReport{
-		ID:   "a1",
-		Type: "upload",
-		Status:       "success",
+		ID:     "a1",
+		Type:   "upload",
+		Status: "success",
 	}
 	body, _ := json.Marshal(report)
 

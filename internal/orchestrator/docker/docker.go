@@ -39,7 +39,7 @@ type Orchestrator struct {
 	artifactEndpoint    string
 	extraHosts          []string
 	ctrl                *job.MemoryStore[dockerHandle]
-	watcher             JobWatcher
+	watcher             LifecycleWatcher
 
 	cancelMaintenance context.CancelFunc
 	watchWg           sync.WaitGroup
@@ -82,7 +82,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			artifactEndpoint:    cfg.ArtifactEndpoint,
 			extraHosts:          cfg.ExtraHosts,
 			ctrl:                job.NewMemoryStore[dockerHandle](),
-			watcher:             newDockerJobWatcher(dockerClient),
+			watcher:             newDockerLifecycleWatcher(dockerClient),
 		}, nil
 	}
 }
@@ -160,10 +160,13 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 
 		switch {
 		case !sidecarRunning && !workerRunning:
-			// Both exited — restore with terminal state, no watcher needed.
+			// Both exited — replay terminal state, no watcher needed.
 			completed++
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
-			_, _ = o.ctrl.Restore(jobID, job.TransitionForExit(cs.workerExitCode), handle, nil)
+			_ = o.ctrl.Reserve(jobID)
+			o.ctrl.Commit(jobID, handle, nil)
+			_ = o.ctrl.Apply(jobID, job.Started{})
+			_ = o.ctrl.Apply(jobID, job.Exited{ExitCode: cs.workerExitCode})
 
 		case sidecarRunning && jc.worker == nil:
 			// Sidecar running but no worker — shouldn't happen in normal flow.
@@ -172,53 +175,58 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
-			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
+			_ = o.ctrl.Reserve(jobID)
+			o.ctrl.Commit(jobID, handle, cancelWatch)
+			_ = o.ctrl.Apply(jobID, job.Started{})
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg, n)
+				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
+					_ = o.ctrl.Apply(cfg.jobID, s)
+					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
+				})
 			}()
 
 		case workerRunning:
-			// Worker is running — restore as running and resume watcher.
+			// Worker is running — replay running state and resume watcher.
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
-			n, _ := o.ctrl.Restore(jobID, job.ToRunning(), handle, cancelWatch)
+			_ = o.ctrl.Reserve(jobID)
+			o.ctrl.Commit(jobID, handle, cancelWatch)
+			_ = o.ctrl.Apply(jobID, job.Started{})
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg, n)
+				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
+					_ = o.ctrl.Apply(cfg.jobID, s)
+					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
+				})
 			}()
 
 		default:
-			// Sidecar running, worker created but not yet running — accepted state.
+			// Sidecar running, worker created but not yet started — accepted state.
 			// The watcher will drive the Running transition when the worker starts.
 			resumed++
 			watchCtx, cancelWatch := context.WithCancel(context.Background())
 			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			cfg := watchConfigFromState(cs, handle)
-			n, _ := o.ctrl.Restore(jobID, job.ToAccepted(), handle, cancelWatch)
+			_ = o.ctrl.Reserve(jobID)
+			o.ctrl.Commit(jobID, handle, cancelWatch)
 			o.watchWg.Add(1)
 			go func() {
 				defer o.watchWg.Done()
-				o.runWatchLoop(watchCtx, cfg, n)
+				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
+					_ = o.ctrl.Apply(cfg.jobID, s)
+					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
+				})
 			}()
 		}
 	}
 
 	logger.Info("Reconciliation complete", "reconciled", reconciled, "resumed", resumed, "completed", completed)
 	return nil
-}
-
-// callbackDest holds destination info for dispatching events.
-type callbackDest struct {
-	jobID  string
-	meta   map[string]string
-	url    string
-	key    string
-	events []string
 }
 
 // Run creates and starts a job with its sidecar.
@@ -272,48 +280,18 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 
 	// Commit runtime handles and start event-driven watcher.
 	watchCtx, cancelWatch := context.WithCancel(context.Background())
-	n := o.ctrl.Commit(req.ID, h, cancelWatch)
+	o.ctrl.Commit(req.ID, h, cancelWatch)
 	success = true
 	o.watchWg.Add(1)
 	go func() {
 		defer o.watchWg.Done()
-		o.runWatchLoop(watchCtx, cfg, n)
+		o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
+			_ = o.ctrl.Apply(cfg.jobID, s)
+			job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
+		})
 	}()
 
 	return nil
-}
-
-// runWatchLoop drives job state transitions and callback emission from watcher events.
-func (o *Orchestrator) runWatchLoop(ctx context.Context, cfg *watchConfig, n job.Notifier) {
-	for e := range o.watcher.Watch(ctx, cfg.sidecarID, cfg.workerID) {
-		switch ev := e.(type) {
-		case SidecarReady:
-			_ = n.Notify(job.ToRunning())
-			o.emitStartEvent(cfg)
-
-		case WorkerExited:
-			_ = n.Notify(job.TransitionForExit(ev.ExitCode))
-			o.sendExitEvent(cfg.jobID, cfg, ev.ExitCode, ev.Duration.Seconds())
-
-		case SidecarExited:
-			if !ev.WorkerHasStarted {
-				_ = n.Notify(job.ToFailed(-1, "sidecar exited before worker started"))
-				o.sendExitEvent(cfg.jobID, cfg, -1, 0)
-			}
-
-		case LogLine:
-			if cfg.dest == nil || !job.FilteredEvents(job.EventTypeLog, cfg.dest.events) {
-				continue
-			}
-			builder := job.NewEventBuilder(cfg.jobID, "orchestrator/service", cfg.dest.meta)
-			logEv := builder.BuildLogEvent(ev.Lines, ev.Stream)
-			o.emitter.Emit(&job.Event{
-				Payload:     logEv,
-				CallbackURL: cfg.dest.url,
-				SigningKey:  cfg.dest.key,
-			})
-		}
-	}
 }
 
 // Stop stops a running job and cleans up its resources.
@@ -371,49 +349,6 @@ func (o *Orchestrator) Close() error {
 func (o *Orchestrator) Ready(ctx context.Context) error {
 	_, err := o.client.Ping(ctx)
 	return err
-}
-
-// emitStartEvent emits the job start event to registered listeners.
-func (o *Orchestrator) emitStartEvent(cfg *watchConfig) {
-	if cfg.dest == nil {
-		return
-	}
-	builder := job.NewEventBuilder(cfg.jobID, "orchestrator/service", cfg.dest.meta)
-	event := builder.BuildStartEvent()
-	if job.FilteredEvents(event.Type, cfg.dest.events) {
-		o.emitter.Emit(&job.Event{
-			Payload:     event,
-			CallbackURL: cfg.dest.url,
-			SigningKey:  cfg.dest.key,
-		})
-	}
-}
-
-// sendExitEvent emits the job exit event.
-func (o *Orchestrator) sendExitEvent(jobID string, cfg *watchConfig, exitCode int, durationSeconds float64) {
-	builder := job.NewEventBuilder(jobID, "orchestrator/service", nil)
-	var exitErr error
-	if exitCode != 0 {
-		exitErr = fmt.Errorf("exit code %d", exitCode)
-	}
-
-	var callbackURL, signingKey string
-	var eventFilter []string
-	if cfg.dest != nil {
-		builder = job.NewEventBuilder(jobID, "orchestrator/service", cfg.dest.meta)
-		callbackURL = cfg.dest.url
-		signingKey = cfg.dest.key
-		eventFilter = cfg.dest.events
-	}
-
-	event := builder.BuildExitEvent(exitCode, cfg.image, durationSeconds, exitErr)
-	if job.FilteredEvents(event.Type, eventFilter) {
-		o.emitter.Emit(&job.Event{
-			Payload:     event,
-			CallbackURL: callbackURL,
-			SigningKey:  signingKey,
-		})
-	}
 }
 
 func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request, h dockerHandle) (string, error) {
@@ -488,13 +423,11 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		fmt.Sprintf("SHARED_VOLUME_PATH=%s", req.Workspace),
 	}
 
-	if len(req.Artifacts) > 0 {
-		artifactsJSON, err := json.Marshal(req.Artifacts)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal artifacts: %w", err)
-		}
-		env = append(env, fmt.Sprintf("ARTIFACTS_JSON=%s", string(artifactsJSON)))
+	artifactsJSON, err := json.Marshal(req.Artifacts)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal artifacts: %w", err)
 	}
+	env = append(env, fmt.Sprintf("ARTIFACTS_JSON=%s", string(artifactsJSON)))
 
 	if o.artifactEndpoint != "" {
 		env = append(env, fmt.Sprintf("ARTIFACT_ENDPOINT=%s", o.artifactEndpoint))

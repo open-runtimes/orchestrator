@@ -10,16 +10,20 @@ import (
 
 // fakeWatcher replays a fixed sequence of events with no Docker daemon.
 type fakeWatcher struct {
-	events []JobEvent
+	events []job.Signal
 }
 
-func (f *fakeWatcher) Watch(_ context.Context, _, _ string) <-chan JobEvent {
-	ch := make(chan JobEvent, len(f.events))
+func (f *fakeWatcher) Watch(_ context.Context, _, _ string, emit func(job.Signal)) {
 	for _, e := range f.events {
-		ch <- e
+		emit(e)
 	}
-	close(ch)
-	return ch
+}
+
+// blockingWatcher blocks until ctx is cancelled.
+type blockingWatcher struct{}
+
+func (b *blockingWatcher) Watch(ctx context.Context, _, _ string, _ func(job.Signal)) {
+	<-ctx.Done()
 }
 
 // captureListener records all emitted job events.
@@ -51,49 +55,26 @@ func (c *captureListener) types() []string {
 	return types
 }
 
-// helpers
+// --- tests ---
 
-func newTestOrchestrator(w JobWatcher) (*Orchestrator, *job.MemoryStore[dockerHandle], *captureListener) {
+func TestLifecycle_HappyPath(t *testing.T) {
+	t.Parallel()
 	ctrl := job.NewMemoryStore[dockerHandle]()
+	_ = ctrl.Reserve("job-1")
+	ctrl.Commit("job-1", dockerHandle{}, nil)
 	emitter := job.NewEventEmitter()
 	capture := &captureListener{}
 	emitter.Register(capture.record)
-	return &Orchestrator{ctrl: ctrl, emitter: emitter, watcher: w}, ctrl, capture
-}
+	dest := &job.CallbackDest{URL: "http://example.com/cb"}
 
-func testCfgNoCallback(jobID string) *watchConfig {
-	return &watchConfig{jobID: jobID, image: "alpine:latest", sidecarID: "sc-1", workerID: "wk-1"}
-}
-
-func testCfgWithCallback(jobID string, events ...string) *watchConfig {
-	return &watchConfig{
-		jobID:     jobID,
-		image:     "alpine:latest",
-		sidecarID: "sc-1",
-		workerID:  "wk-1",
-		dest: &callbackDest{
-			jobID:  jobID,
-			url:    "http://example.com/cb",
-			events: events,
-		},
-	}
-}
-
-// --- runWatchLoop tests ---
-
-func TestRunWatchLoop_HappyPath(t *testing.T) {
-	t.Parallel()
-	script := []JobEvent{
-		SidecarReady{},
-		WorkerExited{ExitCode: 0, Duration: 2 * time.Second},
-		SidecarExited{WorkerHasStarted: true},
-	}
-	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
-	cfg := testCfgWithCallback("job-1")
-
-	o.runWatchLoop(context.Background(), cfg, n)
+	w := &fakeWatcher{events: []job.Signal{
+		job.Started{},
+		job.Exited{ExitCode: 0, Duration: 2 * time.Second},
+	}}
+	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+		_ = ctrl.Apply("job-1", s)
+		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
+	})
 
 	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateCompleted {
@@ -102,7 +83,6 @@ func TestRunWatchLoop_HappyPath(t *testing.T) {
 	if entry.ExitCode == nil || *entry.ExitCode != 0 {
 		t.Errorf("want exit code 0, got %v", entry.ExitCode)
 	}
-
 	got := capture.types()
 	want := []string{job.EventTypeStart, job.EventTypeExit}
 	if len(got) != len(want) {
@@ -115,19 +95,24 @@ func TestRunWatchLoop_HappyPath(t *testing.T) {
 	}
 }
 
-func TestRunWatchLoop_WorkerFailure(t *testing.T) {
+func TestLifecycle_WorkerFailure(t *testing.T) {
 	t.Parallel()
-	script := []JobEvent{
-		SidecarReady{},
-		WorkerExited{ExitCode: 1, Duration: time.Second},
-		SidecarExited{WorkerHasStarted: true},
-	}
-	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
-	cfg := testCfgWithCallback("job-1")
+	ctrl.Commit("job-1", dockerHandle{}, nil)
+	emitter := job.NewEventEmitter()
+	capture := &captureListener{}
+	emitter.Register(capture.record)
+	dest := &job.CallbackDest{URL: "http://example.com/cb"}
 
-	o.runWatchLoop(context.Background(), cfg, n)
+	w := &fakeWatcher{events: []job.Signal{
+		job.Started{},
+		job.Exited{ExitCode: 1, Duration: time.Second},
+	}}
+	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+		_ = ctrl.Apply("job-1", s)
+		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
+	})
 
 	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateFailed {
@@ -136,24 +121,29 @@ func TestRunWatchLoop_WorkerFailure(t *testing.T) {
 	if entry.ExitCode == nil || *entry.ExitCode != 1 {
 		t.Errorf("want exit code 1, got %v", entry.ExitCode)
 	}
-
 	got := capture.types()
 	if len(got) != 2 || got[0] != job.EventTypeStart || got[1] != job.EventTypeExit {
 		t.Errorf("want [start, exit], got %v", got)
 	}
 }
 
-func TestRunWatchLoop_SidecarCrashBeforeWorker(t *testing.T) {
+func TestLifecycle_SidecarCrashBeforeWorker(t *testing.T) {
 	t.Parallel()
-	script := []JobEvent{
-		SidecarExited{WorkerHasStarted: false},
-	}
-	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
-	cfg := testCfgWithCallback("job-1")
+	ctrl.Commit("job-1", dockerHandle{}, nil)
+	emitter := job.NewEventEmitter()
+	capture := &captureListener{}
+	emitter.Register(capture.record)
+	dest := &job.CallbackDest{URL: "http://example.com/cb"}
 
-	o.runWatchLoop(context.Background(), cfg, n)
+	w := &fakeWatcher{events: []job.Signal{
+		job.Failed{Reason: "sidecar exited before inputs completed"},
+	}}
+	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+		_ = ctrl.Apply("job-1", s)
+		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
+	})
 
 	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateFailed {
@@ -162,28 +152,32 @@ func TestRunWatchLoop_SidecarCrashBeforeWorker(t *testing.T) {
 	if entry.ExitCode == nil || *entry.ExitCode != -1 {
 		t.Errorf("want exit code -1, got %v", entry.ExitCode)
 	}
-
 	got := capture.types()
 	if len(got) != 1 || got[0] != job.EventTypeExit {
 		t.Errorf("want [exit], got %v", got)
 	}
 }
 
-func TestRunWatchLoop_LogDelivered(t *testing.T) {
+func TestLifecycle_LogDelivered(t *testing.T) {
 	t.Parallel()
-	script := []JobEvent{
-		SidecarReady{},
-		LogLine{Stream: "stdout", Lines: []string{"hello", "world"}},
-		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerHasStarted: true},
-	}
-	// No event filter = all events allowed
-	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
-	cfg := testCfgWithCallback("job-1")
+	ctrl.Commit("job-1", dockerHandle{}, nil)
+	emitter := job.NewEventEmitter()
+	capture := &captureListener{}
+	emitter.Register(capture.record)
+	dest := &job.CallbackDest{URL: "http://example.com/cb"}
 
-	o.runWatchLoop(context.Background(), cfg, n)
+	// No event filter = all events allowed
+	w := &fakeWatcher{events: []job.Signal{
+		job.Started{},
+		job.LogLine{Stream: "stdout", Lines: []string{"hello", "world"}},
+		job.Exited{ExitCode: 0},
+	}}
+	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+		_ = ctrl.Apply("job-1", s)
+		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
+	})
 
 	got := capture.types()
 	want := []string{job.EventTypeStart, job.EventTypeLog, job.EventTypeExit}
@@ -197,19 +191,24 @@ func TestRunWatchLoop_LogDelivered(t *testing.T) {
 	}
 }
 
-func TestRunWatchLoop_LogSkippedWhenNoCallback(t *testing.T) {
+func TestLifecycle_LogSkippedWhenNoCallback(t *testing.T) {
 	t.Parallel()
-	script := []JobEvent{
-		SidecarReady{},
-		LogLine{Stream: "stdout", Lines: []string{"hello"}},
-		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerHasStarted: true},
-	}
-	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
+	ctrl.Commit("job-1", dockerHandle{}, nil)
+	emitter := job.NewEventEmitter()
+	capture := &captureListener{}
+	emitter.Register(capture.record)
 
-	o.runWatchLoop(context.Background(), testCfgNoCallback("job-1"), n)
+	w := &fakeWatcher{events: []job.Signal{
+		job.Started{},
+		job.LogLine{Stream: "stdout", Lines: []string{"hello"}},
+		job.Exited{ExitCode: 0},
+	}}
+	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+		_ = ctrl.Apply("job-1", s)
+		job.EmitCallback(emitter, "job-1", "alpine:latest", nil, s)
+	})
 
 	for _, e := range capture.all() {
 		if e.Payload.Type == job.EventTypeLog {
@@ -218,21 +217,25 @@ func TestRunWatchLoop_LogSkippedWhenNoCallback(t *testing.T) {
 	}
 }
 
-func TestRunWatchLoop_LogSkippedWhenFilteredOut(t *testing.T) {
+func TestLifecycle_LogSkippedWhenFilteredOut(t *testing.T) {
 	t.Parallel()
-	script := []JobEvent{
-		SidecarReady{},
-		LogLine{Stream: "stderr", Lines: []string{"warning"}},
-		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerHasStarted: true},
-	}
-	// Callback configured but log events not in filter
-	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
+	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
-	cfg := testCfgWithCallback("job-1", job.EventTypeStart, job.EventTypeExit)
+	ctrl.Commit("job-1", dockerHandle{}, nil)
+	emitter := job.NewEventEmitter()
+	capture := &captureListener{}
+	emitter.Register(capture.record)
+	dest := &job.CallbackDest{URL: "http://example.com/cb", Events: []string{job.EventTypeStart, job.EventTypeExit}}
 
-	o.runWatchLoop(context.Background(), cfg, n)
+	w := &fakeWatcher{events: []job.Signal{
+		job.Started{},
+		job.LogLine{Stream: "stderr", Lines: []string{"warning"}},
+		job.Exited{ExitCode: 0},
+	}}
+	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+		_ = ctrl.Apply("job-1", s)
+		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
+	})
 
 	for _, e := range capture.all() {
 		if e.Payload.Type == job.EventTypeLog {
@@ -241,90 +244,63 @@ func TestRunWatchLoop_LogSkippedWhenFilteredOut(t *testing.T) {
 	}
 }
 
-func TestRunWatchLoop_ResumeNoSidecarReady(t *testing.T) {
+func TestLifecycle_ResumeNoStarted(t *testing.T) {
 	t.Parallel()
 	// Simulate a resumed job: worker was already running, so Watch emits
-	// WorkerExited and SidecarExited without a leading SidecarReady.
-	script := []JobEvent{
-		WorkerExited{ExitCode: 0, Duration: 5 * time.Second},
-		SidecarExited{WorkerHasStarted: true},
-	}
-	o, ctrl, capture := newTestOrchestrator(&fakeWatcher{events: script})
-	// Outer reconcile already set Running before spawning the goroutine.
-	n, _ := ctrl.Restore("job-1", job.ToRunning(), dockerHandle{}, nil)
-	cfg := testCfgWithCallback("job-1")
+	// Exited without a leading Started.
+	ctrl := job.NewMemoryStore[dockerHandle]()
+	_ = ctrl.Reserve("job-1")
+	ctrl.Commit("job-1", dockerHandle{}, nil)
+	_ = ctrl.Apply("job-1", job.Started{})
+	emitter := job.NewEventEmitter()
+	capture := &captureListener{}
+	emitter.Register(capture.record)
+	dest := &job.CallbackDest{URL: "http://example.com/cb"}
 
-	o.runWatchLoop(context.Background(), cfg, n)
+	w := &fakeWatcher{events: []job.Signal{
+		job.Exited{ExitCode: 0, Duration: 5 * time.Second},
+	}}
+	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+		_ = ctrl.Apply("job-1", s)
+		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
+	})
 
 	entry, _ := ctrl.Get("job-1")
 	if entry.State != job.StateCompleted {
 		t.Errorf("want StateCompleted, got %s", entry.State)
 	}
-
-	// No start event should be emitted — worker was already running.
 	for _, e := range capture.all() {
 		if e.Payload.Type == job.EventTypeStart {
 			t.Error("start event should not be emitted for resumed job")
 		}
 	}
-	// Exit event should still be emitted.
 	types := capture.types()
 	if len(types) != 1 || types[0] != job.EventTypeExit {
 		t.Errorf("want [exit] event, got %v", types)
 	}
 }
 
-func TestRunWatchLoop_SidecarExitedAfterWorker(t *testing.T) {
+func TestLifecycle_ContextCancelled(t *testing.T) {
 	t.Parallel()
-	// SidecarExited{WorkerHasStarted: true} should not change state
-	// (worker exit already handled it).
-	script := []JobEvent{
-		SidecarReady{},
-		WorkerExited{ExitCode: 0},
-		SidecarExited{WorkerHasStarted: true},
-	}
-	o, ctrl, _ := newTestOrchestrator(&fakeWatcher{events: script})
+	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
-
-	o.runWatchLoop(context.Background(), testCfgNoCallback("job-1"), n)
-
-	entry, _ := ctrl.Get("job-1")
-	if entry.State != job.StateCompleted {
-		t.Errorf("want StateCompleted, got %s", entry.State)
-	}
-}
-
-func TestRunWatchLoop_ContextCancelled(t *testing.T) {
-	t.Parallel()
-	blocking := &blockingWatcher{}
-	o, ctrl, _ := newTestOrchestrator(blocking)
-	_ = ctrl.Reserve("job-1")
-	n := ctrl.Commit("job-1", dockerHandle{}, nil)
+	ctrl.Commit("job-1", dockerHandle{}, nil)
+	emitter := job.NewEventEmitter()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		o.runWatchLoop(ctx, testCfgNoCallback("job-1"), n)
+		(&blockingWatcher{}).Watch(ctx, "sc-1", "wk-1", func(s job.Signal) {
+			_ = ctrl.Apply("job-1", s)
+			job.EmitCallback(emitter, "job-1", "alpine:latest", nil, s)
+		})
 	}()
 
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("runWatchLoop did not return after context cancellation")
+		t.Fatal("Watch did not return after context cancellation")
 	}
-}
-
-// blockingWatcher returns a channel that is only closed when ctx is cancelled.
-type blockingWatcher struct{}
-
-func (b *blockingWatcher) Watch(ctx context.Context, _, _ string) <-chan JobEvent {
-	ch := make(chan JobEvent)
-	go func() {
-		<-ctx.Done()
-		close(ch)
-	}()
-	return ch
 }

@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// Handle pairs a cancel function with a runtime-specific handle T.
+// Returned by Release so the caller can stop the watcher and clean up resources.
+type Handle[T any] struct {
+	CancelWatch context.CancelFunc
+	Runtime     T
+}
+
 // Viewer is the read-only surface used by HTTP handlers.
 type Viewer interface {
 	Get(jobID string) (Entry, bool)
@@ -17,22 +24,15 @@ type Viewer interface {
 // Store is the full lifecycle surface for an orchestrator backend.
 // T is the runtime handle type (e.g. dockerHandle in the docker package).
 //
-// Lifecycle: Reserve → Commit → [Notifier.Notify via watcher] → Release
-// Reconcile: Restore → [Notifier.Notify via watcher] → Release
+// Lifecycle: Reserve → Commit → [Apply via watcher] → Release
+// Reconcile: Reserve → Commit → Apply (to replay known state) → [Apply via watcher] → Release
 type Store[T any] interface {
 	Viewer
 	Reserve(jobID string) error
-	Commit(jobID string, runtime T, cancelWatch context.CancelFunc) Notifier
-	Restore(jobID string, t Transition, runtime T, cancelWatch context.CancelFunc) (Notifier, error)
+	Commit(jobID string, runtime T, cancelWatch context.CancelFunc)
+	Apply(jobID string, s Signal) error
 	Release(jobID string) (Handle[T], bool)
 	Each(f func(string, Entry, Handle[T]))
-}
-
-// Notifier is the pre-bound write handle given to a watcher goroutine.
-// It does not expose the full Store; it can only drive FSM transitions
-// for the single job it was bound to at Commit or Restore time.
-type Notifier interface {
-	Notify(t Transition) error
 }
 
 // controllerEntry is the internal record in MemoryStore.
@@ -40,40 +40,7 @@ type controllerEntry[T any] struct {
 	jobEntry    Entry
 	handle      T
 	cancelWatch context.CancelFunc
-	released    bool // set by Release; Notify returns an error if true
-}
-
-// notifier is the Notifier implementation returned by Commit and Restore.
-// It holds a pointer to the controller's mutex and to its own entry so that
-// Notify can drive FSM transitions without a map lookup.
-type notifier[T any] struct {
-	mu    *sync.RWMutex
-	e     *controllerEntry[T]
-	jobID string
-}
-
-func (n *notifier[T]) Notify(t Transition) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	if n.e.released {
-		return fmt.Errorf("job %s: job has been released", n.jobID)
-	}
-
-	if err := ValidateTransition(n.e.jobEntry.State, t.State()); err != nil {
-		return fmt.Errorf("job %s: %w", n.jobID, err)
-	}
-
-	n.e.jobEntry.State = t.State()
-	n.e.jobEntry.UpdatedAt = time.Now()
-	if code := t.ExitCode(); code != nil {
-		c := *code
-		n.e.jobEntry.ExitCode = &c
-	}
-	if msg := t.ErrMsg(); msg != "" {
-		n.e.jobEntry.Error = msg
-	}
-	return nil
+	released    bool // set by Release; Apply returns an error if true
 }
 
 // MemoryStore implements Store[T].
@@ -110,52 +77,67 @@ func (c *MemoryStore[T]) Reserve(jobID string) error {
 	return nil
 }
 
-// Commit stores the runtime handle and returns a Notifier pre-bound to this job.
-// If the job does not exist, a dead Notifier is returned (always errors on Notify).
-func (c *MemoryStore[T]) Commit(jobID string, runtime T, cancelWatch context.CancelFunc) Notifier {
+// Commit stores the runtime handle for a reserved job.
+func (c *MemoryStore[T]) Commit(jobID string, runtime T, cancelWatch context.CancelFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	e := c.jobs[jobID]
-	if e == nil {
-		return &deadNotifier{jobID: jobID}
+	if e := c.jobs[jobID]; e != nil {
+		e.handle = runtime
+		e.cancelWatch = cancelWatch
 	}
-	e.handle = runtime
-	e.cancelWatch = cancelWatch
-	return &notifier[T]{mu: &c.mu, e: e, jobID: jobID}
 }
 
-// Restore seeds the controller with a job recovered at startup.
-// Unlike Reserve+Commit, the initial state is taken directly from t.
-// Pass nil cancelWatch for terminal jobs.
-func (c *MemoryStore[T]) Restore(jobID string, t Transition, runtime T, cancelWatch context.CancelFunc) (Notifier, error) {
+// Apply translates a Signal into an FSM state change for the given job.
+// LogLine signals are ignored (no state change). Returns an error if the job
+// is not found, already released, or the signal results in an invalid transition.
+func (c *MemoryStore[T]) Apply(jobID string, s Signal) error {
+	var targetState string
+	var exitCode *int
+	var errMsg string
+
+	switch ev := s.(type) {
+	case Started:
+		targetState = StateRunning
+	case Exited:
+		code := ev.ExitCode
+		exitCode = &code
+		if ev.ExitCode == 0 {
+			targetState = StateCompleted
+		} else {
+			targetState = StateFailed
+		}
+	case Failed:
+		targetState = StateFailed
+		code := -1
+		exitCode = &code
+		errMsg = ev.Reason
+	default:
+		return nil
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, exists := c.jobs[jobID]; exists {
-		return nil, fmt.Errorf("job %s already registered", jobID)
+	e, ok := c.jobs[jobID]
+	if !ok || e.released {
+		return fmt.Errorf("job %s: not found or released", jobID)
 	}
 
-	now := time.Now()
-	e := &controllerEntry[T]{
-		jobEntry: Entry{
-			ID:        jobID,
-			State:     t.State(),
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-		handle:      runtime,
-		cancelWatch: cancelWatch,
+	if err := validateTransition(e.jobEntry.State, targetState); err != nil {
+		return fmt.Errorf("job %s: %w", jobID, err)
 	}
-	if code := t.ExitCode(); code != nil {
-		cp := *code
+
+	e.jobEntry.State = targetState
+	e.jobEntry.UpdatedAt = time.Now()
+	if exitCode != nil {
+		cp := *exitCode
 		e.jobEntry.ExitCode = &cp
 	}
-	if msg := t.ErrMsg(); msg != "" {
-		e.jobEntry.Error = msg
+	if errMsg != "" {
+		e.jobEntry.Error = errMsg
 	}
-	c.jobs[jobID] = e
-	return &notifier[T]{mu: &c.mu, e: e, jobID: jobID}, nil
+	return nil
 }
 
 // Release atomically removes a job and returns its handle for cleanup.
@@ -221,16 +203,5 @@ func (c *MemoryStore[T]) Each(f func(string, Entry, Handle[T])) {
 	}
 }
 
-// deadNotifier is returned by Commit when Reserve was not called first.
-type deadNotifier struct{ jobID string }
-
-func (d *deadNotifier) Notify(_ Transition) error {
-	return fmt.Errorf("job %s: notifier is dead (Reserve was not called)", d.jobID)
-}
-
-// Compile-time interface checks.
-var (
-	_ Store[struct{}] = (*MemoryStore[struct{}])(nil)
-	_ Notifier             = (*notifier[struct{}])(nil)
-	_ Notifier             = (*deadNotifier)(nil)
-)
+// Compile-time interface check.
+var _ Store[struct{}] = (*MemoryStore[struct{}])(nil)

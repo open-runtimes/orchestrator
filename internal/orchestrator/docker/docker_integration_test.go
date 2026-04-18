@@ -164,7 +164,7 @@ func TestOrchestrator_CallbackEvents(t *testing.T) {
 			Destination: e.CallbackURL,
 			SigningKey:  e.SigningKey,
 		})
-	}))
+	})
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -482,7 +482,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 			Destination: e.CallbackURL,
 			SigningKey:  e.SigningKey,
 		})
-	}))
+	})
 
 	orchestratorA, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -543,7 +543,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 			Destination: e.CallbackURL,
 			SigningKey:  e.SigningKey,
 		})
-	}))
+	})
 
 	orchestratorB, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,

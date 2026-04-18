@@ -16,7 +16,7 @@ type watchConfig struct {
 	image     string
 	sidecarID string
 	workerID  string
-	dest      *callbackDest
+	dest      *job.CallbackDest
 }
 
 // containerState is the Docker state needed to reconstruct a watchConfig on resume.
@@ -52,12 +52,11 @@ func watchConfigFromRequest(req *job.Request, h dockerHandle) *watchConfig {
 		workerID:  h.jobContainerID,
 	}
 	if req.Callback != nil && req.Callback.URL != "" {
-		cfg.dest = &callbackDest{
-			jobID:  req.ID,
-			meta:   req.Meta,
-			url:    req.Callback.URL,
-			key:    req.Callback.Key,
-			events: req.Callback.Events,
+		cfg.dest = &job.CallbackDest{
+			Meta:   req.Meta,
+			URL:    req.Callback.URL,
+			Key:    req.Callback.Key,
+			Events: req.Callback.Events,
 		}
 	}
 	return cfg
@@ -71,13 +70,13 @@ func watchConfigFromState(cs containerState, h dockerHandle) *watchConfig {
 		image:     cs.workerImage,
 		sidecarID: h.sidecarContainerID,
 		workerID:  h.jobContainerID,
-		dest:      callbackDestFromLabels(cs.jobID, cs.workerLabels),
+		dest:      callbackDestFromLabels(cs.workerLabels),
 	}
 }
 
 // callbackDestFromLabels parses callback destination from worker container labels.
 // Callback config is stored as labels at creation time so it survives service restarts.
-func callbackDestFromLabels(jobID string, labels map[string]string) *callbackDest {
+func callbackDestFromLabels(labels map[string]string) *job.CallbackDest {
 	callbackURL := labels["job.callback.url"]
 	if callbackURL == "" {
 		return nil
@@ -93,11 +92,10 @@ func callbackDestFromLabels(jobID string, labels map[string]string) *callbackDes
 		events = strings.Split(raw, ",")
 	}
 
-	return &callbackDest{
-		jobID:  jobID,
-		meta:   meta,
-		url:    callbackURL,
-		key:    labels["job.callback.key"],
-		events: events,
+	return &job.CallbackDest{
+		Meta:   meta,
+		URL:    callbackURL,
+		Key:    labels["job.callback.key"],
+		Events: events,
 	}
 }

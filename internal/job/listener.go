@@ -9,7 +9,7 @@ import (
 type Event struct {
 	Payload     *cloudevent.Event
 	CallbackURL string
-	SigningKey   string
+	SigningKey  string
 }
 
 // EventEmitter fans out job events to registered listeners.

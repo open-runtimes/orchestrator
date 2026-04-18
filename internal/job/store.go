@@ -29,8 +29,8 @@ func (e *Entry) Status() *Status {
 	return s
 }
 
-// ValidateTransition returns an error if the from→to transition is not allowed by the FSM.
-func ValidateTransition(from, to string) error {
+// validateTransition returns an error if the from→to transition is not allowed by the FSM.
+func validateTransition(from, to string) error {
 	allowed, ok := validTransitions[from]
 	if !ok || !allowed[to] {
 		return fmt.Errorf("invalid state transition: %s -> %s", from, to)

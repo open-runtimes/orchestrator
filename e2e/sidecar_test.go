@@ -37,7 +37,7 @@ func mockOrchestratorServer(t *testing.T, count *atomic.Int64, mu *sync.Mutex, r
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		t.Logf("Received artifact report: id=%s type=%s status=%s", report.ArtifactID, report.ArtifactType, report.Status)
+		t.Logf("Received artifact report: id=%s type=%s status=%s", report.ID, report.Type, report.Status)
 		mu.Lock()
 		*reports = append(*reports, report)
 		mu.Unlock()
@@ -138,8 +138,8 @@ func TestSidecar_FullFlow(t *testing.T) {
 		t.Fatal("No artifact reports received")
 	}
 	r := receivedReports[0]
-	if r.ArtifactID != "result" {
-		t.Errorf("ArtifactID: got %q, want %q", r.ArtifactID, "result")
+	if r.ID != "result" {
+		t.Errorf("ArtifactID: got %q, want %q", r.ID, "result")
 	}
 	if r.Status != "success" {
 		t.Errorf("Status: got %q, want %q", r.Status, "success")
@@ -257,8 +257,8 @@ func TestSidecar_InputDownload(t *testing.T) {
 		t.Fatal("No artifact reports received")
 	}
 	r := receivedReports[0]
-	if r.ArtifactID != "input-1" {
-		t.Errorf("ArtifactID: got %q, want %q", r.ArtifactID, "input-1")
+	if r.ID != "input-1" {
+		t.Errorf("ArtifactID: got %q, want %q", r.ID, "input-1")
 	}
 	if r.Status != "success" {
 		t.Errorf("Status: got %q, want %q", r.Status, "success")
@@ -377,8 +377,8 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		t.Fatal("No artifact reports received")
 	}
 	r := receivedReports[0]
-	if r.ArtifactID != "result" {
-		t.Errorf("ArtifactID: got %q, want %q", r.ArtifactID, "result")
+	if r.ID != "result" {
+		t.Errorf("ArtifactID: got %q, want %q", r.ID, "result")
 	}
 	if r.Status != "success" {
 		t.Errorf("Status: got %q, want %q", r.Status, "success")

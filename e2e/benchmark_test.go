@@ -410,7 +410,7 @@ func createBenchServer(tb testing.TB) (string, func()) {
 			Destination: e.CallbackURL,
 			SigningKey:  e.SigningKey,
 		})
-	}))
+	})
 
 	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{
 		SidecarImage:        "ko.local/job-sidecar:latest",
