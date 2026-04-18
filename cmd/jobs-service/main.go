@@ -54,6 +54,8 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string)
 			Namespace:                     cfg.Namespace,
 			ServiceAccount:                cfg.ServiceAccount,
 			ImagePullSecrets:              cfg.ImagePullSecrets,
+			WorkerImagePullPolicy:         cfg.WorkerImagePullPolicy,
+			SidecarImagePullPolicy:        cfg.SidecarImagePullPolicy,
 			RetentionPeriod:               cfg.JobRetention,
 			MaintenanceInterval:           cfg.MaintenanceInterval,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,

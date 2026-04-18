@@ -9,6 +9,11 @@ sidecarImage:
   repository: ko.local/job-sidecar
   tag: latest
 
+orchestrator:
+  # Kind loaded the ko.local/job-sidecar image; tell kubelet to use it instead of pulling.
+  # Worker pull policy stays empty so user images (alpine, python, etc.) still pull normally.
+  sidecarImagePullPolicy: Never
+
 replicaCount: 1
 
 resources:

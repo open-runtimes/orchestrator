@@ -44,6 +44,13 @@ orchestrator:
   maintenanceInterval: 1m
   # How long kubelet waits for the post-sidecar to finish after sending SIGTERM.
   terminationGracePeriodSeconds: 600
+  # ImagePullPolicy applied to containers inside job pods. Empty = kubelet default.
+  # workerImagePullPolicy applies to the user workload; sidecarImagePullPolicy applies to
+  # artifact-pre + artifact-post (our own image). For local dev with ko-loaded images,
+  # set sidecarImagePullPolicy=Never and leave workerImagePullPolicy empty so alpine etc.
+  # still pulls from upstream.
+  workerImagePullPolicy: ""
+  sidecarImagePullPolicy: ""
 
 resources:
   requests:

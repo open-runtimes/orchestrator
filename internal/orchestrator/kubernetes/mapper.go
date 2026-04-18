@@ -135,6 +135,9 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 		cmd = []string{"/bin/sh", "-c", req.Command}
 	}
 
+	sidecarPull := corev1.PullPolicy(cfg.SidecarImagePullPolicy)
+	workerPull := corev1.PullPolicy(cfg.WorkerImagePullPolicy)
+
 	podSpec := corev1.PodSpec{
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		ServiceAccountName:            cfg.ServiceAccount,
@@ -147,30 +150,33 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 		},
 		InitContainers: []corev1.Container{
 			{
-				Name:         ContainerArtifactPre,
-				Image:        sidecarImage,
-				Args:         []string{"-mode=pre"},
-				Env:          sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
-				VolumeMounts: volumeMounts,
+				Name:            ContainerArtifactPre,
+				Image:           sidecarImage,
+				ImagePullPolicy: sidecarPull,
+				Args:            []string{"-mode=pre"},
+				Env:             sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
+				VolumeMounts:    volumeMounts,
 			},
 			{
-				Name:          ContainerArtifactPost,
-				Image:         sidecarImage,
-				Args:          []string{"-mode=post"},
-				Env:           sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
-				VolumeMounts:  volumeMounts,
-				RestartPolicy: &alwaysRestart,
+				Name:            ContainerArtifactPost,
+				Image:           sidecarImage,
+				ImagePullPolicy: sidecarPull,
+				Args:            []string{"-mode=post"},
+				Env:             sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
+				VolumeMounts:    volumeMounts,
+				RestartPolicy:   &alwaysRestart,
 			},
 		},
 		Containers: []corev1.Container{
 			{
-				Name:         ContainerWorker,
-				Image:        req.Image,
-				Command:      cmd,
-				Env:          workerEnv(req),
-				WorkingDir:   workspace,
-				VolumeMounts: volumeMounts,
-				Resources:    workerResources(req),
+				Name:            ContainerWorker,
+				Image:           req.Image,
+				ImagePullPolicy: workerPull,
+				Command:         cmd,
+				Env:             workerEnv(req),
+				WorkingDir:      workspace,
+				VolumeMounts:    volumeMounts,
+				Resources:       workerResources(req),
 			},
 		},
 	}

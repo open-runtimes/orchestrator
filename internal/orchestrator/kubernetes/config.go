@@ -12,6 +12,8 @@ type OrchestratorConfig struct {
 	Namespace                     string
 	ServiceAccount                string
 	ImagePullSecrets              []string
+	WorkerImagePullPolicy         string // applied to the worker (user) container; empty = kubelet default
+	SidecarImagePullPolicy        string // applied to artifact-pre + artifact-post; empty = kubelet default
 	JobRetention                  time.Duration
 	MaintenanceInterval           time.Duration
 	ArtifactEndpoint              string
@@ -29,6 +31,8 @@ func LoadConfigFromEnv() OrchestratorConfig {
 		Namespace:                     config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
 		ServiceAccount:                config.GetEnv("KUBE_JOB_SERVICE_ACCOUNT", "job-sidecar"),
 		ImagePullSecrets:              pullSecrets,
+		WorkerImagePullPolicy:         config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
+		SidecarImagePullPolicy:        config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		JobRetention:                  config.GetDurationEnv("JOB_RETENTION", 15*time.Minute),
 		MaintenanceInterval:           config.GetDurationEnv("MAINTENANCE_INTERVAL", 1*time.Minute),
 		ArtifactEndpoint:              config.GetEnv("ARTIFACT_ENDPOINT", "http://jobs-service.orchestrator.svc.cluster.local:8080"),

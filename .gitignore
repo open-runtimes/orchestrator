@@ -67,3 +67,4 @@ dist/
 bin/
 out/
 tmp/
+orchestrator-*.tgz

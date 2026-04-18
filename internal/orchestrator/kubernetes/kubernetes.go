@@ -41,6 +41,8 @@ type Config struct {
 	Namespace                     string
 	ServiceAccount                string
 	ImagePullSecrets              []string
+	WorkerImagePullPolicy         string
+	SidecarImagePullPolicy        string
 	RetentionPeriod               time.Duration
 	MaintenanceInterval           time.Duration
 	ArtifactEndpoint              string
@@ -85,6 +87,8 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			Namespace:                     ns,
 			ServiceAccount:                sa,
 			ImagePullSecrets:              cfg.ImagePullSecrets,
+			WorkerImagePullPolicy:         cfg.WorkerImagePullPolicy,
+			SidecarImagePullPolicy:        cfg.SidecarImagePullPolicy,
 			JobRetention:                  retention,
 			MaintenanceInterval:           maint,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,

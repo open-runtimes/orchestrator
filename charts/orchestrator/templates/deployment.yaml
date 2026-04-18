@@ -50,6 +50,14 @@ spec:
               value: {{ .Values.orchestrator.maintenanceInterval | quote }}
             - name: KUBE_TERMINATION_GRACE_SECONDS
               value: {{ .Values.orchestrator.terminationGracePeriodSeconds | quote }}
+            {{- if .Values.orchestrator.workerImagePullPolicy }}
+            - name: KUBE_WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.workerImagePullPolicy | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.sidecarImagePullPolicy }}
+            - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.sidecarImagePullPolicy | quote }}
+            {{- end }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
             {{- with .Values.extraEnv }}
