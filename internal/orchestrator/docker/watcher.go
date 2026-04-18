@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"strings"
 	"time"
 

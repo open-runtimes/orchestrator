@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"sync"
 	"time"
 

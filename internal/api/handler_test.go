@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/health"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"sync"
 	"testing"
 )

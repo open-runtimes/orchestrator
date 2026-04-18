@@ -3,7 +3,7 @@ package kubernetes
 import (
 	"encoding/json"
 	"fmt"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"strconv"
 	"strings"
 

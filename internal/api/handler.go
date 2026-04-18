@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/health"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"orchestrator/internal/observability"
 )
 

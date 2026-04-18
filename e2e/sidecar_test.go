@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/testutil"
 	"os"

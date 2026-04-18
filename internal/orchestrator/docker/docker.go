@@ -9,7 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"strings"
 	"sync"
 	"time"

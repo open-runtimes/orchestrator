@@ -1,7 +1,7 @@
 package kubernetes
 
 import (
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"reflect"
 	"slices"
 	"strconv"

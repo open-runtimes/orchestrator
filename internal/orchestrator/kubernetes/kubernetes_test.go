@@ -2,7 +2,7 @@ package kubernetes
 
 import (
 	"context"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"orchestrator/internal/testutil"
 	"testing"
 	"time"

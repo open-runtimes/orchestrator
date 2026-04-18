@@ -226,7 +226,7 @@ linters:
       # State machine transition table is a package-level constant in disguise
       - linters:
           - gochecknoglobals
-        path: internal/job/store\.go
+        path: pkg/job/store\.go
       # HTTP handler methods named Get* write to ResponseWriter, not return values
       - linters:
           - revive

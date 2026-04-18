@@ -14,7 +14,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"orchestrator/internal/orchestrator/docker"
 	"orchestrator/internal/testutil"
 	"os"

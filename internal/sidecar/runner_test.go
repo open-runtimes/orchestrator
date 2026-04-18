@@ -5,7 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"os"
 	"path/filepath"
 	"sync"

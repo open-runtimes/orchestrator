@@ -1,7 +1,7 @@
 package docker
 
 import (
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"reflect"
 	"testing"
 )

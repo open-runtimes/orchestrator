@@ -3,7 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"strings"
 
 	"github.com/docker/docker/client"

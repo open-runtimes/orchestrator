@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/dispatcher"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/testutil"
 	"sync"

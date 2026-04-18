@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/job"
+	"orchestrator/pkg/job"
 	"orchestrator/pkg/emitter"
 	"os"
 	"os/signal"
