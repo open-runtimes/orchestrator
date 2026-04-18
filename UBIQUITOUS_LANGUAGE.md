@@ -99,11 +99,3 @@
 > **Dev:** "And **output artifacts** — they run after that exit event?"
 
 > **Domain expert:** "After the worker exits, yes. The **sidecar** processes **output artifacts** and posts an **ArtifactReport** for each one. Those trigger `orchestrator.job.artifact` **CloudEvents** before the final exit callback."
-
-## Resolved ambiguities
-
-These were previously flagged and have been fixed in code:
-
-- **"event"** — `job.Event` (dispatch envelope) was renamed to `job.CallbackEnvelope`; `EventType*` constants renamed to `CallbackType*`; `FilteredEvents` renamed to `MatchesCallbackFilter`. **Signal** remains the term for the internal LifecycleWatcher type; **CloudEvent** for the wire format.
-- **"status"** — `job.Status` (API response struct) renamed to `job.StatusResponse`; `Response.Status` field renamed to `Response.State`. Use **state** for the FSM value, **status response** for the API struct.
-- **"error"** — `ArtifactReport.Error string` renamed to `ArtifactReport.FailureReason` (JSON: `"failureReason"`). `artifact.Result.Error` remains a Go `error` value.
