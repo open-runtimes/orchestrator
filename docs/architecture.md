@@ -70,23 +70,22 @@ Features:
 
 See: `internal/dispatcher/memory.go`, `pkg/circuitbreaker/`
 
-### Callback Proxy for Sidecar Events
+### Artifact Reporting via Orchestrator
 
-By default, sidecar callbacks (artifact events) are routed through the orchestrator.
+Sidecar artifact results are posted to the orchestrator, which dispatches them as CloudEvent callbacks.
 
 ```
-Sidecar ──signs & POST /internal/events──► Orchestrator ──dispatcher──► Callback Server
+Sidecar ──POST /internal/jobs/{jobId}/artifact──► Orchestrator ──dispatcher──► Callback Server
 ```
 
 **Why?** This ensures all callbacks go through the robust dispatcher with circuit breaker and retry logic.
 
 **How it works:**
-1. Orchestrator sets sidecar's `CALLBACK_URL` to `http://host.docker.internal:8080/internal/events?url=<actual>` and passes `CALLBACK_KEY` for signing
-2. Sidecar builds CloudEvent, signs it with HMAC-SHA256, and POSTs to the proxy URL with `X-Signature-256` header
-3. Orchestrator's `/internal/events` endpoint extracts destination from query params and signature from header
-4. Event is dispatched via the robust dispatcher (signature is preserved)
+1. Orchestrator sets the sidecar's `ARTIFACT_ENDPOINT` to `http://host.docker.internal:8080` and `CALLBACK_URL`/`CALLBACK_KEY` for the outbound callback destination
+2. Sidecar posts an `ArtifactReport` to `POST /internal/jobs/{jobId}/artifact` after each artifact operation
+3. Orchestrator builds a `orchestrator.job.artifact` CloudEvent from the report and queues it in the dispatcher
 
-See: `internal/api/handler.go` -> `ProxyEvent()`, `internal/orchestrator/docker/docker.go` -> `createSidecarContainer()`
+See: `internal/api/handler.go` -> `ReportArtifact()`, `internal/sidecar/runner.go` -> `NewHTTPSink()`, `internal/orchestrator/docker/docker.go` -> `createSidecarContainer()`
 
 ### Reserve/Commit Pattern for Job Creation
 
@@ -94,7 +93,7 @@ Jobs are created in two phases: reserve the ID slot (with nil state), then commi
 
 **Why?** Prevents race conditions where two concurrent requests for the same job ID both pass the existence check. The first to reserve wins; others get "already exists" error.
 
-See: `internal/orchestrator/docker/state.go` -> `reserve()`, `commit()`, `release()`
+See: `internal/job/controller.go` -> `Reserve()`, `Commit()`, `Release()`
 
 ### Restart Resilience
 
@@ -133,7 +132,7 @@ File uploads stream directly from disk to HTTP, reopening the file for each retr
 
 **Why?** Large files shouldn't be loaded into memory. The HTTP transport closes the request body after sending, so we reopen the file rather than seeking.
 
-See: `internal/artifact/types/upload.go` -> `Apply()`, `doUpload()`
+See: `internal/artifact/upload.go` -> `Apply()`, `doUpload()`
 
 ## Callback Events
 
