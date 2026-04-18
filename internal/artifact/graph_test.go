@@ -130,7 +130,7 @@ func TestRunInOrder(t *testing.T) {
 			&stub{id: "c", depends: "b"},
 		}
 		var order []string
-		err := RunInOrder(context.Background(), artifacts, func(_ context.Context, a Artifact) error {
+		err := RunInOrder(t.Context(), artifacts, func(_ context.Context, a Artifact) error {
 			order = append(order, a.ArtifactID())
 			return nil
 		})
@@ -159,7 +159,7 @@ func TestRunInOrder(t *testing.T) {
 			&stub{id: "a", depends: JobDependency},
 		}
 		var called []string
-		err := RunInOrder(context.Background(), artifacts, func(_ context.Context, a Artifact) error {
+		err := RunInOrder(t.Context(), artifacts, func(_ context.Context, a Artifact) error {
 			called = append(called, a.ArtifactID())
 			return nil
 		})
@@ -178,7 +178,7 @@ func TestRunInOrder(t *testing.T) {
 			&stub{id: "b"}, // independent of a
 		}
 		var called []string
-		err := RunInOrder(context.Background(), artifacts, func(_ context.Context, a Artifact) error {
+		err := RunInOrder(t.Context(), artifacts, func(_ context.Context, a Artifact) error {
 			called = append(called, a.ArtifactID())
 			if a.ArtifactID() == "a" {
 				return errA
@@ -199,7 +199,7 @@ func TestRunInOrder(t *testing.T) {
 			&stub{id: "b", depends: "a"},
 		}
 		var called []string
-		_ = RunInOrder(context.Background(), artifacts, func(_ context.Context, a Artifact) error {
+		_ = RunInOrder(t.Context(), artifacts, func(_ context.Context, a Artifact) error {
 			called = append(called, a.ArtifactID())
 			return nil
 		})
@@ -209,7 +209,7 @@ func TestRunInOrder(t *testing.T) {
 	})
 
 	t.Run("empty list is a no-op", func(t *testing.T) {
-		err := RunInOrder(context.Background(), nil, func(_ context.Context, a Artifact) error {
+		err := RunInOrder(t.Context(), nil, func(_ context.Context, a Artifact) error {
 			t.Error("fn should not be called for empty list")
 			return nil
 		})

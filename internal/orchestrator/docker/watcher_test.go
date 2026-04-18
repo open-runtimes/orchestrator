@@ -71,7 +71,7 @@ func TestLifecycle_HappyPath(t *testing.T) {
 		job.Started{},
 		job.Exited{ExitCode: 0, Duration: 2 * time.Second},
 	}}
-	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -109,7 +109,7 @@ func TestLifecycle_WorkerFailure(t *testing.T) {
 		job.Started{},
 		job.Exited{ExitCode: 1, Duration: time.Second},
 	}}
-	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -140,7 +140,7 @@ func TestLifecycle_SidecarCrashBeforeWorker(t *testing.T) {
 	w := &fakeWatcher{events: []job.Signal{
 		job.Failed{Reason: "sidecar exited before inputs completed"},
 	}}
-	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -174,7 +174,7 @@ func TestLifecycle_LogDelivered(t *testing.T) {
 		job.LogLine{Stream: "stdout", Lines: []string{"hello", "world"}},
 		job.Exited{ExitCode: 0},
 	}}
-	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -205,7 +205,7 @@ func TestLifecycle_LogSkippedWhenNoCallback(t *testing.T) {
 		job.LogLine{Stream: "stdout", Lines: []string{"hello"}},
 		job.Exited{ExitCode: 0},
 	}}
-	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", nil, s)
 	})
@@ -232,7 +232,7 @@ func TestLifecycle_LogSkippedWhenFilteredOut(t *testing.T) {
 		job.LogLine{Stream: "stderr", Lines: []string{"warning"}},
 		job.Exited{ExitCode: 0},
 	}}
-	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -260,7 +260,7 @@ func TestLifecycle_ResumeNoStarted(t *testing.T) {
 	w := &fakeWatcher{events: []job.Signal{
 		job.Exited{ExitCode: 0, Duration: 5 * time.Second},
 	}}
-	w.Watch(context.Background(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -287,7 +287,7 @@ func TestLifecycle_ContextCancelled(t *testing.T) {
 	ctrl.Commit("job-1", dockerHandle{}, nil)
 	emitter := job.NewEventEmitter()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

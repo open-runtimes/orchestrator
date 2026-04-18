@@ -49,7 +49,7 @@ func TestWaitForCount_Success(t *testing.T) {
 	var counter atomic.Int64
 
 	go func() {
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			time.Sleep(10 * time.Millisecond)
 			counter.Add(1)
 		}

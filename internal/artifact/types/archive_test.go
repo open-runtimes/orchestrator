@@ -1,7 +1,6 @@
 package types
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,8 +17,7 @@ func TestArchive_Interface(t *testing.T) {
 }
 
 func TestArchive_Apply(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "archive-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	srcDir := filepath.Join(tmpDir, "source")
 	os.MkdirAll(srcDir, 0o755)
@@ -32,7 +30,7 @@ func TestArchive_Apply(t *testing.T) {
 		Format: "tar.gz",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -43,8 +41,7 @@ func TestArchive_Apply(t *testing.T) {
 }
 
 func TestArchive_Apply_InvalidFormat(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "archive-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	a := &Archive{
 		ID:     "test-archive",
@@ -53,7 +50,7 @@ func TestArchive_Apply_InvalidFormat(t *testing.T) {
 		Format: "zip",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error == nil {
 		t.Error("Expected error for unsupported format")
 	}

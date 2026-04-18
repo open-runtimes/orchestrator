@@ -3,7 +3,6 @@ package types
 import (
 	"archive/tar"
 	"compress/gzip"
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,8 +22,7 @@ func TestUnarchive_Interface(t *testing.T) {
 }
 
 func TestUnarchive_Apply(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "unarchive-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
 	createTestArchive(t, archiveIn, map[string]string{
@@ -38,7 +36,7 @@ func TestUnarchive_Apply(t *testing.T) {
 		Out: "extracted",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -53,8 +51,7 @@ func TestUnarchive_Apply(t *testing.T) {
 }
 
 func TestUnarchive_Apply_Subdir(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "unarchive-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
 	createTestArchive(t, archiveIn, map[string]string{
@@ -71,7 +68,7 @@ func TestUnarchive_Apply_Subdir(t *testing.T) {
 		Subdir: "functions/node",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -92,8 +89,7 @@ func TestUnarchive_Apply_Subdir(t *testing.T) {
 }
 
 func TestUnarchive_Apply_InTraversal(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "unarchive-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	archiveIn := filepath.Join(tmpDir, "malicious.tar.gz")
 	createTestArchive(t, archiveIn, map[string]string{
@@ -106,7 +102,7 @@ func TestUnarchive_Apply_InTraversal(t *testing.T) {
 		Out: "extracted",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error == nil {
 		t.Error("Expected error for path traversal attempt")
 	}

@@ -3,7 +3,6 @@ package dispatcher
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"orchestrator/pkg/circuitbreaker"
@@ -78,7 +77,7 @@ func NewMemory(cfg Config, metrics MetricsRecorder) *Memory {
 
 	// Start workers
 	d.wg.Add(cfg.Workers)
-	for i := 0; i < cfg.Workers; i++ {
+	for range cfg.Workers {
 		go d.worker()
 	}
 
@@ -109,7 +108,7 @@ func (d *Memory) reportQueueSize() {
 // Dispatch queues an event for async delivery.
 func (d *Memory) Dispatch(event *Event) error {
 	if d.isClosed.Load() {
-		return fmt.Errorf("dispatcher is closed")
+		return errors.New("dispatcher is closed")
 	}
 
 	select {

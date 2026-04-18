@@ -1,7 +1,6 @@
 package health
 
 import (
-	"context"
 	"testing"
 )
 
@@ -9,7 +8,7 @@ func TestChecker_Liveness(t *testing.T) {
 	t.Parallel()
 	checker := NewChecker(nil)
 
-	response := checker.Liveness(context.Background())
+	response := checker.Liveness(t.Context())
 
 	if response.Status != StatusHealthy {
 		t.Errorf("Expected healthy status, got %s", response.Status)
@@ -20,7 +19,7 @@ func TestChecker_Readiness_NoOrchestrator(t *testing.T) {
 	t.Parallel()
 	checker := NewChecker(nil)
 
-	response := checker.Readiness(context.Background())
+	response := checker.Readiness(t.Context())
 
 	if response.Status != StatusUnhealthy {
 		t.Errorf("Expected unhealthy status, got %s", response.Status)

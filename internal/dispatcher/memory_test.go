@@ -49,7 +49,7 @@ func TestMemoryDispatcher_Dispatch(t *testing.T) {
 		t.Errorf("expected 1 delivered, got %d", stats.Delivered)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	d.Close(ctx)
 }
@@ -72,7 +72,7 @@ func TestMemoryDispatcher_BufferFull(t *testing.T) {
 		Destination: server.URL,
 	}
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_ = d.Dispatch(event)
 	}
 
@@ -85,7 +85,7 @@ func TestMemoryDispatcher_BufferFull(t *testing.T) {
 		t.Error("expected some events to be dropped")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	d.Close(ctx)
 }
@@ -128,7 +128,7 @@ func TestMemoryDispatcher_Retry(t *testing.T) {
 		t.Errorf("expected 1 delivered, got %d", stats.Delivered)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	d.Close(ctx)
 }
@@ -162,7 +162,7 @@ func TestMemoryDispatcher_NoRetryOn4xx(t *testing.T) {
 		t.Errorf("expected 1 attempt (no retry on 4xx), got %d", attempts.Load())
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	d.Close(ctx)
 }
@@ -188,7 +188,7 @@ func TestMemoryDispatcher_CircuitBreaker(t *testing.T) {
 
 	// Send more events than the breaker threshold (5) to trigger circuit opening
 	// After 5 failures, the circuit opens and subsequent events get requeued
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		d.Dispatch(event)
 	}
 
@@ -205,7 +205,7 @@ func TestMemoryDispatcher_CircuitBreaker(t *testing.T) {
 		t.Errorf("expected some events to be requeued due to open circuit, got requeued=%d, failed=%d", stats.Requeued, stats.Failed)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	d.Close(ctx)
 }
@@ -251,7 +251,7 @@ func TestMemoryDispatcher_CloudEventHeaders(t *testing.T) {
 		t.Errorf("expected Ce-Type header, got %s", ceType)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	d.Close(ctx)
 }
@@ -293,7 +293,7 @@ func TestMemoryDispatcher_Signature(t *testing.T) {
 		t.Errorf("unexpected signature format: %s", sig)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	d.Close(ctx)
 }
@@ -312,7 +312,7 @@ func TestMemoryDispatcher_GracefulShutdown(t *testing.T) {
 		HTTPTimeout: 5 * time.Second,
 	}, nil)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		event := &Event{
 			Payload:     cloudevent.New("test.event", "test", "job-1", time.Now().Format("150405.000000"), nil),
 			Destination: server.URL,
@@ -320,7 +320,7 @@ func TestMemoryDispatcher_GracefulShutdown(t *testing.T) {
 		d.Dispatch(event)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	err := d.Close(ctx)
 	if err != nil {
@@ -355,13 +355,13 @@ func TestMemoryDispatcher_CircuitBreakerRecovery(t *testing.T) {
 		HTTPTimeout:     500 * time.Millisecond,
 		BreakerCooldown: cooldown,
 	}, nil)
-	defer d.Close(context.Background())
+	defer d.Close(t.Context())
 
 	event := &Event{
 		Payload:     cloudevent.New("test.breaker", "test", "job", "evt", nil),
 		Destination: server.URL,
 	}
-	for i := 0; i < numEvents; i++ {
+	for range numEvents {
 		d.Dispatch(event)
 	}
 

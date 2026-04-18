@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/api"
@@ -27,6 +28,7 @@ import (
 // If E2E_API_URL is set, tests run against that instance.
 // Otherwise, a test server is created.
 func getTestURL(t *testing.T) (string, func()) {
+	t.Helper()
 	if url := os.Getenv("E2E_API_URL"); url != "" {
 		t.Logf("Using external API: %s", url)
 		return url, func() {}
@@ -37,6 +39,7 @@ func getTestURL(t *testing.T) (string, func()) {
 }
 
 func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
+	t.Helper()
 	eventDispatcher := dispatcher.NewMemory(dispatcher.Config{
 		BufferSize: 100,
 		Workers:    2,
@@ -54,7 +57,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		})
 	})
 
-	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(context.Background(), docker.Config{
+	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(t.Context(), docker.Config{
 		SidecarImage: "ko.local/job-sidecar:latest",
 	}))
 	if err != nil {
@@ -78,7 +81,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 	cleanup := func() {
 		orchestrator.Close()
 		// Drain dispatcher before closing server so pending callbacks can be delivered
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		eventDispatcher.Close(ctx)
 		server.Close()
@@ -163,14 +166,14 @@ func TestAPI_CreateAndGetJob(t *testing.T) {
 
 	var statusResp map[string]any
 	testutil.MustWaitFor(t, func() bool {
-		resp, err = http.Get(baseURL + "/v1/jobs/" + jobID)
-		if err != nil {
+		r, e := http.Get(baseURL + "/v1/jobs/" + jobID)
+		if e != nil {
 			return false
 		}
-		defer resp.Body.Close()
+		defer r.Body.Close()
 
-		if resp.StatusCode == http.StatusOK {
-			json.NewDecoder(resp.Body).Decode(&statusResp)
+		if r.StatusCode == http.StatusOK {
+			json.NewDecoder(r.Body).Decode(&statusResp)
 			return true
 		}
 		return false
@@ -272,14 +275,14 @@ func TestAPI_JobCompletion(t *testing.T) {
 
 	var status string
 	testutil.MustWaitFor(t, func() bool {
-		resp, err = http.Get(baseURL + "/v1/jobs/" + jobID)
-		if err != nil {
+		r, e := http.Get(baseURL + "/v1/jobs/" + jobID)
+		if e != nil {
 			return false
 		}
-		defer resp.Body.Close()
+		defer r.Body.Close()
 
 		var statusResp map[string]any
-		json.NewDecoder(resp.Body).Decode(&statusResp)
+		json.NewDecoder(r.Body).Decode(&statusResp)
 
 		if s, ok := statusResp["status"].(string); ok {
 			status = s
@@ -331,7 +334,7 @@ func TestAPI_JobWithCallbacks(t *testing.T) {
 			}
 		}()
 
-		callbackURL = fmt.Sprintf("http://%s:%s", callbackHost, port)
+		callbackURL = "http://" + net.JoinHostPort(callbackHost, port)
 		cleanup = func() { server.Close() }
 		t.Logf("Callback server listening on :%s, URL for jobs: %s", port, callbackURL)
 	} else {

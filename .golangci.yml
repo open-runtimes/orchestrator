@@ -1,69 +1,224 @@
-linters:
-  enable:
-    - errcheck
-    - errname
-    - exhaustive
-    - gocritic
-    - gofumpt
-    - goimports
-    - gomodguard
-    - gosimple
-    - govet
-    - ineffassign
-    - misspell
-    - predeclared
-    - revive
-    - staticcheck
-    - unused
+version: "2"
 
 run:
   timeout: 5m
+  tests: true
   build-tags:
     - integration
     - e2e
 
-linters-settings:
-  exhaustive:
-    check:
-      - switch
-      - map
-    default-signifies-exhaustive: true
-
-  gomodguard:
-    blocked:
-      modules:
-        - github.com/pkg/errors:
-            reason: "Use stdlib errors.Join and fmt.Errorf with %w"
-
-  revive:
+linters:
+  default: standard
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - copyloopvar
+    - depguard
+    - dupl
+    - dupword
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - forbidigo
+    - gochecknoglobals
+    - gocheckcompilerdirectives
+    - gomodguard
+    - gomoddirectives
+    - goprintffuncname
+    - interfacebloat
+    - intrange
+    - ireturn
+    - loggercheck
+    - maintidx
+    - makezero
+    - mirror
+    - misspell
+    - musttag
+    - nestif
+    - nilerr
+    - nilnil
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - perfsprint
+    - predeclared
+    - promlinter
+    - reassign
+    - recvcheck
+    - revive
+    - staticcheck
+    - tagliatelle
+    - thelper
+    - unconvert
+    - unparam
+    - usetesting
+    - usestdlibvars
+    - wastedassign
+  settings:
+    exhaustive:
+      check:
+        - switch
+        - map
+      default-signifies-exhaustive: true
+    loggercheck:
+      logr: true
+    tagliatelle:
+      case:
+        rules:
+          json: camel
+    ireturn:
+      allow:
+        - error
+        - stdlib
+        - anon
+        - empty
+        - orchestrator  # our own domain interfaces (Artifact, Orchestrator, etc.)
+        - opentelemetry # otel metric options returned by attribute helpers
+    interfacebloat:
+      max: 8
+    depguard:
+      rules:
+        no_vague_packages:
+          files:
+            - $all
+          deny:
+            - pkg: ".*/util$"
+              desc: "Name the domain concept, not the utility."
+            - pkg: ".*/utils$"
+              desc: "Name the domain concept, not the utility."
+            - pkg: ".*/helpers?$"
+              desc: "Name the domain concept, not the helper."
+            - pkg: ".*/common$"
+              desc: "Move to a domain-specific package."
+            - pkg: ".*/misc$"
+              desc: "Move to a domain-specific package."
+    forbidigo:
+      forbid:
+        - pattern: '^.*[Hh]elpers?\.(New|Get|Make|Do|Run|Process|Handle).*$'
+          msg: "Call the domain operation directly, not via a generic helper."
+    dupl:
+      threshold: 100
+    nestif:
+      min-complexity: 6
+    maintidx:
+      under: 20
+    gomodguard:
+      blocked:
+        modules:
+          - github.com/pkg/errors:
+              reason: Use stdlib errors.Join and fmt.Errorf with %w.
+    revive:
+      rules:
+        # Naming & style
+        - name: blank-imports
+        - name: comment-spacings
+        - name: confusing-naming
+        - name: enforce-repeated-arg-type-style
+          arguments:
+            - "short"
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: exported
+        - name: get-return
+        - name: import-alias-naming
+        - name: increment-decrement
+        - name: receiver-naming
+        - name: redundant-import-alias
+        - name: time-naming
+        - name: use-any
+        - name: var-declaration
+        - name: var-naming
+        # Logic & control flow
+        - name: bool-literal-in-expr
+        - name: constant-logical-expr
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: early-return
+        - name: errorf
+        - name: identical-branches
+        - name: if-return
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unreachable-code
+        # Bug prevention
+        - name: atomic
+        - name: bare-return
+        - name: call-to-gc
+        - name: datarace
+        - name: defer
+        - name: modifies-value-receiver
+        - name: redefines-builtin-id
+        - name: string-of-int
+        - name: time-equal
+        - name: unconditional-recursion
+        - name: unexported-return
+        - name: waitgroup-by-value
+        # Code quality
+        - name: deep-exit
+        - name: duplicated-imports
+        - name: empty-block
+        - name: empty-lines
+        - name: import-shadowing
+        - name: range
+        - name: struct-tag
+          arguments:
+            - "json,inline"
+        - name: unnecessary-stmt
+        - name: useless-break
+        # Modern Go
+        - name: redundant-build-tag
+  exclusions:
     rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: error-return
-      - name: error-strings
-      - name: exported
-      - name: increment-decrement
-      - name: var-declaration
-      - name: package-comments
-        disabled: true
-
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-    disabled-checks:
-      - hugeParam
+      - linters:
+          - dupl
+          - gochecknoglobals
+          - ireturn
+          - unparam
+          - maintidx
+        path: _test\.go$
+      - linters:
+          - errcheck
+        path: _test\.go$
+        text: "Error return value"
+      # e2e tests use plain http.Get/Post without context by convention
+      - linters:
+          - noctx
+        path: ^e2e/
+      # Artifact type definitions are intentional package-level registrations
+      - linters:
+          - gochecknoglobals
+          - dupl
+        path: internal/artifact/definitions\.go
+      # Singleton lazy-init pattern for default registry
+      - linters:
+          - gochecknoglobals
+        path: internal/artifact/registry\.go
+      # State machine transition table is a package-level constant in disguise
+      - linters:
+          - gochecknoglobals
+        path: internal/job/store\.go
+      # HTTP handler methods named Get* write to ResponseWriter, not return values
+      - linters:
+          - revive
+        path: internal/api/
+        text: "get-return"
+      # Cleanup functions intentionally ignore errors
+      - linters:
+          - errcheck
+        path: internal/orchestrator/docker/
+        text: "Error return value of .*(ContainerStop|ContainerRemove|NetworkRemove|VolumeRemove).*is not checked"
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gocritic
-    # Cleanup functions intentionally ignore errors
-    - path: internal/job/adapter/
-      text: "Error return value of .*(ContainerStop|ContainerRemove|NetworkRemove|VolumeRemove).*is not checked"
-      linters:
-        - errcheck
+  max-issues-per-linter: 0
+  max-same-issues: 0

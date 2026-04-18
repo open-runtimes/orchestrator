@@ -3,7 +3,6 @@
 package docker
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +20,7 @@ import (
 const sidecarImage = "ko.local/job-sidecar:latest"
 
 func TestOrchestrator_EventBasedFlow(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -82,7 +81,7 @@ func TestOrchestrator_EventBasedFlow(t *testing.T) {
 }
 
 func TestOrchestrator_DownloadFailure(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -137,7 +136,7 @@ func TestOrchestrator_DownloadFailure(t *testing.T) {
 }
 
 func TestOrchestrator_CallbackEvents(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Track received events
 	var receivedEvents []string
@@ -223,7 +222,7 @@ func TestOrchestrator_CallbackEvents(t *testing.T) {
 
 func TestOrchestrator_HealthCheckMarker(t *testing.T) {
 	// Verify the sidecar writes the ready marker file
-	ctx := context.Background()
+	ctx := t.Context()
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -271,7 +270,7 @@ func TestOrchestrator_HealthCheckMarker(t *testing.T) {
 }
 
 func TestOrchestrator_List(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -319,7 +318,7 @@ func TestOrchestrator_List(t *testing.T) {
 }
 
 func TestOrchestrator_Stop(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	orchestrator, err := NewOrchestrator(ctx, Config{
 		SidecarImage: sidecarImage,
@@ -375,7 +374,7 @@ func TestOrchestrator_Stop(t *testing.T) {
 // instance whose Start() reconciles the in-flight jobs.
 
 func TestOrchestrator_ResumeRunningJob(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Phase 1: Start a long-running job with orchestrator A
 	orchestratorA, err := NewOrchestrator(ctx, Config{
@@ -456,7 +455,7 @@ func TestOrchestrator_ResumeRunningJob(t *testing.T) {
 }
 
 func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Callback server tracks events received after restart
 	var receivedAfterRestart []string
@@ -586,7 +585,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 }
 
 func TestOrchestrator_ResumeJobAppearsinList(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Phase 1: Start a job with orchestrator A
 	orchestratorA, err := NewOrchestrator(ctx, Config{

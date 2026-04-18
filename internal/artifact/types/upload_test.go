@@ -1,7 +1,6 @@
 package types
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,15 +36,14 @@ func TestUpload_Apply(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "upload-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	testContent := "upload test content"
 	os.WriteFile(filepath.Join(tmpDir, "output.txt"), []byte(testContent), 0o644)
 
 	a := &Upload{ID: "test-upload", In: "output.txt", Out: server.URL, Retries: 3}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -64,13 +62,12 @@ func TestUpload_Apply_CustomConfig(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "upload-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 	os.WriteFile(filepath.Join(tmpDir, "out.txt"), []byte("data"), 0o644)
 
 	a := &Upload{ID: "ul1", In: "out.txt", Out: server.URL, TimeoutSeconds: 30, Retries: 1}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}

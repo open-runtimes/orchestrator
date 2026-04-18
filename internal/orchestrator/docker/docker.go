@@ -418,28 +418,28 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 
 func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Request, h dockerHandle) (string, error) {
 	env := []string{
-		fmt.Sprintf("JOB_ID=%s", req.ID),
+		"JOB_ID=" + req.ID,
 		fmt.Sprintf("TIMEOUT_SECONDS=%d", req.TimeoutSeconds),
-		fmt.Sprintf("SHARED_VOLUME_PATH=%s", req.Workspace),
+		"SHARED_VOLUME_PATH=" + req.Workspace,
 	}
 
 	artifactsJSON, err := json.Marshal(req.Artifacts)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal artifacts: %w", err)
 	}
-	env = append(env, fmt.Sprintf("ARTIFACTS_JSON=%s", string(artifactsJSON)))
+	env = append(env, "ARTIFACTS_JSON="+string(artifactsJSON))
 
 	if o.artifactEndpoint != "" {
-		env = append(env, fmt.Sprintf("ARTIFACT_ENDPOINT=%s", o.artifactEndpoint))
+		env = append(env, "ARTIFACT_ENDPOINT="+o.artifactEndpoint)
 	}
 
 	if req.Callback != nil && req.Callback.URL != "" {
-		env = append(env, fmt.Sprintf("CALLBACK_URL=%s", req.Callback.URL))
+		env = append(env, "CALLBACK_URL="+req.Callback.URL)
 		if req.Callback.Key != "" {
-			env = append(env, fmt.Sprintf("CALLBACK_KEY=%s", req.Callback.Key))
+			env = append(env, "CALLBACK_KEY="+req.Callback.Key)
 		}
 		if len(req.Callback.Events) > 0 {
-			env = append(env, fmt.Sprintf("CALLBACK_EVENTS=%s", strings.Join(req.Callback.Events, ",")))
+			env = append(env, "CALLBACK_EVENTS="+strings.Join(req.Callback.Events, ","))
 		}
 	}
 
@@ -448,7 +448,7 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		if err != nil {
 			return "", fmt.Errorf("failed to marshal meta: %w", err)
 		}
-		env = append(env, fmt.Sprintf("JOB_META=%s", string(metaJSON)))
+		env = append(env, "JOB_META="+string(metaJSON))
 	}
 
 	healthCheck := &container.HealthConfig{

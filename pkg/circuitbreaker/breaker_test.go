@@ -24,7 +24,7 @@ func TestNew_WithZeroValues(t *testing.T) {
 
 	// Verify defaults were applied by checking behavior
 	// With default threshold of 5, should need 5 failures to open
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		b.RecordFailure()
 	}
 	if b.State() != Closed {
@@ -43,7 +43,7 @@ func TestNew_WithNegativeValues(t *testing.T) {
 	b := New(Config{Threshold: -1, Cooldown: -1})
 
 	// Should use default threshold of 5
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		b.RecordFailure()
 	}
 	if b.State() != Open {

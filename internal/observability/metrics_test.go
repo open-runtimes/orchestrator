@@ -1,13 +1,12 @@
 package observability
 
 import (
-	"context"
 	"testing"
 )
 
 func TestNewMetrics(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	metrics, handler, err := NewMetrics(ctx)
 	if err != nil {
 		t.Fatalf("Failed to create metrics: %v", err)
@@ -24,7 +23,7 @@ func TestNewMetrics(t *testing.T) {
 
 func TestRecordHTTPRequest(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	metrics, _, err := NewMetrics(ctx)
 	if err != nil {
 		t.Fatalf("Failed to create metrics: %v", err)
@@ -41,7 +40,7 @@ func TestRecordHTTPRequest(t *testing.T) {
 
 func TestRecordJobMetrics(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := t.Context()
 	metrics, _, err := NewMetrics(ctx)
 	if err != nil {
 		t.Fatalf("Failed to create metrics: %v", err)

@@ -1,7 +1,6 @@
 package types
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,14 +15,13 @@ func TestList_Interface(t *testing.T) {
 	if a.ArtifactType() != "list" {
 		t.Errorf("ArtifactType() = %v, want list", a.ArtifactType())
 	}
-	if *a.IsRecursive != false {
+	if *a.IsRecursive {
 		t.Errorf("Recursive = %v, want false", *a.IsRecursive)
 	}
 }
 
 func TestList_Apply(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "list-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	os.MkdirAll(filepath.Join(tmpDir, "src", "subdir"), 0o755)
 	os.WriteFile(filepath.Join(tmpDir, "src", "main.go"), []byte("package main"), 0o644)
@@ -35,7 +33,7 @@ func TestList_Apply(t *testing.T) {
 		In: "src",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -51,8 +49,7 @@ func TestList_Apply(t *testing.T) {
 }
 
 func TestList_Apply_WithExcludes(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "list-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	os.MkdirAll(filepath.Join(tmpDir, "project", "src"), 0o755)
 	os.MkdirAll(filepath.Join(tmpDir, "project", "node_modules", "pkg"), 0o755)
@@ -66,7 +63,7 @@ func TestList_Apply_WithExcludes(t *testing.T) {
 		Excludes: []string{"node_modules"},
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -82,8 +79,7 @@ func TestList_Apply_WithExcludes(t *testing.T) {
 }
 
 func TestList_Apply_NonRecursive(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "list-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	os.MkdirAll(filepath.Join(tmpDir, "project", "subdir"), 0o755)
 	os.WriteFile(filepath.Join(tmpDir, "project", "root.txt"), []byte("root"), 0o644)
@@ -96,7 +92,7 @@ func TestList_Apply_NonRecursive(t *testing.T) {
 		IsRecursive: &recursive,
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}

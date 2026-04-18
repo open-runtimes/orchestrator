@@ -50,7 +50,7 @@ func mockOrchestratorServer(t *testing.T, count *atomic.Int64, mu *sync.Mutex, r
 // posts an ArtifactReport to the orchestrator endpoint with the correct fields,
 // including callback config that the orchestrator will use for dispatch.
 func TestSidecar_FullFlow(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
 	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -59,11 +59,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 	}
 	defer dockerClient.Close()
 
-	sharedDir, err := os.MkdirTemp("", "sidecar-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(sharedDir)
+	sharedDir := t.TempDir()
 
 	var reportCount atomic.Int64
 	var mu sync.Mutex
@@ -85,7 +81,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 		Image: "alpine:latest",
 		Cmd:   []string{"/bin/sh", "-c", "echo 'hello from job' > /workspace/output.txt && sleep 1"},
 	}, &container.HostConfig{
-		Binds: []string{fmt.Sprintf("%s:/workspace", sharedDir)},
+		Binds: []string{sharedDir + ":/workspace"},
 	}, nil, nil, containerName)
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
@@ -155,7 +151,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 // TestSidecar_InputDownload tests that the sidecar downloads a pre-job artifact
 // and reports the result to the orchestrator endpoint.
 func TestSidecar_InputDownload(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
 	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -164,11 +160,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 	}
 	defer dockerClient.Close()
 
-	sharedDir, err := os.MkdirTemp("", "sidecar-input-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(sharedDir)
+	sharedDir := t.TempDir()
 
 	inputContent := "downloaded input content"
 	inputServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +188,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 		Image: "alpine:latest",
 		Cmd:   []string{"/bin/sh", "-c", "sleep 2 && cat /workspace/input.txt"},
 	}, &container.HostConfig{
-		Binds: []string{fmt.Sprintf("%s:/workspace", sharedDir)},
+		Binds: []string{sharedDir + ":/workspace"},
 	}, nil, nil, containerName)
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
@@ -268,7 +260,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 // TestSidecar_OutputUpload tests that the sidecar uploads a post-job artifact
 // and reports the result to the orchestrator endpoint.
 func TestSidecar_OutputUpload(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
 	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -277,11 +269,7 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	}
 	defer dockerClient.Close()
 
-	sharedDir, err := os.MkdirTemp("", "sidecar-output-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(sharedDir)
+	sharedDir := t.TempDir()
 
 	var uploadedContent []byte
 	var uploadMu sync.Mutex
@@ -318,7 +306,7 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		Image: "alpine:latest",
 		Cmd:   []string{"/bin/sh", "-c", fmt.Sprintf("echo -n '%s' > /workspace/result.txt", outputContent)},
 	}, &container.HostConfig{
-		Binds: []string{fmt.Sprintf("%s:/workspace", sharedDir)},
+		Binds: []string{sharedDir + ":/workspace"},
 	}, nil, nil, containerName)
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)

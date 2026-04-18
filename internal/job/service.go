@@ -2,6 +2,7 @@ package job
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -191,14 +192,14 @@ func validateURL(rawURL string) error {
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("malformed URL")
+		return errors.New("malformed URL")
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("URL scheme must be http or https, got %q", parsed.Scheme)
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("URL must have a host")
+		return errors.New("URL must have a host")
 	}
 	return nil
 }

@@ -1,7 +1,6 @@
 package types
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,8 +17,7 @@ func TestWrite_Interface(t *testing.T) {
 }
 
 func TestWrite_Apply(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "write-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	expectedContent := `{"key": "value"}`
 	a := &Write{
@@ -28,7 +26,7 @@ func TestWrite_Apply(t *testing.T) {
 		Out: "config.json",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -43,8 +41,7 @@ func TestWrite_Apply(t *testing.T) {
 }
 
 func TestWrite_Apply_CreatesDirectory(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "write-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	a := &Write{
 		ID:  "test-write",
@@ -52,7 +49,7 @@ func TestWrite_Apply_CreatesDirectory(t *testing.T) {
 		Out: "subdir/nested/file.txt",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}

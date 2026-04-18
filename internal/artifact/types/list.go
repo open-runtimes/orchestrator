@@ -43,33 +43,7 @@ func (a *List) Apply(ctx context.Context, basePath string) *Result {
 	var files []string
 
 	if recursive {
-		err = filepath.Walk(srcPath, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-
-			relPath, err := filepath.Rel(srcPath, path)
-			if err != nil {
-				return err
-			}
-
-			if relPath == "." {
-				return nil
-			}
-
-			if matchesAnyPattern(relPath, a.Excludes) || matchesAnyPattern(filepath.Base(path), a.Excludes) {
-				if info.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-
-			if !info.IsDir() {
-				files = append(files, relPath)
-			}
-
-			return nil
-		})
+		err = filepath.Walk(srcPath, a.walkCollect(srcPath, &files))
 		if err != nil {
 			return &Result{Status: "failed", Error: fmt.Errorf("failed to walk directory: %w", err)}
 		}
@@ -93,6 +67,31 @@ func (a *List) Apply(ctx context.Context, basePath string) *Result {
 
 	slog.Debug("Listed files", "path", srcPath, "count", len(files), "recursive", recursive)
 	return &Result{Status: "success", Content: files}
+}
+
+func (a *List) walkCollect(root string, files *[]string) filepath.WalkFunc {
+	return func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return nil
+		}
+		if matchesAnyPattern(relPath, a.Excludes) || matchesAnyPattern(filepath.Base(path), a.Excludes) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.IsDir() {
+			*files = append(*files, relPath)
+		}
+		return nil
+	}
 }
 
 func matchesAnyPattern(path string, patterns []string) bool {

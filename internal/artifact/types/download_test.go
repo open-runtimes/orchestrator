@@ -1,7 +1,6 @@
 package types
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,15 +29,11 @@ func TestDownload_Apply(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, err := os.MkdirTemp("", "download-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	a := &Download{ID: "test-download", In: server.URL, Out: "subdir/downloaded.txt"}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -61,12 +56,11 @@ func TestDownload_Apply_Error(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "download-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	a := &Download{ID: "test-download", In: server.URL, Out: "downloaded.txt"}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error == nil {
 		t.Error("Expected error for 404 response")
 	}
@@ -81,12 +75,11 @@ func TestDownload_Apply_CustomTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "download-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	a := &Download{ID: "dl1", In: server.URL, Out: "file.txt", TimeoutSeconds: 30}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}

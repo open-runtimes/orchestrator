@@ -48,11 +48,7 @@ func (c *captureReporter) count() int {
 }
 
 func TestCheckReady(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "check-ready-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	if CheckReady(tmpDir) {
 		t.Error("CheckReady should return false when marker doesn't exist")
@@ -123,7 +119,7 @@ func TestRunner_FullLifecycle(t *testing.T) {
 		WithArtifactListener(captured.fn()),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -187,7 +183,7 @@ func TestRunner_PreJobDependencyOrder(t *testing.T) {
 
 	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := runner.Run(ctx, artifacts); err != nil {
@@ -218,7 +214,7 @@ func TestRunner_ChainedDependencies(t *testing.T) {
 
 	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	if err := runner.Run(ctx, artifacts); err != nil {
@@ -254,7 +250,7 @@ func TestRunner_CircularDependency(t *testing.T) {
 
 	runner := NewRunner("test-job", tmpDir, 5, reg, WithSignalFunc(sigFn))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -290,7 +286,7 @@ func TestRunner_ReportsArtifact(t *testing.T) {
 		WithArtifactListener(captured.fn()),
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	if err := runner.Run(ctx, artifacts); err != nil {

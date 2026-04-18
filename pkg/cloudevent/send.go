@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -106,7 +107,8 @@ func (e *HTTPError) Error() string {
 
 // IsClientError returns true for 4xx errors (shouldn't retry).
 func IsClientError(err error) bool {
-	if he, ok := err.(*HTTPError); ok {
+	he := &HTTPError{}
+	if errors.As(err, &he) {
 		return he.StatusCode >= 400 && he.StatusCode < 500
 	}
 	return false

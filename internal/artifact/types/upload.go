@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -126,7 +127,8 @@ func (e *uploadError) Error() string {
 }
 
 func isClientError(err error) bool {
-	if ue, ok := err.(*uploadError); ok {
+	ue := &uploadError{}
+	if errors.As(err, &ue) {
 		return ue.statusCode >= 400 && ue.statusCode < 500
 	}
 	return false

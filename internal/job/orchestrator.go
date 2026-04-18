@@ -3,7 +3,7 @@ package job
 
 import (
 	"context"
-	"fmt"
+	"errors"
 )
 
 // Orchestrator defines the interface for container orchestration platforms.
@@ -66,7 +66,7 @@ type OrchestratorFactory func(emitter *EventEmitter) (Orchestrator, error)
 // NewOrchestrator validates that shared dependencies are non-nil and calls the factory.
 func NewOrchestrator(emitter *EventEmitter, factory OrchestratorFactory) (Orchestrator, error) {
 	if emitter == nil {
-		return nil, fmt.Errorf("emitter is required")
+		return nil, errors.New("emitter is required")
 	}
 	return factory(emitter)
 }

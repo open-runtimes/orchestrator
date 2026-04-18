@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -108,13 +107,13 @@ func TestCallbackThroughput(t *testing.T) {
 		Workers:     concurrency,
 		HTTPTimeout: 5 * time.Second,
 	}, nil)
-	defer d.Close(context.Background())
+	defer d.Close(t.Context())
 
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, concurrency)
 
 	dispatchStart := time.Now()
-	for i := 0; i < numCallbacks; i++ {
+	for i := range numCallbacks {
 		wg.Add(1)
 		semaphore <- struct{}{}
 		go func(id int) {
@@ -198,7 +197,7 @@ func TestConcurrentJobsWithCallbacks(t *testing.T) {
 	var created, failed atomic.Int64
 
 	start := time.Now()
-	for i := 0; i < numJobs; i++ {
+	for i := range numJobs {
 		wg.Add(1)
 		semaphore <- struct{}{}
 		go func(id int) {
@@ -309,7 +308,7 @@ func TestDispatcherUnderLoad(t *testing.T) {
 		Workers:     50,
 		HTTPTimeout: 2 * time.Second,
 	}, nil)
-	defer d.Close(context.Background())
+	defer d.Close(t.Context())
 
 	ticker := time.NewTicker(time.Second / time.Duration(eventRate))
 	defer ticker.Stop()
@@ -318,7 +317,7 @@ func TestDispatcherUnderLoad(t *testing.T) {
 	var dispatched atomic.Int64
 
 	go func() {
-		for i := 0; i < totalEvents; i++ {
+		for i := range totalEvents {
 			<-ticker.C
 			event := &dispatcher.Event{
 				Payload:     newTestEvent(fmt.Sprintf("load-%d", i)),
@@ -376,13 +375,14 @@ func TestDispatcherUnderLoad(t *testing.T) {
 }
 
 func createBenchServer(tb testing.TB) (string, func()) {
+	tb.Helper()
 	// If E2E_API_URL is set, use external server
 	if url := os.Getenv("E2E_API_URL"); url != "" {
 		tb.Logf("Using external API: %s", url)
 		return url, func() {}
 	}
 
-	ctx := context.Background()
+	ctx := tb.Context()
 
 	metrics, _, err := observability.NewMetrics(ctx)
 	if err != nil {
@@ -442,7 +442,7 @@ func createBenchServer(tb testing.TB) (string, func()) {
 
 	cleanup := func() {
 		tempServer.Close()
-		eventDispatcher.Close(context.Background())
+		eventDispatcher.Close(tb.Context())
 		orchestrator.Close()
 	}
 

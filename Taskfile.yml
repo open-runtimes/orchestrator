@@ -5,7 +5,7 @@ vars:
     sh: go env GOARCH
   # Pin tool versions explicitly to avoid polluting go.mod
   KO: go run github.com/google/ko@v0.18.1
-  LINT: go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+  LINT: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 
 tasks:
   default:

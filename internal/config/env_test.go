@@ -14,8 +14,7 @@ func TestGetEnv(t *testing.T) {
 	}
 
 	// Test with set value
-	os.Setenv("TEST_GET_ENV", "custom")
-	defer os.Unsetenv("TEST_GET_ENV")
+	t.Setenv("TEST_GET_ENV", "custom")
 
 	result = GetEnv("TEST_GET_ENV", "default")
 	if result != "custom" {
@@ -31,8 +30,7 @@ func TestGetIntEnv(t *testing.T) {
 	}
 
 	// Test with valid int
-	os.Setenv("TEST_INT_ENV", "123")
-	defer os.Unsetenv("TEST_INT_ENV")
+	t.Setenv("TEST_INT_ENV", "123")
 
 	result = GetIntEnv("TEST_INT_ENV", 42)
 	if result != 123 {
@@ -40,8 +38,7 @@ func TestGetIntEnv(t *testing.T) {
 	}
 
 	// Test with invalid int (should return default)
-	os.Setenv("TEST_INVALID_INT", "not-a-number")
-	defer os.Unsetenv("TEST_INVALID_INT")
+	t.Setenv("TEST_INVALID_INT", "not-a-number")
 
 	result = GetIntEnv("TEST_INVALID_INT", 42)
 	if result != 42 {
@@ -59,8 +56,7 @@ func TestGetDurationEnv(t *testing.T) {
 	}
 
 	// Test with valid duration
-	os.Setenv("TEST_DURATION_ENV", "30s")
-	defer os.Unsetenv("TEST_DURATION_ENV")
+	t.Setenv("TEST_DURATION_ENV", "30s")
 
 	result = GetDurationEnv("TEST_DURATION_ENV", defaultDuration)
 	if result != 30*time.Second {
@@ -68,8 +64,7 @@ func TestGetDurationEnv(t *testing.T) {
 	}
 
 	// Test with milliseconds
-	os.Setenv("TEST_DURATION_MS", "100ms")
-	defer os.Unsetenv("TEST_DURATION_MS")
+	t.Setenv("TEST_DURATION_MS", "100ms")
 
 	result = GetDurationEnv("TEST_DURATION_MS", defaultDuration)
 	if result != 100*time.Millisecond {
@@ -77,8 +72,7 @@ func TestGetDurationEnv(t *testing.T) {
 	}
 
 	// Test with invalid duration (should return default)
-	os.Setenv("TEST_INVALID_DURATION", "not-a-duration")
-	defer os.Unsetenv("TEST_INVALID_DURATION")
+	t.Setenv("TEST_INVALID_DURATION", "not-a-duration")
 
 	result = GetDurationEnv("TEST_INVALID_DURATION", defaultDuration)
 	if result != defaultDuration {
@@ -100,7 +94,7 @@ func TestGetSecretFile(t *testing.T) {
 	}
 
 	// Test with actual file
-	tmpFile, err := os.CreateTemp("", "secret-test")
+	tmpFile, err := os.CreateTemp(t.TempDir(), "secret-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}

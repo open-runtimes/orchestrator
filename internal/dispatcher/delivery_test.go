@@ -32,7 +32,7 @@ func TestWithRetry_SucceedsOnFirstAttempt(t *testing.T) {
 	})
 	chain := WithRetry(next, 3, fastBackoff, nil)
 
-	if err := chain(context.Background(), testDeliveryEvent()); err != nil {
+	if err := chain(t.Context(), testDeliveryEvent()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if calls.Load() != 1 {
@@ -52,7 +52,7 @@ func TestWithRetry_RetriesOnTransientError(t *testing.T) {
 	var retries atomic.Int32
 	chain := WithRetry(next, 3, fastBackoff, func() { retries.Add(1) })
 
-	if err := chain(context.Background(), testDeliveryEvent()); err != nil {
+	if err := chain(t.Context(), testDeliveryEvent()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if calls.Load() != 3 {
@@ -71,7 +71,7 @@ func TestWithRetry_NoRetryOnClientError(t *testing.T) {
 	})
 	chain := WithRetry(next, 3, fastBackoff, nil)
 
-	if err := chain(context.Background(), testDeliveryEvent()); err == nil {
+	if err := chain(t.Context(), testDeliveryEvent()); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls.Load() != 1 {
@@ -87,7 +87,7 @@ func TestWithRetry_ExhaustsMaxRetries(t *testing.T) {
 	})
 	chain := WithRetry(next, 3, fastBackoff, nil)
 
-	if err := chain(context.Background(), testDeliveryEvent()); err == nil {
+	if err := chain(t.Context(), testDeliveryEvent()); err == nil {
 		t.Fatal("expected error after exhausted retries")
 	}
 	if calls.Load() != 4 { // 1 initial + 3 retries
@@ -102,7 +102,7 @@ func TestWithRetry_StopsOnContextCancellation(t *testing.T) {
 	// Use real (tiny) backoff so the select fires between attempts
 	chain := WithRetry(next, 10, &backoff.Config{Initial: 10 * time.Millisecond, Max: 10 * time.Millisecond}, nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately
 
 	err := chain(ctx, testDeliveryEvent())
@@ -122,7 +122,7 @@ func TestWithCircuitBreaker_AllowsWhenClosed(t *testing.T) {
 	})
 	chain := WithCircuitBreaker(next, registry)
 
-	if err := chain(context.Background(), testDeliveryEvent()); err != nil {
+	if err := chain(t.Context(), testDeliveryEvent()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
@@ -139,10 +139,10 @@ func TestWithCircuitBreaker_ReturnsErrCircuitOpenWhenOpen(t *testing.T) {
 	chain := WithCircuitBreaker(next, registry)
 
 	for range threshold {
-		chain(context.Background(), testDeliveryEvent()) //nolint:errcheck
+		chain(t.Context(), testDeliveryEvent())
 	}
 
-	err := chain(context.Background(), testDeliveryEvent())
+	err := chain(t.Context(), testDeliveryEvent())
 	if !errors.Is(err, ErrCircuitOpen) {
 		t.Errorf("expected ErrCircuitOpen, got %v", err)
 	}
@@ -157,8 +157,8 @@ func TestWithCircuitBreaker_DoesNotCallNextWhenOpen(t *testing.T) {
 	})
 	chain := WithCircuitBreaker(next, registry)
 
-	chain(context.Background(), testDeliveryEvent()) //nolint:errcheck // trips the circuit
-	chain(context.Background(), testDeliveryEvent()) //nolint:errcheck // should be blocked
+	chain(t.Context(), testDeliveryEvent())
+	chain(t.Context(), testDeliveryEvent())
 
 	if calls.Load() != 1 {
 		t.Errorf("expected next called once (not when open), got %d", calls.Load())
@@ -174,7 +174,7 @@ func TestWithCircuitBreaker_RecordsFailureOnError(t *testing.T) {
 	chain := WithCircuitBreaker(next, registry)
 
 	for range threshold - 1 {
-		chain(context.Background(), testDeliveryEvent()) //nolint:errcheck
+		chain(t.Context(), testDeliveryEvent())
 	}
 
 	// One below threshold: circuit should still be closed
@@ -183,7 +183,7 @@ func TestWithCircuitBreaker_RecordsFailureOnError(t *testing.T) {
 	}
 
 	// Trip it
-	chain(context.Background(), testDeliveryEvent()) //nolint:errcheck
+	chain(t.Context(), testDeliveryEvent())
 
 	if registry.Stats().Open != 1 {
 		t.Errorf("expected 1 open circuit after threshold failures, got %d", registry.Stats().Open)
@@ -202,12 +202,12 @@ func TestWithCircuitBreaker_RecordsSuccessAndCloses(t *testing.T) {
 	})
 	chain := WithCircuitBreaker(next, registry)
 
-	chain(context.Background(), testDeliveryEvent()) //nolint:errcheck // open the circuit
+	chain(t.Context(), testDeliveryEvent())
 
 	time.Sleep(2 * time.Nanosecond) // let cooldown expire → half-open
 
 	failing = false
-	if err := chain(context.Background(), testDeliveryEvent()); err != nil {
+	if err := chain(t.Context(), testDeliveryEvent()); err != nil {
 		t.Fatalf("expected success in half-open, got %v", err)
 	}
 	if registry.Stats().Open != 0 {
@@ -225,14 +225,14 @@ func TestWithCircuitBreaker_PerHostIsolation(t *testing.T) {
 	hostA := &Event{Payload: cloudevent.New("t", "s", "j", "e", nil), Destination: "http://host-a/"}
 	hostB := &Event{Payload: cloudevent.New("t", "s", "j", "e", nil), Destination: "http://host-b/"}
 
-	chain(context.Background(), hostA) //nolint:errcheck // open circuit for host-a only
+	chain(t.Context(), hostA)
 
 	// host-a should be open
-	if !errors.Is(chain(context.Background(), hostA), ErrCircuitOpen) {
+	if !errors.Is(chain(t.Context(), hostA), ErrCircuitOpen) {
 		t.Error("expected host-a circuit to be open")
 	}
 	// host-b should still be closed
-	if errors.Is(chain(context.Background(), hostB), ErrCircuitOpen) {
+	if errors.Is(chain(t.Context(), hostB), ErrCircuitOpen) {
 		t.Error("expected host-b circuit to remain closed")
 	}
 }

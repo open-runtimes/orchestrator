@@ -69,7 +69,7 @@ func TestConflict(t *testing.T) {
 
 func TestInternal(t *testing.T) {
 	t.Parallel()
-	cause := fmt.Errorf("docker daemon unavailable")
+	cause := errors.New("docker daemon unavailable")
 	err := Internal("docker.createVolume", cause)
 
 	if !errors.Is(err, ErrInternal) {
@@ -86,7 +86,7 @@ func TestInternal(t *testing.T) {
 	if appErr.Op != "docker.createVolume" {
 		t.Errorf("expected op 'docker.createVolume', got %q", appErr.Op)
 	}
-	if appErr.Cause != cause {
+	if !errors.Is(appErr.Cause, cause) {
 		t.Error("expected cause to be preserved")
 	}
 }
@@ -101,13 +101,13 @@ func TestHTTPStatus(t *testing.T) {
 		{"validation", Validation("id", "required"), http.StatusBadRequest},
 		{"not found", NotFound("job", "123"), http.StatusNotFound},
 		{"conflict", Conflict("job", "123", "exists"), http.StatusConflict},
-		{"internal", Internal("op", fmt.Errorf("fail")), http.StatusInternalServerError},
+		{"internal", Internal("op", errors.New("fail")), http.StatusInternalServerError},
 		{"sentinel validation", ErrValidation, http.StatusBadRequest},
 		{"sentinel not found", ErrNotFound, http.StatusNotFound},
 		{"sentinel conflict", ErrConflict, http.StatusConflict},
 		{"sentinel internal", ErrInternal, http.StatusInternalServerError},
 		{"wrapped validation", fmt.Errorf("wrap: %w", Validation("f", "m")), http.StatusBadRequest},
-		{"unknown error", fmt.Errorf("unknown"), http.StatusInternalServerError},
+		{"unknown error", errors.New("unknown"), http.StatusInternalServerError},
 		{"nil error", nil, http.StatusInternalServerError},
 	}
 

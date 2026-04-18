@@ -1,7 +1,6 @@
 package types
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,8 +20,7 @@ func TestRead_Interface(t *testing.T) {
 }
 
 func TestRead_Apply(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "read-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	os.WriteFile(filepath.Join(tmpDir, "result.json"), []byte(`{"status": "ok"}`), 0o644)
 
@@ -31,7 +29,7 @@ func TestRead_Apply(t *testing.T) {
 		In: "result.json",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
@@ -50,8 +48,7 @@ func TestRead_Apply(t *testing.T) {
 }
 
 func TestRead_Apply_PlainText(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "read-test")
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	os.WriteFile(filepath.Join(tmpDir, "result.txt"), []byte("plain text content"), 0o644)
 
@@ -60,7 +57,7 @@ func TestRead_Apply_PlainText(t *testing.T) {
 		In: "result.txt",
 	}
 
-	result := a.Apply(context.Background(), tmpDir)
+	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
