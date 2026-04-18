@@ -100,8 +100,10 @@
 
 > **Domain expert:** "After the worker exits, yes. The **sidecar** processes **output artifacts** and posts an **ArtifactReport** for each one. Those trigger `orchestrator.job.artifact` **CloudEvents** before the final exit callback."
 
-## Flagged ambiguities
+## Resolved ambiguities
 
-- **"event"** is overloaded: it refers to both a **CloudEvent** (the HTTP callback payload) and a **Signal** (the internal Go type emitted by the LifecycleWatcher). In code, prefer **Signal** for the internal type and **CloudEvent** or **callback** for the external one.
-- **"status"** appears as both a job **state** (the FSM value: `accepted`, `running`, etc.) and as the `Status` struct returned by the API. In conversation, prefer **state** for the FSM concept and **status response** for the API type.
-- **"error"** in an **ArtifactReport** is a string, while `artifact.Result.Error` is a Go `error`. In domain discussions, say **artifact failure reason** to avoid confusion with Go error handling.
+These were previously flagged and have been fixed in code:
+
+- **"event"** — `job.Event` (dispatch envelope) was renamed to `job.CallbackEnvelope`; `EventType*` constants renamed to `CallbackType*`; `FilteredEvents` renamed to `MatchesCallbackFilter`. **Signal** remains the term for the internal LifecycleWatcher type; **CloudEvent** for the wire format.
+- **"status"** — `job.Status` (API response struct) renamed to `job.StatusResponse`; `Response.Status` field renamed to `Response.State`. Use **state** for the FSM value, **status response** for the API struct.
+- **"error"** — `ArtifactReport.Error string` renamed to `ArtifactReport.FailureReason` (JSON: `"failureReason"`). `artifact.Result.Error` remains a Go `error` value.
