@@ -4,7 +4,7 @@ A job orchestration service for running containerized workloads with callbacks.
 
 ## Features
 
-- Async job execution in Docker containers
+- Async job execution on Docker or Kubernetes (select via `ORCHESTRATOR_BACKEND`)
 - Unified artifacts system (downloads, uploads, file writes, archives)
 - Dependency-based artifact ordering (pre-job and post-job)
 - CloudEvents 1.0 callbacks with HMAC-SHA256 signing
@@ -15,9 +15,9 @@ A job orchestration service for running containerized workloads with callbacks.
 ## Quick Start
 
 ```bash
-# Prerequisites: Go 1.22+, Docker
+# Prerequisites: Go 1.25+, Docker (or a Kubernetes cluster for the k8s backend)
 
-# Run with hot reload
+# Run with hot reload (Docker backend)
 go run github.com/go-task/task/v3/cmd/task@latest dev
 
 # Create a job
@@ -118,6 +118,27 @@ CloudEvents 1.0 format, optionally signed with HMAC-SHA256.
 | `orchestrator.job.log` | service | Log output |
 | `orchestrator.job.exit` | service | Job exited |
 | `orchestrator.job.artifact` | sidecar | Artifact processed |
+
+## Deploy to Kubernetes
+
+A Helm chart lives at `charts/orchestrator/`. Local dev loop (requires kind + tilt):
+
+```bash
+task tools       # install pinned ko, golangci-lint, helm into ./bin/
+task kind:up     # create the kind-orchestrator-dev cluster
+task dev:k8s     # tilt up: live-reload the chart on source change
+```
+
+For production:
+
+```bash
+helm install orchestrator ./charts/orchestrator \
+  --namespace orchestrator --create-namespace \
+  --set image.repository=ghcr.io/<your-org>/orchestrator \
+  --set sidecarImage.repository=ghcr.io/<your-org>/job-sidecar
+```
+
+K8s jobs run as `batch/v1.Job` with a native sidecar (requires K8s 1.29+).
 
 ## Documentation
 

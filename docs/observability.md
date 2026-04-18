@@ -16,7 +16,7 @@ task dev               # Start service with hot reload
 - `localhost:8080` - API server
 - `localhost:9090/metrics` - Prometheus metrics
 - `localhost:8080/livez` - Liveness (process running)
-- `localhost:8080/readyz` - Readiness (Docker reachable)
+- `localhost:8080/readyz` - Readiness (backend reachable — Docker daemon or K8s API server)
 
 ## Design Decisions
 
@@ -93,9 +93,9 @@ See: `internal/observability/attributes.go` -> `normalizePath()`
 ### Health Check Semantics
 
 - **Liveness** (`/livez`): Always healthy if process is running. Failure = deadlock, trigger restart.
-- **Readiness** (`/readyz`): Checks Docker daemon. Failure = remove from load balancer, don't restart.
+- **Readiness** (`/readyz`): Checks the configured backend (Docker daemon or K8s API server). Failure = remove from load balancer, don't restart.
 
-**Why separate?** A service can be alive but not ready (e.g., Docker daemon unreachable). Restarting won't fix external dependencies.
+**Why separate?** A service can be alive but not ready (e.g., Docker daemon unreachable, K8s API server unresponsive). Restarting won't fix external dependencies.
 
 See: `internal/health/checker.go`
 

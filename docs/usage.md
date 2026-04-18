@@ -95,7 +95,7 @@ DELETE /v1/jobs/{jobId}
 
 ```
 GET /livez   # Liveness probe
-GET /readyz  # Readiness probe (checks Docker connectivity)
+GET /readyz  # Readiness probe (checks backend connectivity — Docker daemon or K8s API server)
 ```
 
 ## Artifacts
