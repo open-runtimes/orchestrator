@@ -2,8 +2,9 @@ package kubernetes
 
 import (
 	"context"
-	"orchestrator/pkg/job"
 	"orchestrator/internal/testutil"
+	"orchestrator/pkg/job"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,6 +62,7 @@ func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator,
 		emitter:             job.NewCallbackEmitter(),
 		ctrl:                job.NewMemoryStore[kubernetesHandle](),
 		watcher:             watcher,
+		statusCache:         newStatusCache(),
 	}
 	return o, cs
 }
@@ -154,46 +156,105 @@ func TestStop_UnknownJob(t *testing.T) {
 
 func TestRun_AppliesStartedAndExited(t *testing.T) {
 	t.Parallel()
-	o, _ := newTestOrchestrator(t, newScriptedWatcher(
+	// Capture callback events emitted by the orchestrator's pipeline.
+	emitter := job.NewCallbackEmitter()
+	var mu sync.Mutex
+	var events []string
+	emitter.Register(func(e *job.CallbackEnvelope) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e.Payload.Type)
+	})
+
+	o := orchestratorWithEmitter(t, newScriptedWatcher(
 		job.Started{},
 		job.Exited{ExitCode: 0, Duration: time.Second},
-	))
+	), emitter)
 	defer o.Close()
 
-	if err := o.Run(context.Background(), &job.Request{ID: "flow", Image: "alpine:latest"}); err != nil {
+	if err := o.Run(context.Background(), &job.Request{
+		ID:       "flow",
+		Image:    "alpine:latest",
+		Callback: &job.Callback{URL: "https://cb.example"},
+	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	testutil.MustWaitFor(t, func() bool {
-		status, err := o.Status(context.Background(), "flow")
-		return err == nil && status.State == job.StateCompleted
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) >= 2
 	}, testutil.WithTimeout(5*time.Second))
 
-	status, _ := o.Status(context.Background(), "flow")
-	if status.ExitCode == nil || *status.ExitCode != 0 {
-		t.Errorf("exit code: got %v", status.ExitCode)
+	mu.Lock()
+	defer mu.Unlock()
+	if got := events; len(got) < 2 || got[0] != job.CallbackTypeStart || got[1] != job.CallbackTypeExit {
+		t.Errorf("events: want [start, exit], got %v", got)
 	}
 }
 
 func TestRun_FailedBeforeStart(t *testing.T) {
 	t.Parallel()
-	o, _ := newTestOrchestrator(t, newScriptedWatcher(
+	emitter := job.NewCallbackEmitter()
+	var mu sync.Mutex
+	var events []string
+	emitter.Register(func(e *job.CallbackEnvelope) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e.Payload.Type)
+	})
+
+	o := orchestratorWithEmitter(t, newScriptedWatcher(
 		job.Failed{Reason: "image pull"},
-	))
+	), emitter)
 	defer o.Close()
 
-	if err := o.Run(context.Background(), &job.Request{ID: "fail-early", Image: "alpine:latest"}); err != nil {
+	if err := o.Run(context.Background(), &job.Request{
+		ID:       "fail-early",
+		Image:    "alpine:latest",
+		Callback: &job.Callback{URL: "https://cb.example"},
+	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	testutil.MustWaitFor(t, func() bool {
-		status, err := o.Status(context.Background(), "fail-early")
-		return err == nil && status.State == job.StateFailed
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) >= 1
 	}, testutil.WithTimeout(5*time.Second))
 
-	status, _ := o.Status(context.Background(), "fail-early")
-	if status.Error != "image pull" {
-		t.Errorf("error: got %q", status.Error)
+	mu.Lock()
+	defer mu.Unlock()
+	// Failed maps to the exit event via EmitCallback.
+	if got := events; len(got) < 1 || got[0] != job.CallbackTypeExit {
+		t.Errorf("events: want [exit] from Failed, got %v", got)
+	}
+}
+
+// orchestratorWithEmitter builds a test Orchestrator wired to the supplied
+// emitter, so tests can observe the callback pipeline directly.
+func orchestratorWithEmitter(t *testing.T, watcher LifecycleWatcher, emitter *job.CallbackEmitter) *Orchestrator {
+	t.Helper()
+	cs := fake.NewClientset()
+	cfg := OrchestratorConfig{
+		Namespace:                     "orchestrator",
+		ServiceAccount:                "job-sidecar",
+		JobRetention:                  15 * time.Minute,
+		MaintenanceInterval:           1 * time.Minute,
+		ArtifactEndpoint:              "http://jobs-service.orchestrator.svc:8080",
+		TerminationGracePeriodSeconds: 600,
+	}
+	return &Orchestrator{
+		client:              cs,
+		namespace:           cfg.Namespace,
+		sidecarImage:        "sidecar:latest",
+		cfg:                 cfg,
+		retentionPeriod:     cfg.JobRetention,
+		maintenanceInterval: cfg.MaintenanceInterval,
+		emitter:             emitter,
+		ctrl:                job.NewMemoryStore[kubernetesHandle](),
+		watcher:             watcher,
+		statusCache:         newStatusCache(),
 	}
 }
 
@@ -222,6 +283,7 @@ func TestReconcile_ResumesRunning(t *testing.T) {
 		emitter:         job.NewCallbackEmitter(),
 		ctrl:            job.NewMemoryStore[kubernetesHandle](),
 		watcher:         newScriptedWatcher(job.Started{}),
+		statusCache:     newStatusCache(),
 	}
 	defer o.Close()
 
@@ -229,10 +291,16 @@ func TestReconcile_ResumesRunning(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 
-	testutil.MustWaitFor(t, func() bool {
-		status, err := o.Status(context.Background(), "resume-1")
-		return err == nil && status.State == job.StateRunning
-	}, testutil.WithTimeout(5*time.Second))
+	// Status derives from the K8s Job. Job.Status.Active=1 with no Pod present
+	// in the fake client renders as Accepted (real K8s would have a Pod in
+	// Running by this point; fake client doesn't run the Job controller).
+	status, err := o.Status(context.Background(), "resume-1")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.State != job.StateAccepted {
+		t.Errorf("state: want accepted (no pod in fake client), got %s", status.State)
+	}
 }
 
 func TestReconcile_MarksTerminalCompleted(t *testing.T) {
@@ -300,6 +368,7 @@ func reconcileHarness(t *testing.T, seed *batchv1.Job) *Orchestrator {
 		emitter:         job.NewCallbackEmitter(),
 		ctrl:            job.NewMemoryStore[kubernetesHandle](),
 		watcher:         blockingWatcher{},
+		statusCache:     newStatusCache(),
 	}
 }
 

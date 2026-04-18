@@ -29,6 +29,7 @@ type Orchestrator struct {
 	emitter             *job.CallbackEmitter
 	ctrl                *job.MemoryStore[kubernetesHandle]
 	watcher             LifecycleWatcher
+	statusCache         *statusCache
 
 	cancelMaintenance context.CancelFunc
 	watchWg           sync.WaitGroup
@@ -105,6 +106,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			emitter:             emitter,
 			ctrl:                job.NewMemoryStore[kubernetesHandle](),
 			watcher:             newK8sLifecycleWatcher(cs, ns),
+			statusCache:         newStatusCache(),
 		}, nil
 	}
 }
@@ -233,24 +235,54 @@ func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
 		h.CancelWatch()
 	}
 	o.cleanup(ctx, h.Runtime)
+	o.statusCache.invalidate(jobID)
 	return nil
 }
 
-// Status returns the current state of a job.
+// Status returns the current state of a job, derived from the K8s Job (+ Pod
+// when still present). Does not consult any in-process store, so all replicas
+// return consistent results regardless of leader election.
+// Results are cached for statusCacheTTL to absorb read bursts.
 func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusResponse, error) {
-	entry, exists := o.ctrl.Get(jobID)
-	if !exists {
+	if cached, ok := o.statusCache.get(jobID); ok {
+		out := cached
+		return &out, nil
+	}
+
+	j, err := o.client.BatchV1().Jobs(o.namespace).Get(ctx, jobNameFor(jobID), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
 		return nil, apperrors.NotFound("job", jobID)
 	}
-	return entry.StatusResponse(), nil
+	if err != nil {
+		return nil, apperrors.Internal("kubernetes.getJob", err)
+	}
+	status, err := deriveStatus(ctx, o.client, o.namespace, j)
+	if err != nil {
+		return nil, apperrors.Internal("kubernetes.deriveStatus", err)
+	}
+	o.statusCache.put(jobID, status)
+	out := status
+	return &out, nil
 }
 
-// List returns the status of all jobs.
+// List returns the status of all managed jobs, derived live from the K8s API.
+// No cache: List is already a single paginated API call, and the response is
+// a moving target that's hard to cache correctly.
 func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
-	entries := o.ctrl.List()
-	statuses := make([]job.StatusResponse, len(entries))
-	for i, e := range entries {
-		statuses[i] = *e.StatusResponse()
+	jobs, err := o.client.BatchV1().Jobs(o.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: LabelManagedBy + "=" + ManagedByValue,
+	})
+	if err != nil {
+		return nil, apperrors.Internal("kubernetes.listJobs", err)
+	}
+	statuses := make([]job.StatusResponse, 0, len(jobs.Items))
+	for i := range jobs.Items {
+		status, err := deriveStatus(ctx, o.client, o.namespace, &jobs.Items[i])
+		if err != nil {
+			slog.Warn("Failed to derive status for job", "name", jobs.Items[i].Name, "error", err)
+			continue
+		}
+		statuses = append(statuses, status)
 	}
 	return statuses, nil
 }
