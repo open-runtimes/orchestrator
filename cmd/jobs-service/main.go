@@ -61,6 +61,7 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string,
 		return kubernetes.NewOrchestrator(ctx, kubernetes.Config{
 			SidecarImage:                  sidecarImage,
 			Kubeconfig:                    cfg.Kubeconfig,
+			Context:                       cfg.Context,
 			Namespace:                     cfg.Namespace,
 			ServiceAccount:                cfg.ServiceAccount,
 			ImagePullSecrets:              cfg.ImagePullSecrets,

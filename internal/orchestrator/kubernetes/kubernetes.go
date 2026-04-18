@@ -49,6 +49,7 @@ type Orchestrator struct {
 type Config struct {
 	SidecarImage                  string
 	Kubeconfig                    string
+	Context                       string // kubeconfig context to pin; empty uses current-context
 	Namespace                     string
 	ServiceAccount                string
 	ImagePullSecrets              []string
@@ -69,7 +70,7 @@ type Config struct {
 // Register listeners on the emitter before calling Start.
 func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 	return func(emitter *job.CallbackEmitter) (job.Orchestrator, error) {
-		restCfg, err := buildRestConfig(cfg.Kubeconfig)
+		restCfg, err := buildRestConfig(cfg.Kubeconfig, cfg.Context)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build kube config: %w", err)
 		}
@@ -103,6 +104,8 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 		}
 
 		ocfg := OrchestratorConfig{
+			Kubeconfig:                    cfg.Kubeconfig,
+			Context:                       cfg.Context,
 			Namespace:                     ns,
 			ServiceAccount:                sa,
 			ImagePullSecrets:              cfg.ImagePullSecrets,
@@ -152,17 +155,26 @@ func applyLeaderDefaults(cfg *LeaderElectionConfig) {
 }
 
 // buildRestConfig resolves a *rest.Config in this order:
-//  1. explicit kubeconfig path (if set);
-//  2. in-cluster config (when running as a pod);
-//  3. default kubeconfig at $HOME/.kube/config.
-func buildRestConfig(kubeconfig string) (*rest.Config, error) {
+//  1. in-cluster config (when running as a pod) — only when neither kubeconfig
+//     nor context is explicitly requested, so explicit overrides win;
+//  2. an explicit kubeconfig path with optional context override;
+//  3. default kubeconfig loading rules ($KUBECONFIG or $HOME/.kube/config)
+//     with optional context override.
+func buildRestConfig(kubeconfig, kubeContext string) (*rest.Config, error) {
+	if kubeconfig == "" && kubeContext == "" {
+		if cfg, err := rest.InClusterConfig(); err == nil {
+			return cfg, nil
+		}
+	}
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeconfig)
+		loadingRules.ExplicitPath = kubeconfig
 	}
-	if cfg, err := rest.InClusterConfig(); err == nil {
-		return cfg, nil
+	overrides := &clientcmd.ConfigOverrides{}
+	if kubeContext != "" {
+		overrides.CurrentContext = kubeContext
 	}
-	return clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides).ClientConfig()
 }
 
 // Start begins the lifecycle watcher. With leader election enabled, only the

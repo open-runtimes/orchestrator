@@ -9,6 +9,7 @@ import (
 // OrchestratorConfig holds configuration for the Kubernetes orchestrator.
 type OrchestratorConfig struct {
 	Kubeconfig                    string
+	Context                       string // kubeconfig context to pin; empty uses current-context
 	Namespace                     string
 	ServiceAccount                string
 	ImagePullSecrets              []string
@@ -41,6 +42,7 @@ func LoadConfigFromEnv() OrchestratorConfig {
 	}
 	return OrchestratorConfig{
 		Kubeconfig:                    config.GetEnv("KUBECONFIG", ""),
+		Context:                       config.GetEnv("KUBE_CONTEXT", ""),
 		Namespace:                     config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
 		ServiceAccount:                config.GetEnv("KUBE_JOB_SERVICE_ACCOUNT", "job-sidecar"),
 		ImagePullSecrets:              pullSecrets,

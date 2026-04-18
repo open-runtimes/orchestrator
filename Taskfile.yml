@@ -91,6 +91,13 @@ tasks:
     cmds:
       - go test -race -tags=integration -timeout=10m ./...
 
+  test-k8s-integration:
+    desc: Run real-cluster K8s integration tests (requires kind + built images)
+    deps: [build, kind:up]
+    cmds:
+      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest --name {{.KIND_CLUSTER}}
+      - go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/...
+
   test-e2e:
     desc: Run e2e tests (full system)
     deps: [build]
