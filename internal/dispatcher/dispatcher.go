@@ -31,7 +31,8 @@ type Event struct {
 	Destination string // callback URL
 	SigningKey  string // HMAC key for signing, empty = no signing
 	Signature   string // Pre-computed signature, takes precedence over SigningKey
-	Requeues    int    // number of times requeued due to circuit open (internal use)
+	Headers     map[string]string
+	Requeues    int // number of times requeued due to circuit open (internal use)
 }
 
 // Stats holds dispatcher statistics.

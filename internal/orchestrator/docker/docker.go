@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
@@ -38,6 +40,7 @@ type Orchestrator struct {
 	emitter             *job.CallbackEmitter
 	artifactEndpoint    string
 	extraHosts          []string
+	networkName         string
 	ctrl                *job.MemoryStore[dockerHandle]
 	watcher             LifecycleWatcher
 
@@ -52,6 +55,7 @@ type Config struct {
 	MaintenanceInterval time.Duration // How often to run cleanup (default 1m)
 	ArtifactEndpoint    string        // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
 	ExtraHosts          []string      // Extra /etc/hosts entries for containers (e.g., ["appwrite.test:host-gateway"])
+	Network             string        // Docker network to attach worker and sidecar containers to
 }
 
 // NewOrchestrator returns an OrchestratorFactory that creates a Docker orchestrator.
@@ -81,6 +85,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			emitter:             emitter,
 			artifactEndpoint:    cfg.ArtifactEndpoint,
 			extraHosts:          cfg.ExtraHosts,
+			networkName:         cfg.Network,
 			ctrl:                job.NewMemoryStore[dockerHandle](),
 			watcher:             newDockerLifecycleWatcher(dockerClient),
 		}, nil
@@ -370,6 +375,11 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 		if len(req.Callback.Events) > 0 {
 			labels["job.callback.events"] = strings.Join(req.Callback.Events, ",")
 		}
+		if len(req.Callback.Headers) > 0 {
+			if headersJSON, err := json.Marshal(req.Callback.Headers); err == nil {
+				labels["job.callback.headers"] = string(headersJSON)
+			}
+		}
 	}
 	if len(req.Meta) > 0 {
 		if metaJSON, err := json.Marshal(req.Meta); err == nil {
@@ -398,9 +408,10 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 			Memory:   int64(req.Memory) * 1024 * 1024,
 		},
 	}
+	networkConfig := o.networkingConfig()
 
 	containerName := fmt.Sprintf("job-%s-worker", req.ID)
-	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, containerName)
 	if err != nil {
 		return "", err
 	}
@@ -415,7 +426,7 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		"SHARED_VOLUME_PATH=" + req.Workspace,
 	}
 
-	artifactsJSON, err := json.Marshal(req.Artifacts)
+	artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal artifacts: %w", err)
 	}
@@ -432,6 +443,13 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		}
 		if len(req.Callback.Events) > 0 {
 			env = append(env, "CALLBACK_EVENTS="+strings.Join(req.Callback.Events, ","))
+		}
+		if len(req.Callback.Headers) > 0 {
+			headersJSON, err := json.Marshal(req.Callback.Headers)
+			if err != nil {
+				return "", fmt.Errorf("failed to marshal callback headers: %w", err)
+			}
+			env = append(env, "CALLBACK_HEADERS_JSON="+string(headersJSON))
 		}
 	}
 
@@ -473,14 +491,27 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		},
 		ExtraHosts: o.extraHosts,
 	}
+	networkConfig := o.networkingConfig()
 
 	containerName := fmt.Sprintf("job-%s-sidecar", req.ID)
-	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, containerName)
 	if err != nil {
 		return "", err
 	}
 
 	return resp.ID, nil
+}
+
+func (o *Orchestrator) networkingConfig() *network.NetworkingConfig {
+	if o.networkName == "" {
+		return nil
+	}
+
+	return &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			o.networkName: {},
+		},
+	}
 }
 
 func (o *Orchestrator) pullImageIfNeeded(ctx context.Context, imageName string) error {
@@ -584,6 +615,7 @@ func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
 		Payload:     event,
 		CallbackURL: r.CallbackURL,
 		SigningKey:  r.CallbackKey,
+		Headers:     r.CallbackHeaders,
 	})
 }
 

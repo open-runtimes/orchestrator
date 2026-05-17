@@ -42,10 +42,11 @@ func (LogLine) signal() {}
 // It is backend-agnostic: the Docker orchestrator builds it from container labels
 // or a job.Request; a Kubernetes backend would build it the same way.
 type CallbackDest struct {
-	URL    string
-	Key    string
-	Events []string
-	Meta   map[string]string
+	URL     string
+	Key     string
+	Events  []string
+	Headers map[string]string
+	Meta    map[string]string
 }
 
 // EmitCallback translates a Signal into an outbound CloudEvent callback.
@@ -64,6 +65,7 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 				Payload:     event,
 				CallbackURL: dest.URL,
 				SigningKey:  dest.Key,
+				Headers:     dest.Headers,
 			})
 		}
 	case Exited:
@@ -79,6 +81,7 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 			Payload:     builder.BuildLogEvent(ev.Lines, ev.Stream),
 			CallbackURL: dest.URL,
 			SigningKey:  dest.Key,
+			Headers:     dest.Headers,
 		})
 	}
 }
@@ -92,11 +95,13 @@ func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDe
 	var callbackURL, signingKey string
 	var eventFilter []string
 	var meta map[string]string
+	var headers map[string]string
 	if dest != nil {
 		meta = dest.Meta
 		callbackURL = dest.URL
 		signingKey = dest.Key
 		eventFilter = dest.Events
+		headers = dest.Headers
 	}
 
 	builder := NewEventBuilder(jobID, "orchestrator/service", meta)
@@ -106,6 +111,7 @@ func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDe
 			Payload:     event,
 			CallbackURL: callbackURL,
 			SigningKey:  signingKey,
+			Headers:     headers,
 		})
 	}
 }

@@ -53,10 +53,11 @@ func watchConfigFromRequest(req *job.Request, h dockerHandle) *watchConfig {
 	}
 	if req.Callback != nil && req.Callback.URL != "" {
 		cfg.dest = &job.CallbackDest{
-			Meta:   req.Meta,
-			URL:    req.Callback.URL,
-			Key:    req.Callback.Key,
-			Events: req.Callback.Events,
+			Meta:    req.Meta,
+			URL:     req.Callback.URL,
+			Key:     req.Callback.Key,
+			Events:  req.Callback.Events,
+			Headers: req.Callback.Headers,
 		}
 	}
 	return cfg
@@ -91,11 +92,16 @@ func callbackDestFromLabels(labels map[string]string) *job.CallbackDest {
 	if raw := labels["job.callback.events"]; raw != "" {
 		events = strings.Split(raw, ",")
 	}
+	var headers map[string]string
+	if raw := labels["job.callback.headers"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &headers)
+	}
 
 	return &job.CallbackDest{
-		Meta:   meta,
-		URL:    callbackURL,
-		Key:    labels["job.callback.key"],
-		Events: events,
+		Meta:    meta,
+		URL:     callbackURL,
+		Key:     labels["job.callback.key"],
+		Events:  events,
+		Headers: headers,
 	}
 }

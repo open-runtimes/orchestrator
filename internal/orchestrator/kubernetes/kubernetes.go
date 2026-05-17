@@ -395,6 +395,7 @@ func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
 		Payload:     event,
 		CallbackURL: r.CallbackURL,
 		SigningKey:  r.CallbackKey,
+		Headers:     r.CallbackHeaders,
 	})
 }
 

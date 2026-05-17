@@ -260,7 +260,6 @@ func (w *dockerLifecycleWatcher) streamLogs(ctx context.Context, logger *slog.Lo
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     true,
-		Timestamps: true,
 	})
 	if err != nil {
 		logger.Error("Failed to get container logs", "error", err)
@@ -310,12 +309,14 @@ func (w *dockerLifecycleWatcher) parseExitCode(event events.Message) int {
 }
 
 func splitLines(s string) []string {
-	var lines []string
-	for line := range strings.SplitSeq(s, "\n") {
-		line = strings.TrimSuffix(line, "\r")
-		if line != "" {
-			lines = append(lines, line)
-		}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	parts := strings.Split(s, "\n")
+	if strings.HasSuffix(s, "\n") {
+		parts = parts[:len(parts)-1]
 	}
-	return lines
+
+	for i := range parts {
+		parts[i] = strings.TrimSuffix(parts[i], "\r")
+	}
+	return parts
 }

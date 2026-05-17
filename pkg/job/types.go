@@ -93,9 +93,10 @@ func (r Request) MarshalJSON() ([]byte, error) {
 
 // Callback represents callback configuration for a job
 type Callback struct {
-	URL    string   `json:"url"`
-	Events []string `json:"events"`
-	Key    string   `json:"key,omitempty"` // HMAC signing key
+	URL     string            `json:"url"`
+	Events  []string          `json:"events"`
+	Key     string            `json:"key,omitempty"` // HMAC signing key
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Response represents the response when a job is created
@@ -122,17 +123,18 @@ type ListResponse struct {
 // Callback config is passed through from the sidecar so the orchestrator does not need to
 // duplicate it in its own state.
 type ArtifactReport struct {
-	JobID   string `json:"jobId"`
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Status  string `json:"status"`
-	Content any    `json:"content,omitempty"`
+	JobID         string `json:"jobId"`
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	Content       any    `json:"content,omitempty"`
 	FailureReason string `json:"failureReason,omitempty"`
 
-	CallbackURL    string            `json:"callbackUrl,omitempty"`
-	CallbackKey    string            `json:"callbackKey,omitempty"`
-	CallbackEvents []string          `json:"callbackEvents,omitempty"`
-	Meta           map[string]string `json:"meta,omitempty"`
+	CallbackURL     string            `json:"callbackUrl,omitempty"`
+	CallbackKey     string            `json:"callbackKey,omitempty"`
+	CallbackEvents  []string          `json:"callbackEvents,omitempty"`
+	CallbackHeaders map[string]string `json:"callbackHeaders,omitempty"`
+	Meta            map[string]string `json:"meta,omitempty"`
 }
 
 // State constants

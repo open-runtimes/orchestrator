@@ -36,6 +36,7 @@ func NewSender(timeout time.Duration) *Sender {
 type SendOptions struct {
 	SigningKey string // HMAC key for signing
 	Signature  string // Pre-computed signature (takes precedence over SigningKey)
+	Headers    map[string]string
 }
 
 // Send delivers a CloudEvent via HTTP POST.
@@ -58,6 +59,9 @@ func (s *Sender) Send(ctx context.Context, url string, event *Event, opts SendOp
 	req.Header.Set("Ce-Subject", event.Subject)
 	req.Header.Set("Ce-Id", event.ID)
 	req.Header.Set("Ce-Time", event.Time.Format(time.RFC3339))
+	for key, value := range opts.Headers {
+		req.Header.Set(key, value)
+	}
 
 	// HMAC signature - pre-computed takes precedence
 	if opts.Signature != "" {

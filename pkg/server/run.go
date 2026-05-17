@@ -54,6 +54,7 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 			Payload:     e.Payload,
 			Destination: e.CallbackURL,
 			SigningKey:  e.SigningKey,
+			Headers:     e.Headers,
 		}); err != nil {
 			slog.Warn("Failed to dispatch job event", "type", e.Payload.Type, "error", err)
 		}

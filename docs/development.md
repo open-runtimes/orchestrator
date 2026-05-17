@@ -57,7 +57,7 @@ Configuration is loaded from environment variables. Each package manages its own
 |---------|------------|-------------|
 | `config` | `PORT`, `METRICS_PORT`, `ORCHESTRATOR_BACKEND`, etc. | Service-level settings; backend selection |
 | `dispatcher` | `DISPATCHER_*` | Event dispatch buffer, workers, retry |
-| `orchestrator/docker` | `JOB_RETENTION`, `MAINTENANCE_INTERVAL`, `ARTIFACT_ENDPOINT`, `EXTRA_HOSTS` | Docker backend config |
+| `orchestrator/docker` | `JOB_RETENTION`, `MAINTENANCE_INTERVAL`, `ARTIFACT_ENDPOINT`, `EXTRA_HOSTS`, `ORCHESTRATOR_NETWORK` | Docker backend config |
 | `orchestrator/kubernetes` | `KUBE_NAMESPACE`, `KUBE_JOB_SERVICE_ACCOUNT`, `KUBE_IMAGE_PULL_SECRETS`, `KUBE_TERMINATION_GRACE_SECONDS`, `KUBECONFIG`, plus shared `JOB_RETENTION`/`MAINTENANCE_INTERVAL`/`ARTIFACT_ENDPOINT` | Kubernetes backend config |
 | `sidecar` | `JOB_ID`, `CALLBACK_*`, etc. | Sidecar runtime settings |
 

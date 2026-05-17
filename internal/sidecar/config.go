@@ -16,6 +16,7 @@ type Config struct {
 	CallbackURL      string
 	CallbackKey      string
 	CallbackEvents   string // comma-separated event type filter
+	CallbackHeaders  string
 }
 
 // LoadConfigFromEnv loads sidecar configuration from environment variables.
@@ -30,5 +31,6 @@ func LoadConfigFromEnv() *Config {
 		CallbackURL:      config.GetEnv("CALLBACK_URL", ""),
 		CallbackKey:      config.GetEnv("CALLBACK_KEY", ""),
 		CallbackEvents:   config.GetEnv("CALLBACK_EVENTS", ""),
+		CallbackHeaders:  config.GetEnv("CALLBACK_HEADERS_JSON", "{}"),
 	}
 }

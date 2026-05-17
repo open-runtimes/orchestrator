@@ -244,6 +244,21 @@ func TestLifecycle_LogSkippedWhenFilteredOut(t *testing.T) {
 	}
 }
 
+func TestSplitLinesPreservesBlankLines(t *testing.T) {
+	t.Parallel()
+
+	got := splitLines("one\n\nthree\n")
+	want := []string{"one", "", "three"}
+	if len(got) != len(want) {
+		t.Fatalf("want %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line[%d]: want %q, got %q", i, want[i], got[i])
+		}
+	}
+}
+
 func TestLifecycle_ResumeNoStarted(t *testing.T) {
 	t.Parallel()
 	// Simulate a resumed job: worker was already running, so Watch emits

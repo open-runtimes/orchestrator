@@ -67,6 +67,10 @@ func run(mode string) error {
 	if cfg.CallbackEvents != "" {
 		callbackEvents = strings.Split(cfg.CallbackEvents, ",")
 	}
+	var callbackHeaders map[string]string
+	if cfg.CallbackHeaders != "" && cfg.CallbackHeaders != "{}" {
+		_ = json.Unmarshal([]byte(cfg.CallbackHeaders), &callbackHeaders)
+	}
 
 	reporter := sidecar.NewHTTPSink(
 		cfg.JobID,
@@ -75,6 +79,7 @@ func run(mode string) error {
 		cfg.CallbackURL,
 		cfg.CallbackKey,
 		callbackEvents,
+		callbackHeaders,
 		meta,
 	)
 

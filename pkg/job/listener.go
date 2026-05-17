@@ -10,6 +10,7 @@ type CallbackEnvelope struct {
 	Payload     *cloudevent.Event
 	CallbackURL string
 	SigningKey  string
+	Headers     map[string]string
 }
 
 // CallbackEmitter fans out outbound callbacks to registered listeners.

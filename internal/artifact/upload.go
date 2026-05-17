@@ -20,12 +20,13 @@ const (
 
 // Upload uploads a file to a URL.
 type Upload struct {
-	ID             string `json:"id"`
-	In             string `json:"in"`  // Path to read from
-	Out            string `json:"out"` // URL to upload to
-	Depends        string `json:"depends,omitempty"`
-	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
-	Retries        int    `json:"retries,omitempty"`        // Max retry attempts (default 3)
+	ID             string            `json:"id"`
+	In             string            `json:"in"`  // Path to read from
+	Out            string            `json:"out"` // URL to upload to
+	Depends        string            `json:"depends,omitempty"`
+	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
+	Retries        int               `json:"retries,omitempty"`        // Max retry attempts (default 3)
+	Headers        map[string]string `json:"headers,omitempty"`
 }
 
 func (a *Upload) ArtifactID() string   { return a.ID }
@@ -101,6 +102,7 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/octet-stream")
+	applyHeaders(req, a.Headers)
 
 	resp, err := client.Do(req)
 	if err != nil {

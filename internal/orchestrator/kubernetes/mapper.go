@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"encoding/json"
 	"fmt"
+	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
 	"strconv"
 	"strings"
@@ -18,10 +19,11 @@ const (
 	LabelJobID     = "job.id"
 	ManagedByValue = "jobs-service"
 
-	AnnotationCallbackURL    = "job.callback.url"
-	AnnotationCallbackKey    = "job.callback.key"
-	AnnotationCallbackEvents = "job.callback.events"
-	AnnotationMeta           = "job.meta"
+	AnnotationCallbackURL     = "job.callback.url"
+	AnnotationCallbackKey     = "job.callback.key"
+	AnnotationCallbackEvents  = "job.callback.events"
+	AnnotationCallbackHeaders = "job.callback.headers"
+	AnnotationMeta            = "job.meta"
 
 	ContainerWorker       = "worker"
 	ContainerArtifactPre  = "artifact-pre"
@@ -45,10 +47,11 @@ func watchConfigFromRequest(req *job.Request) *watchConfig {
 	}
 	if req.Callback != nil && req.Callback.URL != "" {
 		cfg.dest = &job.CallbackDest{
-			Meta:   req.Meta,
-			URL:    req.Callback.URL,
-			Key:    req.Callback.Key,
-			Events: req.Callback.Events,
+			Meta:    req.Meta,
+			URL:     req.Callback.URL,
+			Key:     req.Callback.Key,
+			Events:  req.Callback.Events,
+			Headers: req.Callback.Headers,
 		}
 	}
 	return cfg
@@ -81,11 +84,16 @@ func callbackDestFromAnnotations(ann map[string]string) *job.CallbackDest {
 	if raw := ann[AnnotationCallbackEvents]; raw != "" {
 		events = strings.Split(raw, ",")
 	}
+	var headers map[string]string
+	if raw := ann[AnnotationCallbackHeaders]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &headers)
+	}
 	return &job.CallbackDest{
-		Meta:   meta,
-		URL:    url,
-		Key:    ann[AnnotationCallbackKey],
-		Events: events,
+		Meta:    meta,
+		URL:     url,
+		Key:     ann[AnnotationCallbackKey],
+		Events:  events,
+		Headers: headers,
 	}
 }
 
@@ -213,6 +221,11 @@ func jobAnnotations(req *job.Request) map[string]string {
 		if len(req.Callback.Events) > 0 {
 			annotations[AnnotationCallbackEvents] = strings.Join(req.Callback.Events, ",")
 		}
+		if len(req.Callback.Headers) > 0 {
+			if headersJSON, err := json.Marshal(req.Callback.Headers); err == nil {
+				annotations[AnnotationCallbackHeaders] = string(headersJSON)
+			}
+		}
 	}
 	if len(req.Meta) > 0 {
 		if metaJSON, err := json.Marshal(req.Meta); err == nil {
@@ -254,7 +267,7 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 		{Name: "SHARED_VOLUME_PATH", Value: workspace},
 		{Name: "TIMEOUT_SECONDS", Value: strconv.Itoa(req.TimeoutSeconds)},
 	}
-	if artifactsJSON, err := json.Marshal(req.Artifacts); err == nil {
+	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACTS_JSON", Value: string(artifactsJSON)})
 	}
 	if artifactEndpoint != "" {
@@ -267,6 +280,11 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 		}
 		if len(req.Callback.Events) > 0 {
 			env = append(env, corev1.EnvVar{Name: "CALLBACK_EVENTS", Value: strings.Join(req.Callback.Events, ",")})
+		}
+		if len(req.Callback.Headers) > 0 {
+			if headersJSON, err := json.Marshal(req.Callback.Headers); err == nil {
+				env = append(env, corev1.EnvVar{Name: "CALLBACK_HEADERS_JSON", Value: string(headersJSON)})
+			}
 		}
 	}
 	if len(req.Meta) > 0 {

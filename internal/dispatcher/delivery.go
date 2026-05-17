@@ -26,6 +26,7 @@ func HTTPSender(sender *cloudevent.Sender) DeliveryFunc {
 		opts := cloudevent.SendOptions{
 			SigningKey: event.SigningKey,
 			Signature:  event.Signature,
+			Headers:    event.Headers,
 		}
 		return sender.Send(ctx, event.Destination, event.Payload, opts)
 	}
