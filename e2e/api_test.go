@@ -14,15 +14,120 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
-	"orchestrator/pkg/job"
 	"orchestrator/internal/orchestrator/docker"
 	"orchestrator/internal/testutil"
+	"orchestrator/pkg/job"
 	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/client"
 )
+
+type testAPI struct {
+	baseURL string
+	cleanup func()
+	jobIDs  sync.Map
+}
+
+func newTestAPI(t *testing.T) *testAPI {
+	t.Helper()
+
+	baseURL, cleanup := getTestURL(t)
+	api := &testAPI{
+		baseURL: baseURL,
+		cleanup: cleanup,
+	}
+	t.Cleanup(api.cleanupAll)
+
+	return api
+}
+
+func (a *testAPI) createJob(t *testing.T, body map[string]any) *http.Response {
+	t.Helper()
+
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(a.baseURL+"/v1/jobs", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("Create job failed: %v", err)
+	}
+
+	if id, ok := body["id"].(string); ok && resp.StatusCode == http.StatusAccepted {
+		a.jobIDs.Store(id, struct{}{})
+	}
+
+	return resp
+}
+
+func (a *testAPI) cleanupAll() {
+	client := &http.Client{Timeout: 10 * time.Second}
+	a.jobIDs.Range(func(key, _ any) bool {
+		jobID, ok := key.(string)
+		if !ok {
+			return true
+		}
+
+		req, err := http.NewRequest(http.MethodDelete, a.baseURL+"/v1/jobs/"+jobID, nil)
+		if err == nil {
+			resp, err := client.Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}
+
+		a.waitForJobCleanup(jobID)
+		a.cleanupDockerJob(jobID)
+
+		return true
+	})
+
+	a.cleanup()
+}
+
+func (a *testAPI) waitForJobCleanup(jobID string) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(a.baseURL + "/v1/jobs/" + jobID)
+		if err != nil {
+			return
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (a *testAPI) cleanupDockerJob(jobID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return
+	}
+	defer cli.Close()
+
+	containers, err := cli.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "managed-by=jobs-service"),
+			filters.Arg("label", "job.id="+jobID),
+		),
+	})
+	if err == nil {
+		for _, c := range containers {
+			_ = cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+		}
+	}
+
+	_ = cli.VolumeRemove(ctx, "job-"+jobID+"-workspace", true)
+}
 
 // getTestURL returns the base URL for e2e tests.
 // If E2E_API_URL is set, tests run against that instance.
@@ -128,8 +233,7 @@ func TestAPI_Livez(t *testing.T) {
 }
 
 func TestAPI_CreateAndGetJob(t *testing.T) {
-	baseURL, cleanup := getTestURL(t)
-	defer cleanup()
+	api := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-test-%d", time.Now().UnixNano())
 
@@ -141,12 +245,7 @@ func TestAPI_CreateAndGetJob(t *testing.T) {
 		"memory":         128,
 		"timeoutSeconds": 60,
 	}
-	body, _ := json.Marshal(reqBody)
-
-	resp, err := http.Post(baseURL+"/v1/jobs", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("Create job failed: %v", err)
-	}
+	resp := api.createJob(t, reqBody)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted {
@@ -166,7 +265,7 @@ func TestAPI_CreateAndGetJob(t *testing.T) {
 
 	var statusResp map[string]any
 	testutil.MustWaitFor(t, func() bool {
-		r, e := http.Get(baseURL + "/v1/jobs/" + jobID)
+		r, e := http.Get(api.baseURL + "/v1/jobs/" + jobID)
 		if e != nil {
 			return false
 		}
@@ -189,8 +288,7 @@ func TestAPI_CreateAndGetJob(t *testing.T) {
 }
 
 func TestAPI_CreateAndCancelJob(t *testing.T) {
-	baseURL, cleanup := getTestURL(t)
-	defer cleanup()
+	api := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-cancel-%d", time.Now().UnixNano())
 
@@ -202,12 +300,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 		"memory":         128,
 		"timeoutSeconds": 60,
 	}
-	body, _ := json.Marshal(reqBody)
-
-	resp, err := http.Post(baseURL+"/v1/jobs", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("Create job failed: %v", err)
-	}
+	resp := api.createJob(t, reqBody)
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted {
@@ -216,7 +309,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 
 	// Wait for job to be running before canceling
 	testutil.MustWaitFor(t, func() bool {
-		resp, err := http.Get(baseURL + "/v1/jobs/" + jobID)
+		resp, err := http.Get(api.baseURL + "/v1/jobs/" + jobID)
 		if err != nil {
 			return false
 		}
@@ -229,8 +322,8 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 		return status["status"] == "running"
 	}, testutil.WithTimeout(30*time.Second), testutil.WithInterval(time.Second))
 
-	req, _ := http.NewRequest(http.MethodDelete, baseURL+"/v1/jobs/"+jobID, nil)
-	resp, err = http.DefaultClient.Do(req)
+	req, _ := http.NewRequest(http.MethodDelete, api.baseURL+"/v1/jobs/"+jobID, nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Cancel job failed: %v", err)
 	}
@@ -240,7 +333,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 		t.Errorf("Expected status 204, got %d", resp.StatusCode)
 	}
 
-	resp, err = http.Get(baseURL + "/v1/jobs/" + jobID)
+	resp, err = http.Get(api.baseURL + "/v1/jobs/" + jobID)
 	if err != nil {
 		t.Fatalf("Get job failed: %v", err)
 	}
@@ -252,8 +345,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 }
 
 func TestAPI_JobCompletion(t *testing.T) {
-	baseURL, cleanup := getTestURL(t)
-	defer cleanup()
+	api := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-complete-%d", time.Now().UnixNano())
 
@@ -265,17 +357,12 @@ func TestAPI_JobCompletion(t *testing.T) {
 		"memory":         128,
 		"timeoutSeconds": 60,
 	}
-	body, _ := json.Marshal(reqBody)
-
-	resp, err := http.Post(baseURL+"/v1/jobs", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("Create job failed: %v", err)
-	}
+	resp := api.createJob(t, reqBody)
 	resp.Body.Close()
 
 	var status string
 	testutil.MustWaitFor(t, func() bool {
-		r, e := http.Get(baseURL + "/v1/jobs/" + jobID)
+		r, e := http.Get(api.baseURL + "/v1/jobs/" + jobID)
 		if e != nil {
 			return false
 		}
@@ -345,8 +432,7 @@ func TestAPI_JobWithCallbacks(t *testing.T) {
 	}
 	defer cleanup()
 
-	baseURL, apiCleanup := getTestURL(t)
-	defer apiCleanup()
+	api := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-callback-%d", time.Now().UnixNano())
 
@@ -361,12 +447,7 @@ func TestAPI_JobWithCallbacks(t *testing.T) {
 			"url": callbackURL,
 		},
 	}
-	body, _ := json.Marshal(reqBody)
-
-	resp, err := http.Post(baseURL+"/v1/jobs", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("Create job failed: %v", err)
-	}
+	resp := api.createJob(t, reqBody)
 	resp.Body.Close()
 
 	// Wait for at least 2 callback events (start, exit)
@@ -407,8 +488,7 @@ func TestAPI_InvalidJobRequest(t *testing.T) {
 }
 
 func TestAPI_ConcurrentJobs(t *testing.T) {
-	baseURL, cleanup := getTestURL(t)
-	defer cleanup()
+	api := newTestAPI(t)
 
 	numJobs := 3
 	var wg sync.WaitGroup
@@ -426,13 +506,7 @@ func TestAPI_ConcurrentJobs(t *testing.T) {
 				"memory":         128,
 				"timeoutSeconds": 60,
 			}
-			body, _ := json.Marshal(reqBody)
-
-			resp, err := http.Post(baseURL+"/v1/jobs", "application/json", bytes.NewReader(body))
-			if err != nil {
-				errors <- fmt.Errorf("job %d: create failed: %w", i, err)
-				return
-			}
+			resp := api.createJob(t, reqBody)
 			resp.Body.Close()
 
 			if resp.StatusCode != http.StatusAccepted {
