@@ -13,11 +13,11 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
-	"orchestrator/pkg/job"
 	"orchestrator/internal/observability"
 	"orchestrator/internal/orchestrator/docker"
 	"orchestrator/internal/testutil"
 	"orchestrator/pkg/cloudevent"
+	"orchestrator/pkg/job"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -37,6 +37,8 @@ func BenchmarkConcurrentJobs(b *testing.B) {
 
 	server, cleanup := createBenchServer(b)
 	defer cleanup()
+	var jobIDs sync.Map
+	defer cleanupBenchJobs(b, server, &jobIDs)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -66,6 +68,8 @@ func BenchmarkConcurrentJobs(b *testing.B) {
 
 			if resp.StatusCode != http.StatusAccepted {
 				b.Errorf("Expected 202, got %d", resp.StatusCode)
+			} else {
+				jobIDs.Store(jobID, struct{}{})
 			}
 		}
 	})
@@ -187,6 +191,8 @@ func TestConcurrentJobsWithCallbacks(t *testing.T) {
 
 	server, cleanup := createBenchServer(t)
 	defer cleanup()
+	var jobIDs sync.Map
+	defer cleanupBenchJobs(t, server, &jobIDs)
 
 	client := &http.Client{Timeout: jobTimeout}
 
@@ -222,6 +228,7 @@ func TestConcurrentJobsWithCallbacks(t *testing.T) {
 
 			if resp.StatusCode == http.StatusAccepted {
 				created.Add(1)
+				jobIDs.Store(jobID, struct{}{})
 			} else {
 				failed.Add(1)
 			}
@@ -443,6 +450,33 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	}
 
 	return tempServer.URL, cleanup
+}
+
+func cleanupBenchJobs(tb testing.TB, baseURL string, jobIDs *sync.Map) {
+	tb.Helper()
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	jobIDs.Range(func(key, _ any) bool {
+		jobID, ok := key.(string)
+		if !ok {
+			return true
+		}
+
+		req, err := http.NewRequestWithContext(tb.Context(), http.MethodDelete, baseURL+"/v1/jobs/"+jobID, nil)
+		if err != nil {
+			tb.Logf("Failed to create cleanup request for job %s: %v", jobID, err)
+			return true
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			tb.Logf("Failed to cleanup job %s: %v", jobID, err)
+			return true
+		}
+		_ = resp.Body.Close()
+
+		return true
+	})
 }
 
 func newTestEvent(id string) *cloudevent.Event {
