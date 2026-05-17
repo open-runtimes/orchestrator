@@ -2,7 +2,10 @@ package cloudevent
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestHTTPError_Error(t *testing.T) {
@@ -121,5 +124,52 @@ func TestGenerateSignature(t *testing.T) {
 	signature3 := generateSignature(payload, "different-key")
 	if signature == signature3 {
 		t.Error("different keys should produce different signatures")
+	}
+}
+
+func TestSendProtocolHeadersOverrideCustomHeaders(t *testing.T) {
+	t.Parallel()
+
+	gotCh := make(chan http.Header, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCh <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sender := NewSender(time.Second)
+	event := New("test.event", "test", "job-1", "evt-1", nil)
+
+	err := sender.Send(t.Context(), server.URL, event, SendOptions{
+		Signature: "sha256=authoritative",
+		Headers: map[string]string{
+			"Content-Type":     "text/plain",
+			"Ce-Type":          "wrong.type",
+			"X-Signature-256":  "sha256=custom",
+			"X-Custom-Header":  "custom",
+			"Ce-Specversion":   "0.3",
+			"Ce-Source":        "wrong",
+			"Ce-Subject":       "wrong",
+			"Ce-Id":            "wrong",
+			"Ce-Time":          "wrong",
+			"X-Another-Header": "another",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	got := <-gotCh
+
+	if got.Get("Content-Type") != "application/cloudevents+json" {
+		t.Errorf("Content-Type = %q", got.Get("Content-Type"))
+	}
+	if got.Get("Ce-Type") != "test.event" {
+		t.Errorf("Ce-Type = %q", got.Get("Ce-Type"))
+	}
+	if got.Get("X-Signature-256") != "sha256=authoritative" {
+		t.Errorf("X-Signature-256 = %q", got.Get("X-Signature-256"))
+	}
+	if got.Get("X-Custom-Header") != "custom" {
+		t.Errorf("X-Custom-Header = %q", got.Get("X-Custom-Header"))
 	}
 }

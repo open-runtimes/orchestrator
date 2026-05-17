@@ -101,8 +101,8 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 	}
 
 	req.ContentLength = size
-	req.Header.Set("Content-Type", "application/octet-stream")
 	applyHeaders(req, a.Headers)
+	req.Header.Set("Content-Type", "application/octet-stream")
 
 	resp, err := client.Do(req)
 	if err != nil {

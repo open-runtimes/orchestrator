@@ -38,13 +38,13 @@ func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
 
 	baseURL, cleanup := getTestURL(t)
-	api := &testAPI{
+	testClient := &testAPI{
 		baseURL: baseURL,
 		cleanup: cleanup,
 	}
-	t.Cleanup(api.cleanupAll)
+	t.Cleanup(testClient.cleanupAll)
 
-	return api
+	return testClient
 }
 
 func (a *testAPI) createJob(t *testing.T, body map[string]any) *http.Response {
@@ -64,7 +64,7 @@ func (a *testAPI) createJob(t *testing.T, body map[string]any) *http.Response {
 }
 
 func (a *testAPI) cleanupAll() {
-	client := &http.Client{Timeout: 10 * time.Second}
+	httpClient := &http.Client{Timeout: 10 * time.Second}
 	a.jobIDs.Range(func(key, _ any) bool {
 		jobID, ok := key.(string)
 		if !ok {
@@ -73,7 +73,7 @@ func (a *testAPI) cleanupAll() {
 
 		req, err := http.NewRequest(http.MethodDelete, a.baseURL+"/v1/jobs/"+jobID, nil)
 		if err == nil {
-			resp, err := client.Do(req)
+			resp, err := httpClient.Do(req)
 			if err == nil {
 				_ = resp.Body.Close()
 			}
@@ -233,7 +233,7 @@ func TestAPI_Livez(t *testing.T) {
 }
 
 func TestAPI_CreateAndGetJob(t *testing.T) {
-	api := newTestAPI(t)
+	testClient := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-test-%d", time.Now().UnixNano())
 
@@ -245,7 +245,7 @@ func TestAPI_CreateAndGetJob(t *testing.T) {
 		"memory":         128,
 		"timeoutSeconds": 60,
 	}
-	resp := api.createJob(t, reqBody)
+	resp := testClient.createJob(t, reqBody)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted {
@@ -265,7 +265,7 @@ func TestAPI_CreateAndGetJob(t *testing.T) {
 
 	var statusResp map[string]any
 	testutil.MustWaitFor(t, func() bool {
-		r, e := http.Get(api.baseURL + "/v1/jobs/" + jobID)
+		r, e := http.Get(testClient.baseURL + "/v1/jobs/" + jobID)
 		if e != nil {
 			return false
 		}
@@ -288,7 +288,7 @@ func TestAPI_CreateAndGetJob(t *testing.T) {
 }
 
 func TestAPI_CreateAndCancelJob(t *testing.T) {
-	api := newTestAPI(t)
+	testClient := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-cancel-%d", time.Now().UnixNano())
 
@@ -300,7 +300,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 		"memory":         128,
 		"timeoutSeconds": 60,
 	}
-	resp := api.createJob(t, reqBody)
+	resp := testClient.createJob(t, reqBody)
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted {
@@ -309,7 +309,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 
 	// Wait for job to be running before canceling
 	testutil.MustWaitFor(t, func() bool {
-		resp, err := http.Get(api.baseURL + "/v1/jobs/" + jobID)
+		resp, err := http.Get(testClient.baseURL + "/v1/jobs/" + jobID)
 		if err != nil {
 			return false
 		}
@@ -322,7 +322,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 		return status["status"] == "running"
 	}, testutil.WithTimeout(30*time.Second), testutil.WithInterval(time.Second))
 
-	req, _ := http.NewRequest(http.MethodDelete, api.baseURL+"/v1/jobs/"+jobID, nil)
+	req, _ := http.NewRequest(http.MethodDelete, testClient.baseURL+"/v1/jobs/"+jobID, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Cancel job failed: %v", err)
@@ -333,7 +333,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 		t.Errorf("Expected status 204, got %d", resp.StatusCode)
 	}
 
-	resp, err = http.Get(api.baseURL + "/v1/jobs/" + jobID)
+	resp, err = http.Get(testClient.baseURL + "/v1/jobs/" + jobID)
 	if err != nil {
 		t.Fatalf("Get job failed: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestAPI_CreateAndCancelJob(t *testing.T) {
 }
 
 func TestAPI_JobCompletion(t *testing.T) {
-	api := newTestAPI(t)
+	testClient := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-complete-%d", time.Now().UnixNano())
 
@@ -357,12 +357,12 @@ func TestAPI_JobCompletion(t *testing.T) {
 		"memory":         128,
 		"timeoutSeconds": 60,
 	}
-	resp := api.createJob(t, reqBody)
+	resp := testClient.createJob(t, reqBody)
 	resp.Body.Close()
 
 	var status string
 	testutil.MustWaitFor(t, func() bool {
-		r, e := http.Get(api.baseURL + "/v1/jobs/" + jobID)
+		r, e := http.Get(testClient.baseURL + "/v1/jobs/" + jobID)
 		if e != nil {
 			return false
 		}
@@ -432,7 +432,7 @@ func TestAPI_JobWithCallbacks(t *testing.T) {
 	}
 	defer cleanup()
 
-	api := newTestAPI(t)
+	testClient := newTestAPI(t)
 
 	jobID := fmt.Sprintf("e2e-callback-%d", time.Now().UnixNano())
 
@@ -447,7 +447,7 @@ func TestAPI_JobWithCallbacks(t *testing.T) {
 			"url": callbackURL,
 		},
 	}
-	resp := api.createJob(t, reqBody)
+	resp := testClient.createJob(t, reqBody)
 	resp.Body.Close()
 
 	// Wait for at least 2 callback events (start, exit)
@@ -488,7 +488,7 @@ func TestAPI_InvalidJobRequest(t *testing.T) {
 }
 
 func TestAPI_ConcurrentJobs(t *testing.T) {
-	api := newTestAPI(t)
+	testClient := newTestAPI(t)
 
 	numJobs := 3
 	var wg sync.WaitGroup
@@ -506,7 +506,7 @@ func TestAPI_ConcurrentJobs(t *testing.T) {
 				"memory":         128,
 				"timeoutSeconds": 60,
 			}
-			resp := api.createJob(t, reqBody)
+			resp := testClient.createJob(t, reqBody)
 			resp.Body.Close()
 
 			if resp.StatusCode != http.StatusAccepted {

@@ -51,7 +51,11 @@ func (s *Sender) Send(ctx context.Context, url string, event *Event, opts SendOp
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// CloudEvent headers
+	for key, value := range opts.Headers {
+		req.Header.Set(key, value)
+	}
+
+	// CloudEvent protocol headers are authoritative.
 	req.Header.Set("Content-Type", "application/cloudevents+json")
 	req.Header.Set("Ce-Specversion", event.SpecVersion)
 	req.Header.Set("Ce-Type", event.Type)
@@ -59,9 +63,6 @@ func (s *Sender) Send(ctx context.Context, url string, event *Event, opts SendOp
 	req.Header.Set("Ce-Subject", event.Subject)
 	req.Header.Set("Ce-Id", event.ID)
 	req.Header.Set("Ce-Time", event.Time.Format(time.RFC3339))
-	for key, value := range opts.Headers {
-		req.Header.Set(key, value)
-	}
 
 	// HMAC signature - pre-computed takes precedence
 	if opts.Signature != "" {

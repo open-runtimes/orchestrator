@@ -69,7 +69,9 @@ func run(mode string) error {
 	}
 	var callbackHeaders map[string]string
 	if cfg.CallbackHeaders != "" && cfg.CallbackHeaders != "{}" {
-		_ = json.Unmarshal([]byte(cfg.CallbackHeaders), &callbackHeaders)
+		if err := json.Unmarshal([]byte(cfg.CallbackHeaders), &callbackHeaders); err != nil {
+			slog.Warn("Failed to parse CALLBACK_HEADERS_JSON, no custom headers will be sent", "error", err)
+		}
 	}
 
 	reporter := sidecar.NewHTTPSink(
