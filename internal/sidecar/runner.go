@@ -75,7 +75,7 @@ func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, reg *artifact
 // NewHTTPSink returns an emitter listener that POSTs artifact results to the orchestrator.
 // It captures all job-level fields (callback config, meta) and merges them into each report.
 // The HTTP client timeout governs per-request cancellation.
-func NewHTTPSink(jobID, endpoint string, timeout time.Duration, callbackURL, callbackKey string, callbackEvents []string, callbackHeaders map[string]string, meta map[string]string) func(job.ArtifactReport) {
+func NewHTTPSink(jobID, endpoint string, timeout time.Duration, callbackURL, callbackKey string, callbackEvents []string, callbackHeaders, meta map[string]string) func(job.ArtifactReport) {
 	client := &http.Client{Timeout: timeout}
 	return func(report job.ArtifactReport) {
 		if endpoint == "" {
