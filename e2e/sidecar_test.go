@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/job"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/testutil"
+	"orchestrator/pkg/job"
 	"os"
 	"path/filepath"
 	"sync"
@@ -103,7 +103,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 	}
 
 	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second,
-		"http://example.com/callback", "", []string{"orchestrator.job.artifact"}, nil)
+		"http://example.com/callback", "", []string{"orchestrator.job.artifact"}, nil, nil)
 
 	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
 		sidecar.WithArtifactListener(reporter),
@@ -209,7 +209,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second, "", "", nil, nil)
+	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second, "", "", nil, nil, nil)
 
 	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
 		sidecar.WithArtifactListener(reporter),
@@ -327,7 +327,7 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second, "", "", nil, nil)
+	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, 30*time.Second, "", "", nil, nil, nil)
 
 	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
 		sidecar.WithArtifactListener(reporter),
