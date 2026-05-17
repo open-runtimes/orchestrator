@@ -315,6 +315,8 @@ func splitLines(s string) []string {
 		parts = parts[:len(parts)-1]
 	}
 
+	// Preserve blank lines from worker output so callback consumers receive
+	// the same log spacing as the container produced.
 	for i := range parts {
 		parts[i] = strings.TrimSuffix(parts[i], "\r")
 	}
