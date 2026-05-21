@@ -240,6 +240,7 @@ Upload a file to a presigned URL:
 
 - `in` - Path to read from (required)
 - `out` - URL to upload to (required)
+- `chunked` - Set to `true` to split large uploads into 5 MB `Content-Range` PUT requests. Defaults to `false` for compatibility with presigned S3/GCS/Azure PUT URLs.
 
 ### Read Artifact
 

@@ -28,6 +28,7 @@ type Upload struct {
 	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 	Retries        int               `json:"retries,omitempty"`        // Max retry attempts (default 3)
 	Headers        map[string]string `json:"headers,omitempty"`
+	Chunked        bool              `json:"chunked,omitempty"` // Split large uploads into Content-Range PUT requests
 }
 
 func (a *Upload) ArtifactID() string   { return a.ID }
@@ -96,7 +97,7 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 	}
 	defer file.Close()
 
-	if size <= uploadChunkSize {
+	if !a.Chunked || size <= uploadChunkSize {
 		return a.uploadChunk(ctx, client, file, 0, size, size)
 	}
 
@@ -125,7 +126,7 @@ func (a *Upload) uploadChunk(ctx context.Context, client *http.Client, file *os.
 	req.ContentLength = length
 	applyHeaders(req, a.Headers)
 	req.Header.Set("Content-Type", "application/octet-stream")
-	if size > uploadChunkSize {
+	if length != size {
 		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, start+length-1, size))
 	}
 

@@ -102,7 +102,7 @@ func TestUpload_Apply_Chunked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &Upload{ID: "test-upload", In: "output.bin", Out: server.URL, Retries: 1}
+	a := &Upload{ID: "test-upload", In: "output.bin", Out: server.URL, Retries: 1, Chunked: true}
 	result := a.Apply(t.Context(), tmpDir)
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
@@ -113,5 +113,42 @@ func TestUpload_Apply_Chunked(t *testing.T) {
 	}
 	if uploaded.Load() != int64(len(payload)) {
 		t.Errorf("uploaded = %d, want %d", uploaded.Load(), len(payload))
+	}
+}
+
+func TestUpload_Apply_LargeFileDefaultsToSinglePut(t *testing.T) {
+	var requests atomic.Int64
+	var uploaded atomic.Int64
+	var contentRange atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		contentRange.Store(r.Header.Get("Content-Range"))
+
+		content, _ := io.ReadAll(r.Body)
+		uploaded.Add(int64(len(content)))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	payload := make([]byte, uploadChunkSize+1)
+	if err := os.WriteFile(filepath.Join(tmpDir, "output.bin"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Upload{ID: "test-upload", In: "output.bin", Out: server.URL, Retries: 1}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	if requests.Load() != 1 {
+		t.Errorf("requests = %d, want 1", requests.Load())
+	}
+	if uploaded.Load() != int64(len(payload)) {
+		t.Errorf("uploaded = %d, want %d", uploaded.Load(), len(payload))
+	}
+	if got, _ := contentRange.Load().(string); got != "" {
+		t.Errorf("Content-Range = %q, want empty", got)
 	}
 }
