@@ -466,11 +466,12 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 	}
 
 	healthCheck := &container.HealthConfig{
-		Test:        []string{"CMD", "/ko-app/job-sidecar", "-check-ready"},
-		Interval:    200 * time.Millisecond,
-		Timeout:     5 * time.Second,
-		StartPeriod: time.Duration(req.TimeoutSeconds) * time.Second,
-		Retries:     0,
+		Test:          []string{"CMD", "/ko-app/job-sidecar", "-check-ready"},
+		Interval:      200 * time.Millisecond,
+		Timeout:       5 * time.Second,
+		StartPeriod:   time.Duration(req.TimeoutSeconds) * time.Second,
+		StartInterval: 200 * time.Millisecond,
+		Retries:       0,
 	}
 
 	containerConfig := &container.Config{
