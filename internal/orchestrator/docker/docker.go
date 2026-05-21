@@ -265,6 +265,10 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 		return apperrors.Internal("docker.createJobContainer", err)
 	}
 
+	if err := o.pullImageIfNeeded(pullCtx, o.sidecarImage); err != nil {
+		return apperrors.Internal("docker.pullSidecarImage", err)
+	}
+
 	// Create sidecar container
 	if h.sidecarContainerID, err = o.createSidecarContainer(ctx, req, h); err != nil {
 		return apperrors.Internal("docker.createSidecarContainer", err)

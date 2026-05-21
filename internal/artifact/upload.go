@@ -16,6 +16,7 @@ import (
 const (
 	defaultUploadTimeoutSeconds = 300 // 5 minutes
 	defaultUploadRetries        = 3
+	uploadChunkSize             = 5 * 1024 * 1024
 )
 
 // Upload uploads a file to a URL.
@@ -95,23 +96,47 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 	}
 	defer file.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.Out, file)
+	if size <= uploadChunkSize {
+		return a.uploadChunk(ctx, client, file, 0, size, size)
+	}
+
+	for start := int64(0); start < size; start += uploadChunkSize {
+		end := start + uploadChunkSize - 1
+		if end >= size {
+			end = size - 1
+		}
+
+		if err := a.uploadChunk(ctx, client, file, start, end-start+1, size); err != nil {
+			return err
+		}
+	}
+
+	slog.Debug("Uploaded file", "bytes", size)
+	return nil
+}
+
+func (a *Upload) uploadChunk(ctx context.Context, client *http.Client, file *os.File, start int64, length int64, size int64) error {
+	reader := io.NewSectionReader(file, start, length)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.Out, reader)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.ContentLength = size
+	req.ContentLength = length
 	applyHeaders(req, a.Headers)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if size > uploadChunkSize {
+		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, start+length-1, size))
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to upload file: %w", err)
+		return fmt.Errorf("failed to upload file chunk: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		slog.Debug("Uploaded file", "bytes", size)
+		slog.Debug("Uploaded file chunk", "start", start, "bytes", length, "total", size)
 		return nil
 	}
 
