@@ -76,7 +76,7 @@ func TestUpload_Apply_CustomConfig(t *testing.T) {
 
 func TestUpload_Apply_Chunked(t *testing.T) {
 	var chunks atomic.Int64
-	var uploaded int64
+	var uploaded atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			t.Errorf("method = %s, want PUT", r.Method)
@@ -91,7 +91,7 @@ func TestUpload_Apply_Chunked(t *testing.T) {
 		}
 
 		content, _ := io.ReadAll(r.Body)
-		uploaded += int64(len(content))
+		uploaded.Add(int64(len(content)))
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
@@ -111,7 +111,7 @@ func TestUpload_Apply_Chunked(t *testing.T) {
 	if chunks.Load() != 2 {
 		t.Errorf("chunks = %d, want 2", chunks.Load())
 	}
-	if uploaded != int64(len(payload)) {
-		t.Errorf("uploaded = %d, want %d", uploaded, len(payload))
+	if uploaded.Load() != int64(len(payload)) {
+		t.Errorf("uploaded = %d, want %d", uploaded.Load(), len(payload))
 	}
 }

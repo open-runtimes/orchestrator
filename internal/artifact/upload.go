@@ -115,7 +115,7 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 	return nil
 }
 
-func (a *Upload) uploadChunk(ctx context.Context, client *http.Client, file *os.File, start int64, length int64, size int64) error {
+func (a *Upload) uploadChunk(ctx context.Context, client *http.Client, file *os.File, start, length, size int64) error {
 	reader := io.NewSectionReader(file, start, length)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.Out, reader)
 	if err != nil {
