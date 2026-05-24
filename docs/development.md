@@ -63,6 +63,11 @@ Configuration is loaded from environment variables. Each package manages its own
 
 `ORCHESTRATOR_BACKEND` selects the backend (`docker` default, or `kubernetes`).
 
+For Kubernetes installs, `KUBE_NAMESPACE` is the namespace where temporary
+`batch/v1.Job` resources and their pods are created. The Helm chart sets it from
+`orchestrator.jobNamespace`; leave that value empty to use the release namespace
+or set it to a separate namespace such as `orchestrator-jobs`.
+
 ### Dispatcher Configuration
 
 | Variable | Default | Description |

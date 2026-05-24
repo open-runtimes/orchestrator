@@ -137,6 +137,17 @@ helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
   --namespace orchestrator --create-namespace
 ```
 
+To keep temporary Job pods separate from the jobs-service Deployment, set a job
+namespace:
+
+```bash
+helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
+  --version <X.Y.Z> \
+  --namespace orchestrator --create-namespace \
+  --set orchestrator.jobNamespace=orchestrator-jobs \
+  --set orchestrator.jobNamespaceCreate=true
+```
+
 The chart and container images are published to GHCR on every `v*` tag. K8s jobs run as `batch/v1.Job` with a native sidecar (requires K8s 1.29+).
 
 ## Documentation

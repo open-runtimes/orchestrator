@@ -37,7 +37,7 @@ spec:
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
+              value: {{ include "orchestrator.jobNamespace" . | quote }}
             - name: KUBE_JOB_SERVICE_ACCOUNT
               value: {{ .Values.serviceAccount.jobSidecarName | quote }}
             - name: SIDECAR_IMAGE

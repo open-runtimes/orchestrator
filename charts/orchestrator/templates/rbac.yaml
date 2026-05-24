@@ -3,7 +3,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.jobsName" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "orchestrator.jobNamespace" . }}
   labels:
     {{- include "orchestrator.jobsLabels" . | nindent 4 }}
 rules:
@@ -27,7 +27,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.jobsName" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "orchestrator.jobNamespace" . }}
   labels:
     {{- include "orchestrator.jobsLabels" . | nindent 4 }}
 subjects:

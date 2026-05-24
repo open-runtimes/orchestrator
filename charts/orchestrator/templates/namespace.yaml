@@ -1,0 +1,8 @@
+{{- if and .Values.orchestrator.jobNamespaceCreate .Values.orchestrator.jobNamespace (ne .Values.orchestrator.jobNamespace .Release.Namespace) -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "orchestrator.jobNamespace" . }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+{{- end }}

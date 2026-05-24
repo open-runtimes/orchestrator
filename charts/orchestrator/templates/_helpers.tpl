@@ -51,6 +51,10 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.jobNamespace" -}}
+{{- default .Release.Namespace .Values.orchestrator.jobNamespace -}}
+{{- end -}}
+
 {{- define "orchestrator.artifactEndpoint" -}}
 {{- if .Values.orchestrator.artifactEndpoint -}}
 {{- .Values.orchestrator.artifactEndpoint -}}
