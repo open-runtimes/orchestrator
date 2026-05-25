@@ -50,17 +50,26 @@ func newTestAPI(t *testing.T) *testAPI {
 func (a *testAPI) createJob(t *testing.T, body map[string]any) *http.Response {
 	t.Helper()
 
+	resp, err := a.createJobRequest(body)
+	if err != nil {
+		t.Fatalf("Create job failed: %v", err)
+	}
+
+	return resp
+}
+
+func (a *testAPI) createJobRequest(body map[string]any) (*http.Response, error) {
 	raw, _ := json.Marshal(body)
 	resp, err := http.Post(a.baseURL+"/v1/jobs", "application/json", bytes.NewReader(raw))
 	if err != nil {
-		t.Fatalf("Create job failed: %v", err)
+		return nil, err
 	}
 
 	if id, ok := body["id"].(string); ok && resp.StatusCode == http.StatusAccepted {
 		a.jobIDs.Store(id, struct{}{})
 	}
 
-	return resp
+	return resp, nil
 }
 
 func (a *testAPI) cleanupAll() {
@@ -506,7 +515,11 @@ func TestAPI_ConcurrentJobs(t *testing.T) {
 				"memory":         128,
 				"timeoutSeconds": 60,
 			}
-			resp := testClient.createJob(t, reqBody)
+			resp, err := testClient.createJobRequest(reqBody)
+			if err != nil {
+				errors <- fmt.Errorf("job %d: create job failed: %w", i, err)
+				return
+			}
 			resp.Body.Close()
 
 			if resp.StatusCode != http.StatusAccepted {
