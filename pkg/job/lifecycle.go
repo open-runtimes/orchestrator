@@ -25,7 +25,8 @@ type Exited struct {
 // Failed is emitted when the job fails before or without the worker starting
 // (e.g. sidecar crash, failure to start the worker container).
 type Failed struct {
-	Reason string
+	Reason           string
+	FinalLogSequence uint64
 }
 
 // LogLine is emitted for each batch of stdout/stderr lines from the worker.
@@ -73,7 +74,7 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 	case Exited:
 		emitExitCallback(em, jobID, image, dest, ev.ExitCode, ev.Duration.Seconds(), ev.FinalLogSequence)
 	case Failed:
-		emitExitCallback(em, jobID, image, dest, -1, 0, 0)
+		emitExitCallback(em, jobID, image, dest, -1, 0, ev.FinalLogSequence)
 	case LogLine:
 		if dest == nil || !MatchesCallbackFilter(CallbackTypeLog, dest.Events) {
 			return

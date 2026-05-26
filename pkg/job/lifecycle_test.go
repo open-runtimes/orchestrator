@@ -77,10 +77,13 @@ func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
-	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Failed{Reason: "sidecar died"})
+	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Failed{Reason: "sidecar died", FinalLogSequence: 4})
 
 	if len(captured) != 1 || captured[0].Payload.Data["exitCode"] != -1 {
 		t.Errorf("want exit event with code -1, got %v", captured)
+	}
+	if got := captured[0].Payload.Data["finalLogSequence"]; got != uint64(4) {
+		t.Errorf("want finalLogSequence 4, got %v", got)
 	}
 }
 

@@ -37,6 +37,31 @@ func TestJobTracker_NodeLostAfterStart(t *testing.T) {
 	capture.assertHasType(t, job.CallbackTypeExit)
 }
 
+func TestJobTracker_PodFailedAfterStartIncludesFinalLogSequence(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	tr := newJobTracker(w, &watchConfig{
+		jobID: "failed-after-logs-job",
+		image: "alpine:latest",
+		dest:  &job.CallbackDest{URL: "https://cb.example"},
+	})
+
+	tr.handleUpdate(t.Context(), podWithWorkerRunning())
+	capture.reset()
+	tr.emitLogBatch("stdout", []string{"one"})
+	tr.emitLogBatch("stdout", []string{"two"})
+	tr.handleUpdate(t.Context(), podNodeLostWithStaleRunning())
+
+	exit := capture.lastOfType(job.CallbackTypeExit)
+	if exit == nil {
+		t.Fatalf("expected exit callback, got %v", capture.types())
+	}
+	if got := exit.Payload.Data["finalLogSequence"]; got != uint64(2) {
+		t.Fatalf("want finalLogSequence 2, got %v", got)
+	}
+}
+
 func TestJobTracker_PodDeletedMidJob(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)
@@ -149,6 +174,16 @@ func (c *eventCapture) types() []string {
 		out[i] = e.Payload.Type
 	}
 	return out
+}
+
+func (c *eventCapture) lastOfType(eventType string) *job.CallbackEnvelope {
+	events := c.all()
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Payload.Type == eventType {
+			return events[i]
+		}
+	}
+	return nil
 }
 
 func (c *eventCapture) reset() {

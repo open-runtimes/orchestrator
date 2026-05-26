@@ -426,6 +426,7 @@ X-Signature-256: sha256=abc123...
     "exitCode": 0,
     "image": "ffmpeg:latest",
     "durationSeconds": 12.34,
+    "finalLogSequence": 42,
     "meta": {
       "userId": "user-456",
       "requestId": "req-789"
@@ -448,12 +449,12 @@ X-Signature-256: sha256=abc123...
 
 **log:**
 ```json
-{"jobId": "...", "lines": ["line1", "line2"], "stream": "stdout|stderr", "meta": {...}}
+{"jobId": "...", "lines": ["line1", "line2"], "stream": "stdout|stderr", "sequence": 1, "meta": {...}}
 ```
 
 **exit:**
 ```json
-{"jobId": "...", "exitCode": 0, "image": "alpine:latest", "durationSeconds": 12.34, "error": "...", "meta": {...}}
+{"jobId": "...", "exitCode": 0, "image": "alpine:latest", "durationSeconds": 12.34, "finalLogSequence": 1, "error": "...", "meta": {...}}
 ```
 
 ### Verifying Signatures

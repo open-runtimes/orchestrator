@@ -337,7 +337,7 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		t.state.isExited = true
 		t.logger.Info("Pod failed during job", "reason", reason)
 		t.stopLogsLocked()
-		t.emit(job.Failed{Reason: reason})
+		t.emit(job.Failed{Reason: reason, FinalLogSequence: t.finalLogSequenceLocked()})
 		return true
 	}
 
