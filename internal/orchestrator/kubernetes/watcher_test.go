@@ -91,11 +91,36 @@ func TestJobTracker_HappyPath(t *testing.T) {
 	capture.assertHasType(t, job.CallbackTypeExit)
 }
 
+func TestJobTracker_LogBatchSequencesIncreaseFromOne(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	tr := newJobTracker(w, &watchConfig{
+		jobID: "logs-job",
+		image: "alpine:latest",
+		dest:  &job.CallbackDest{URL: "https://cb.example"},
+	})
+
+	tr.emitLogBatch("stdout", []string{"one"})
+	tr.emitLogBatch("stdout", []string{"two"})
+
+	events := capture.all()
+	if len(events) != 2 {
+		t.Fatalf("want 2 log events, got %d", len(events))
+	}
+	if events[0].Payload.Data["sequence"] != uint64(1) || events[1].Payload.Data["sequence"] != uint64(2) {
+		t.Fatalf("want sequences [1 2], got [%v %v]", events[0].Payload.Data["sequence"], events[1].Payload.Data["sequence"])
+	}
+	if final := tr.finalLogSequenceLocked(); final != 2 {
+		t.Fatalf("want final sequence 2, got %d", final)
+	}
+}
+
 // --- helpers ---
 
 type eventCapture struct {
 	mu     sync.Mutex
-	events []string
+	events []*job.CallbackEnvelope
 }
 
 func (c *eventCapture) register(emitter *job.CallbackEmitter) {
@@ -104,16 +129,25 @@ func (c *eventCapture) register(emitter *job.CallbackEmitter) {
 			return
 		}
 		c.mu.Lock()
-		c.events = append(c.events, e.Payload.Type)
+		c.events = append(c.events, e)
 		c.mu.Unlock()
 	})
 }
 
-func (c *eventCapture) types() []string {
+func (c *eventCapture) all() []*job.CallbackEnvelope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]string, len(c.events))
+	out := make([]*job.CallbackEnvelope, len(c.events))
 	copy(out, c.events)
+	return out
+}
+
+func (c *eventCapture) types() []string {
+	events := c.all()
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = e.Payload.Type
+	}
 	return out
 }
 

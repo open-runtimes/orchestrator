@@ -74,24 +74,26 @@ func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status strin
 }
 
 // BuildLogEvent creates a log event.
-func (b *EventBuilder) BuildLogEvent(lines []string, stream string) *cloudevent.Event {
+func (b *EventBuilder) BuildLogEvent(lines []string, stream string, sequence uint64) *cloudevent.Event {
 	data := map[string]any{
-		"jobId":  b.subject,
-		"lines":  lines,
-		"stream": stream,
-		"meta":   b.meta,
+		"jobId":    b.subject,
+		"lines":    lines,
+		"stream":   stream,
+		"sequence": sequence,
+		"meta":     b.meta,
 	}
 	return b.Build(CallbackTypeLog, data)
 }
 
 // BuildExitEvent creates an exit event.
-func (b *EventBuilder) BuildExitEvent(exitCode int, image string, durationSeconds float64, err error) *cloudevent.Event {
+func (b *EventBuilder) BuildExitEvent(exitCode int, image string, durationSeconds float64, finalLogSequence uint64, err error) *cloudevent.Event {
 	data := map[string]any{
-		"jobId":           b.subject,
-		"exitCode":        exitCode,
-		"image":           image,
-		"durationSeconds": durationSeconds,
-		"meta":            b.meta,
+		"jobId":            b.subject,
+		"exitCode":         exitCode,
+		"image":            image,
+		"durationSeconds":  durationSeconds,
+		"finalLogSequence": finalLogSequence,
+		"meta":             b.meta,
 	}
 	if err != nil {
 		data["error"] = err.Error()

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"orchestrator/pkg/job"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -46,6 +47,21 @@ type watcherState struct {
 	startTime       time.Time
 	logCancel       context.CancelFunc
 	logDone         chan struct{}
+	mu              sync.Mutex
+	logSequence     uint64
+}
+
+func (s *watcherState) nextLogSequence() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logSequence++
+	return s.logSequence
+}
+
+func (s *watcherState) finalLogSequence() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logSequence
 }
 
 func (w *dockerLifecycleWatcher) run(ctx context.Context, sidecarID, workerID string, out func(job.Signal)) {
@@ -151,7 +167,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 
 	// Start or resume log streaming.
 	if state.isWorkerStarted && state.logCancel == nil && !state.isWorkerExited {
-		state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
+		state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, state, out)
 	}
 
 	// Handle worker exit detected via inspection (missed event on reconnect).
@@ -166,7 +182,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
 			logger.Warn("Failed to signal sidecar", "error", err)
 		}
-		out(job.Exited{ExitCode: ws.exitCode, Duration: duration})
+		out(job.Exited{ExitCode: ws.exitCode, Duration: duration, FinalLogSequence: state.finalLogSequence()})
 	}
 
 	return false
@@ -202,7 +218,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 				}
 				state.isWorkerStarted = true
 				out(job.Started{})
-				state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
+				state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, state, out)
 
 			case event.Actor.ID == workerID && event.Action == "die" && !state.isWorkerExited:
 				state.isWorkerExited = true
@@ -218,7 +234,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 				if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
 					logger.Warn("Failed to signal sidecar", "error", err)
 				}
-				out(job.Exited{ExitCode: exitCode, Duration: duration})
+				out(job.Exited{ExitCode: exitCode, Duration: duration, FinalLogSequence: state.finalLogSequence()})
 
 			case event.Actor.ID == sidecarID && event.Action == "die":
 				switch {
@@ -236,12 +252,12 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 	}
 }
 
-func (w *dockerLifecycleWatcher) startLogStreaming(ctx context.Context, logger *slog.Logger, workerID string, out func(job.Signal)) (cancel context.CancelFunc, done chan struct{}) {
+func (w *dockerLifecycleWatcher) startLogStreaming(ctx context.Context, logger *slog.Logger, workerID string, state *watcherState, out func(job.Signal)) (cancel context.CancelFunc, done chan struct{}) {
 	logCtx, logCancel := context.WithCancel(ctx)
 	logDone := make(chan struct{})
 	go func() {
 		defer close(logDone)
-		w.streamLogs(logCtx, logger, workerID, out)
+		w.streamLogs(logCtx, logger, workerID, state, out)
 	}()
 	return logCancel, logDone
 }
@@ -255,7 +271,7 @@ func (w *dockerLifecycleWatcher) stopLogStreaming(state *watcherState) {
 	}
 }
 
-func (w *dockerLifecycleWatcher) streamLogs(ctx context.Context, logger *slog.Logger, containerID string, out func(job.Signal)) {
+func (w *dockerLifecycleWatcher) streamLogs(ctx context.Context, logger *slog.Logger, containerID string, state *watcherState, out func(job.Signal)) {
 	logs, err := w.client.ContainerLogs(ctx, containerID, container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
@@ -292,10 +308,15 @@ func (w *dockerLifecycleWatcher) streamLogs(ctx context.Context, logger *slog.Lo
 			stream = "stderr"
 		}
 
-		if lines := splitLines(string(payload)); len(lines) > 0 {
-			out(job.LogLine{Stream: stream, Lines: lines})
-		}
+		w.emitLogBatch(state, out, stream, splitLines(string(payload)))
 	}
+}
+
+func (w *dockerLifecycleWatcher) emitLogBatch(state *watcherState, out func(job.Signal), stream string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	out(job.LogLine{Stream: stream, Lines: lines, Sequence: state.nextLogSequence()})
 }
 
 func (w *dockerLifecycleWatcher) parseExitCode(event events.Message) int {

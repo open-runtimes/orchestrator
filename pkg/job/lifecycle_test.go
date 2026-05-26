@@ -46,10 +46,13 @@ func TestEmitCallback_Exited_EmitsExitEvent(t *testing.T) {
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
-	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Exited{ExitCode: 0, Duration: 2 * time.Second})
+	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Exited{ExitCode: 0, Duration: 2 * time.Second, FinalLogSequence: 7})
 
 	if len(captured) != 1 || captured[0].Payload.Type != CallbackTypeExit {
 		t.Errorf("want exit event, got %v", captured)
+	}
+	if got := captured[0].Payload.Data["finalLogSequence"]; got != uint64(7) {
+		t.Errorf("want finalLogSequence 7, got %v", got)
 	}
 }
 
@@ -86,10 +89,13 @@ func TestEmitCallback_LogLine_EmitsLogEvent(t *testing.T) {
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
-	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, LogLine{Stream: "stdout", Lines: []string{"hello"}})
+	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, LogLine{Stream: "stdout", Lines: []string{"hello"}, Sequence: 3})
 
 	if len(captured) != 1 || captured[0].Payload.Type != CallbackTypeLog {
 		t.Errorf("want log event, got %v", captured)
+	}
+	if got := captured[0].Payload.Data["sequence"]; got != uint64(3) {
+		t.Errorf("want sequence 3, got %v", got)
 	}
 }
 

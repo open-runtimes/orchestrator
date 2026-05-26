@@ -17,8 +17,9 @@ type Started struct{}
 
 // Exited is emitted when the worker container exits.
 type Exited struct {
-	ExitCode int
-	Duration time.Duration
+	ExitCode         int
+	Duration         time.Duration
+	FinalLogSequence uint64
 }
 
 // Failed is emitted when the job fails before or without the worker starting
@@ -29,8 +30,9 @@ type Failed struct {
 
 // LogLine is emitted for each batch of stdout/stderr lines from the worker.
 type LogLine struct {
-	Stream string // "stdout" or "stderr"
-	Lines  []string
+	Stream   string // "stdout" or "stderr"
+	Lines    []string
+	Sequence uint64
 }
 
 func (Started) signal() {}
@@ -69,16 +71,16 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 			})
 		}
 	case Exited:
-		emitExitCallback(em, jobID, image, dest, ev.ExitCode, ev.Duration.Seconds())
+		emitExitCallback(em, jobID, image, dest, ev.ExitCode, ev.Duration.Seconds(), ev.FinalLogSequence)
 	case Failed:
-		emitExitCallback(em, jobID, image, dest, -1, 0)
+		emitExitCallback(em, jobID, image, dest, -1, 0, 0)
 	case LogLine:
 		if dest == nil || !MatchesCallbackFilter(CallbackTypeLog, dest.Events) {
 			return
 		}
 		builder := NewEventBuilder(jobID, "orchestrator/service", dest.Meta)
 		em.Emit(&CallbackEnvelope{
-			Payload:     builder.BuildLogEvent(ev.Lines, ev.Stream),
+			Payload:     builder.BuildLogEvent(ev.Lines, ev.Stream, ev.Sequence),
 			CallbackURL: dest.URL,
 			SigningKey:  dest.Key,
 			Headers:     dest.Headers,
@@ -86,7 +88,7 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 	}
 }
 
-func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, exitCode int, durationSeconds float64) {
+func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, exitCode int, durationSeconds float64, finalLogSequence uint64) {
 	var exitErr error
 	if exitCode != 0 {
 		exitErr = fmt.Errorf("exit code %d", exitCode)
@@ -105,7 +107,7 @@ func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDe
 	}
 
 	builder := NewEventBuilder(jobID, "orchestrator/service", meta)
-	event := builder.BuildExitEvent(exitCode, image, durationSeconds, exitErr)
+	event := builder.BuildExitEvent(exitCode, image, durationSeconds, finalLogSequence, exitErr)
 	if MatchesCallbackFilter(event.Type, eventFilter) {
 		em.Emit(&CallbackEnvelope{
 			Payload:     event,

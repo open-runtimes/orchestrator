@@ -191,11 +191,12 @@ type jobTracker struct {
 
 // trackerState is the per-job mutable state. Guarded by jobTracker.mu.
 type trackerState struct {
-	isStarted bool
-	isExited  bool
-	startTime time.Time
-	logCancel context.CancelFunc
-	logDone   chan struct{}
+	isStarted   bool
+	isExited    bool
+	startTime   time.Time
+	logCancel   context.CancelFunc
+	logDone     chan struct{}
+	logSequence uint64
 }
 
 func newJobTracker(w *k8sLifecycleWatcher, cfg *watchConfig) *jobTracker {
@@ -248,6 +249,17 @@ func (t *jobTracker) closeLocked() {
 
 func (t *jobTracker) emit(s job.Signal) {
 	job.EmitCallback(t.watcher.emitter, t.cfg.jobID, t.cfg.image, t.cfg.dest, s)
+}
+
+func (t *jobTracker) nextLogSequence() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.state.logSequence++
+	return t.state.logSequence
+}
+
+func (t *jobTracker) finalLogSequenceLocked() uint64 {
+	return t.state.logSequence
 }
 
 // applyPodStateLocked advances the state machine for one pod update.
@@ -309,7 +321,7 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		t.logger.Info("Worker exited", "exitCode", exitCode)
 		time.Sleep(500 * time.Millisecond) // allow log flush
 		t.stopLogsLocked()
-		t.emit(job.Exited{ExitCode: exitCode, Duration: duration})
+		t.emit(job.Exited{ExitCode: exitCode, Duration: duration, FinalLogSequence: t.finalLogSequenceLocked()})
 		return true
 	}
 
@@ -380,7 +392,7 @@ func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 		if len(batch) == 0 {
 			return
 		}
-		t.emit(job.LogLine{Stream: "stdout", Lines: batch})
+		t.emitLogBatch("stdout", batch)
 		batch = nil
 	}
 	for scanner.Scan() {
@@ -397,4 +409,11 @@ func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 	if err := scanner.Err(); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
 		t.logger.Debug("Log stream ended", "error", err)
 	}
+}
+
+func (t *jobTracker) emitLogBatch(stream string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	t.emit(job.LogLine{Stream: stream, Lines: lines, Sequence: t.nextLogSequence()})
 }

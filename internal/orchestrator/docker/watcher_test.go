@@ -259,6 +259,32 @@ func TestSplitLinesPreservesBlankLines(t *testing.T) {
 	}
 }
 
+func TestWatcher_LogBatchSequencesIncreaseFromOne(t *testing.T) {
+	t.Parallel()
+
+	state := &watcherState{}
+	w := &dockerLifecycleWatcher{}
+	var got []job.LogLine
+	emit := func(s job.Signal) {
+		if line, ok := s.(job.LogLine); ok {
+			got = append(got, line)
+		}
+	}
+
+	w.emitLogBatch(state, emit, "stdout", []string{"one"})
+	w.emitLogBatch(state, emit, "stderr", []string{"two"})
+
+	if len(got) != 2 {
+		t.Fatalf("want 2 log batches, got %d", len(got))
+	}
+	if got[0].Sequence != 1 || got[1].Sequence != 2 {
+		t.Fatalf("want sequences [1 2], got [%d %d]", got[0].Sequence, got[1].Sequence)
+	}
+	if final := state.finalLogSequence(); final != 2 {
+		t.Fatalf("want final sequence 2, got %d", final)
+	}
+}
+
 func TestLifecycle_ResumeNoStarted(t *testing.T) {
 	t.Parallel()
 	// Simulate a resumed job: worker was already running, so Watch emits
