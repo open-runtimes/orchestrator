@@ -227,7 +227,8 @@ func (t *jobTracker) handleDelete() {
 		return
 	}
 	if !t.state.isExited {
-		t.emit(job.Failed{Reason: "pod deleted"})
+		t.stopLogsLocked()
+		t.emit(job.Failed{Reason: "pod deleted", FinalLogSequence: t.finalLogSequenceLocked()})
 	}
 	t.closeLocked()
 }
@@ -392,7 +393,7 @@ func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 		if len(batch) == 0 {
 			return
 		}
-		t.emitLogBatch("stdout", batch)
+		t.emitLogBatch(batch)
 		batch = nil
 	}
 	for scanner.Scan() {
@@ -411,9 +412,9 @@ func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 	}
 }
 
-func (t *jobTracker) emitLogBatch(stream string, lines []string) {
+func (t *jobTracker) emitLogBatch(lines []string) {
 	if len(lines) == 0 {
 		return
 	}
-	t.emit(job.LogLine{Stream: stream, Lines: lines, Sequence: t.nextLogSequence()})
+	t.emit(job.LogLine{Stream: "stdout", Lines: lines, Sequence: t.nextLogSequence()})
 }

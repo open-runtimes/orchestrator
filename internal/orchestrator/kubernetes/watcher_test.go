@@ -49,8 +49,8 @@ func TestJobTracker_PodFailedAfterStartIncludesFinalLogSequence(t *testing.T) {
 
 	tr.handleUpdate(t.Context(), podWithWorkerRunning())
 	capture.reset()
-	tr.emitLogBatch("stdout", []string{"one"})
-	tr.emitLogBatch("stdout", []string{"two"})
+	tr.emitLogBatch([]string{"one"})
+	tr.emitLogBatch([]string{"two"})
 	tr.handleUpdate(t.Context(), podNodeLostWithStaleRunning())
 
 	exit := capture.lastOfType(job.CallbackTypeExit)
@@ -76,8 +76,15 @@ func TestJobTracker_PodDeletedMidJob(t *testing.T) {
 	capture.assertHasType(t, job.CallbackTypeStart)
 
 	capture.reset()
+	tr.emitLogBatch([]string{"before delete"})
 	tr.handleDelete()
-	capture.assertHasType(t, job.CallbackTypeExit)
+	exit := capture.lastOfType(job.CallbackTypeExit)
+	if exit == nil {
+		t.Fatalf("expected exit callback, got %v", capture.types())
+	}
+	if got := exit.Payload.Data["finalLogSequence"]; got != uint64(1) {
+		t.Fatalf("want finalLogSequence 1, got %v", got)
+	}
 }
 
 func TestJobTracker_AlreadyTerminatedSkipsEmission(t *testing.T) {
@@ -126,8 +133,8 @@ func TestJobTracker_LogBatchSequencesIncreaseFromOne(t *testing.T) {
 		dest:  &job.CallbackDest{URL: "https://cb.example"},
 	})
 
-	tr.emitLogBatch("stdout", []string{"one"})
-	tr.emitLogBatch("stdout", []string{"two"})
+	tr.emitLogBatch([]string{"one"})
+	tr.emitLogBatch([]string{"two"})
 
 	events := capture.all()
 	if len(events) != 2 {
