@@ -139,6 +139,7 @@ func DefaultRegistry() *Registry {
 			ReadDef,
 			ArchiveDef,
 			UnarchiveDef,
+			MountDef,
 			ListDef,
 		)
 	})

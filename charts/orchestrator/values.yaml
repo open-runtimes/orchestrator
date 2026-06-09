@@ -74,6 +74,12 @@ orchestrator:
   # still pulls from upstream.
   workerImagePullPolicy: ""
   sidecarImagePullPolicy: ""
+  # Allow `mount` artifacts (mount a squashfs image read-only into the worker).
+  # DISABLED by default: a mounting job runs its post sidecar privileged with
+  # Bidirectional mount propagation, and nodes need the squashfs kernel module.
+  # Only jobs that include a `mount` artifact are affected; the worker is never
+  # privileged. Jobs with a `mount` artifact are rejected while this is false.
+  squashfsMountEnabled: false
 
 resources:
   requests:

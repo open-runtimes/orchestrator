@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/testutil"
 	"orchestrator/pkg/job"
@@ -37,19 +38,23 @@ const (
 // setup brings up an Orchestrator wired to the host's default kubeconfig
 // (which points at kind-orchestrator-dev), creates a dedicated test namespace
 // if needed, and returns teardown.
-func setup(t *testing.T) (*Orchestrator, *job.CallbackEmitter, func()) {
+func setup(t *testing.T, opts ...func(*Config)) (*Orchestrator, *job.CallbackEmitter, func()) {
 	t.Helper()
 	ctx := t.Context()
 
 	emitter := job.NewCallbackEmitter()
-	factory := NewOrchestrator(ctx, Config{
+	cfg := Config{
 		SidecarImage: sidecarImage,
 		// Pin the kubeconfig context explicitly: this test must only ever run
 		// against the project's kind cluster, never the user's current-context.
 		Context:                "kind-orchestrator-dev",
 		Namespace:              testNamespace,
 		SidecarImagePullPolicy: "Never", // ko-loaded image lives locally in kind
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	factory := NewOrchestrator(ctx, cfg)
 	orch, err := factory(emitter)
 	if err != nil {
 		t.Fatalf("NewOrchestrator: %v", err)
@@ -178,6 +183,55 @@ func TestIntegration_HappyPath(t *testing.T) {
 	}
 	if !events.has(job.CallbackTypeExit) {
 		t.Errorf("expected a %s callback", job.CallbackTypeExit)
+	}
+}
+
+// --- squashfs mount ---
+
+// TestIntegration_SquashfsMount builds a squashfs image in the workspace
+// (write → archive), mounts it read-only via a `mount` artifact, and has the
+// worker read a file back out of the mount. Reaching Completed proves the
+// privileged post sidecar mounted the image, propagation reached the worker,
+// and the contents round-tripped. Requires the squashfs kernel module on nodes.
+func TestIntegration_SquashfsMount(t *testing.T) {
+	o, emitter, teardown := setup(t, func(c *Config) { c.MountEnabled = true })
+	defer teardown()
+
+	d := wireDispatcher(t, emitter)
+	defer d.Close(context.Background())
+
+	jobID := fmt.Sprintf("mount-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:    jobID,
+		Image: "alpine:3.20",
+		// Fails (non-zero) unless the mounted file is present with the right
+		// content — so Completed is a real assertion that the mount worked.
+		Command:        `sleep 1 && grep -q "mounted content" /workspace/mnt/hello.txt`,
+		CPU:            0.1,
+		Memory:         64,
+		TimeoutSeconds: 120,
+		Workspace:      "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "w", In: "mounted content", Out: "hello.txt"},
+			&artifact.Archive{ID: "a", In: "hello.txt", Out: "data.sqfs", Format: "squashfs", Depends: "w"},
+			&artifact.Mount{ID: "m", In: "data.sqfs", Out: "mnt", Depends: "a"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), jobID)
+		return err == nil && (s.State == job.StateCompleted || s.State == job.StateFailed)
+	}, testutil.WithTimeout(150*time.Second), testutil.WithInterval(time.Second))
+
+	status, err := o.Status(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("final Status: %v", err)
+	}
+	if status.State != job.StateCompleted {
+		t.Errorf("final state: want completed (mount + read succeeded), got %s (exit=%v)", status.State, status.ExitCode)
 	}
 }
 

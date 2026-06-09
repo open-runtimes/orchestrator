@@ -17,20 +17,26 @@ import (
 
 func main() {
 	var (
-		checkReady bool
-		mode       string
+		checkReady  bool
+		checkMounts bool
+		mode        string
 	)
 	flag.BoolVar(&checkReady, "check-ready", false, "exit 0 if the pre-job ready marker exists, 1 otherwise")
+	flag.BoolVar(&checkMounts, "check-mounts", false, "exit 0 if the mounts-ready marker exists, 1 otherwise")
 	flag.StringVar(&mode, "mode", "combined", "sidecar mode: combined (Docker), pre (K8s init container), post (K8s native sidecar)")
 	flag.Parse()
 
-	// Docker health check path — must stay silent (no log setup) to avoid polluting status output.
-	if checkReady {
+	// Probe paths — must stay silent (no log setup) to avoid polluting status output.
+	if checkReady || checkMounts {
 		path := os.Getenv("SHARED_VOLUME_PATH")
 		if path == "" {
 			path = "/workspace"
 		}
-		if sidecar.CheckReady(path) {
+		ready := sidecar.CheckReady(path)
+		if checkMounts {
+			ready = sidecar.CheckMountsReady(path)
+		}
+		if ready {
 			os.Exit(0)
 		}
 		os.Exit(1)

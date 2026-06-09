@@ -38,7 +38,7 @@ func TestUnmarshalArtifact(t *testing.T) {
 		},
 		{
 			name:     "archive",
-			json:     `{"type":"archive","id":"a1","in":"src","out":"src.tar.gz","format":"tar.gz"}`,
+			json:     `{"type":"archive","id":"a1","in":"src","out":"src.tar.gz","format":"tar"}`,
 			wantType: "archive",
 			wantID:   "a1",
 		},
@@ -53,6 +53,12 @@ func TestUnmarshalArtifact(t *testing.T) {
 			json:     `{"type":"unarchive","id":"ua2","in":"repo.tar.gz","out":"code","subdir":"functions/node"}`,
 			wantType: "unarchive",
 			wantID:   "ua2",
+		},
+		{
+			name:     "mount",
+			json:     `{"type":"mount","id":"m1","in":"data.sqfs","out":"mnt/data"}`,
+			wantType: "mount",
+			wantID:   "m1",
 		},
 		{
 			name:     "list",

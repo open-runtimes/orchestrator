@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/job"
 	"orchestrator/pkg/emitter"
+	"orchestrator/pkg/job"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -42,6 +42,12 @@ func WithArtifactListener(fn func(job.ArtifactReport)) Option {
 	return func(r *Runner) { r.emitter.Register(fn) }
 }
 
+// WithMounter replaces the default platform Mounter. Used in tests to inject a
+// fake instead of performing real loop mounts.
+func WithMounter(m Mounter) Option {
+	return func(r *Runner) { r.mounter = m }
+}
+
 // Runner orchestrates the sidecar flow.
 // The sidecar handles artifact processing (downloads, uploads, archives, etc.)
 // and reports results to the orchestrator, which dispatches the corresponding events.
@@ -53,6 +59,8 @@ type Runner struct {
 	timeoutSeconds   int
 	registry         *artifact.Registry
 	waitFn           SignalFunc
+	mounter          Mounter
+	mounted          []string // mount targets to unmount on teardown
 	emitter          emitter.Emitter[job.ArtifactReport]
 }
 
@@ -65,6 +73,7 @@ func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, reg *artifact
 		timeoutSeconds:   timeoutSeconds,
 		registry:         reg,
 		waitFn:           waitForSignal,
+		mounter:          defaultMounter(),
 	}
 	for _, o := range opts {
 		o(r)
@@ -129,9 +138,10 @@ func waitForSignal(ctx context.Context) {
 //
 // If any pre-job artifact fails, the sidecar exits with an error.
 func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
-	preJob, postJob := artifact.Partition(artifacts)
+	mounts, rest := splitMounts(artifacts)
+	preJob, postJob := artifact.Partition(rest)
 
-	logger := slog.With("jobId", r.jobID, "preJob", len(preJob), "postJob", len(postJob))
+	logger := slog.With("jobId", r.jobID, "preJob", len(preJob), "mounts", len(mounts), "postJob", len(postJob))
 	logger.Info("Sidecar starting")
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
@@ -140,6 +150,12 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	if err := r.processArtifacts(ctx, preJob, false); err != nil {
 		logger.Error("Pre-job artifact processing failed, aborting job", "error", err)
 		return fmt.Errorf("pre-job artifact processing failed: %w", err)
+	}
+
+	if err := r.establishMounts(ctx, mounts); err != nil {
+		r.unmountAll() // roll back any mounts established before the failure
+		logger.Error("Mount setup failed, aborting job", "error", err)
+		return fmt.Errorf("mount setup failed: %w", err)
 	}
 
 	if err := r.writeReadyMarker(); err != nil {
@@ -155,6 +171,7 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
 
+	r.unmountAll()
 	logger.Info("Sidecar completed")
 	return nil
 }
@@ -162,7 +179,8 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 // RunPre processes pre-job artifacts and exits. Used by the Kubernetes backend as
 // a regular init container — the worker will not start until this returns successfully.
 func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) error {
-	preJob, _ := artifact.Partition(artifacts)
+	_, rest := splitMounts(artifacts) // mounts are established by the post sidecar
+	preJob, _ := artifact.Partition(rest)
 	logger := slog.With("jobId", r.jobID, "mode", "pre", "preJob", len(preJob))
 	logger.Info("Sidecar pre-mode starting")
 
@@ -181,10 +199,29 @@ func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) erro
 // Used by the Kubernetes backend as a native sidecar container — kubelet sends
 // SIGTERM when the worker main container exits, which unblocks waitFn.
 func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) error {
-	_, postJob := artifact.Partition(artifacts)
-	logger := slog.With("jobId", r.jobID, "mode", "post", "postJob", len(postJob))
-	logger.Info("Sidecar post-mode starting — waiting for worker to finish")
+	mounts, rest := splitMounts(artifacts)
+	_, postJob := artifact.Partition(rest)
+	logger := slog.With("jobId", r.jobID, "mode", "post", "mounts", len(mounts), "postJob", len(postJob))
 
+	// Establish mounts at startup, before signaling ready, so they exist when
+	// the worker starts. The startup probe gates the worker on the marker.
+	if len(mounts) > 0 {
+		logger.Info("Establishing squashfs mounts")
+		mountCtx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
+		err := r.establishMounts(mountCtx, mounts)
+		cancel()
+		if err != nil {
+			r.unmountAll() // roll back any mounts established before the failure
+			logger.Error("Mount setup failed, aborting job", "error", err)
+			return fmt.Errorf("mount setup failed: %w", err)
+		}
+		if err := r.writeMountReadyMarker(); err != nil {
+			logger.Error("Failed to write mounts-ready marker", "error", err)
+			return err
+		}
+	}
+
+	logger.Info("Waiting for worker to finish")
 	r.waitFn(ctx)
 	logger.Info("Worker finished, processing post-job artifacts")
 
@@ -196,6 +233,8 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	if err := r.processArtifacts(postCtx, postJob, true); err != nil {
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
+
+	r.unmountAll()
 	logger.Info("Sidecar post-mode completed")
 	return nil
 }
@@ -206,6 +245,55 @@ func (r *Runner) writeReadyMarker() error {
 		return fmt.Errorf("failed to write ready marker: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) writeMountReadyMarker() error {
+	markerPath := filepath.Join(r.sharedVolumePath, MountReadyFile)
+	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
+		return fmt.Errorf("failed to write mounts-ready marker: %w", err)
+	}
+	return nil
+}
+
+// establishMounts mounts each squashfs image read-only into the workspace. A
+// failure aborts the job — the worker must not start without its inputs.
+func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact) error {
+	for _, a := range mounts {
+		m, ok := a.(*artifact.Mount)
+		if !ok {
+			continue
+		}
+		image := filepath.Join(r.sharedVolumePath, m.In)
+		target := filepath.Join(r.sharedVolumePath, m.Out)
+
+		err := r.waitForPath(ctx, image)
+		if err == nil {
+			err = os.MkdirAll(target, 0o755)
+		}
+		if err == nil {
+			err = r.mounter.Mount(image, target)
+		}
+		if err != nil {
+			r.emitArtifact(a, "failed", nil, err)
+			slog.With("artifactId", m.ID, "error", err).Error("Mount failed")
+			return fmt.Errorf("mount %s: %w", m.ID, err)
+		}
+
+		r.mounted = append(r.mounted, target)
+		r.emitArtifact(a, "success", nil, nil)
+		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out).Info("Mounted squashfs image")
+	}
+	return nil
+}
+
+// unmountAll tears down established mounts in reverse order (best effort).
+func (r *Runner) unmountAll() {
+	for i := len(r.mounted) - 1; i >= 0; i-- {
+		if err := r.mounter.Unmount(r.mounted[i]); err != nil {
+			slog.With("target", r.mounted[i], "error", err).Warn("Failed to unmount")
+		}
+	}
+	r.mounted = nil
 }
 
 // processArtifacts processes artifacts in dependency order.

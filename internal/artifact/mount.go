@@ -1,0 +1,38 @@
+package artifact
+
+import "context"
+
+// Mount mounts a squashfs image read-only into the workspace so the worker can
+// read it without extraction.
+//
+// Unlike other artifacts, a mount is not applied-and-done: the mount must exist
+// before the worker starts and persist for its whole lifetime, then be torn
+// down afterwards. That lifecycle is owned by the sidecar runner, which detects
+// Mount artifacts and drives the host Mounter directly — so Apply here is a
+// no-op and is never invoked through the normal artifact flow.
+type Mount struct {
+	ID      string `json:"id"`
+	In      string `json:"in"`  // Source squashfs image path (in the workspace)
+	Out     string `json:"out"` // Mount point directory (in the workspace)
+	Depends string `json:"depends,omitempty"`
+}
+
+func (a *Mount) ArtifactID() string   { return a.ID }
+func (a *Mount) ArtifactType() string { return "mount" }
+func (a *Mount) DependsOn() string    { return a.Depends }
+
+// HasMount reports whether any artifact is a squashfs mount. Orchestrators use
+// this to decide whether a job needs the privileged, propagation-enabled pod.
+func HasMount(artifacts []Artifact) bool {
+	for _, a := range artifacts {
+		if a.ArtifactType() == "mount" {
+			return true
+		}
+	}
+	return false
+}
+
+// Apply is a no-op; the sidecar runner owns the mount lifecycle (see type doc).
+func (a *Mount) Apply(context.Context, string) *Result {
+	return &Result{Status: "success"}
+}

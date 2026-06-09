@@ -8,40 +8,86 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/klauspost/compress/zstd"
 )
 
-// Archive creates a tar.gz archive.
+// Archive packs a file or directory into a tar or squashfs archive.
+//
+// Format selects the container; Compression selects the algorithm. For tar an
+// empty value means no compression; squashfs is always compressed (defaults to
+// gzip). Level (1-9) sets the gzip level and applies to tar only.
 type Archive struct {
-	ID      string `json:"id"`
-	In      string `json:"in"`     // Source file or directory
-	Out     string `json:"out"`    // Destination archive path
-	Format  string `json:"format"` // Archive format (must be "tar.gz")
-	Depends string `json:"depends,omitempty"`
+	ID          string `json:"id"`
+	In          string `json:"in"`                    // Source file or directory
+	Out         string `json:"out"`                   // Destination archive path
+	Format      string `json:"format"`                // "tar" or "squashfs"
+	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd; squashfs: gzip, zstd
+	Level       int    `json:"level,omitempty"`       // gzip compression level 1-9 (tar only)
+	Depends     string `json:"depends,omitempty"`
 }
 
 func (a *Archive) ArtifactID() string   { return a.ID }
 func (a *Archive) ArtifactType() string { return "archive" }
 func (a *Archive) DependsOn() string    { return a.Depends }
 
-// Apply creates a tar.gz archive.
-func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
-	if a.Format != "tar.gz" {
-		return &Result{Status: "failed", Error: fmt.Errorf("unsupported archive format: %s (supported: tar.gz)", a.Format)}
+// gzipLevel maps an unset level (0) to the gzip default; otherwise returns it.
+func gzipLevel(level int) int {
+	if level == 0 {
+		return gzip.DefaultCompression
 	}
+	return level
+}
 
+// Apply creates the archive in the configured format.
+func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 	srcPath := filepath.Join(basePath, a.In)
 	destPath := filepath.Join(basePath, a.Out)
 
+	switch a.Format {
+	case "tar":
+		return a.applyTar(srcPath, destPath)
+	case "squashfs":
+		if err := writeSquashfs(srcPath, destPath, a.Compression); err != nil {
+			return &Result{Status: "failed", Error: err}
+		}
+		return &Result{Status: "success"}
+	default:
+		return &Result{Status: "failed", Error: fmt.Errorf("unsupported archive format: %s (supported: tar, squashfs)", a.Format)}
+	}
+}
+
+// applyTar creates a tar archive from srcPath at destPath, optionally gzipped.
+func (a *Archive) applyTar(srcPath, destPath string) *Result {
 	outFile, err := os.Create(destPath)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create archive file: %w", err)}
 	}
 	defer outFile.Close()
 
-	gzWriter := gzip.NewWriter(outFile)
-	defer gzWriter.Close()
+	var w io.Writer = outFile
+	switch a.Compression {
+	case "", "none":
+		// plain tar, no compression
+	case "gzip":
+		gzWriter, err := gzip.NewWriterLevel(outFile, gzipLevel(a.Level))
+		if err != nil {
+			return &Result{Status: "failed", Error: fmt.Errorf("failed to create gzip writer: %w", err)}
+		}
+		defer gzWriter.Close()
+		w = gzWriter
+	case "zstd":
+		zstdWriter, err := zstd.NewWriter(outFile)
+		if err != nil {
+			return &Result{Status: "failed", Error: fmt.Errorf("failed to create zstd writer: %w", err)}
+		}
+		defer zstdWriter.Close()
+		w = zstdWriter
+	default:
+		return &Result{Status: "failed", Error: fmt.Errorf("unsupported tar compression: %q (supported: gzip, zstd, none)", a.Compression)}
+	}
 
-	tarWriter := tar.NewWriter(gzWriter)
+	tarWriter := tar.NewWriter(w)
 	defer tarWriter.Close()
 
 	info, err := os.Stat(srcPath)

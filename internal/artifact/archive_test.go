@@ -7,7 +7,7 @@ import (
 )
 
 func TestArchive_Interface(t *testing.T) {
-	a := &Archive{ID: "a1", In: "src", Out: "src.tar.gz", Format: "tar.gz"}
+	a := &Archive{ID: "a1", In: "src", Out: "src.tar.gz", Format: "tar"}
 	if a.ArtifactID() != "a1" {
 		t.Errorf("ArtifactID() = %v, want a1", a.ArtifactID())
 	}
@@ -27,7 +27,7 @@ func TestArchive_Apply(t *testing.T) {
 		ID:     "test-archive",
 		In:     "source",
 		Out:    "output.tar.gz",
-		Format: "tar.gz",
+		Format: "tar",
 	}
 
 	result := a.Apply(t.Context(), tmpDir)
