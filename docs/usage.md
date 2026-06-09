@@ -108,10 +108,11 @@ Artifacts handle file operations before and after job execution. An artifact run
 |------|-------------|
 | `download` | Download file from URL |
 | `write` | Write inline content |
-| `unarchive` | Extract tar.gz archive |
+| `unarchive` | Extract a tar (plain/gzip/zstd) or squashfs archive |
+| `mount` | Mount a squashfs image read-only into the workspace |
 | `upload` | Upload file to URL |
 | `read` | Include file contents in callback event |
-| `archive` | Create tar.gz archive |
+| `archive` | Create tar or squashfs archive |
 | `list` | List files with glob pattern exclusions |
 
 ### Common Fields
@@ -159,7 +160,7 @@ Write inline content to a file:
 
 ### Unarchive Artifact
 
-Extract a tar.gz archive:
+Extract an archive — tar (plain, gzip-, or zstd-compressed) or squashfs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To mount a squashfs image read-only *in place* instead of copying its files out, use the Mount artifact.)
 
 ```json
 {
@@ -224,6 +225,27 @@ Often chained with a download:
 }
 ```
 
+### Mount Artifact
+
+Mount a squashfs image read-only into the workspace, so the worker reads it directly without extraction (preserving the compressed, read-only image):
+
+```json
+{
+  "id": "dataset",
+  "type": "mount",
+  "in": "dataset.sqfs",
+  "out": "mnt/dataset"
+}
+```
+
+This mounts `dataset.sqfs` at `mnt/dataset/` in the workspace, visible to the worker for its whole run and unmounted afterwards.
+
+**Options:**
+- `in` - Squashfs image to mount (required)
+- `out` - Mount point directory in the workspace (required)
+
+> **Operator note:** Mounting requires a privileged sidecar with mount propagation and the `squashfs` kernel module on nodes, so it is **disabled by default**. Enable it with `squashfsMountEnabled` (Helm) / `KUBE_SQUASHFS_MOUNT_ENABLED` (K8s) / `SQUASHFS_MOUNT_ENABLED` (Docker). Jobs containing a `mount` artifact are rejected when it is disabled. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
+
 ### Upload Artifact
 
 Upload a file to a presigned URL:
@@ -260,7 +282,7 @@ The file contents (parsed as JSON if valid, otherwise string) are included in th
 
 ### Archive Artifact
 
-Create a tar.gz archive from a file or directory:
+Create a tar or squashfs archive from a file or directory:
 
 ```json
 {
@@ -268,14 +290,32 @@ Create a tar.gz archive from a file or directory:
   "type": "archive",
   "in": "output",
   "out": "output.tar.gz",
-  "format": "tar.gz",
+  "format": "tar",
+  "compression": "gzip",
+  "level": 5,
   "depends": "job"
 }
 ```
 
 - `in` - Source file or directory (required)
 - `out` - Destination archive path (required)
-- `format` - Archive format, must be `"tar.gz"` (required)
+- `format` - Container format, either `"tar"` or `"squashfs"` (required)
+- `compression` - Compression algorithm: `gzip` or `zstd`. Defaults to no compression for `tar`; `squashfs` is always compressed (defaults to `gzip`) (optional)
+- `level` - gzip compression level, `1`-`9`. Only valid when `compression` is `gzip` (optional)
+
+Create a squashfs archive with zstd compression:
+
+```json
+{
+  "id": "archive",
+  "type": "archive",
+  "in": "output",
+  "out": "output.sqfs",
+  "format": "squashfs",
+  "compression": "zstd",
+  "depends": "job"
+}
+```
 
 ### List Artifact
 
@@ -351,7 +391,8 @@ Use `depends` to chain artifacts. The dependent artifact waits for its dependenc
       "type": "archive",
       "in": "build",
       "out": "build.tar.gz",
-      "format": "tar.gz",
+      "format": "tar",
+      "compression": "gzip",
       "depends": "job"
     },
     {

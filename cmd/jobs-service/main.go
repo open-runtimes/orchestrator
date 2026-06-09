@@ -55,6 +55,7 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string,
 			MaintenanceInterval: cfg.MaintenanceInterval,
 			ArtifactEndpoint:    cfg.ArtifactEndpoint,
 			ExtraHosts:          cfg.ExtraHosts,
+			MountEnabled:        cfg.MountEnabled,
 		}), nil
 	case "kubernetes":
 		cfg := kubernetes.LoadConfigFromEnv()
@@ -71,6 +72,7 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string,
 			MaintenanceInterval:           cfg.MaintenanceInterval,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: cfg.TerminationGracePeriodSeconds,
+			MountEnabled:                  cfg.MountEnabled,
 			LeaderElection:                cfg.LeaderElection,
 			Metrics:                       metrics,
 		}), nil

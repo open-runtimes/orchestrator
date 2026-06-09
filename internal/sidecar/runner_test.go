@@ -68,7 +68,7 @@ func TestPartition(t *testing.T) {
 	artifacts := []artifact.Artifact{
 		&artifact.Download{ID: "download", In: "http://example.com/input.tar.gz", Out: "input.tar.gz"},
 		&artifact.Unarchive{ID: "extract", In: "input.tar.gz", Out: "code", Depends: "download"},
-		&artifact.Archive{ID: "archive", In: "output", Out: "output.tar.gz", Format: "tar.gz", Depends: artifact.JobDependency},
+		&artifact.Archive{ID: "archive", In: "output", Out: "output.tar.gz", Format: "tar", Depends: artifact.JobDependency},
 		&artifact.Upload{ID: "upload", In: "output.tar.gz", Out: "http://example.com/upload", Depends: "archive"},
 	}
 
@@ -308,6 +308,88 @@ func TestRunner_ReportsArtifact(t *testing.T) {
 	}
 	if r.Status != "success" {
 		t.Errorf("expected Status 'success', got %q", r.Status)
+	}
+}
+
+// fakeMounter records Mount/Unmount calls without touching the kernel.
+type fakeMounter struct {
+	mu        sync.Mutex
+	mounted   []string
+	unmounted []string
+}
+
+func (f *fakeMounter) Mount(image, target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mounted = append(f.mounted, target)
+	return nil
+}
+
+func (f *fakeMounter) Unmount(target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unmounted = append(f.unmounted, target)
+	return nil
+}
+
+// TestRunner_MountLifecycle verifies the post sidecar mounts before signaling
+// the mounts-ready marker (which gates the worker) and unmounts on teardown.
+func TestRunner_MountLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "data.sqfs"), []byte("hsqs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sigFn, triggerDone := triggerSignal()
+	fake := &fakeMounter{}
+	target := filepath.Join(tmpDir, "mnt", "data")
+
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn), WithMounter(fake))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runner.RunPost(ctx, artifacts) }()
+
+	// The mounts-ready marker proves the mount completed before the worker gate.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !CheckMountsReady(tmpDir) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !CheckMountsReady(tmpDir) {
+		t.Fatal("mounts-ready marker not written within deadline")
+	}
+
+	fake.mu.Lock()
+	if len(fake.mounted) != 1 || fake.mounted[0] != target {
+		t.Fatalf("expected mount of %q, got %v", target, fake.mounted)
+	}
+	if len(fake.unmounted) != 0 {
+		t.Fatalf("should not unmount before worker finishes, got %v", fake.unmounted)
+	}
+	fake.mu.Unlock()
+
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("mount target dir not created: %v", err)
+	}
+
+	triggerDone() // worker finished
+
+	if err := <-done; err != nil {
+		t.Fatalf("RunPost() error = %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.unmounted) != 1 || fake.unmounted[0] != target {
+		t.Fatalf("expected unmount of %q on teardown, got %v", target, fake.unmounted)
 	}
 }
 

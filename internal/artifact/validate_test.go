@@ -157,22 +157,105 @@ func TestValidate_Archive(t *testing.T) {
 	}{
 		{
 			name:    "valid",
-			art:     &Archive{ID: "a1", In: "src", Out: "src.tar.gz", Format: "tar.gz"},
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar.gz", Format: "tar"},
 			wantErr: false,
 		},
 		{
 			name:    "missing out (dest)",
-			art:     &Archive{ID: "a1", In: "src", Format: "tar.gz"},
+			art:     &Archive{ID: "a1", In: "src", Format: "tar"},
 			wantErr: true,
 		},
 		{
 			name:    "missing in (path)",
-			art:     &Archive{ID: "a1", Out: "src.tar.gz", Format: "tar.gz"},
+			art:     &Archive{ID: "a1", Out: "src.tar.gz", Format: "tar"},
 			wantErr: true,
 		},
 		{
 			name:    "invalid format",
 			art:     &Archive{ID: "a1", In: "src", Out: "src.zip", Format: "zip"},
+			wantErr: true,
+		},
+		{
+			name:    "tar with gzip and level",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar.gz", Format: "tar", Compression: "gzip", Level: 5},
+			wantErr: false,
+		},
+		{
+			name:    "tar uncompressed",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", Compression: "none"},
+			wantErr: false,
+		},
+		{
+			name:    "tar zstd",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar.zst", Format: "tar", Compression: "zstd"},
+			wantErr: false,
+		},
+		{
+			name:    "tar invalid compression",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", Compression: "lz4"},
+			wantErr: true,
+		},
+		{
+			name:    "level out of range",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar.gz", Format: "tar", Compression: "gzip", Level: 12},
+			wantErr: true,
+		},
+		{
+			name:    "level set without gzip",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", Compression: "none", Level: 5},
+			wantErr: true,
+		},
+		{
+			name:    "squashfs default compression",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs"},
+			wantErr: false,
+		},
+		{
+			name:    "squashfs explicit compression",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", Compression: "zstd"},
+			wantErr: false,
+		},
+		{
+			name:    "squashfs invalid compression",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", Compression: "brotli"},
+			wantErr: true,
+		},
+		{
+			name:    "squashfs rejects level",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", Compression: "gzip", Level: 5},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Validate(0, tt.art)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidate_Mount(t *testing.T) {
+	tests := []struct {
+		name    string
+		art     *Mount
+		wantErr bool
+	}{
+		{
+			name:    "valid",
+			art:     &Mount{ID: "m1", In: "data.sqfs", Out: "mnt/data"},
+			wantErr: false,
+		},
+		{
+			name:    "missing in (image)",
+			art:     &Mount{ID: "m1", Out: "mnt/data"},
+			wantErr: true,
+		},
+		{
+			name:    "missing out (dir)",
+			art:     &Mount{ID: "m1", In: "data.sqfs"},
 			wantErr: true,
 		},
 	}

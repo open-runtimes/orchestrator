@@ -3,6 +3,8 @@ package kubernetes
 import (
 	"encoding/json"
 	"fmt"
+	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
 	"strconv"
 	"strings"
@@ -102,10 +104,15 @@ func jobNameFor(jobID string) string {
 //   - container "worker": the user workload
 //
 // All three share an emptyDir volume mounted at req.Workspace.
-func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *batchv1.Job {
+func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) (*batchv1.Job, error) {
 	workspace := req.Workspace
 	if workspace == "" {
 		workspace = "/workspace"
+	}
+
+	hasMounts := artifact.HasMount(req.Artifacts)
+	if hasMounts && !cfg.MountEnabled {
+		return nil, apperrors.Validation("artifacts", "squashfs mounting is disabled; enable squashfsMountEnabled to use \"mount\" artifacts")
 	}
 
 	labels := map[string]string{
@@ -122,8 +129,40 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 
-	volumeMounts := []corev1.VolumeMount{
-		{Name: VolumeWorkspace, MountPath: workspace},
+	// Base workspace mount, shared by all containers. When the job mounts a
+	// squashfs image, the post sidecar establishes the mount and must propagate
+	// it outward (Bidirectional, which requires a privileged container), and the
+	// worker receives it (HostToContainer). A startup probe gates the worker
+	// until the mounts-ready marker appears.
+	preMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
+	postMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
+	workerMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
+
+	var postSecurityContext *corev1.SecurityContext
+	var postStartupProbe *corev1.Probe
+	if hasMounts {
+		bidirectional := corev1.MountPropagationBidirectional
+		hostToContainer := corev1.MountPropagationHostToContainer
+		postMounts[0].MountPropagation = &bidirectional
+		workerMounts[0].MountPropagation = &hostToContainer
+
+		privileged := true
+		runAsRoot := int64(0)
+		// Root + privileged: the sidecar image is distroless nonroot, but mounting
+		// needs to open /dev/loop-control (root:disk 0660) and call mount(2).
+		postSecurityContext = &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &runAsRoot}
+
+		failureThreshold := int32(req.TimeoutSeconds)
+		if failureThreshold < 1 {
+			failureThreshold = 60
+		}
+		postStartupProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				Exec: &corev1.ExecAction{Command: []string{"/ko-app/job-sidecar", "-check-mounts"}},
+			},
+			PeriodSeconds:    1,
+			FailureThreshold: failureThreshold,
+		}
 	}
 
 	var cmd []string
@@ -151,7 +190,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 				ImagePullPolicy: sidecarPull,
 				Args:            []string{"-mode=pre"},
 				Env:             sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
-				VolumeMounts:    volumeMounts,
+				VolumeMounts:    preMounts,
 			},
 			{
 				Name:            ContainerArtifactPost,
@@ -159,8 +198,10 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 				ImagePullPolicy: sidecarPull,
 				Args:            []string{"-mode=post"},
 				Env:             sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
-				VolumeMounts:    volumeMounts,
+				VolumeMounts:    postMounts,
 				RestartPolicy:   &alwaysRestart,
+				SecurityContext: postSecurityContext,
+				StartupProbe:    postStartupProbe,
 			},
 		},
 		Containers: []corev1.Container{
@@ -171,7 +212,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 				Command:         cmd,
 				Env:             workerEnv(req),
 				WorkingDir:      workspace,
-				VolumeMounts:    volumeMounts,
+				VolumeMounts:    workerMounts,
 				Resources:       workerResources(req),
 			},
 		},
@@ -200,7 +241,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 				Spec: podSpec,
 			},
 		},
-	}
+	}, nil
 }
 
 func jobAnnotations(req *job.Request) map[string]string {
@@ -254,7 +295,9 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 		{Name: "SHARED_VOLUME_PATH", Value: workspace},
 		{Name: "TIMEOUT_SECONDS", Value: strconv.Itoa(req.TimeoutSeconds)},
 	}
-	if artifactsJSON, err := json.Marshal(req.Artifacts); err == nil {
+	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
+	// needs to unmarshal them back into concrete types.
+	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACTS_JSON", Value: string(artifactsJSON)})
 	}
 	if artifactEndpoint != "" {

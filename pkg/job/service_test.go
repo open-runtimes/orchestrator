@@ -222,7 +222,7 @@ func TestValidate_Artifacts(t *testing.T) {
 				ID:    "test-job",
 				Image: "alpine",
 				Artifacts: []artifact.Artifact{
-					&artifact.Archive{ID: "a1", In: "output", Out: "output.tar.gz", Format: "tar.gz", Depends: artifact.JobDependency},
+					&artifact.Archive{ID: "a1", In: "output", Out: "output.tar.gz", Format: "tar", Depends: artifact.JobDependency},
 				},
 			},
 			wantErr: false,
@@ -233,7 +233,7 @@ func TestValidate_Artifacts(t *testing.T) {
 				ID:    "test-job",
 				Image: "alpine",
 				Artifacts: []artifact.Artifact{
-					&artifact.Archive{ID: "a1", In: "output", Format: "tar.gz", Depends: artifact.JobDependency},
+					&artifact.Archive{ID: "a1", In: "output", Format: "tar", Depends: artifact.JobDependency},
 				},
 			},
 			wantErr: true,
@@ -348,7 +348,7 @@ func TestUnmarshalArtifact(t *testing.T) {
 		},
 		{
 			name:     "archive artifact",
-			json:     `{"type":"archive","id":"a1","in":"output","out":"output.tar.gz","format":"tar.gz"}`,
+			json:     `{"type":"archive","id":"a1","in":"output","out":"output.tar.gz","format":"tar"}`,
 			wantType: "archive",
 		},
 		{

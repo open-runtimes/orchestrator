@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +28,8 @@ import (
 type dockerHandle struct {
 	sidecarContainerID string
 	jobContainerID     string
-	volumeName         string
+	volumeName         string // shared workspace volume (non-mount jobs)
+	hostDir            string // shared workspace host dir (mount jobs; needs propagation)
 }
 
 // Orchestrator implements job.Orchestrator using Docker.
@@ -38,6 +41,7 @@ type Orchestrator struct {
 	emitter             *job.CallbackEmitter
 	artifactEndpoint    string
 	extraHosts          []string
+	mountEnabled        bool
 	ctrl                *job.MemoryStore[dockerHandle]
 	watcher             LifecycleWatcher
 
@@ -52,6 +56,7 @@ type Config struct {
 	MaintenanceInterval time.Duration // How often to run cleanup (default 1m)
 	ArtifactEndpoint    string        // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
 	ExtraHosts          []string      // Extra /etc/hosts entries for containers (e.g., ["appwrite.test:host-gateway"])
+	MountEnabled        bool          // allow `mount` artifacts (privileged sidecar + bind-mount propagation)
 }
 
 // NewOrchestrator returns an OrchestratorFactory that creates a Docker orchestrator.
@@ -81,6 +86,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			emitter:             emitter,
 			artifactEndpoint:    cfg.ArtifactEndpoint,
 			extraHosts:          cfg.ExtraHosts,
+			mountEnabled:        cfg.MountEnabled,
 			ctrl:                job.NewMemoryStore[dockerHandle](),
 			watcher:             newDockerLifecycleWatcher(dockerClient),
 		}, nil
@@ -225,13 +231,16 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 
 // Run creates and starts a job with its sidecar.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
+	hasMounts := artifact.HasMount(req.Artifacts)
+	if hasMounts && !o.mountEnabled {
+		return apperrors.Validation("artifacts", "squashfs mounting is disabled; enable SQUASHFS_MOUNT_ENABLED to use \"mount\" artifacts")
+	}
+
 	if err := o.ctrl.Reserve(req.ID); err != nil {
 		return err
 	}
 
-	h := dockerHandle{
-		volumeName: fmt.Sprintf("job-%s-workspace", req.ID),
-	}
+	h := dockerHandle{}
 
 	// On failure, release the reservation and clean up any created resources.
 	success := false
@@ -243,9 +252,20 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 		}
 	}()
 
-	// Create shared volume
-	if _, err := o.client.VolumeCreate(ctx, volume.CreateOptions{Name: h.volumeName}); err != nil {
-		return apperrors.Internal("docker.createVolume", err)
+	// Set up the shared workspace. Mount jobs use a host bind mount so the
+	// sidecar's squashfs mounts propagate to the worker; other jobs use a
+	// named volume.
+	if hasMounts {
+		hostDir, err := os.MkdirTemp("", "job-"+req.ID+"-ws-")
+		if err != nil {
+			return apperrors.Internal("docker.createWorkspaceDir", err)
+		}
+		h.hostDir = hostDir
+	} else {
+		h.volumeName = fmt.Sprintf("job-%s-workspace", req.ID)
+		if _, err := o.client.VolumeCreate(ctx, volume.CreateOptions{Name: h.volumeName}); err != nil {
+			return apperrors.Internal("docker.createVolume", err)
+		}
 	}
 
 	// Pull job image if needed (with detached context so HTTP timeout doesn't cancel)
@@ -343,6 +363,21 @@ func (o *Orchestrator) Ready(ctx context.Context) error {
 	return err
 }
 
+// workspaceMount returns the shared-workspace mount for a container. Mount jobs
+// use a host bind mount with the given propagation so the sidecar's squashfs
+// mounts reach the worker; other jobs use the named volume (propagation unused).
+func workspaceMount(h dockerHandle, workspace string, propagation mount.Propagation) mount.Mount {
+	if h.hostDir != "" {
+		return mount.Mount{
+			Type:        mount.TypeBind,
+			Source:      h.hostDir,
+			Target:      workspace,
+			BindOptions: &mount.BindOptions{Propagation: propagation},
+		}
+	}
+	return mount.Mount{Type: mount.TypeVolume, Source: h.volumeName, Target: workspace}
+}
+
 func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request, h dockerHandle) (string, error) {
 	env := make([]string, 0, len(req.Environment))
 	for k, v := range req.Environment {
@@ -386,13 +421,7 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 	}
 
 	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{
-				Type:   mount.TypeVolume,
-				Source: h.volumeName,
-				Target: req.Workspace,
-			},
-		},
+		Mounts: []mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)},
 		Resources: container.Resources{
 			NanoCPUs: int64(req.CPU * 1e9),
 			Memory:   int64(req.Memory) * 1024 * 1024,
@@ -415,7 +444,9 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		"SHARED_VOLUME_PATH=" + req.Workspace,
 	}
 
-	artifactsJSON, err := json.Marshal(req.Artifacts)
+	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
+	// needs to unmarshal them back into concrete types.
+	artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal artifacts: %w", err)
 	}
@@ -464,14 +495,13 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 	}
 
 	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{
-			{
-				Type:   mount.TypeVolume,
-				Source: h.volumeName,
-				Target: req.Workspace,
-			},
-		},
+		Mounts:     []mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRShared)},
 		ExtraHosts: o.extraHosts,
+	}
+	// Mount jobs: the sidecar performs the loop mount and propagates it to the
+	// worker, which needs a privileged container (loop devices + propagation).
+	if h.hostDir != "" {
+		hostConfig.Privileged = true
 	}
 
 	containerName := fmt.Sprintf("job-%s-sidecar", req.ID)
@@ -507,6 +537,9 @@ func (o *Orchestrator) cleanup(ctx context.Context, h dockerHandle) {
 
 	if h.volumeName != "" {
 		_ = o.client.VolumeRemove(ctx, h.volumeName, true)
+	}
+	if h.hostDir != "" {
+		_ = os.RemoveAll(h.hostDir)
 	}
 }
 

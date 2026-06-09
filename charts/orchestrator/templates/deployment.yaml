@@ -50,6 +50,8 @@ spec:
               value: {{ .Values.orchestrator.maintenanceInterval | quote }}
             - name: KUBE_TERMINATION_GRACE_SECONDS
               value: {{ .Values.orchestrator.terminationGracePeriodSeconds | quote }}
+            - name: KUBE_SQUASHFS_MOUNT_ENABLED
+              value: {{ .Values.orchestrator.squashfsMountEnabled | quote }}
             {{- if .Values.orchestrator.workerImagePullPolicy }}
             - name: KUBE_WORKER_IMAGE_PULL_POLICY
               value: {{ .Values.orchestrator.workerImagePullPolicy | quote }}

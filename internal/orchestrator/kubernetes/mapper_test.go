@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
 	"reflect"
 	"slices"
@@ -11,6 +12,62 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 )
+
+func TestBuildJob_MountArtifact(t *testing.T) {
+	t.Parallel()
+	req := &job.Request{
+		ID: "job-mnt", Image: "alpine:3.20", TimeoutSeconds: 60, Workspace: "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Mount{ID: "m", In: "data.sqfs", Out: "mnt/data"},
+		},
+	}
+
+	// Disabled → rejected.
+	if _, err := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest"); err == nil {
+		t.Fatal("expected error when squashfs mounting is disabled")
+	}
+
+	// Enabled → privileged post sidecar, propagation on post + worker, startup probe.
+	j, err := buildJob(req, OrchestratorConfig{Namespace: "orchestrator", MountEnabled: true}, "sidecar:latest")
+	if err != nil {
+		t.Fatalf("buildJob error = %v", err)
+	}
+	spec := j.Spec.Template.Spec
+	post := spec.InitContainers[1]
+	if post.SecurityContext == nil || post.SecurityContext.Privileged == nil || !*post.SecurityContext.Privileged {
+		t.Error("post sidecar should be privileged when mounting")
+	}
+	if post.StartupProbe == nil || post.StartupProbe.Exec == nil {
+		t.Error("post sidecar should have a -check-mounts startup probe")
+	}
+	if got := post.VolumeMounts[0].MountPropagation; got == nil || *got != corev1.MountPropagationBidirectional {
+		t.Errorf("post mount propagation: want Bidirectional, got %v", got)
+	}
+	if got := spec.Containers[0].VolumeMounts[0].MountPropagation; got == nil || *got != corev1.MountPropagationHostToContainer {
+		t.Errorf("worker mount propagation: want HostToContainer, got %v", got)
+	}
+	if pre := spec.InitContainers[0]; pre.SecurityContext != nil || pre.VolumeMounts[0].MountPropagation != nil {
+		t.Error("pre sidecar should stay unprivileged with no propagation")
+	}
+}
+
+func TestBuildJob_NoMount_Unprivileged(t *testing.T) {
+	t.Parallel()
+	req := &job.Request{ID: "job-1", Image: "alpine:3.20", TimeoutSeconds: 60, Workspace: "/workspace"}
+
+	j, err := buildJob(req, OrchestratorConfig{Namespace: "orchestrator", MountEnabled: true}, "sidecar:latest")
+	if err != nil {
+		t.Fatalf("buildJob error = %v", err)
+	}
+	spec := j.Spec.Template.Spec
+	post := spec.InitContainers[1]
+	if post.SecurityContext != nil || post.StartupProbe != nil {
+		t.Error("non-mount job should not get privilege or a mounts startup probe")
+	}
+	if post.VolumeMounts[0].MountPropagation != nil || spec.Containers[0].VolumeMounts[0].MountPropagation != nil {
+		t.Error("non-mount job should not set mount propagation")
+	}
+}
 
 // --- watchConfigFromRequest ---
 
@@ -121,7 +178,7 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 		TerminationGracePeriodSeconds: 600,
 	}
 
-	j := buildJob(req, cfg, "ko.local/job-sidecar:latest")
+	j, _ := buildJob(req, cfg, "ko.local/job-sidecar:latest")
 
 	if j.Name != "job-job-1" {
 		t.Errorf("Name: want job-job-1, got %s", j.Name)
@@ -135,7 +192,7 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 	if j.Spec.BackoffLimit == nil || *j.Spec.BackoffLimit != 0 {
 		t.Errorf("BackoffLimit: want 0, got %v", j.Spec.BackoffLimit)
 	}
-	if j.Spec.TTLSecondsAfterFinished == nil || *j.Spec.TTLSecondsAfterFinished != int32((15 * time.Minute).Seconds()) {
+	if j.Spec.TTLSecondsAfterFinished == nil || *j.Spec.TTLSecondsAfterFinished != int32((15*time.Minute).Seconds()) {
 		t.Errorf("TTLSecondsAfterFinished: got %v", j.Spec.TTLSecondsAfterFinished)
 	}
 
@@ -240,7 +297,7 @@ func TestBuildJob_CallbackAnnotations(t *testing.T) {
 			Events: []string{"job.start", "job.exit"},
 		},
 	}
-	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
+	j, _ := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
 
 	if j.Annotations[AnnotationCallbackURL] != "https://hooks.example.com/cb" {
 		t.Errorf("url annotation: got %s", j.Annotations[AnnotationCallbackURL])
@@ -268,7 +325,7 @@ func TestBuildJob_WatchConfigRoundTrip(t *testing.T) {
 			Events: []string{"job.exit"},
 		},
 	}
-	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
+	j, _ := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
 
 	cfg := watchConfigFromJob(j)
 	if cfg.jobID != "job-3" {
@@ -288,7 +345,7 @@ func TestBuildJob_WatchConfigRoundTrip(t *testing.T) {
 func TestBuildJob_EmptyWorkspaceDefaults(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-4", Image: "alpine:latest"}
-	j := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
+	j, _ := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
 
 	worker := j.Spec.Template.Spec.Containers[0]
 	if worker.WorkingDir != "/workspace" {
@@ -305,7 +362,7 @@ func TestBuildJob_EmptyWorkspaceDefaults(t *testing.T) {
 func TestBuildJob_NoResources(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-5", Image: "alpine:latest"}
-	j := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
+	j, _ := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
 	res := j.Spec.Template.Spec.Containers[0].Resources
 	if len(res.Limits) != 0 || len(res.Requests) != 0 {
 		t.Errorf("expected empty resources, got %+v", res)

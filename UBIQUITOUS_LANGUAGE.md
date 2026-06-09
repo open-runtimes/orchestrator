@@ -38,8 +38,9 @@
 | **Upload** | Sends a file from the workspace to a URL | Push, put |
 | **Write** | Writes inline content from the request into a workspace file | Inject, create |
 | **Read** | Reads a workspace file and includes its content in the callback | Get, cat |
-| **Archive** | Compresses a workspace directory into a tar.gz file | Zip, pack |
-| **Unarchive** | Expands a tar.gz file into the workspace | Unzip, unpack, extract |
+| **Archive** | Compresses a workspace directory into a tar or squashfs file | Zip, pack |
+| **Unarchive** | Expands a tar (plain/gzip/zstd) or squashfs archive into the workspace | Unzip, unpack, extract |
+| **Mount** | Mounts a squashfs image read-only into the workspace for the worker | Attach, bind |
 | **List** | Enumerates files in a workspace directory and includes the list in the callback | Ls, dir |
 
 ## Callbacks

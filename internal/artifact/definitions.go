@@ -94,8 +94,29 @@ var (
 			if err := validatePath(a.Out); err != nil {
 				return apperrors.Validation(field+".out", "invalid out (dest): "+err.Error())
 			}
-			if a.Format != "tar.gz" {
-				return apperrors.Validation(field+".format", "format must be \"tar.gz\"")
+			switch a.Format {
+			case "tar":
+				switch a.Compression {
+				case "", "none", "zstd":
+					if a.Level != 0 {
+						return apperrors.Validation(field+".level", "level is only valid with gzip compression")
+					}
+				case "gzip":
+					if a.Level < 0 || a.Level > 9 {
+						return apperrors.Validation(field+".level", "level must be between 0 and 9 (0 means default)")
+					}
+				default:
+					return apperrors.Validation(field+".compression", "compression must be \"gzip\", \"zstd\", or \"none\" for tar")
+				}
+			case "squashfs":
+				if _, err := squashfsCompression(a.Compression); err != nil {
+					return apperrors.Validation(field+".compression", err.Error())
+				}
+				if a.Level != 0 {
+					return apperrors.Validation(field+".level", "level is not supported for squashfs")
+				}
+			default:
+				return apperrors.Validation(field+".format", "format must be \"tar\" or \"squashfs\"")
 			}
 			return nil
 		}),
@@ -121,6 +142,27 @@ var (
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Unarchive) string { return a.In }),
+	}
+
+	MountDef = TypeDef{
+		Type: "mount",
+		New:  func() Artifact { return &Mount{} },
+		Validate: TypedValidator(func(field string, a *Mount) error {
+			if a.In == "" {
+				return apperrors.Validation(field+".in", "in (image path) is required")
+			}
+			if err := validatePath(a.In); err != nil {
+				return apperrors.Validation(field+".in", "invalid in (path): "+err.Error())
+			}
+			if a.Out == "" {
+				return apperrors.Validation(field+".out", "out (mount dir) is required")
+			}
+			if err := validatePath(a.Out); err != nil {
+				return apperrors.Validation(field+".out", "invalid out (path): "+err.Error())
+			}
+			return nil
+		}),
+		SourcePath: TypedSourcePath(func(a *Mount) string { return a.In }),
 	}
 
 	ListDef = TypeDef{
