@@ -244,7 +244,7 @@ This mounts `dataset.sqfs` at `mnt/dataset/` in the workspace, visible to the wo
 - `in` - Squashfs image to mount (required)
 - `out` - Mount point directory in the workspace (required)
 
-> **Operator note:** Mounting requires a privileged sidecar with mount propagation and the `squashfs` kernel module on nodes, so it is **disabled by default**. Enable it with `squashfsMountEnabled` (Helm) / `KUBE_SQUASHFS_MOUNT_ENABLED` (K8s) / `SQUASHFS_MOUNT_ENABLED` (Docker). Jobs containing a `mount` artifact are rejected when it is disabled. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
+> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the `squashfs` kernel module on nodes, and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
 
 ### Upload Artifact
 

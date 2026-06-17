@@ -59,7 +59,6 @@ type Config struct {
 	MaintenanceInterval           time.Duration
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64
-	MountEnabled                  bool
 	LeaderElection                LeaderElectionConfig
 	// Metrics wires backend-specific recorders (leadership, status cache,
 	// tracker saturation, K8s API latency). Optional — when nil, recording
@@ -115,7 +114,6 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			JobRetention:                  retention,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: grace,
-			MountEnabled:                  cfg.MountEnabled,
 			LeaderElection:                cfg.LeaderElection,
 		}
 
@@ -275,10 +273,7 @@ func (o *Orchestrator) runLeaderElection(ctx context.Context) {
 // The job's watcher will be spawned automatically by the leader's informer
 // when K8s creates the owning Pod.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
-	jobSpec, err := buildJob(req, o.cfg, o.sidecarImage)
-	if err != nil {
-		return err
-	}
+	jobSpec := buildJob(req, o.cfg, o.sidecarImage)
 	if _, err := o.client.BatchV1().Jobs(o.namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return apperrors.Conflict("job", req.ID, "job already exists")

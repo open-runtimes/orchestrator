@@ -19,7 +19,6 @@ type OrchestratorConfig struct {
 	MaintenanceInterval           time.Duration
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64 // grace period for post-sidecar to run post-artifacts
-	MountEnabled                  bool  // allow `mount` artifacts (privileged sidecar + mount propagation)
 	LeaderElection                LeaderElectionConfig
 }
 
@@ -53,7 +52,6 @@ func LoadConfigFromEnv() OrchestratorConfig {
 		MaintenanceInterval:           config.GetDurationEnv("MAINTENANCE_INTERVAL", 1*time.Minute),
 		ArtifactEndpoint:              config.GetEnv("ARTIFACT_ENDPOINT", "http://jobs-service.orchestrator.svc.cluster.local:8080"),
 		TerminationGracePeriodSeconds: int64(config.GetIntEnv("KUBE_TERMINATION_GRACE_SECONDS", 600)),
-		MountEnabled:                  config.GetEnv("KUBE_SQUASHFS_MOUNT_ENABLED", "") == "true",
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", "jobs-service-leader"),

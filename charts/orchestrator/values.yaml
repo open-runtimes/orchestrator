@@ -61,6 +61,12 @@ service:
 
 # Orchestrator runtime config.
 orchestrator:
+  # Namespace where temporary Kubernetes Jobs and their Pods are created.
+  # Empty keeps them in the Helm release namespace.
+  jobNamespace: ""
+  # Create orchestrator.jobNamespace when it is set to a namespace different
+  # from the Helm release namespace.
+  jobNamespaceCreate: false
   # Full URL the sidecar POSTs artifact reports to. Empty auto-derives from release+namespace.
   artifactEndpoint: ""
   jobRetention: 15m
@@ -74,12 +80,6 @@ orchestrator:
   # still pulls from upstream.
   workerImagePullPolicy: ""
   sidecarImagePullPolicy: ""
-  # Allow `mount` artifacts (mount a squashfs image read-only into the worker).
-  # DISABLED by default: a mounting job runs its post sidecar privileged with
-  # Bidirectional mount propagation, and nodes need the squashfs kernel module.
-  # Only jobs that include a `mount` artifact are affected; the worker is never
-  # privileged. Jobs with a `mount` artifact are rejected while this is false.
-  squashfsMountEnabled: false
 
 resources:
   requests:

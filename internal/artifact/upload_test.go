@@ -72,3 +72,32 @@ func TestUpload_Apply_CustomConfig(t *testing.T) {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
 }
+
+func TestUpload_Apply_CustomHeaders(t *testing.T) {
+	var gotAuth, gotContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "out.txt"), []byte("data"), 0o644)
+
+	a := &Upload{ID: "ul1", In: "out.txt", Out: server.URL, Retries: 1, Headers: map[string]string{
+		"Authorization": "Bearer token",
+		"Content-Type":  "text/plain", // must not override the fixed octet-stream type
+	}}
+
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+	if gotAuth != "Bearer token" {
+		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer token")
+	}
+	if gotContentType != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want application/octet-stream", gotContentType)
+	}
+}

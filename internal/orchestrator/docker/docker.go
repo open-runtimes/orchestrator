@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
@@ -41,7 +42,7 @@ type Orchestrator struct {
 	emitter             *job.CallbackEmitter
 	artifactEndpoint    string
 	extraHosts          []string
-	mountEnabled        bool
+	networkName         string
 	ctrl                *job.MemoryStore[dockerHandle]
 	watcher             LifecycleWatcher
 
@@ -56,7 +57,7 @@ type Config struct {
 	MaintenanceInterval time.Duration // How often to run cleanup (default 1m)
 	ArtifactEndpoint    string        // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
 	ExtraHosts          []string      // Extra /etc/hosts entries for containers (e.g., ["appwrite.test:host-gateway"])
-	MountEnabled        bool          // allow `mount` artifacts (privileged sidecar + bind-mount propagation)
+	Network             string        // Docker network to attach worker and sidecar containers to
 }
 
 // NewOrchestrator returns an OrchestratorFactory that creates a Docker orchestrator.
@@ -86,7 +87,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			emitter:             emitter,
 			artifactEndpoint:    cfg.ArtifactEndpoint,
 			extraHosts:          cfg.ExtraHosts,
-			mountEnabled:        cfg.MountEnabled,
+			networkName:         cfg.Network,
 			ctrl:                job.NewMemoryStore[dockerHandle](),
 			watcher:             newDockerLifecycleWatcher(dockerClient),
 		}, nil
@@ -232,9 +233,6 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 // Run creates and starts a job with its sidecar.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	hasMounts := artifact.HasMount(req.Artifacts)
-	if hasMounts && !o.mountEnabled {
-		return apperrors.Validation("artifacts", "squashfs mounting is disabled; enable SQUASHFS_MOUNT_ENABLED to use \"mount\" artifacts")
-	}
 
 	if err := o.ctrl.Reserve(req.ID); err != nil {
 		return err
@@ -278,6 +276,12 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	var err error
 	if h.jobContainerID, err = o.createJobContainer(ctx, req, h); err != nil {
 		return apperrors.Internal("docker.createJobContainer", err)
+	}
+
+	// Pull sidecar image if needed so sidecar creation doesn't fail when the
+	// image isn't already present locally.
+	if err := o.pullImageIfNeeded(pullCtx, o.sidecarImage); err != nil {
+		return apperrors.Internal("docker.pullSidecarImage", err)
 	}
 
 	// Create sidecar container
@@ -429,7 +433,7 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 	}
 
 	containerName := fmt.Sprintf("job-%s-worker", req.ID)
-	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, o.networkingConfig(), nil, containerName)
 	if err != nil {
 		return "", err
 	}
@@ -475,11 +479,12 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 	}
 
 	healthCheck := &container.HealthConfig{
-		Test:        []string{"CMD", "/ko-app/job-sidecar", "-check-ready"},
-		Interval:    200 * time.Millisecond,
-		Timeout:     5 * time.Second,
-		StartPeriod: time.Duration(req.TimeoutSeconds) * time.Second,
-		Retries:     0,
+		Test:          []string{"CMD", "/ko-app/job-sidecar", "-check-ready"},
+		Interval:      200 * time.Millisecond,
+		Timeout:       5 * time.Second,
+		StartPeriod:   time.Duration(req.TimeoutSeconds) * time.Second,
+		StartInterval: 200 * time.Millisecond,
+		Retries:       0,
 	}
 
 	containerConfig := &container.Config{
@@ -505,12 +510,24 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 	}
 
 	containerName := fmt.Sprintf("job-%s-sidecar", req.ID)
-	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, o.networkingConfig(), nil, containerName)
 	if err != nil {
 		return "", err
 	}
 
 	return resp.ID, nil
+}
+
+func (o *Orchestrator) networkingConfig() *network.NetworkingConfig {
+	if o.networkName == "" {
+		return nil
+	}
+
+	return &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			o.networkName: {},
+		},
+	}
 }
 
 func (o *Orchestrator) pullImageIfNeeded(ctx context.Context, imageName string) error {

@@ -194,7 +194,7 @@ func TestIntegration_HappyPath(t *testing.T) {
 // privileged post sidecar mounted the image, propagation reached the worker,
 // and the contents round-tripped. Requires the squashfs kernel module on nodes.
 func TestIntegration_SquashfsMount(t *testing.T) {
-	o, emitter, teardown := setup(t, func(c *Config) { c.MountEnabled = true })
+	o, emitter, teardown := setup(t)
 	defer teardown()
 
 	d := wireDispatcher(t, emitter)

@@ -37,7 +37,7 @@ spec:
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
+              value: {{ include "orchestrator.jobNamespace" . | quote }}
             - name: KUBE_JOB_SERVICE_ACCOUNT
               value: {{ .Values.serviceAccount.jobSidecarName | quote }}
             - name: SIDECAR_IMAGE
@@ -50,8 +50,6 @@ spec:
               value: {{ .Values.orchestrator.maintenanceInterval | quote }}
             - name: KUBE_TERMINATION_GRACE_SECONDS
               value: {{ .Values.orchestrator.terminationGracePeriodSeconds | quote }}
-            - name: KUBE_SQUASHFS_MOUNT_ENABLED
-              value: {{ .Values.orchestrator.squashfsMountEnabled | quote }}
             {{- if .Values.orchestrator.workerImagePullPolicy }}
             - name: KUBE_WORKER_IMAGE_PULL_POLICY
               value: {{ .Values.orchestrator.workerImagePullPolicy | quote }}

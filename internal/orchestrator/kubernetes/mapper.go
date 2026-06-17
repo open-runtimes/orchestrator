@@ -3,7 +3,6 @@ package kubernetes
 import (
 	"encoding/json"
 	"fmt"
-	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
 	"strconv"
@@ -104,16 +103,13 @@ func jobNameFor(jobID string) string {
 //   - container "worker": the user workload
 //
 // All three share an emptyDir volume mounted at req.Workspace.
-func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) (*batchv1.Job, error) {
+func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *batchv1.Job {
 	workspace := req.Workspace
 	if workspace == "" {
 		workspace = "/workspace"
 	}
 
 	hasMounts := artifact.HasMount(req.Artifacts)
-	if hasMounts && !cfg.MountEnabled {
-		return nil, apperrors.Validation("artifacts", "squashfs mounting is disabled; enable squashfsMountEnabled to use \"mount\" artifacts")
-	}
 
 	labels := map[string]string{
 		LabelManagedBy: ManagedByValue,
@@ -241,7 +237,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) (*b
 				Spec: podSpec,
 			},
 		},
-	}, nil
+	}
 }
 
 func jobAnnotations(req *job.Request) map[string]string {

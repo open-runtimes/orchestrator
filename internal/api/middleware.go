@@ -20,6 +20,10 @@ func LoggingMiddleware() func(http.Handler) http.Handler {
 
 			next.ServeHTTP(wrapped, r)
 
+			if r.URL.Path == "/livez" || r.URL.Path == "/readyz" {
+				return
+			}
+
 			// Use context-aware logging to include trace_id and span_id
 			slog.InfoContext(r.Context(), "HTTP request",
 				"method", r.Method,

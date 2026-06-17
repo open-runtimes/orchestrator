@@ -15,11 +15,12 @@ const defaultDownloadTimeoutSeconds = 300 // 5 minutes
 
 // Download downloads a file from a URL.
 type Download struct {
-	ID             string `json:"id"`
-	In             string `json:"in"`  // URL to download from
-	Out            string `json:"out"` // Path to write to
-	Depends        string `json:"depends,omitempty"`
-	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
+	ID             string            `json:"id"`
+	In             string            `json:"in"`  // URL to download from
+	Out            string            `json:"out"` // Path to write to
+	Depends        string            `json:"depends,omitempty"`
+	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
+	Headers        map[string]string `json:"headers,omitempty"`
 }
 
 func (a *Download) ArtifactID() string   { return a.ID }
@@ -38,6 +39,7 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create request: %w", err)}
 	}
+	applyHeaders(req, a.Headers)
 
 	timeoutSecs := a.TimeoutSeconds
 	if timeoutSecs <= 0 {

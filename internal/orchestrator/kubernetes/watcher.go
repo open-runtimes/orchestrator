@@ -363,9 +363,8 @@ func (t *jobTracker) stopLogsLocked() {
 
 func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 	req := t.watcher.client.CoreV1().Pods(t.watcher.namespace).GetLogs(podName, &corev1.PodLogOptions{
-		Container:  ContainerWorker,
-		Follow:     true,
-		Timestamps: true,
+		Container: ContainerWorker,
+		Follow:    true,
 	})
 	stream, err := req.Stream(ctx)
 	if err != nil {

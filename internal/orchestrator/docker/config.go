@@ -12,7 +12,7 @@ type OrchestratorConfig struct {
 	MaintenanceInterval time.Duration // How often to run cleanup
 	ArtifactEndpoint    string        // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
 	ExtraHosts          []string      // Extra hosts for containers (e.g., ["appwrite.test:host-gateway"])
-	MountEnabled        bool          // allow `mount` artifacts (privileged sidecar + bind-mount propagation)
+	Network             string        // Docker network to attach job containers to
 }
 
 // LoadConfigFromEnv loads orchestrator configuration from environment variables.
@@ -27,6 +27,6 @@ func LoadConfigFromEnv() OrchestratorConfig {
 		MaintenanceInterval: config.GetDurationEnv("MAINTENANCE_INTERVAL", 1*time.Minute),
 		ArtifactEndpoint:    config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8080"),
 		ExtraHosts:          extraHosts,
-		MountEnabled:        config.GetEnv("SQUASHFS_MOUNT_ENABLED", "") == "true",
+		Network:             config.GetEnv("ORCHESTRATOR_NETWORK", ""),
 	}
 }
