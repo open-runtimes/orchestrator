@@ -27,6 +27,39 @@
 {{- end -}}
 {{- end -}}
 
+{{/*
+  deploymentsName: resource name for the serving-plane (deployments) API,
+  following the same per-component convention as jobsName.
+*/}}
+{{- define "orchestrator.deploymentsName" -}}
+{{- if .Values.deployments.fullnameOverride -}}
+{{- .Values.deployments.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else if eq .Release.Name "orchestrator" -}}
+{{- "deployments" -}}
+{{- else -}}
+{{- printf "%s-deployments" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.deploymentsImage" -}}
+{{- if .Values.deployments.image.ref -}}
+{{- .Values.deployments.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.deployments.image.repository .Values.deployments.image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.deploymentsLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: deployments
+{{- end -}}
+
+{{- define "orchestrator.deploymentsSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: deployments
+{{- end -}}
+
 {{- define "orchestrator.serviceAccountName" -}}
 {{- if .Values.serviceAccount.name -}}
 {{- .Values.serviceAccount.name -}}

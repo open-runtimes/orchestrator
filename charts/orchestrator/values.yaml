@@ -28,6 +28,27 @@ sidecarImage:
   repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
   tag: latest
 
+# Serving-plane API (deployments + deployment-pools). Disabled by default —
+# Phase 0 ships a probe-only skeleton; see docs/design/implementation-plan.md.
+deployments:
+  enabled: false
+  # Empty uses "deployments" when the release is named "orchestrator",
+  # otherwise "<release>-deployments".
+  fullnameOverride: ""
+  replicaCount: 1
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/deployments-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
 replicaCount: 1
 
 # Leader election coordinates watcher ownership across replicas. Required when

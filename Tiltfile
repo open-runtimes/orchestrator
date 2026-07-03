@@ -9,8 +9,13 @@
 # Guard against accidental deploys to anything other than the local dev cluster.
 allow_k8s_contexts('kind-orchestrator-dev')
 
-JOBS_SERVICE_IMAGE = 'ko.local/jobs-service'
-SIDECAR_IMAGE      = 'ko.local/job-sidecar'
+# Opt-in serving plane (Phase 0 skeleton): `tilt up -- --deployments`.
+config.define_bool('deployments')
+DEPLOYMENTS_ENABLED = config.parse().get('deployments', False)
+
+JOBS_SERVICE_IMAGE        = 'ko.local/jobs-service'
+SIDECAR_IMAGE             = 'ko.local/job-sidecar'
+DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
 
 # --- Image builds ------------------------------------------------------------
 
@@ -51,11 +56,31 @@ metadata:
 
 # --- Helm release ------------------------------------------------------------
 
+helm_set = []
+if DEPLOYMENTS_ENABLED:
+    custom_build(
+        DEPLOYMENTS_SERVICE_IMAGE,
+        'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/deployments-service && docker tag {0} $EXPECTED_REF'.format(DEPLOYMENTS_SERVICE_IMAGE),
+        deps=[
+            'cmd/deployments-service',
+            'internal',
+            'pkg',
+            'go.mod',
+            'go.sum',
+        ],
+    )
+    helm_set = [
+        'deployments.enabled=true',
+        'deployments.image.repository=' + DEPLOYMENTS_SERVICE_IMAGE,
+        'deployments.image.pullPolicy=Never',
+    ]
+
 k8s_yaml(helm(
     'charts/orchestrator',
     name='orchestrator',
     namespace='orchestrator',
     values=['hack/dev-values.yaml'],
+    set=helm_set,
 ))
 
 k8s_resource(
@@ -77,3 +102,17 @@ k8s_resource(
         link('http://localhost:9090/metrics', 'metrics'),
     ],
 )
+
+if DEPLOYMENTS_ENABLED:
+    k8s_resource(
+        'deployments',
+        port_forwards=[
+            port_forward(8081, 8080, name='api'),
+            port_forward(9091, 9090, name='metrics'),
+        ],
+        labels=['orchestrator'],
+        links=[
+            link('http://localhost:8081/readyz', 'readyz'),
+            link('http://localhost:9091/metrics', 'metrics'),
+        ],
+    )

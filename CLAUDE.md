@@ -20,8 +20,9 @@ Job orchestration service for running containerized workloads with async callbac
 
 - `cmd/jobs-service` — main orchestration service (HTTP API on :8080, metrics on :9090)
 - `cmd/job-sidecar` — sidecar for artifact processing and job lifecycle
-- `internal/` — core packages: api, job, artifact, dispatcher, orchestrator/{docker,kubernetes}, sidecar, config
-- `pkg/` — reusable utilities: backoff, circuitbreaker, cloudevent
+- `cmd/deployments-service` — serving plane (deployments + pools); Phase 0 skeleton, see `docs/design/`
+- `internal/` — core packages: api, job, artifact, dispatcher, kube (shared K8s client/leader election), orchestrator/{docker,kubernetes}, sidecar, config
+- `pkg/` — reusable utilities: backoff, circuitbreaker, cloudevent, lifecycle (shared workload FSM/store), server
 - `charts/orchestrator/` — Helm chart
 - `hack/` — dev-only assets (kind config, dev values, install-tools.sh)
 - `Tiltfile` — live-reload dev loop against kind

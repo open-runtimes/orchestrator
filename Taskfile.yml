@@ -55,7 +55,19 @@ tasks:
     cmds:
       - task: build-service
       - task: build-sidecar
+      - task: build-deployments
     silent: true
+
+  build-deployments:
+    desc: Build deployments-service image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/deployments-service {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/deployments-service
+    sources:
+      - cmd/deployments-service/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - go.mod
 
   build-service:
     desc: Build service image

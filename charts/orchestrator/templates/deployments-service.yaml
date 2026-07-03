@@ -1,0 +1,77 @@
+{{- if .Values.deployments.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.deployments.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # Phase 0 skeleton makes no K8s API calls; Phase 1 adds a
+      # ServiceAccount + RBAC alongside the deployment orchestrator.
+      automountServiceAccountToken: false
+      containers:
+        - name: deployments-service
+          image: {{ include "orchestrator.deploymentsImage" . | quote }}
+          imagePullPolicy: {{ .Values.deployments.image.pullPolicy }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.service.apiPort }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          env:
+            - name: ORCHESTRATOR_BACKEND
+              value: kubernetes
+            - name: PORT
+              value: {{ .Values.service.apiPort | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.service.metricsPort | quote }}
+            - name: SHUTDOWN_DRAIN_WAIT
+              value: "0s"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.deployments.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.service.apiPort }}
+      targetPort: api
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+{{- end }}

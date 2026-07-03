@@ -74,6 +74,7 @@ jobs:
         run: |
           go build -o /dev/null ./cmd/jobs-service
           go build -o /dev/null ./cmd/job-sidecar
+          go build -o /dev/null ./cmd/deployments-service
 
   images:
     needs: [lint, helm, test, build]
@@ -124,6 +125,15 @@ jobs:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/job-sidecar
         run: |
           ko build ./cmd/job-sidecar \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push deployments-service
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-service
+        run: |
+          ko build ./cmd/deployments-service \
             --bare \
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
