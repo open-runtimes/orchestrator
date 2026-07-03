@@ -7,19 +7,15 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
 	"orchestrator/pkg/job"
-	"os"
 	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/leaderelection"
-	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
 // Orchestrator implements job.Orchestrator using Kubernetes. It is HA-ready:
@@ -70,16 +66,9 @@ type Config struct {
 // Register listeners on the emitter before calling Start.
 func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 	return func(emitter *job.CallbackEmitter) (job.Orchestrator, error) {
-		restCfg, err := buildRestConfig(cfg.Kubeconfig, cfg.Context)
+		cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build kube config: %w", err)
-		}
-		if cfg.Metrics != nil {
-			restCfg.Wrap(newMetricsTransport(cfg.Metrics))
-		}
-		cs, err := kubernetes.NewForConfig(restCfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create kube client: %w", err)
+			return nil, err
 		}
 
 		ns := cfg.Namespace
@@ -100,7 +89,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 		}
 
 		if cfg.LeaderElection.Enabled {
-			applyLeaderDefaults(&cfg.LeaderElection)
+			cfg.LeaderElection.ApplyDefaults("jobs-service-leader")
 		}
 
 		ocfg := OrchestratorConfig{
@@ -130,53 +119,6 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 	}
 }
 
-// applyLeaderDefaults fills in sensible defaults for leader-election timing
-// and identity, matching the norms from K8s itself (15s/10s/2s).
-func applyLeaderDefaults(cfg *LeaderElectionConfig) {
-	if cfg.LeaseName == "" {
-		cfg.LeaseName = "jobs-service-leader"
-	}
-	if cfg.Identity == "" {
-		if hn, err := os.Hostname(); err == nil {
-			cfg.Identity = hn
-		} else {
-			cfg.Identity = fmt.Sprintf("unknown-%d", time.Now().UnixNano())
-		}
-	}
-	if cfg.LeaseDuration <= 0 {
-		cfg.LeaseDuration = 15 * time.Second
-	}
-	if cfg.RenewDeadline <= 0 {
-		cfg.RenewDeadline = 10 * time.Second
-	}
-	if cfg.RetryPeriod <= 0 {
-		cfg.RetryPeriod = 2 * time.Second
-	}
-}
-
-// buildRestConfig resolves a *rest.Config in this order:
-//  1. in-cluster config (when running as a pod) — only when neither kubeconfig
-//     nor context is explicitly requested, so explicit overrides win;
-//  2. an explicit kubeconfig path with optional context override;
-//  3. default kubeconfig loading rules ($KUBECONFIG or $HOME/.kube/config)
-//     with optional context override.
-func buildRestConfig(kubeconfig, kubeContext string) (*rest.Config, error) {
-	if kubeconfig == "" && kubeContext == "" {
-		if cfg, err := rest.InClusterConfig(); err == nil {
-			return cfg, nil
-		}
-	}
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfig != "" {
-		loadingRules.ExplicitPath = kubeconfig
-	}
-	overrides := &clientcmd.ConfigOverrides{}
-	if kubeContext != "" {
-		overrides.CurrentContext = kubeContext
-	}
-	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides).ClientConfig()
-}
-
 // Start begins the lifecycle watcher. With leader election enabled, only the
 // elected leader runs the watcher; non-leaders block trying to acquire the
 // lease. With leader election disabled (single-replica mode), the watcher
@@ -195,76 +137,14 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	go func() {
 		defer close(done)
-		if o.cfg.LeaderElection.Enabled {
-			o.runLeaderElection(termCtx)
-			return
-		}
-		// Single-replica mode: this process is effectively always the leader,
-		// so report it as such. identity is the hostname (or pod name) so the
-		// dashboard panel still has a label to display.
-		identity, _ := os.Hostname()
-		if identity == "" {
-			identity = "single-replica"
-		}
-		if o.metrics != nil {
-			o.metrics.RecordLeadership(termCtx, identity, true)
-		}
-		o.watcher.Start(termCtx)
-		if o.metrics != nil {
-			o.metrics.RecordLeadership(context.Background(), identity, false)
-		}
+		kube.RunLeaderElected(termCtx, o.client, o.namespace, o.cfg.LeaderElection, o.watcher.Start,
+			func(ctx context.Context, identity string, leading bool) {
+				if o.metrics != nil {
+					o.metrics.RecordLeadership(ctx, identity, leading)
+				}
+			})
 	}()
 	return nil
-}
-
-// runLeaderElection loops so that if RunOrDie returns (lease lost or ctx
-// cancelled but not released), we retry until ctx is truly cancelled. The
-// inner RunOrDie call drives watcher.Start via OnStartedLeading.
-func (o *Orchestrator) runLeaderElection(ctx context.Context) {
-	logger := slog.With("component", "k8s.leaderelection", "identity", o.cfg.LeaderElection.Identity)
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		lock := &resourcelock.LeaseLock{
-			LeaseMeta: metav1.ObjectMeta{
-				Name:      o.cfg.LeaderElection.LeaseName,
-				Namespace: o.namespace,
-			},
-			Client: o.client.CoordinationV1(),
-			LockConfig: resourcelock.ResourceLockConfig{
-				Identity: o.cfg.LeaderElection.Identity,
-			},
-		}
-		leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
-			Lock:            lock,
-			ReleaseOnCancel: true,
-			LeaseDuration:   o.cfg.LeaderElection.LeaseDuration,
-			RenewDeadline:   o.cfg.LeaderElection.RenewDeadline,
-			RetryPeriod:     o.cfg.LeaderElection.RetryPeriod,
-			Callbacks: leaderelection.LeaderCallbacks{
-				OnStartedLeading: func(leaderCtx context.Context) {
-					logger.Info("Acquired leadership; starting watcher")
-					if o.metrics != nil {
-						o.metrics.RecordLeadership(leaderCtx, o.cfg.LeaderElection.Identity, true)
-					}
-					o.watcher.Start(leaderCtx)
-					logger.Info("Watcher stopped; leadership term ended")
-				},
-				OnStoppedLeading: func() {
-					logger.Info("Lost leadership")
-					if o.metrics != nil {
-						o.metrics.RecordLeadership(context.Background(), o.cfg.LeaderElection.Identity, false)
-					}
-				},
-				OnNewLeader: func(identity string) {
-					if identity != o.cfg.LeaderElection.Identity {
-						logger.Info("New leader elected", "leader", identity)
-					}
-				},
-			},
-		})
-	}
 }
 
 // Run creates a batch/v1.Job. Dedup on concurrent creates is enforced by K8s

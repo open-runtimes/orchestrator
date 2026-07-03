@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"orchestrator/internal/config"
+	"orchestrator/internal/kube"
 	"strings"
 	"time"
 )
@@ -22,17 +23,9 @@ type OrchestratorConfig struct {
 	LeaderElection                LeaderElectionConfig
 }
 
-// LeaderElectionConfig controls how replicas coordinate so that exactly one of
-// them runs the lifecycle watcher and emits callbacks. HTTP reads/writes are
-// always handled by any replica — only the watcher is leader-gated.
-type LeaderElectionConfig struct {
-	Enabled       bool          // when false, Start runs the watcher directly (single-replica mode)
-	LeaseName     string        // Lease resource name in the configured namespace
-	Identity      string        // unique per-replica string (usually Pod name)
-	LeaseDuration time.Duration // how long non-leaders wait before taking over after a failed renewal
-	RenewDeadline time.Duration // how long the leader retries renewing before giving up
-	RetryPeriod   time.Duration // how often non-leaders try to acquire the lease
-}
+// LeaderElectionConfig coordinates replicas so exactly one runs the lifecycle
+// watcher; shared with other services via internal/kube.
+type LeaderElectionConfig = kube.LeaderElectionConfig
 
 // LoadConfigFromEnv loads orchestrator configuration from environment variables.
 func LoadConfigFromEnv() OrchestratorConfig {

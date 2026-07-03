@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/artifact"
+	"orchestrator/pkg/lifecycle"
 )
 
 // Request represents a request to create a new job
@@ -122,11 +123,11 @@ type ListResponse struct {
 // Callback config is passed through from the sidecar so the orchestrator does not need to
 // duplicate it in its own state.
 type ArtifactReport struct {
-	JobID   string `json:"jobId"`
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Status  string `json:"status"`
-	Content any    `json:"content,omitempty"`
+	JobID         string `json:"jobId"`
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	Content       any    `json:"content,omitempty"`
 	FailureReason string `json:"failureReason,omitempty"`
 
 	CallbackURL    string            `json:"callbackUrl,omitempty"`
@@ -135,11 +136,11 @@ type ArtifactReport struct {
 	Meta           map[string]string `json:"meta,omitempty"`
 }
 
-// State constants
+// State constants, shared with pkg/lifecycle.
 const (
-	StateAccepted  = "accepted"
-	StateRunning   = "running"
-	StateCompleted = "completed"
-	StateFailed    = "failed"
-	StateCancelled = "cancelled"
+	StateAccepted  = lifecycle.StateAccepted
+	StateRunning   = lifecycle.StateRunning
+	StateCompleted = lifecycle.StateCompleted
+	StateFailed    = lifecycle.StateFailed
+	StateCancelled = lifecycle.StateCancelled
 )

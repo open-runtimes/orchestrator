@@ -1,12 +1,10 @@
 // Package server wires the orchestrator components together and runs the HTTP
-// service until it receives a shutdown signal. The caller is only responsible
-// for choosing a backend and supplying its OrchestratorFactory — everything
-// else (config, dispatcher, API, metrics, graceful shutdown) lives here.
+// service until it receives a shutdown signal. Serve is the generic core
+// (HTTP servers + graceful shutdown); Run adds the jobs-service wiring.
 package server
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/api"
@@ -16,13 +14,6 @@ import (
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
 	"orchestrator/pkg/job"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
-	"github.com/go-logr/logr"
-	"k8s.io/klog/v2"
 )
 
 // Run bootstraps the orchestrator service against the supplied backend factory
@@ -36,11 +27,6 @@ import (
 // packages; add attributes to slog.Default before calling Run if you want
 // them attached to every log line.
 func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observability.Metrics, metricsHandler http.Handler) error {
-	// Route client-go / leaderelection / apimachinery logs (which go through
-	// klog) via slog, so everything in the container's stdout is one ndjson
-	// stream. Must run before any klog-using library is invoked.
-	klog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
-
 	svcCfg := config.LoadServiceConfig()
 	dispatcherCfg := dispatcher.LoadConfigFromEnv()
 
@@ -105,91 +91,27 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 		slog.Warn("API authentication disabled - no API_KEY configured")
 	}
 
-	apiServer := &http.Server{
-		Addr:         ":" + svcCfg.Port,
-		Handler:      router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("GET /metrics", metricsHandler)
-	metricsServer := &http.Server{
-		Addr:         ":" + svcCfg.MetricsPort,
-		Handler:      metricsMux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	}
-
-	serverErr := make(chan error, 1)
-
-	go func() {
-		slog.Info("Starting API server", "port", svcCfg.Port)
-		if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
-		}
-	}()
-
-	go func() {
-		slog.Info("Starting metrics server", "port", svcCfg.MetricsPort)
-		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
-		}
-	}()
-
-	shutdown := func(timeout time.Duration) {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		if err := apiServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("API server shutdown error", "error", err)
-		}
-		if err := metricsServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("Metrics server shutdown error", "error", err)
-		}
-	}
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case sig := <-quit:
-		slog.Info("Received shutdown signal", "signal", sig)
-	case err := <-serverErr:
-		slog.Error("Server failed to start", "error", err)
-		shutdown(5 * time.Second)
-		return err
-	}
-
-	// Phase 1: drain load balancer traffic.
-	healthChecker.SetShuttingDown()
-	if svcCfg.ShutdownDrainWait > 0 {
-		slog.Info("Waiting for traffic to drain", "duration", svcCfg.ShutdownDrainWait)
-		time.Sleep(svcCfg.ShutdownDrainWait)
-	}
-
-	// Phase 2: graceful shutdown of HTTP servers.
-	slog.Info("Starting graceful shutdown")
-	shutdown(25 * time.Second)
-
-	// Phase 3: drain callback dispatcher.
-	slog.Info("Draining callback dispatcher")
-	dispatcherCtx, dispatcherCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer dispatcherCancel()
-	if err := eventDispatcher.Close(dispatcherCtx); err != nil {
-		slog.Warn("Dispatcher shutdown error", "error", err)
-	}
-
-	stats := eventDispatcher.Stats()
-	slog.Info("Dispatcher stats",
-		"delivered", stats.Delivered,
-		"failed", stats.Failed,
-		"dropped", stats.Dropped,
-	)
-
-	// Running jobs continue to run; they're self-contained and will finish and
-	// callback on their own timeline.
-	slog.Info("Running jobs will continue independently")
-	slog.Info("Shutdown complete")
-	return nil
+	return Serve(ctx, Options{
+		Handler:        router,
+		MetricsHandler: metricsHandler,
+		Port:           svcCfg.Port,
+		MetricsPort:    svcCfg.MetricsPort,
+		DrainWait:      svcCfg.ShutdownDrainWait,
+		SetDraining:    healthChecker.SetShuttingDown,
+		Cleanup: func(cleanupCtx context.Context) {
+			slog.Info("Draining callback dispatcher")
+			if err := eventDispatcher.Close(cleanupCtx); err != nil {
+				slog.Warn("Dispatcher shutdown error", "error", err)
+			}
+			stats := eventDispatcher.Stats()
+			slog.Info("Dispatcher stats",
+				"delivered", stats.Delivered,
+				"failed", stats.Failed,
+				"dropped", stats.Dropped,
+			)
+			// Running jobs continue to run; they're self-contained and will
+			// finish and callback on their own timeline.
+			slog.Info("Running jobs will continue independently")
+		},
+	})
 }
