@@ -28,9 +28,9 @@ import (
 )
 
 const (
-	testNamespace = "orchestrator-integration"
-	sidecarImage  = "ko.local/deployments-sidecar:latest"
-	artifactImage = "ko.local/job-sidecar:latest"
+	testNamespace   = "orchestrator-integration"
+	sidecarImage    = "ko.local/deployments-sidecar:latest"
+	jobSidecarImage = "ko.local/job-sidecar:latest"
 
 	// agnhost is a static binary that runs fine as uid 65532 with a read-only
 	// rootfs — unlike most web-server images, which want root or a writable /.
@@ -45,8 +45,8 @@ func setup(t *testing.T) (*Orchestrator, func()) {
 	ctx := t.Context()
 
 	cfg := Config{
-		SidecarImage:  sidecarImage,
-		ArtifactImage: artifactImage,
+		SidecarImage:    sidecarImage,
+		JobSidecarImage: jobSidecarImage,
 		// Pin the kubeconfig context explicitly: this test must only ever run
 		// against the project's kind cluster, never the user's current-context.
 		Context:                "kind-orchestrator-dev",

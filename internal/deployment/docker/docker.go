@@ -101,8 +101,8 @@ func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec
 	}
 
 	if len(req.Artifacts) > 0 {
-		if err := o.pullImageIfNeeded(pullCtx, o.cfg.ArtifactImage); err != nil {
-			return apperrors.Internal("docker.pullArtifactImage", err)
+		if err := o.pullImageIfNeeded(pullCtx, o.cfg.JobSidecarImage); err != nil {
+			return apperrors.Internal("docker.pullJobSidecarImage", err)
 		}
 		if err := o.runArtifacts(ctx, req); err != nil {
 			return err
@@ -145,7 +145,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 
 	resp, err := o.client.ContainerCreate(ctx,
 		&container.Config{
-			Image:  o.cfg.ArtifactImage,
+			Image:  o.cfg.JobSidecarImage,
 			Cmd:    []string{"-mode=pre"},
 			Env:    env,
 			User:   "0",

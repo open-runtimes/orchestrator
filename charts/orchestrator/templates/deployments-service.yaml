@@ -43,10 +43,10 @@ spec:
               value: {{ .Values.service.metricsPort | quote }}
             - name: DEPLOYMENTS_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
-            - name: SIDECAR_IMAGE
+            - name: DEPLOYMENT_SIDECAR_IMAGE
               value: {{ include "orchestrator.deploymentsSidecarImage" . | quote }}
-            - name: ARTIFACT_IMAGE
-              value: {{ include "orchestrator.sidecarImage" . | quote }}
+            - name: JOB_SIDECAR_IMAGE
+              value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             {{- if .Values.orchestrator.sidecarImagePullPolicy }}

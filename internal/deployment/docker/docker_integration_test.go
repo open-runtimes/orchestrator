@@ -18,14 +18,14 @@ import (
 )
 
 func sidecarTestImage() string {
-	if img := os.Getenv("SIDECAR_IMAGE"); img != "" {
+	if img := os.Getenv("DEPLOYMENT_SIDECAR_IMAGE"); img != "" {
 		return img
 	}
 	return "ko.local/deployments-sidecar:latest"
 }
 
-func artifactTestImage() string {
-	if img := os.Getenv("ARTIFACT_IMAGE"); img != "" {
+func jobSidecarTestImage() string {
+	if img := os.Getenv("JOB_SIDECAR_IMAGE"); img != "" {
 		return img
 	}
 	return "ko.local/job-sidecar:latest"
@@ -34,7 +34,7 @@ func artifactTestImage() string {
 func newTestOrchestrator(t *testing.T) *Orchestrator {
 	t.Helper()
 
-	o, err := NewOrchestrator(t.Context(), Config{SidecarImage: sidecarTestImage(), ArtifactImage: artifactTestImage()})
+	o, err := NewOrchestrator(t.Context(), Config{SidecarImage: sidecarTestImage(), JobSidecarImage: jobSidecarTestImage()})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator: %v", err)
 	}

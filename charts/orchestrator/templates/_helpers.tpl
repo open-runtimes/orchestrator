@@ -76,19 +76,19 @@ app.kubernetes.io/component: deployments
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.image" -}}
-{{- if .Values.image.ref -}}
-{{- .Values.image.ref -}}
+{{- define "orchestrator.jobsImage" -}}
+{{- if .Values.jobs.image.ref -}}
+{{- .Values.jobs.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- printf "%s:%s" .Values.jobs.image.repository .Values.jobs.image.tag -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.sidecarImage" -}}
-{{- if .Values.sidecarImage.ref -}}
-{{- .Values.sidecarImage.ref -}}
+{{- define "orchestrator.jobSidecarImage" -}}
+{{- if .Values.jobs.sidecarImage.ref -}}
+{{- .Values.jobs.sidecarImage.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.sidecarImage.repository .Values.sidecarImage.tag -}}
+{{- printf "%s:%s" .Values.jobs.sidecarImage.repository .Values.jobs.sidecarImage.tag -}}
 {{- end -}}
 {{- end -}}
 

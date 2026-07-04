@@ -252,7 +252,7 @@ func TestBuildDeployment_Artifacts(t *testing.T) {
 		&artifact.Write{ID: "w", In: "hello", Out: "index.html"},
 	}
 
-	spec := buildDeployment(req, Config{SidecarImage: "sidecar:latest", ArtifactImage: "artifact:latest"}, "{}").Spec.Template.Spec
+	spec := buildDeployment(req, Config{SidecarImage: "sidecar:latest", JobSidecarImage: "artifact:latest"}, "{}").Spec.Template.Spec
 
 	if len(spec.InitContainers) != 2 {
 		t.Fatalf("InitContainers: want [artifact-pre proxy], got %d", len(spec.InitContainers))

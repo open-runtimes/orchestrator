@@ -30,7 +30,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	factory, err := buildOrchestratorFactory(ctx, backend, svcCfg.SidecarImage, metrics)
+	factory, err := buildOrchestratorFactory(ctx, backend, svcCfg.JobSidecarImage, metrics)
 	if err != nil {
 		slog.Error("Failed to build orchestrator factory", "error", err)
 		os.Exit(1)

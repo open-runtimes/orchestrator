@@ -10,23 +10,21 @@ jobs:
   # Empty uses "jobs" when the release is named "orchestrator", otherwise
   # "<release>-jobs" to keep resources scoped to the release.
   fullnameOverride: ""
-
-# Image for the jobs-service Deployment.
-# CI publishes ghcr.io/open-runtimes/orchestrator/jobs-service on every main push,
-# tagged with both :latest and the commit SHA (plus the semver on release tags).
-image:
-  # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
-  ref: ""
-  repository: ghcr.io/open-runtimes/orchestrator/jobs-service
-  tag: latest
-  pullPolicy: IfNotPresent
-
-# Image used by job pods (worker workspace init + native sidecar).
-# Passed to jobs-service via SIDECAR_IMAGE so it can stamp it into every Job spec.
-sidecarImage:
-  ref: ""
-  repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
-  tag: latest
+  # Image for the jobs-service Deployment.
+  # CI publishes ghcr.io/open-runtimes/orchestrator/jobs-service on every main push,
+  # tagged with both :latest and the commit SHA (plus the semver on release tags).
+  image:
+    # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/jobs-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Image used by job pods (worker workspace init + native sidecar), and by
+  # deployment pods' artifact-pre init container. Passed via JOB_SIDECAR_IMAGE.
+  sidecarImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
+    tag: latest
 
 # Serving-plane API (deployments + deployment-pools). Disabled by default —
 # Phase 0 ships a probe-only skeleton; see docs/design/implementation-plan.md.

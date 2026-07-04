@@ -14,7 +14,7 @@ config.define_bool('deployments')
 DEPLOYMENTS_ENABLED = config.parse().get('deployments', False)
 
 JOBS_SERVICE_IMAGE        = 'ko.local/jobs-service'
-SIDECAR_IMAGE             = 'ko.local/job-sidecar'
+JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
 DEPLOYMENTS_SIDECAR_IMAGE = 'ko.local/deployments-sidecar'
 
@@ -34,8 +34,8 @@ custom_build(
 )
 
 custom_build(
-    SIDECAR_IMAGE,
-    'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/job-sidecar && docker tag {0} $EXPECTED_REF'.format(SIDECAR_IMAGE),
+    JOB_SIDECAR_IMAGE,
+    'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/job-sidecar && docker tag {0} $EXPECTED_REF'.format(JOB_SIDECAR_IMAGE),
     deps=[
         'cmd/job-sidecar',
         'internal',

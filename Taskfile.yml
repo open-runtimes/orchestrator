@@ -33,7 +33,7 @@ tasks:
     desc: Run jobs-service locally with hot reload (Docker backend)
     deps: [build-sidecar]
     env:
-      SIDECAR_IMAGE: ko.local/job-sidecar:latest
+      JOB_SIDECAR_IMAGE: ko.local/job-sidecar:latest
       SHUTDOWN_DRAIN_WAIT: "0s"
       EXTRA_HOSTS: "appwrite.test:host-gateway"
     cmds:
@@ -43,7 +43,7 @@ tasks:
     desc: Run jobs-service locally without reload (Docker backend)
     deps: [build-sidecar]
     env:
-      SIDECAR_IMAGE: ko.local/job-sidecar:latest
+      JOB_SIDECAR_IMAGE: ko.local/job-sidecar:latest
       EXTRA_HOSTS: "appwrite.test:host-gateway"
     cmds:
       - go run ./cmd/jobs-service

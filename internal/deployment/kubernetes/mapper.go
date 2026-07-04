@@ -148,7 +148,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	}
 	return corev1.Container{
 		Name:            ContainerArtifactPre,
-		Image:           cfg.ArtifactImage,
+		Image:           cfg.JobSidecarImage,
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
 		Args:            []string{"-mode=pre"},
 		Env:             env,

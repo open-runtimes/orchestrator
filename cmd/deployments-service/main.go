@@ -37,7 +37,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	orchestrator, err := buildOrchestrator(ctx, backend, svcCfg.SidecarImage)
+	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest"))
 	if err != nil {
 		slog.Error("Failed to build orchestrator", "error", err)
 		os.Exit(1)
