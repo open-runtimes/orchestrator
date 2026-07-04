@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/health"
-	"orchestrator/pkg/job"
 	"orchestrator/internal/observability"
+	"orchestrator/pkg/job"
 )
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
@@ -125,6 +125,16 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 
 // writeJSON writes a JSON response
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, data any) {
+	writeJSON(w, status, data)
+}
+
+// writeError writes an error response
+func (h *Handler) writeError(w http.ResponseWriter, status int, message string) {
+	writeError(w, status, message)
+}
+
+// writeJSON writes a JSON response. Shared by the jobs and deployments handlers.
+func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
@@ -132,20 +142,25 @@ func (h *Handler) writeJSON(w http.ResponseWriter, status int, data any) {
 	}
 }
 
-// writeError writes an error response
-func (h *Handler) writeError(w http.ResponseWriter, status int, message string) {
-	h.writeJSON(w, status, map[string]string{"error": message})
+// writeError writes an error response.
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }
 
-// handleError handles errors from service layer with appropriate HTTP status codes.
-func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
+// handleServiceError maps a service-layer error to its HTTP status.
+func handleServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	status := apperrors.HTTPStatus(err)
 	if status >= 500 {
 		slog.Error("Internal error", "error", err, "path", r.URL.Path)
 	} else {
 		slog.Warn("Client error", "error", err, "path", r.URL.Path, "status", status)
 	}
-	h.writeError(w, status, err.Error())
+	writeError(w, status, err.Error())
+}
+
+// handleError handles errors from service layer with appropriate HTTP status codes.
+func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
+	handleServiceError(w, r, err)
 }
 
 // ReportArtifact handles POST /internal/jobs/{jobId}/artifact.

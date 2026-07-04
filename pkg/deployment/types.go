@@ -10,17 +10,17 @@ import (
 
 // Request is the declarative deployment spec. POST is create-or-update.
 type Request struct {
-	ID          string              `json:"id"`   // RFC-1123 label (≤63); part of object names
+	ID          string              `json:"id"` // RFC-1123 label (≤63); part of object names
 	Meta        map[string]string   `json:"meta,omitempty"`
 	Image       string              `json:"image"`
 	Command     string              `json:"command,omitempty"`
 	CPU         float64             `json:"cpu"`    // limit (cores)
 	Memory      int                 `json:"memory"` // limit (MB)
 	Environment map[string]string   `json:"environment,omitempty"`
-	Artifacts   []artifact.Artifact `json:"artifacts,omitempty"` // materialized into the workspace before serving
-	Host        string              `json:"host,omitempty"`      // RFC-1123 hostname (≤253); else {id}.{domain}
-	Port        int                 `json:"port"`                // container port serving HTTP
-	Replicas    int                 `json:"replicas,omitempty"`  // fixed count; default 1 (Docker: always 1)
+	Artifacts   []artifact.Artifact `json:"artifacts,omitempty"`   // materialized into the workspace before serving
+	Host        string              `json:"host,omitempty"`        // RFC-1123 hostname (≤253); else {id}.{domain}
+	Port        int                 `json:"port"`                  // container port serving HTTP
+	Replicas    int                 `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
 	Concurrency int                 `json:"concurrency,omitempty"` // hard per-replica in-flight cap; 0 = unlimited
 	Probes      *Probes             `json:"probes,omitempty"`
 	Callback    *Callback           `json:"callback,omitempty"`

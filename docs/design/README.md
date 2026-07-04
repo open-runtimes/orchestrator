@@ -51,7 +51,8 @@ proxy.
 ## Shared infrastructure (reused from the jobs service)
 
 The binary imports `pkg/server`, the `internal/api` middleware chain, the `internal/artifact` pipeline
-+ `job-sidecar` (which also runs as the deployments-sidecar / shim), `MemoryStore[T]` +
++ `job-sidecar` (reused as the `artifact-pre` container; the deployments-sidecar and pool shim are
+dedicated binaries), `MemoryStore[T]` +
 `LifecycleWatcher`, config + `ORCHESTRATOR_BACKEND` selection, and the **CloudEvents callback
 dispatcher**.
 

@@ -1,35 +1,35 @@
-// deployments-service is the HTTP API server for the serving plane:
-// long-lived HTTP workloads (/v1/deployments) and pre-warmed pools
-// (/v1/deployment-pools). See docs/design.
-//
-// Phase 0 skeleton: config, backend selection, middleware, probes, and
-// metrics only — the deployment orchestrator arrives in Phase 1.
+// deployments-service is the serving plane: long-lived HTTP workloads
+// (/v1/deployments) with an in-process activator data plane. See docs/design.
 package main
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/activator"
 	"orchestrator/internal/api"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	depdocker "orchestrator/internal/deployment/docker"
+	depkubernetes "orchestrator/internal/deployment/kubernetes"
+	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
+	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/server"
 	"os"
+	"time"
 )
 
 func main() {
 	ctx := context.Background()
 	svcCfg := config.LoadServiceConfig()
 	backend := config.GetEnv("ORCHESTRATOR_BACKEND", "docker")
+	domain := config.GetEnv("DEPLOYMENTS_DOMAIN", "localhost")
+	dataPort := config.GetEnv("DATA_PORT", "8081")
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "deployments", "backend", backend))
-
-	if backend != "docker" && backend != "kubernetes" {
-		slog.Error("Unknown orchestrator backend (expected docker|kubernetes)", "backend", backend)
-		os.Exit(1)
-	}
 
 	metrics, metricsHandler, err := observability.NewMetrics(ctx)
 	if err != nil {
@@ -37,53 +37,83 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Phase 1 wires the deployment orchestrator's Ready here; until then the
-	// service is ready as soon as it can serve.
-	checker := health.NewChecker(alwaysReady{})
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, checker.Liveness(r.Context()))
-	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		resp := checker.Readiness(r.Context())
-		status := http.StatusOK
-		if !resp.IsHealthy() {
-			status = http.StatusServiceUnavailable
-		}
-		writeJSON(w, status, resp)
-	})
-
-	var handler http.Handler = mux
-	if metrics != nil {
-		handler = api.MetricsMiddleware(metrics)(handler)
+	orchestrator, err := buildOrchestrator(ctx, backend, svcCfg.SidecarImage)
+	if err != nil {
+		slog.Error("Failed to build orchestrator", "error", err)
+		os.Exit(1)
 	}
-	handler = api.LoggingMiddleware()(handler)
-	handler = api.RecoveryMiddleware()(handler)
+	defer orchestrator.Close()
+
+	if err := orchestrator.Start(ctx); err != nil {
+		slog.Error("Failed to start orchestrator", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Orchestrator ready")
+
+	urlFor := func(host string) string {
+		if dataPort == "80" {
+			return "http://" + host
+		}
+		return "http://" + host + ":" + dataPort
+	}
+	svc := deployment.NewService(orchestrator, artifact.DefaultRegistry(), domain, urlFor)
+
+	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
+	act := activator.New(svc, eventDispatcher)
+
+	healthChecker := health.NewChecker(orchestrator)
+	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{
+		Service:       svc,
+		Metrics:       metrics,
+		HealthChecker: healthChecker,
+		APIKey:        svcCfg.APIKey,
+	})
+
+	if svcCfg.APIKey == "" {
+		slog.Warn("API authentication disabled - no API_KEY configured")
+	}
+
+	// Data-plane listener: requests can legitimately run for minutes (the
+	// per-request timeout lives in the deployments-sidecar), so no
+	// WriteTimeout here.
+	dataServer := &http.Server{
+		Addr:              ":" + dataPort,
+		Handler:           act,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	if err := server.Serve(ctx, server.Options{
-		Handler:        handler,
+		Handler:        router,
 		MetricsHandler: metricsHandler,
 		Port:           svcCfg.Port,
 		MetricsPort:    svcCfg.MetricsPort,
+		Extra:          []*http.Server{dataServer},
 		DrainWait:      svcCfg.ShutdownDrainWait,
-		SetDraining:    checker.SetShuttingDown,
+		SetDraining:    healthChecker.SetShuttingDown,
+		Cleanup: func(cleanupCtx context.Context) {
+			slog.Info("Draining callback dispatcher")
+			if err := eventDispatcher.Close(cleanupCtx); err != nil {
+				slog.Warn("Dispatcher shutdown error", "error", err)
+			}
+			slog.Info("Running deployments will continue independently")
+		},
 	}); err != nil {
 		slog.Error("Service failed", "error", err)
 		os.Exit(1)
 	}
 }
 
-// alwaysReady satisfies health.ReadinessChecker until Phase 1 supplies the
-// deployment orchestrator.
-type alwaysReady struct{}
-
-func (alwaysReady) Ready(context.Context) error { return nil }
-
-func writeJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		slog.Error("Failed to encode response", "error", err)
+func buildOrchestrator(ctx context.Context, backend, sidecarImage string) (deployment.Orchestrator, error) {
+	switch backend {
+	case "docker":
+		cfg := depdocker.LoadConfigFromEnv()
+		cfg.SidecarImage = sidecarImage
+		return depdocker.NewOrchestrator(ctx, cfg)
+	case "kubernetes":
+		cfg := depkubernetes.LoadConfigFromEnv()
+		cfg.SidecarImage = sidecarImage
+		return depkubernetes.NewOrchestrator(ctx, cfg)
+	default:
+		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
 	}
 }

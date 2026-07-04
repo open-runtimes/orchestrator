@@ -20,9 +20,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      # Phase 0 skeleton makes no K8s API calls; Phase 1 adds a
-      # ServiceAccount + RBAC alongside the deployment orchestrator.
-      automountServiceAccountToken: false
+      serviceAccountName: {{ include "orchestrator.deploymentsName" . }}
       containers:
         - name: deployments-service
           image: {{ include "orchestrator.deploymentsImage" . | quote }}
@@ -30,6 +28,8 @@ spec:
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}
+            - name: data
+              containerPort: {{ .Values.deployments.dataPort }}
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
           env:
@@ -37,10 +37,31 @@ spec:
               value: kubernetes
             - name: PORT
               value: {{ .Values.service.apiPort | quote }}
+            - name: DATA_PORT
+              value: {{ .Values.deployments.dataPort | quote }}
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
+            - name: DEPLOYMENTS_DOMAIN
+              value: {{ .Values.deployments.domain | quote }}
+            - name: SIDECAR_IMAGE
+              value: {{ include "orchestrator.deploymentsSidecarImage" . | quote }}
+            - name: ARTIFACT_IMAGE
+              value: {{ include "orchestrator.sidecarImage" . | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if .Values.orchestrator.sidecarImagePullPolicy }}
+            - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.sidecarImagePullPolicy | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.workerImagePullPolicy }}
+            - name: KUBE_WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.workerImagePullPolicy | quote }}
+            {{- end }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -71,7 +92,52 @@ spec:
     - name: api
       port: {{ .Values.service.apiPort }}
       targetPort: api
+    - name: data
+      port: {{ .Values.deployments.dataPort }}
+      targetPort: data
     - name: metrics
       port: {{ .Values.service.metricsPort }}
       targetPort: metrics
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.deploymentsName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}
+    namespace: {{ .Release.Namespace }}
 {{- end }}

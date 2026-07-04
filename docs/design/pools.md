@@ -13,10 +13,10 @@ open-runtimes execution model: a pool is a warm fleet of a runtime image.
   `size` pods from config on startup. A pool is **standing warm capacity** (idle cost), so it's an
   operator/config decision — adding, resizing, or removing a pool is a config change + rollout, not a
   runtime call.
-- A warm **pod** = a **main container** (pool image, entrypoint overridden to the
-  [deployments-sidecar](deployments-sidecar.md) **shim**, idle on a FIFO) + the **sidecar**
-  (`-mode=proxy`), sharing an `emptyDir`. The sidecar is the pod's HTTP front, **listening from pod
-  start** — so *activation is just an HTTP POST to the claimed pod's sidecar*, no out-of-band channel.
+- A warm **pod** = a **main container** (pool image, entrypoint overridden to the dedicated
+  **pool-shim** binary, idle on a FIFO) + the
+  [**deployments-sidecar**](deployments-sidecar.md), sharing an `emptyDir`. The sidecar is the pod's
+  HTTP front, **listening from pod start** — so *activation is just an HTTP POST to the claimed pod's sidecar*, no out-of-band channel.
 - An **Activation** (`POST /v1/deployment-pools/{id}/activate`) ships **artifacts** + a command. The sidecar
   materializes artifacts, signals the shim to `exec` the entrypoint, gates readiness, and the adapter
   exposes the pod at a **gateway URL** ([per-activation Service + `HTTPRoute`](gateway-routing.md)).

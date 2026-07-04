@@ -20,7 +20,8 @@ Job orchestration service for running containerized workloads with async callbac
 
 - `cmd/jobs-service` — main orchestration service (HTTP API on :8080, metrics on :9090)
 - `cmd/job-sidecar` — sidecar for artifact processing and job lifecycle
-- `cmd/deployments-service` — serving plane (deployments + pools); Phase 0 skeleton, see `docs/design/`
+- `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane, see `docs/design/`
+- `cmd/deployments-sidecar` — reverse proxy in every deployment replica (readiness, drain, concurrency cap)
 - `internal/` — core packages: api, job, artifact, dispatcher, kube (shared K8s client/leader election), orchestrator/{docker,kubernetes}, sidecar, config
 - `pkg/` — reusable utilities: backoff, circuitbreaker, cloudevent, lifecycle (shared workload FSM/store), server
 - `charts/orchestrator/` — Helm chart

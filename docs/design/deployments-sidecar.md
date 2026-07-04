@@ -1,6 +1,6 @@
 # Deployments Sidecar
 
-The `job-sidecar` binary in `-mode=proxy`, run as a long-running native sidecar (K8s 1.29+) in every
+The dedicated `deployments-sidecar` binary, run as a long-running native sidecar (K8s 1.29+) in every
 workload pod — the **queue-proxy equivalent**. Traffic reaches the user container *only* through it
 (`Service → deployments-sidecar → localhost:Port`). It owns the invariants nothing off-pod can
 enforce correctly, because they're pod-local and a cache-backed remote view always lags.
@@ -41,8 +41,8 @@ the `Probe` type — the sidecar runs it sub-second. **`liveness`** and **`start
 gives slow boots grace), so they obey Kubernetes probe semantics: **whole-second granularity, 1s
 minimum** — sub-second values round up. See the [`Probes` type](deployments-service.md#domain-model).
 
-## Shim mode (pools)
+## Shim (pools)
 
-The same binary runs as the warm-pod entrypoint in `-mode=shim`: it blocks on a workspace FIFO, then
+A dedicated pool-shim binary runs as the warm-pod entrypoint: it blocks on a workspace FIFO, then
 `exec`s the activation command (replacing PID 1, so container exit == workload exit). In a warm pod,
-the sidecar is also the **activation surface** — see [pools](pools.md).
+the deployments-sidecar is also the **activation surface** — see [pools](pools.md).

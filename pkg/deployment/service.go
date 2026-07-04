@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
@@ -156,7 +157,10 @@ func (s *Service) fillURL(ctx context.Context, status *StatusResponse) {
 func (s *Service) checkHostOwnership(ctx context.Context, req *Request) error {
 	owner, err := s.Resolve(ctx, req.Host)
 	if err != nil {
-		return nil // no owner — free to claim
+		if apperrors.HTTPStatus(err) == http.StatusNotFound {
+			return nil // no owner — free to claim
+		}
+		return err
 	}
 	if owner.ID != req.ID {
 		return apperrors.Conflict("host", req.Host, fmt.Sprintf("host already owned by deployment %q", owner.ID))

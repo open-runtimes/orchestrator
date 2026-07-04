@@ -49,6 +49,14 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.deploymentsSidecarImage" -}}
+{{- if .Values.deployments.sidecarImage.ref -}}
+{{- .Values.deployments.sidecarImage.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.deployments.sidecarImage.repository .Values.deployments.sidecarImage.tag -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.deploymentsLabels" -}}
 {{ include "orchestrator.labels" . }}
 app.kubernetes.io/component: deployments

@@ -22,6 +22,10 @@ type Options struct {
 	Port           string
 	MetricsPort    string
 
+	// Extra servers (e.g. a data-plane listener) started alongside the API
+	// server and shut down with it. Addr and Handler must be set.
+	Extra []*http.Server
+
 	// DrainWait is how long to keep serving after readiness flips to
 	// shutting-down, so load balancers stop routing here (phase 1 of shutdown).
 	DrainWait time.Duration
@@ -74,14 +78,22 @@ func Serve(ctx context.Context, opts Options) error {
 		}
 	}()
 
+	for _, extra := range opts.Extra {
+		go func() {
+			slog.Info("Starting server", "addr", extra.Addr)
+			if err := extra.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErr <- err
+			}
+		}()
+	}
+
 	shutdown := func(timeout time.Duration) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		if err := apiServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("API server shutdown error", "error", err)
-		}
-		if err := metricsServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("Metrics server shutdown error", "error", err)
+		for _, srv := range append([]*http.Server{apiServer, metricsServer}, opts.Extra...) {
+			if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("Server shutdown error", "addr", srv.Addr, "error", err)
+			}
 		}
 	}
 

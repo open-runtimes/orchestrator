@@ -26,8 +26,8 @@ const (
 	EnvAdminPort                 = "PROXY_ADMIN_PORT"
 	EnvTimeoutSeconds            = "PROXY_TIMEOUT_SECONDS" // per-request total → 504
 	EnvMaxDrainSeconds           = "PROXY_MAX_DRAIN_SECONDS"
-	EnvConcurrency               = "PROXY_CONCURRENCY" // hard in-flight cap; 0 = unlimited
-	EnvQueueSize                 = "PROXY_QUEUE_SIZE"  // pending queue above the cap; overflow → 503
+	EnvConcurrency               = "PROXY_CONCURRENCY"    // hard in-flight cap; 0 = unlimited
+	EnvQueueSize                 = "PROXY_QUEUE_SIZE"     // pending queue above the cap; overflow → 503
 	EnvReadinessPath             = "PROXY_READINESS_PATH" // HTTP GET path; empty = TCP connect
 	EnvReadinessPeriodMillis     = "PROXY_READINESS_PERIOD_MS"
 	EnvReadinessTimeoutMillis    = "PROXY_READINESS_TIMEOUT_MS"

@@ -41,6 +41,15 @@ deployments:
     repository: ghcr.io/open-runtimes/orchestrator/deployments-service
     tag: latest
     pullPolicy: IfNotPresent
+  # Image for the deployments-sidecar (reverse proxy) in every workload pod.
+  sidecarImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/deployments-sidecar
+    tag: latest
+  # Data-plane port the in-process activator listens on (Host-based routing).
+  dataPort: 8081
+  # Base domain for auto-assigned hosts: {id}.{domain}.
+  domain: localhost
   resources:
     requests:
       cpu: 50m

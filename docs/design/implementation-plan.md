@@ -15,18 +15,20 @@ starts by asking what it can import or extract before what it must write.
 | CloudEvents delivery (HMAC, retry, circuit-break) | `internal/dispatcher` (`HTTPSender`→`WithRetry`→`WithCircuitBreaker`) | import as-is; new event types only |
 | Callback fan-out | `pkg/emitter` (`Emitter[T]`) | import as-is |
 | Artifact pipeline | `internal/artifact` (`Registry`, 8 types incl. squashfs mount) | import as-is in sidecar modes |
-| Sidecar binary + mode dispatch | `cmd/job-sidecar` (`-mode=combined\|pre\|post`) | add `-mode=proxy` (deployments) and `-mode=shim` (pools) |
+| Artifact materialization in workload pods | `cmd/job-sidecar` (`-mode=pre`) | reused as the `artifact-pre` container; the deployments proxy is its own binary |
 | K8s client, informers, leader election | `internal/orchestrator/kubernetes` (lease-based, `LeaderElectionConfig`) | extract client/lease setup into a shared sub-package |
 | Backend selection + config | `internal/config`, `ORCHESTRATOR_BACKEND` factory pattern in `cmd/jobs-service/main.go` | same pattern, new factory |
 | Helm chart, kind, Tilt, CI k8s-integration job | `charts/orchestrator`, `hack/`, `Tiltfile`, `.github/workflows/ci.yml` | extend, don't fork |
 
 ## Binary & process model
 
-One new binary, `cmd/deployments-service`, one image, role-selected: `ROLE=api` (default — HTTP API,
-reconcilers, and the leader-elected autoscaler goroutine) and `ROLE=activator` (the buffering edge the
-gateway targets; N stateless replicas). Docker backend runs everything in the one `api` process with
-the in-process activator. The deployments-sidecar and pool shim are `job-sidecar` modes — **no new
-sidecar image**.
+**One dedicated binary per component — no mode/role flags.** `cmd/deployments-service` (HTTP API,
+reconcilers, the leader-elected autoscaler goroutine, and — until Phase 3 — the in-process activator
+data plane) and `cmd/deployments-sidecar` (the per-replica reverse proxy, a thin main over
+`internal/proxy`). Phase 3 adds `cmd/deployments-activator` as its own binary when the buffering edge
+becomes a separate gateway-targeted Deployment, and Phase 5 adds a dedicated pool-shim binary.
+`job-sidecar` keeps artifact materialization only (its pre/post/combined modes are phases of one job
+workflow, not different programs) and remains the `artifact-pre` image for deployments.
 
 ## Phase 0 — extraction & scaffolding (net-negative target)
 
@@ -51,9 +53,9 @@ single revision. All traffic through the in-process activator (no gateway yet).
 - `pkg/deployment`: `Request`/`StatusResponse`/`Probes` types, the `Orchestrator` interface
   ([orchestrator.md](orchestrator.md)), `Service` mirroring `pkg/job.Service` on
   `pkg/lifecycle.MemoryStore`.
-- `job-sidecar -mode=proxy`: localhost reverse proxy, sub-second readiness probe + health endpoint,
-  `preStop` drain (grace = `min(timeoutSeconds, maxDrainSeconds)`), in-flight counter (exposed now,
-  scraped in Phase 4), `concurrency` cap + bounded queue → `503`.
+- `cmd/deployments-sidecar` (over `internal/proxy`): reverse proxy, sub-second readiness probe +
+  health endpoint, `preStop` drain (grace = `min(timeoutSeconds, maxDrainSeconds)`), in-flight counter
+  (exposed now, scraped in Phase 4), `concurrency` cap + bounded queue → `503`.
 - Backends: **Docker** — sidecar container fronting the user container on `DOCKER_NETWORK`,
   `artifact-pre` step, `Apply` recreates on spec change. **K8s** — one `apps/v1.Deployment` + one
   (selector-ful, for now) Service; pod template = `artifact-pre` init + native `proxy` sidecar + user
@@ -114,7 +116,7 @@ Depends only on Phase 1 + the shim; can start in parallel once Phase 3 is underw
 pressure demands — the claim protocol doesn't touch the gateway until HTTP-mode activations.
 
 - `pkg/pool`: config schema (Helm `pools:` list), `Activation` types.
-- `job-sidecar -mode=shim`: block on FIFO, `exec` payload as PID 1. Sidecar `proxy` mode grows the
+- A dedicated pool-shim binary: block on FIFO, `exec` payload as PID 1. The deployments-sidecar grows the
   activation surface: claim POST (per-pod token → `401`; first-wins → `409`), artifact
   materialization via `internal/artifact`, readiness gate.
 - Replenishment controller (leader-elected): `warm_count → size`, off-path; claimed-but-unlabeled

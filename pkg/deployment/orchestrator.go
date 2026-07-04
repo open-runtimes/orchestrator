@@ -14,8 +14,7 @@ import (
 // derive from it live, so any replica can serve any request and a restart
 // loses nothing.
 type Orchestrator interface {
-	// Start reconciles pre-existing deployments and begins maintenance.
-	Start(ctx context.Context) error
+	Lifecycle
 
 	// Apply creates the deployment or replaces its spec in place. Applying an
 	// identical spec is a no-op.
@@ -36,6 +35,12 @@ type Orchestrator interface {
 
 	// List returns all deployments' statuses.
 	List(ctx context.Context) ([]StatusResponse, error)
+}
+
+// Lifecycle is the process-lifecycle surface of an orchestrator backend.
+type Lifecycle interface {
+	// Start reconciles pre-existing deployments and begins maintenance.
+	Start(ctx context.Context) error
 
 	// Ready checks that the backend is reachable.
 	Ready(ctx context.Context) error

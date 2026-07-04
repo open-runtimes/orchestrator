@@ -43,8 +43,8 @@ the activator itself during the cold window (which would loop).
   `X-Revision` header, Gateway API Extended) + a `Prefer: respond-async` rule.
 - The **deployments-activator** runs as an ordinary Deployment + Service the gateway can target.
 - Pod template, sharing an `emptyDir` workspace: `artifact-pre` **init container** (`job-sidecar` in
-  pre mode) materializes artifacts before the server starts; the **deployments-sidecar** native sidecar
-  (`-mode=proxy`); the user **server** container. All under the hardened SecurityContext +
+  pre mode) materializes artifacts before the server starts; the **deployments-sidecar** native
+  sidecar (its own binary); the user **server** container. All under the hardened SecurityContext +
   `RuntimeClass` (see [security](security.md)).
 - Readiness via deployments-sidecar; drain via its `preStop`. `Endpoints` returns the revision's
   **ready Pod IPs** (the activator's direct forward target); `Status` derives from
