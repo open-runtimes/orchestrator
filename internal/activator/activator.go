@@ -35,13 +35,18 @@ const (
 	// resolveTTL bounds how long a host→spec resolution is reused on the data
 	// path. Spec changes (or deletes) take up to this long to be seen here.
 	resolveTTL = time.Second
+
+	// raiseDebounce bounds how often a cold deployment's scale-up is
+	// re-requested while requests wait for the first endpoint.
+	raiseDebounce = 2 * time.Second
 )
 
-// Resolver maps a request host to its deployment spec and supplies ready
-// endpoints. Implemented by deployment.Service.
+// Resolver maps a request host to its deployment spec, supplies ready
+// endpoints, and scales capacity. Implemented by deployment.Service.
 type Resolver interface {
 	Resolve(ctx context.Context, host string) (*deployment.Request, error)
 	Endpoints(ctx context.Context, id string) ([]*url.URL, error)
+	Scale(ctx context.Context, id string, replicas int) error
 }
 
 // Activator routes data-plane traffic by Host.
@@ -50,8 +55,10 @@ type Activator struct {
 	queue    dispatcher.Queue
 	source   string // CloudEvents source
 
-	mu    sync.Mutex
-	cache map[string]resolveEntry // host → spec, TTL-bounded
+	mu        sync.Mutex
+	cache     map[string]resolveEntry // host → spec, TTL-bounded
+	activity  map[string]time.Time    // deployment id → last request seen
+	lastRaise map[string]time.Time    // deployment id → last cold scale-up
 }
 
 type resolveEntry struct {
@@ -62,11 +69,30 @@ type resolveEntry struct {
 // New creates an Activator. queue delivers async response callbacks.
 func New(resolver Resolver, queue dispatcher.Queue) *Activator {
 	return &Activator{
-		resolver: resolver,
-		queue:    queue,
-		source:   "orchestrator/deployments",
-		cache:    make(map[string]resolveEntry),
+		resolver:  resolver,
+		queue:     queue,
+		source:    "orchestrator/deployments",
+		cache:     make(map[string]resolveEntry),
+		activity:  make(map[string]time.Time),
+		lastRaise: make(map[string]time.Time),
 	}
+}
+
+// LastActivity reports when the deployment last received a request through
+// this activator. While the activator is on the request path for all traffic
+// (pre-gateway), this is the idle-to-zero loop's activity source.
+func (a *Activator) LastActivity(id string) (time.Time, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.activity[id]
+	return t, ok
+}
+
+// touch records request activity for the deployment.
+func (a *Activator) touch(id string) {
+	a.mu.Lock()
+	a.activity[id] = time.Now()
+	a.mu.Unlock()
 }
 
 // resolve is the cached host→spec lookup for the data path; misses fall
@@ -98,6 +124,7 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no deployment for host "+host, http.StatusNotFound)
 		return
 	}
+	a.touch(spec.ID)
 
 	// Exact-literal match by design; combined RFC 7240 forms are not recognized.
 	if r.Header.Get("Prefer") == "respond-async" {
@@ -215,7 +242,9 @@ func (a *Activator) dispatchResponse(spec *deployment.Request, invocationID stri
 }
 
 // waitForEndpoint polls for a ready endpoint until the deployment's
-// responseStartTimeout expires.
+// responseStartTimeout expires. A cold deployment (no endpoint — scaled to
+// zero, or its last replica crashed/was evicted) is raised back up first: the
+// activator owns 0→N, never waiting on an autoscaler tick.
 func (a *Activator) waitForEndpoint(ctx context.Context, spec *deployment.Request) (*url.URL, error) {
 	deadline := time.Duration(spec.ResponseStartTimeoutSeconds) * time.Second
 	waitCtx, cancel := context.WithTimeout(ctx, deadline)
@@ -226,12 +255,34 @@ func (a *Activator) waitForEndpoint(ctx context.Context, spec *deployment.Reques
 		if err == nil && len(endpoints) > 0 {
 			return endpoints[0], nil
 		}
+		a.raise(waitCtx, spec)
 		select {
 		case <-waitCtx.Done():
 			return nil, waitCtx.Err()
 		case <-time.After(endpointPollInterval):
 		}
 	}
+}
+
+// raise requests a cold deployment's scale-up to its declared replica count,
+// debounced so concurrent cold hits (and the poll loop) issue one write.
+// Failures are logged, not returned — the endpoint wait carries on and the
+// request fails with 503 only if nothing becomes ready in time.
+func (a *Activator) raise(ctx context.Context, spec *deployment.Request) {
+	a.mu.Lock()
+	if time.Since(a.lastRaise[spec.ID]) < raiseDebounce {
+		a.mu.Unlock()
+		return
+	}
+	a.lastRaise[spec.ID] = time.Now()
+	a.mu.Unlock()
+
+	replicas := max(spec.Replicas, 1)
+	if err := a.resolver.Scale(ctx, spec.ID, replicas); err != nil {
+		slog.Warn("Cold-start scale-up failed", "deploymentId", spec.ID, "replicas", replicas, "error", err)
+		return
+	}
+	slog.Info("Cold-start scale-up requested", "deploymentId", spec.ID, "replicas", replicas)
 }
 
 // proxyTo builds a single-shot reverse proxy to the target endpoint,

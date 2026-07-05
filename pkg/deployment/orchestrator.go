@@ -23,6 +23,11 @@ type Orchestrator interface {
 	// Delete tears down the deployment's workloads and routing state.
 	Delete(ctx context.Context, id string) error
 
+	// Scale sets the deployment's replica count. 0 scales to zero (idle);
+	// the workload's materialized state is retained for a fast cold start.
+	// Docker clamps any positive count to 1.
+	Scale(ctx context.Context, id string, replicas int) error
+
 	// Spec returns the last-applied request, reconstructed from the backend.
 	Spec(ctx context.Context, id string) (*Request, error)
 

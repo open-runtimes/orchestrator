@@ -22,6 +22,7 @@ type Request struct {
 	Port        int                 `json:"port"`                  // container port serving HTTP
 	Replicas    int                 `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
 	Concurrency int                 `json:"concurrency,omitempty"` // hard per-replica in-flight cap; 0 = unlimited
+	Autoscaling *Autoscaling        `json:"autoscaling,omitempty"`
 	Probes      *Probes             `json:"probes,omitempty"`
 	Callback    *Callback           `json:"callback,omitempty"`
 
@@ -47,6 +48,14 @@ type Probe struct {
 	FailureThreshold int    `json:"failureThreshold,omitempty"` // give-up = threshold × period
 }
 
+// Autoscaling opts a deployment into managed replicas. minReplicas: 0 enables
+// scale-to-zero — idle past the operator's window scales down, the next
+// request cold-starts it back to `replicas`. Concurrency-driven 1↔N
+// (maxReplicas/target) arrives in Phase 4.
+type Autoscaling struct {
+	MinReplicas int `json:"minReplicas"` // 0 = scale-to-zero
+}
+
 // Callback is where async responses (and, later, lifecycle events) are delivered.
 type Callback struct {
 	URL    string   `json:"url"`
@@ -58,6 +67,7 @@ type Callback struct {
 const (
 	StatePending  = "pending"
 	StateReady    = "ready"
+	StateIdle     = "idle" // scaled to zero; the next request cold-starts it
 	StateDegraded = "degraded"
 	StateFailed   = "failed"
 	StateDeleting = "deleting"
@@ -92,6 +102,7 @@ type requestJSON struct {
 	Port        int               `json:"port"`
 	Replicas    int               `json:"replicas,omitempty"`
 	Concurrency int               `json:"concurrency,omitempty"`
+	Autoscaling *Autoscaling      `json:"autoscaling,omitempty"`
 	Probes      *Probes           `json:"probes,omitempty"`
 	Callback    *Callback         `json:"callback,omitempty"`
 
@@ -118,6 +129,7 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	r.Port = raw.Port
 	r.Replicas = raw.Replicas
 	r.Concurrency = raw.Concurrency
+	r.Autoscaling = raw.Autoscaling
 	r.Probes = raw.Probes
 	r.Callback = raw.Callback
 	r.TimeoutSeconds = raw.TimeoutSeconds
@@ -149,6 +161,7 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		Port:        r.Port,
 		Replicas:    r.Replicas,
 		Concurrency: r.Concurrency,
+		Autoscaling: r.Autoscaling,
 		Probes:      r.Probes,
 		Callback:    r.Callback,
 

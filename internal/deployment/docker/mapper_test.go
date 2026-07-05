@@ -21,9 +21,16 @@ func TestDeriveStatus(t *testing.T) {
 		name          string
 		snap          snapshot
 		wantState     string
+		wantDesired   int
 		wantAvailable int
 		wantError     bool
 	}{
+		{
+			name:        "no containers is idle (scaled to zero)",
+			snap:        snapshot{deadline: 10 * time.Minute},
+			wantState:   deployment.StateIdle,
+			wantDesired: 0,
+		},
 		{
 			name: "worker and healthy proxy running is ready",
 			snap: snapshot{
@@ -32,6 +39,7 @@ func TestDeriveStatus(t *testing.T) {
 				created: now.Add(-time.Minute), deadline: 10 * time.Minute,
 			},
 			wantState:     deployment.StateReady,
+			wantDesired:   1,
 			wantAvailable: 1,
 		},
 		{
@@ -41,8 +49,9 @@ func TestDeriveStatus(t *testing.T) {
 				proxyRunning: true, proxyHealth: container.Starting,
 				created: now.Add(-time.Second), deadline: 10 * time.Minute,
 			},
-			wantState: deployment.StateFailed,
-			wantError: true,
+			wantState:   deployment.StateFailed,
+			wantDesired: 1,
+			wantError:   true,
 		},
 		{
 			name: "starting health within deadline is pending",
@@ -51,7 +60,8 @@ func TestDeriveStatus(t *testing.T) {
 				proxyRunning: true, proxyHealth: container.Starting,
 				created: now.Add(-time.Second), deadline: 10 * time.Minute,
 			},
-			wantState: deployment.StatePending,
+			wantState:   deployment.StatePending,
+			wantDesired: 1,
 		},
 		{
 			name: "unhealthy past deadline is failed",
@@ -60,8 +70,9 @@ func TestDeriveStatus(t *testing.T) {
 				proxyRunning: true, proxyHealth: container.Unhealthy,
 				created: now.Add(-time.Hour), deadline: 10 * time.Minute,
 			},
-			wantState: deployment.StateFailed,
-			wantError: true,
+			wantState:   deployment.StateFailed,
+			wantDesired: 1,
+			wantError:   true,
 		},
 		{
 			name: "proxy missing within deadline is pending",
@@ -69,7 +80,8 @@ func TestDeriveStatus(t *testing.T) {
 				workerExists: true, workerRunning: true,
 				created: now.Add(-time.Second), deadline: 10 * time.Minute,
 			},
-			wantState: deployment.StatePending,
+			wantState:   deployment.StatePending,
+			wantDesired: 1,
 		},
 	}
 
@@ -84,8 +96,8 @@ func TestDeriveStatus(t *testing.T) {
 			if got.State != tt.wantState {
 				t.Errorf("State = %q, want %q", got.State, tt.wantState)
 			}
-			if got.DesiredReplicas != 1 {
-				t.Errorf("DesiredReplicas = %d, want 1", got.DesiredReplicas)
+			if got.DesiredReplicas != tt.wantDesired {
+				t.Errorf("DesiredReplicas = %d, want %d", got.DesiredReplicas, tt.wantDesired)
 			}
 			if got.AvailableReplicas != tt.wantAvailable {
 				t.Errorf("AvailableReplicas = %d, want %d", got.AvailableReplicas, tt.wantAvailable)
@@ -196,18 +208,42 @@ func TestProgressDeadline(t *testing.T) {
 	}
 }
 
-func TestSpecOf(t *testing.T) {
+func TestVolumeLabels_SpecRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	summaries := []container.Summary{
-		{Labels: map[string]string{labelType: typeWorker}},
-		{Labels: map[string]string{labelType: typeProxy, labelSpec: `{"id":"d1"}`}},
+	req := &deployment.Request{
+		ID:          "d1",
+		Image:       "traefik/whoami:latest",
+		Host:        "d1.example.test",
+		Port:        80,
+		Environment: map[string]string{"KEY": "value"},
+		Autoscaling: &deployment.Autoscaling{MinReplicas: 0},
 	}
-	if got := specOf(summaries); got != `{"id":"d1"}` {
-		t.Errorf("specOf() = %q, want spec JSON", got)
+	spec, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal spec: %v", err)
 	}
-	if got := specOf(summaries[:1]); got != "" {
-		t.Errorf("specOf() without proxy = %q, want empty", got)
+
+	labels := volumeLabels(req, string(spec))
+	if labels[labelManagedBy] != managedByValue || labels[labelID] != "d1" || labels[labelHost] != req.Host {
+		t.Errorf("volumeLabels() = %v, want managed-by/id/host set", labels)
+	}
+
+	got, err := parseSpec(labels[labelSpec])
+	if err != nil {
+		t.Fatalf("parseSpec: %v", err)
+	}
+	if got.ID != req.ID || got.Image != req.Image || got.Host != req.Host ||
+		got.Environment["KEY"] != "value" || got.Autoscaling == nil || got.Autoscaling.MinReplicas != 0 {
+		t.Errorf("parseSpec() = %+v, want round-tripped request", got)
+	}
+}
+
+func TestParseSpec_Invalid(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseSpec("not json"); err == nil {
+		t.Error("parseSpec(invalid) = nil error, want error")
 	}
 }
 
@@ -218,15 +254,12 @@ func TestSpecDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal spec: %v", err)
 	}
-	summaries := []container.Summary{
-		{Labels: map[string]string{labelType: typeProxy, labelSpec: string(spec)}},
-	}
 
-	if got := specDeadline(summaries); got != 30*time.Second {
+	if got := specDeadline(string(spec)); got != 30*time.Second {
 		t.Errorf("specDeadline() = %v, want 30s", got)
 	}
-	if got := specDeadline(nil); got != defaultProgressDeadline {
-		t.Errorf("specDeadline(nil) = %v, want default", got)
+	if got := specDeadline(""); got != defaultProgressDeadline {
+		t.Errorf("specDeadline(\"\") = %v, want default", got)
 	}
 }
 

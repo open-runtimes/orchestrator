@@ -53,7 +53,8 @@ endpoint and **buffers cold starts**, but a genuine application `5xx` is returne
   sized/monitored as one.
 
 **State mapping:** `pending` (deploying, within deadline) → `ready` (≥1 ready endpoint) → `degraded`
-(some replicas unhealthy) / `failed` (deadline exceeded or crashloop) → `deleting`.
+(some replicas unhealthy) / `failed` (deadline exceeded or crashloop) → `deleting`. `ready` ↔ `idle`
+(scaled to zero; the next request cold-starts it — a latency event, not an error).
 
 ## Pools-specific
 

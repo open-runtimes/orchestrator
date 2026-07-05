@@ -5,9 +5,11 @@ import (
 	"errors"
 	"orchestrator/internal/apperrors"
 	"orchestrator/pkg/deployment"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,8 +21,52 @@ import (
 func newTestOrchestrator(t *testing.T) (*Orchestrator, *fake.Clientset) {
 	t.Helper()
 	cs := fake.NewClientset()
+	registerScaleSubresource(cs)
 	cfg := Config{SidecarImage: "sidecar:latest", Namespace: "orchestrator", RunAsUser: 65532}
 	return &Orchestrator{client: cs, namespace: cfg.Namespace, cfg: cfg}, cs
+}
+
+// registerScaleSubresource teaches the fake clientset the deployments/scale
+// subresource, which it does not implement natively (GetScale/UpdateScale
+// panic casting the tracked *apps/v1.Deployment to *autoscaling/v1.Scale).
+func registerScaleSubresource(cs *fake.Clientset) {
+	gvr := appsv1.SchemeGroupVersion.WithResource("deployments")
+	cs.PrependReactor("get", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		get, ok := action.(k8stesting.GetAction)
+		if !ok || action.GetSubresource() != "scale" {
+			return false, nil, nil
+		}
+		obj, err := cs.Tracker().Get(gvr, get.GetNamespace(), get.GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		dep := obj.(*appsv1.Deployment)
+		replicas := int32(1)
+		if dep.Spec.Replicas != nil {
+			replicas = *dep.Spec.Replicas
+		}
+		return true, &autoscalingv1.Scale{
+			ObjectMeta: metav1.ObjectMeta{Name: dep.Name, Namespace: dep.Namespace},
+			Spec:       autoscalingv1.ScaleSpec{Replicas: replicas},
+		}, nil
+	})
+	cs.PrependReactor("update", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		update, ok := action.(k8stesting.UpdateAction)
+		if !ok || action.GetSubresource() != "scale" {
+			return false, nil, nil
+		}
+		scale := update.GetObject().(*autoscalingv1.Scale)
+		obj, err := cs.Tracker().Get(gvr, update.GetNamespace(), scale.Name)
+		if err != nil {
+			return true, nil, err
+		}
+		dep := obj.(*appsv1.Deployment)
+		dep.Spec.Replicas = &scale.Spec.Replicas
+		if err := cs.Tracker().Update(gvr, dep, update.GetNamespace()); err != nil {
+			return true, nil, err
+		}
+		return true, scale, nil
+	})
 }
 
 func countActions(cs *fake.Clientset, verb, resource string) int {
@@ -406,5 +452,56 @@ func testPod(name, deploymentID, ip string, ready corev1.ConditionStatus) *corev
 			PodIP:      ip,
 			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: ready}},
 		},
+	}
+}
+
+func TestScale_ToZeroAndBack(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	ctx := t.Context()
+
+	req := &deployment.Request{ID: "web", Image: "nginx", Port: 8080, Replicas: 1}
+	if err := o.Apply(ctx, req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if err := o.Scale(ctx, "web", 0); err != nil {
+		t.Fatalf("Scale(0): %v", err)
+	}
+	dep, err := cs.AppsV1().Deployments("orchestrator").Get(ctx, "dep-web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+		t.Fatalf("replicas after Scale(0): got %v, want 0", dep.Spec.Replicas)
+	}
+	if got := deriveStatus(dep).State; got != deployment.StateIdle {
+		t.Fatalf("state after Scale(0): got %s, want idle", got)
+	}
+
+	// Idempotent: same value performs no write.
+	writes := countActions(cs, "update", "deployments")
+	if err := o.Scale(ctx, "web", 0); err != nil {
+		t.Fatalf("Scale(0) again: %v", err)
+	}
+	if countActions(cs, "update", "deployments") != writes {
+		t.Fatal("idempotent Scale performed a write")
+	}
+
+	if err := o.Scale(ctx, "web", 2); err != nil {
+		t.Fatalf("Scale(2): %v", err)
+	}
+	dep, _ = cs.AppsV1().Deployments("orchestrator").Get(ctx, "dep-web", metav1.GetOptions{})
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 2 {
+		t.Fatalf("replicas after Scale(2): got %v, want 2", dep.Spec.Replicas)
+	}
+}
+
+func TestScale_NotFound(t *testing.T) {
+	t.Parallel()
+	o, _ := newTestOrchestrator(t)
+	err := o.Scale(t.Context(), "ghost", 0)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("want not-found error, got %v", err)
 	}
 }

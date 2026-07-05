@@ -108,7 +108,7 @@ type Target struct {
 
 type StatusResponse struct {
     ID                string   `json:"id"`
-    State             string   `json:"status"` // pending|ready|degraded|failed|deleting
+    State             string   `json:"status"` // pending|ready|idle|degraded|failed|deleting
     URL               string   `json:"url"`    // gateway URL (K8s) / activator URL (Docker)
     Revisions         []string `json:"revisions"`
     Traffic           []Target `json:"traffic"`

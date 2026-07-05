@@ -96,6 +96,32 @@ func (o *Orchestrator) ensureService(ctx context.Context, req *deployment.Reques
 	return nil
 }
 
+// Scale sets the replica count via the scale subresource — the same write the
+// activator's cold raise and the idle-to-zero loop perform, so they can't
+// conflict with a concurrent Apply (which never touches a live spec.replicas
+// unless the spec changed).
+func (o *Orchestrator) Scale(ctx context.Context, id string, replicas int) error {
+	if replicas < 0 {
+		replicas = 0
+	}
+	deployments := o.client.AppsV1().Deployments(o.namespace)
+	scale, err := deployments.GetScale(ctx, deploymentNameFor(id), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return apperrors.NotFound("deployment", id)
+	}
+	if err != nil {
+		return apperrors.Internal("kubernetes.getScale", err)
+	}
+	if scale.Spec.Replicas == int32(replicas) {
+		return nil
+	}
+	scale.Spec.Replicas = int32(replicas)
+	if _, err := deployments.UpdateScale(ctx, deploymentNameFor(id), scale, metav1.UpdateOptions{}); err != nil {
+		return apperrors.Internal("kubernetes.updateScale", err)
+	}
+	return nil
+}
+
 // Delete tears down the deployment's Service and apps/v1.Deployment (foreground
 // propagation, so pods are gone before the Deployment object is). NotFound only
 // when neither object existed.

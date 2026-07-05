@@ -17,8 +17,12 @@ import (
 
 // fakeResolver serves a single deployment at a fixed host.
 type fakeResolver struct {
-	spec      *deployment.Request
-	endpoints []*url.URL
+	spec *deployment.Request
+
+	mu               sync.Mutex
+	endpoints        []*url.URL
+	scaleCalls       []int
+	endpointsOnScale []*url.URL // revealed by Scale, simulating a cold start
 }
 
 func (f *fakeResolver) Resolve(_ context.Context, host string) (*deployment.Request, error) {
@@ -29,7 +33,25 @@ func (f *fakeResolver) Resolve(_ context.Context, host string) (*deployment.Requ
 }
 
 func (f *fakeResolver) Endpoints(context.Context, string) ([]*url.URL, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.endpoints, nil
+}
+
+func (f *fakeResolver) Scale(_ context.Context, _ string, replicas int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scaleCalls = append(f.scaleCalls, replicas)
+	if f.endpointsOnScale != nil {
+		f.endpoints = f.endpointsOnScale
+	}
+	return nil
+}
+
+func (f *fakeResolver) scaled() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.scaleCalls...)
 }
 
 // captureQueue records dispatched events and signals on each Dispatch.
@@ -128,6 +150,36 @@ func TestSync_NoEndpoint503(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestSync_ColdStartRaisesAndServes(t *testing.T) {
+	spec := newTestSpec("app.example.test")
+	spec.Replicas = 2
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "warmed")
+	}))
+	t.Cleanup(backend.Close)
+	u, _ := url.Parse(backend.URL)
+
+	// No endpoints until Scale is called — a scaled-to-zero deployment.
+	resolver := &fakeResolver{spec: spec, endpointsOnScale: []*url.URL{u}}
+	act := New(resolver, newCaptureQueue())
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://app.example.test/", nil)
+	rec := httptest.NewRecorder()
+	act.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "warmed" {
+		t.Fatalf("cold start: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	calls := resolver.scaled()
+	if len(calls) != 1 || calls[0] != 2 {
+		t.Fatalf("scale calls: want [2] (declared replicas, debounced), got %v", calls)
+	}
+
+	if _, ok := act.LastActivity("test"); !ok {
+		t.Fatal("expected activity recorded for the deployment")
 	}
 }
 

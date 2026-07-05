@@ -257,3 +257,47 @@ func TestIntegration_NeverReadyFails(t *testing.T) {
 		t.Errorf("available: want 0, got %d", s.AvailableReplicas)
 	}
 }
+
+// TestIntegration_ScaleToZeroAndBack exercises the 0↔1 cycle the activator and
+// idle-to-zero loop drive in production: ready → Scale(0) → idle with no
+// endpoints → Scale(1) → ready again with a fresh pod.
+func TestIntegration_ScaleToZeroAndBack(t *testing.T) {
+	o, teardown := setup(t)
+	defer teardown()
+
+	id := fmt.Sprintf("zero-%d", time.Now().UnixNano())
+	req := serverRequest(id)
+	req.Autoscaling = &deployment.Autoscaling{MinReplicas: 0}
+	if err := o.Apply(t.Context(), req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), id)
+		return err == nil && s.State == deployment.StateReady
+	}, testutil.WithTimeout(120*time.Second), testutil.WithInterval(time.Second))
+
+	if err := o.Scale(t.Context(), id, 0); err != nil {
+		t.Fatalf("Scale(0): %v", err)
+	}
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), id)
+		return err == nil && s.State == deployment.StateIdle
+	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(time.Second))
+	testutil.MustWaitFor(t, func() bool {
+		endpoints, err := o.Endpoints(t.Context(), id)
+		return err == nil && len(endpoints) == 0
+	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(time.Second))
+
+	if err := o.Scale(t.Context(), id, 1); err != nil {
+		t.Fatalf("Scale(1): %v", err)
+	}
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), id)
+		return err == nil && s.State == deployment.StateReady
+	}, testutil.WithTimeout(120*time.Second), testutil.WithInterval(time.Second))
+
+	endpoints, err := o.Endpoints(t.Context(), id)
+	if err != nil || len(endpoints) != 1 {
+		t.Fatalf("endpoints after wake: want 1, got %d (err=%v)", len(endpoints), err)
+	}
+}

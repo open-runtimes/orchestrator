@@ -10,6 +10,7 @@ import (
 	"orchestrator/internal/activator"
 	"orchestrator/internal/api"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/autoscaler"
 	"orchestrator/internal/config"
 	depdocker "orchestrator/internal/deployment/docker"
 	depkubernetes "orchestrator/internal/deployment/kubernetes"
@@ -60,6 +61,12 @@ func main() {
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 	act := activator.New(svc, eventDispatcher)
+
+	// Idle-to-zero loop: the activator is its activity source while all
+	// traffic flows through it (pre-gateway).
+	idlerCtx, stopIdler := context.WithCancel(ctx)
+	defer stopIdler()
+	go autoscaler.New(orchestrator, act, autoscaler.LoadConfigFromEnv()).Run(idlerCtx)
 
 	healthChecker := health.NewChecker(orchestrator)
 	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{

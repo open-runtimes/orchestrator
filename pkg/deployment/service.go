@@ -145,6 +145,12 @@ func (s *Service) Endpoints(ctx context.Context, id string) ([]*url.URL, error) 
 	return s.orchestrator.Endpoints(ctx, id)
 }
 
+// Scale sets the deployment's replica count. Used by the activator's cold
+// raise (0→replicas) and the idle-to-zero loop (→0).
+func (s *Service) Scale(ctx context.Context, id string, replicas int) error {
+	return s.orchestrator.Scale(ctx, id, replicas)
+}
+
 func (s *Service) fillURL(ctx context.Context, status *StatusResponse) {
 	spec, err := s.orchestrator.Spec(ctx, status.ID)
 	if err != nil || s.urlFor == nil {
@@ -230,6 +236,9 @@ func (s *Service) validate(req *Request) error {
 	}
 	if req.Concurrency < 0 {
 		return apperrors.Validation("concurrency", "concurrency must be non-negative")
+	}
+	if req.Autoscaling != nil && req.Autoscaling.MinReplicas != 0 {
+		return apperrors.Validation("autoscaling.minReplicas", "only 0 (scale-to-zero) is supported until concurrency autoscaling lands")
 	}
 	if req.TimeoutSeconds > maxTimeoutSecs {
 		return apperrors.Validation("timeoutSeconds", fmt.Sprintf("timeout exceeds maximum of %d seconds", maxTimeoutSecs))

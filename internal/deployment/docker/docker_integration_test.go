@@ -46,6 +46,66 @@ func newTestOrchestrator(t *testing.T) *Orchestrator {
 	return o
 }
 
+// waitForState polls Status until it reports the wanted state.
+func waitForState(t *testing.T, o *Orchestrator, id, want string) {
+	t.Helper()
+
+	testutil.MustWaitFor(t, func() bool {
+		status, err := o.Status(t.Context(), id)
+		return err == nil && status.State == want
+	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(500*time.Millisecond))
+}
+
+// mustGetOK asserts a GET to the endpoint returns 200.
+func mustGetOK(t *testing.T, endpoint *url.URL) {
+	t.Helper()
+
+	httpReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		t.Fatalf("Failed to build request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("Failed to GET endpoint %s: %v", endpoint, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET %s = %d, want 200", endpoint, resp.StatusCode)
+	}
+}
+
+// requireIdle asserts a scaled-to-zero deployment: no containers (checked via
+// the Docker API by label), idle status, no endpoints.
+func requireIdle(t *testing.T, o *Orchestrator, id string) {
+	t.Helper()
+	ctx := t.Context()
+
+	summaries, err := o.containersFor(ctx, id)
+	if err != nil {
+		t.Fatalf("Failed to list containers: %v", err)
+	}
+	if len(summaries) != 0 {
+		t.Fatalf("Expected no containers, found %d", len(summaries))
+	}
+
+	status, err := o.Status(ctx, id)
+	if err != nil {
+		t.Fatalf("Failed to get status: %v", err)
+	}
+	if status.State != deployment.StateIdle || status.DesiredReplicas != 0 || status.AvailableReplicas != 0 {
+		t.Errorf("Status = %s (desired %d, available %d), want idle/0/0",
+			status.State, status.DesiredReplicas, status.AvailableReplicas)
+	}
+
+	endpoints, err := o.Endpoints(ctx, id)
+	if err != nil {
+		t.Fatalf("Failed to get endpoints: %v", err)
+	}
+	if len(endpoints) != 0 {
+		t.Errorf("Endpoints = %v, want empty", endpoints)
+	}
+}
+
 // containerIDsByType maps deployment.type label -> container ID for a deployment.
 func containerIDsByType(t *testing.T, o *Orchestrator, id string) map[string]string {
 	t.Helper()
@@ -87,18 +147,7 @@ func TestDeployment_ApplyServeUpdateDelete(t *testing.T) {
 		return len(endpoints) > 0
 	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(500*time.Millisecond))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoints[0].String(), nil)
-	if err != nil {
-		t.Fatalf("Failed to build request: %v", err)
-	}
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		t.Fatalf("Failed to GET endpoint %s: %v", endpoints[0], err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("GET %s = %d, want 200", endpoints[0], resp.StatusCode)
-	}
+	mustGetOK(t, endpoints[0])
 
 	status, err := o.Status(ctx, id)
 	if err != nil {
@@ -141,6 +190,73 @@ func TestDeployment_ApplyServeUpdateDelete(t *testing.T) {
 	}
 	if _, err := o.Status(ctx, id); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Errorf("Status after delete = %v, want not found", err)
+	}
+}
+
+func TestDeployment_ScaleToZeroAndBack(t *testing.T) {
+	ctx := t.Context()
+	o := newTestOrchestrator(t)
+
+	id := fmt.Sprintf("it-scale-%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = o.Delete(context.WithoutCancel(ctx), id) })
+
+	req := &deployment.Request{
+		ID:                      id,
+		Image:                   "traefik/whoami:latest",
+		CPU:                     1,
+		Memory:                  128,
+		Port:                    80,
+		ProgressDeadlineSeconds: 60,
+		Autoscaling:             &deployment.Autoscaling{MinReplicas: 0},
+	}
+	if err := o.Apply(ctx, req); err != nil {
+		t.Fatalf("Failed to apply deployment: %v", err)
+	}
+	waitForState(t, o, id, deployment.StateReady)
+
+	if err := o.Scale(ctx, id, 0); err != nil {
+		t.Fatalf("Failed to scale to zero: %v", err)
+	}
+	requireIdle(t, o, id)
+
+	// Scaling to zero again is idempotent.
+	if err := o.Scale(ctx, id, 0); err != nil {
+		t.Fatalf("Repeated scale to zero: %v", err)
+	}
+
+	// Applying the identical spec must not wake an idle deployment.
+	if err := o.Apply(ctx, req); err != nil {
+		t.Fatalf("Failed to re-apply identical spec: %v", err)
+	}
+	requireIdle(t, o, id)
+
+	if err := o.Scale(ctx, id, 1); err != nil {
+		t.Fatalf("Failed to scale back up: %v", err)
+	}
+	waitForState(t, o, id, deployment.StateReady)
+
+	endpoints, err := o.Endpoints(ctx, id)
+	if err != nil {
+		t.Fatalf("Failed to get endpoints: %v", err)
+	}
+	if len(endpoints) == 0 {
+		t.Fatal("Expected an endpoint after scaling back up")
+	}
+	mustGetOK(t, endpoints[0])
+
+	if err := o.Delete(ctx, id); err != nil {
+		t.Fatalf("Failed to delete deployment: %v", err)
+	}
+	if _, err := o.Status(ctx, id); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Errorf("Status after delete = %v, want not found", err)
+	}
+}
+
+func TestDeployment_ScaleUnknownIsNotFound(t *testing.T) {
+	o := newTestOrchestrator(t)
+
+	if err := o.Scale(t.Context(), "it-scale-missing", 1); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Errorf("Scale(unknown) = %v, want not found", err)
 	}
 }
 

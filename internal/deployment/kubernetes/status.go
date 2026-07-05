@@ -18,6 +18,7 @@ const progressDeadlineExceeded = "ProgressDeadlineExceeded"
 //
 // Mapping:
 //   - DeletionTimestamp set        → deleting
+//   - desired == 0                 → idle (scaled to zero; lingering replicas are draining)
 //   - available >= desired         → ready
 //   - 0 < available < desired      → degraded
 //   - available == 0: failed when the controller reports ProgressDeadlineExceeded
@@ -38,6 +39,8 @@ func deriveStatus(dep *appsv1.Deployment) deployment.StatusResponse {
 	switch {
 	case dep.DeletionTimestamp != nil:
 		resp.State = deployment.StateDeleting
+	case desired == 0:
+		resp.State = deployment.StateIdle
 	case available >= desired:
 		resp.State = deployment.StateReady
 	case available > 0:

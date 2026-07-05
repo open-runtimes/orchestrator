@@ -2,7 +2,9 @@
 // Docker API. Each deployment is a worker container fronted by a
 // deployments-sidecar proxy container, with an optional one-shot artifacts
 // step, all sharing a workspace volume. The daemon is the source of truth:
-// state derives live from container labels — there is no in-memory store.
+// the volume is the identity anchor and carries the canonical spec on its
+// labels, so a deployment scaled to zero (no containers) still exists — there
+// is no in-memory store.
 package docker
 
 import (
@@ -59,22 +61,23 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 }
 
 // Apply creates the deployment or replaces it in place. Applying an identical
-// spec is a no-op; any change tears the old containers down and recreates them.
+// spec is a no-op — including when the deployment is scaled to zero, which
+// stays idle; any change tears down the containers and volume and recreates
+// everything, re-running artifacts.
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error {
 	spec, err := json.Marshal(req)
 	if err != nil {
 		return apperrors.Internal("docker.marshalSpec", err)
 	}
 
-	existing, err := o.containersFor(ctx, req.ID)
-	if err != nil {
-		return apperrors.Internal("docker.listContainers", err)
-	}
-	if specOf(existing) == string(spec) {
+	vol, err := o.client.VolumeInspect(ctx, volumeName(req.ID))
+	switch {
+	case err == nil && vol.Labels[labelSpec] == string(spec):
 		return nil
-	}
-	if len(existing) > 0 {
+	case err == nil:
 		o.cleanup(ctx, req.ID)
+	case !cerrdefs.IsNotFound(err):
+		return apperrors.Internal("docker.inspectVolume", err)
 	}
 
 	if err := o.create(ctx, req, string(spec)); err != nil {
@@ -84,13 +87,75 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error
 	return nil
 }
 
-// create provisions the workspace volume, materializes artifacts, and starts
-// the worker and proxy containers.
+// Scale sets the deployment's replica count. Zero stops and removes the
+// containers but keeps the workspace volume, so the deployment idles with its
+// materialized artifacts intact; a positive count (clamped to 1) recreates the
+// containers from the volume's spec label without re-running artifacts. Both
+// directions are idempotent.
+func (o *Orchestrator) Scale(ctx context.Context, id string, replicas int) error {
+	vol, err := o.volumeFor(ctx, id)
+	if err != nil {
+		return err
+	}
+	if replicas <= 0 {
+		o.removeContainers(ctx, id)
+		return nil
+	}
+	if o.serving(ctx, id) {
+		return nil
+	}
+
+	req, err := parseSpec(vol.Labels[labelSpec])
+	if err != nil {
+		return err
+	}
+	o.removeContainers(ctx, id) // clear stopped or partial containers first
+	if err := o.createContainers(ctx, req, vol.Labels[labelSpec]); err != nil {
+		o.removeContainers(ctx, id)
+		return err
+	}
+	return nil
+}
+
+// serving reports whether both the worker and proxy containers are running.
+func (o *Orchestrator) serving(ctx context.Context, id string) bool {
+	for _, name := range []string{workerName(id), proxyName(id)} {
+		info, err := o.client.ContainerInspect(ctx, name)
+		if err != nil || info.State == nil || !info.State.Running {
+			return false
+		}
+	}
+	return true
+}
+
+// create provisions the labeled workspace volume — the deployment's identity
+// anchor — materializes artifacts, and starts the serving containers.
 func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec string) error {
-	if _, err := o.client.VolumeCreate(ctx, volume.CreateOptions{Name: volumeName(req.ID)}); err != nil {
+	_, err := o.client.VolumeCreate(ctx, volume.CreateOptions{
+		Name:   volumeName(req.ID),
+		Labels: volumeLabels(req, spec),
+	})
+	if err != nil {
 		return apperrors.Internal("docker.createVolume", err)
 	}
 
+	if len(req.Artifacts) > 0 {
+		// Detached context so an HTTP request timeout doesn't cancel image pulls.
+		if err := o.pullImageIfNeeded(context.WithoutCancel(ctx), o.cfg.JobSidecarImage); err != nil {
+			return apperrors.Internal("docker.pullJobSidecarImage", err)
+		}
+		if err := o.runArtifacts(ctx, req); err != nil {
+			return err
+		}
+	}
+
+	return o.createContainers(ctx, req, spec)
+}
+
+// createContainers pulls images and starts the worker and proxy containers.
+// The workspace volume must already exist with artifacts materialized — this
+// is the wake path shared by create and Scale.
+func (o *Orchestrator) createContainers(ctx context.Context, req *deployment.Request, spec string) error {
 	// Detached context so an HTTP request timeout doesn't cancel image pulls.
 	pullCtx := context.WithoutCancel(ctx)
 	if err := o.pullImageIfNeeded(pullCtx, req.Image); err != nil {
@@ -98,15 +163,6 @@ func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec
 	}
 	if err := o.pullImageIfNeeded(pullCtx, o.cfg.SidecarImage); err != nil {
 		return apperrors.Internal("docker.pullSidecarImage", err)
-	}
-
-	if len(req.Artifacts) > 0 {
-		if err := o.pullImageIfNeeded(pullCtx, o.cfg.JobSidecarImage); err != nil {
-			return apperrors.Internal("docker.pullJobSidecarImage", err)
-		}
-		if err := o.runArtifacts(ctx, req); err != nil {
-			return err
-		}
 	}
 
 	workerID, err := o.startWorker(ctx, req)
@@ -214,7 +270,8 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 }
 
 // startProxy creates and starts the deployments-sidecar proxy fronting the
-// worker. It carries the canonical spec label that makes Apply declarative.
+// worker. It mirrors the volume's spec and host labels for observability; the
+// volume remains authoritative.
 func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, workerIP, spec string) error {
 	labels := containerLabels(req.ID, typeProxy)
 	labels[labelSpec] = spec
@@ -248,37 +305,29 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 
 // Delete tears down the deployment's containers and volume.
 func (o *Orchestrator) Delete(ctx context.Context, id string) error {
-	existing, err := o.containersFor(ctx, id)
-	if err != nil {
-		return apperrors.Internal("docker.listContainers", err)
-	}
-	if len(existing) == 0 {
-		return apperrors.NotFound("deployment", id)
+	if _, err := o.volumeFor(ctx, id); err != nil {
+		return err
 	}
 	o.cleanup(ctx, id)
 	return nil
 }
 
-// Spec returns the last-applied request, read back from the proxy's label.
+// Spec returns the last-applied request, read back from the volume's label.
 func (o *Orchestrator) Spec(ctx context.Context, id string) (*deployment.Request, error) {
-	summaries, err := o.containersFor(ctx, id)
+	vol, err := o.volumeFor(ctx, id)
 	if err != nil {
-		return nil, apperrors.Internal("docker.listContainers", err)
+		return nil, err
 	}
-	raw := specOf(summaries)
-	if raw == "" {
-		return nil, apperrors.NotFound("deployment", id)
-	}
-	req := &deployment.Request{}
-	if err := json.Unmarshal([]byte(raw), req); err != nil {
-		return nil, apperrors.Internal("docker.unmarshalSpec", err)
-	}
-	return req, nil
+	return parseSpec(vol.Labels[labelSpec])
 }
 
 // Endpoints returns the proxy endpoint once it is running and healthy. Docker
-// runs a single replica, so this is at most one URL.
+// runs a single replica, so this is at most one URL; a scaled-to-zero
+// deployment exists but has none.
 func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, error) {
+	if _, err := o.volumeFor(ctx, id); err != nil {
+		return nil, err
+	}
 	info, err := o.client.ContainerInspect(ctx, proxyName(id))
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
@@ -300,25 +349,35 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 	}}, nil
 }
 
-// Status returns the deployment's state, derived live from its containers.
+// Status returns the deployment's state: idle when the volume exists without
+// containers, otherwise derived live from the containers.
 func (o *Orchestrator) Status(ctx context.Context, id string) (*deployment.StatusResponse, error) {
+	vol, err := o.volumeFor(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	summaries, err := o.containersFor(ctx, id)
 	if err != nil {
 		return nil, apperrors.Internal("docker.listContainers", err)
 	}
-	if len(summaries) == 0 {
-		return nil, apperrors.NotFound("deployment", id)
-	}
-	return deriveStatus(id, o.snapshotFor(ctx, summaries), time.Now()), nil
+	snap := o.snapshotFor(ctx, summaries, specDeadline(vol.Labels[labelSpec]))
+	return deriveStatus(id, snap, time.Now()), nil
 }
 
-// List returns the statuses of all deployments known to the daemon.
+// List returns the statuses of all deployments known to the daemon — one per
+// managed workspace volume.
 func (o *Orchestrator) List(ctx context.Context) ([]deployment.StatusResponse, error) {
+	vols, err := o.client.VolumeList(ctx, volume.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("label", labelManagedBy+"="+managedByValue)),
+	})
+	if err != nil {
+		return nil, apperrors.Internal("docker.listVolumes", err)
+	}
+
 	summaries, err := o.listManaged(ctx)
 	if err != nil {
 		return nil, apperrors.Internal("docker.listContainers", err)
 	}
-
 	byID := make(map[string][]container.Summary)
 	for _, c := range summaries {
 		if id := c.Labels[labelID]; id != "" {
@@ -326,10 +385,15 @@ func (o *Orchestrator) List(ctx context.Context) ([]deployment.StatusResponse, e
 		}
 	}
 
-	statuses := make([]deployment.StatusResponse, 0, len(byID))
+	statuses := make([]deployment.StatusResponse, 0, len(vols.Volumes))
 	now := time.Now()
-	for id, cs := range byID {
-		statuses = append(statuses, *deriveStatus(id, o.snapshotFor(ctx, cs), now))
+	for _, vol := range vols.Volumes {
+		id := vol.Labels[labelID]
+		if id == "" {
+			continue
+		}
+		snap := o.snapshotFor(ctx, byID[id], specDeadline(vol.Labels[labelSpec]))
+		statuses = append(statuses, *deriveStatus(id, snap, now))
 	}
 	return statuses, nil
 }
@@ -345,9 +409,22 @@ func (o *Orchestrator) Close() error {
 	return o.client.Close()
 }
 
+// volumeFor inspects a deployment's workspace volume — the identity anchor. A
+// missing volume means the deployment does not exist.
+func (o *Orchestrator) volumeFor(ctx context.Context, id string) (volume.Volume, error) {
+	vol, err := o.client.VolumeInspect(ctx, volumeName(id))
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return vol, apperrors.NotFound("deployment", id)
+		}
+		return vol, apperrors.Internal("docker.inspectVolume", err)
+	}
+	return vol, nil
+}
+
 // snapshotFor inspects a deployment's containers and reduces them to a snapshot.
-func (o *Orchestrator) snapshotFor(ctx context.Context, summaries []container.Summary) snapshot {
-	s := snapshot{deadline: specDeadline(summaries)}
+func (o *Orchestrator) snapshotFor(ctx context.Context, summaries []container.Summary, deadline time.Duration) snapshot {
+	s := snapshot{deadline: deadline}
 
 	var workerCreated time.Time
 	for _, c := range summaries {
@@ -362,6 +439,7 @@ func (o *Orchestrator) snapshotFor(ctx context.Context, summaries []container.Su
 			s.workerExitCode = info.State.ExitCode
 			workerCreated = time.Unix(c.Created, 0)
 		case typeProxy:
+			s.proxyExists = true
 			s.proxyRunning = info.State.Running
 			if info.State.Health != nil {
 				s.proxyHealth = info.State.Health.Status
@@ -438,13 +516,19 @@ func (o *Orchestrator) waitForExit(ctx context.Context, containerID string) (int
 	}
 }
 
-// cleanup stops and removes all of a deployment's containers and its volume.
-// Containers are addressed by their deterministic names, so cleanup works even
-// for partially created deployments.
-func (o *Orchestrator) cleanup(ctx context.Context, id string) {
+// removeContainers stops and removes a deployment's containers, keeping the
+// workspace volume — the scale-to-zero teardown. Containers are addressed by
+// their deterministic names, so this works even for partially created
+// deployments; already-gone containers are ignored.
+func (o *Orchestrator) removeContainers(ctx context.Context, id string) {
 	for _, name := range []string{proxyName(id), workerName(id), artifactsName(id)} {
 		o.removeContainer(ctx, name)
 	}
+}
+
+// cleanup fully tears down a deployment: its containers and its volume.
+func (o *Orchestrator) cleanup(ctx context.Context, id string) {
+	o.removeContainers(ctx, id)
 	_ = o.client.VolumeRemove(ctx, volumeName(id), true)
 }
 

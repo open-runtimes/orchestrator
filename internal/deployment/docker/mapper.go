@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"net"
+	"orchestrator/internal/apperrors"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"strconv"
@@ -11,9 +12,10 @@ import (
 	"github.com/docker/docker/api/types/container"
 )
 
-// Container labels — the Docker daemon is the deployments store, so the proxy
-// container carries the canonical spec and host alongside the shared identity
-// labels.
+// Labels — the Docker daemon is the deployments store. The workspace volume is
+// the identity anchor and carries the canonical spec and host, so a deployment
+// exists (possibly idle, with no containers) iff its volume does. The proxy
+// container mirrors the spec and host labels for observability only.
 const (
 	labelManagedBy = "managed-by"
 	labelID        = "deployment.id"
@@ -48,6 +50,17 @@ func containerLabels(id, containerType string) map[string]string {
 	}
 }
 
+// volumeLabels returns the labels for a deployment's workspace volume — the
+// authoritative home of the canonical spec and host.
+func volumeLabels(req *deployment.Request, spec string) map[string]string {
+	return map[string]string{
+		labelManagedBy: managedByValue,
+		labelID:        req.ID,
+		labelSpec:      spec,
+		labelHost:      req.Host,
+	}
+}
+
 // progressDeadline returns the ready deadline, applying the API default.
 func progressDeadline(seconds int) time.Duration {
 	if seconds <= 0 {
@@ -56,22 +69,20 @@ func progressDeadline(seconds int) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// specOf returns the canonical spec JSON stored on the proxy container, or ""
-// if no proxy container is present.
-func specOf(summaries []container.Summary) string {
-	for _, c := range summaries {
-		if c.Labels[labelType] == typeProxy {
-			return c.Labels[labelSpec]
-		}
+// parseSpec decodes the canonical spec JSON stored on the volume's label.
+func parseSpec(raw string) (*deployment.Request, error) {
+	req := &deployment.Request{}
+	if err := json.Unmarshal([]byte(raw), req); err != nil {
+		return nil, apperrors.Internal("docker.unmarshalSpec", err)
 	}
-	return ""
+	return req, nil
 }
 
-// specDeadline returns the ready deadline recorded in the proxy's spec label,
-// falling back to the API default.
-func specDeadline(summaries []container.Summary) time.Duration {
+// specDeadline returns the ready deadline recorded in the spec JSON, falling
+// back to the API default.
+func specDeadline(raw string) time.Duration {
 	var req deployment.Request
-	if raw := specOf(summaries); raw != "" {
+	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &req)
 	}
 	return progressDeadline(req.ProgressDeadlineSeconds)
@@ -127,6 +138,7 @@ type snapshot struct {
 	workerExists   bool
 	workerRunning  bool
 	workerExitCode int
+	proxyExists    bool
 	proxyRunning   bool
 	proxyHealth    container.HealthStatus
 	created        time.Time     // proxy creation time (worker's if the proxy is missing)
@@ -134,11 +146,15 @@ type snapshot struct {
 }
 
 // deriveStatus maps observed container state to a deployment status. Docker
-// runs exactly one replica, so desired is always 1.
+// runs at most one replica: no containers means scaled to zero (idle),
+// otherwise desired is 1.
 func deriveStatus(id string, s snapshot, now time.Time) *deployment.StatusResponse {
 	status := &deployment.StatusResponse{ID: id, DesiredReplicas: 1}
 
 	switch {
+	case !s.workerExists && !s.proxyExists:
+		status.State = deployment.StateIdle
+		status.DesiredReplicas = 0
 	case s.workerRunning && s.proxyRunning && s.proxyHealth == container.Healthy:
 		status.State = deployment.StateReady
 		status.AvailableReplicas = 1
