@@ -61,6 +61,14 @@ spec:
               value: {{ .Values.deployments.activator.port | quote }}
             - name: KUBE_CPU_OVERCOMMIT
               value: {{ .Values.deployments.cpuOvercommit | quote }}
+            {{- if .Values.deployments.pools }}
+            - name: POOLS_JSON
+              value: {{ .Values.deployments.pools | toJson | quote }}
+            - name: POOL_SHIM_IMAGE
+              value: {{ include "orchestrator.poolShimImage" . | quote }}
+            - name: POOL_DOMAIN
+              value: {{ .Values.deployments.domain | quote }}
+            {{- end }}
             {{- if .Values.deployments.leaderElection.enabled }}
             - name: KUBE_LEADER_ELECTION
               value: "true"
@@ -152,9 +160,13 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pools create/claim/discard warm pods and read exec output from their logs.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

@@ -57,6 +57,14 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.poolShimImage" -}}
+{{- if .Values.deployments.shimImage.ref -}}
+{{- .Values.deployments.shimImage.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.deployments.shimImage.repository .Values.deployments.shimImage.tag -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.activatorImage" -}}
 {{- if .Values.deployments.activator.image.ref -}}
 {{- .Values.deployments.activator.image.ref -}}

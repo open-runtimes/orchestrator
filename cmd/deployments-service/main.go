@@ -17,8 +17,11 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
+	pooldocker "orchestrator/internal/pool/docker"
+	poolkubernetes "orchestrator/internal/pool/kubernetes"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
+	"orchestrator/pkg/pool"
 	"orchestrator/pkg/server"
 	"os"
 	"time"
@@ -102,12 +105,37 @@ func main() {
 		go scaler.Run(scalerCtx)
 	}
 
+	// Pools are config-declared: no POOLS_JSON → no pool orchestrator, no
+	// pool routes.
+	pools, err := pool.LoadPools(config.GetEnv("POOLS_JSON", ""))
+	if err != nil {
+		slog.Error("Invalid pool configuration", "error", err)
+		os.Exit(1)
+	}
+	var poolSvc *pool.Service
+	if len(pools) > 0 {
+		poolOrchestrator, err := buildPoolOrchestrator(ctx, backend, pools)
+		if err != nil {
+			slog.Error("Failed to build pool orchestrator", "error", err)
+			os.Exit(1)
+		}
+		defer poolOrchestrator.Close()
+		if err := poolOrchestrator.Start(ctx); err != nil {
+			slog.Error("Failed to start pool orchestrator", "error", err)
+			os.Exit(1)
+		}
+		poolSvc = pool.NewService(poolOrchestrator, pools, artifact.DefaultRegistry())
+		slog.Info("Pools configured", "count", len(pools))
+	}
+
 	healthChecker := health.NewChecker(orchestrator)
 	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{
 		Service:       svc,
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
 		APIKey:        svcCfg.APIKey,
+		PoolService:   poolSvc,
+		Dispatcher:    eventDispatcher,
 	})
 
 	if svcCfg.APIKey == "" {
@@ -132,6 +160,27 @@ func main() {
 	}); err != nil {
 		slog.Error("Service failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Pool) (pool.Orchestrator, error) {
+	sidecarImage := config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+	shimImage := config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
+	switch backend {
+	case "docker":
+		cfg := pooldocker.LoadConfigFromEnv()
+		cfg.SidecarImage = sidecarImage
+		cfg.ShimImage = shimImage
+		cfg.Pools = pools
+		return pooldocker.NewOrchestrator(ctx, cfg)
+	case "kubernetes":
+		cfg := poolkubernetes.LoadConfigFromEnv()
+		cfg.SidecarImage = sidecarImage
+		cfg.ShimImage = shimImage
+		cfg.Pools = pools
+		return poolkubernetes.NewOrchestrator(ctx, cfg)
+	default:
+		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
 	}
 }
 

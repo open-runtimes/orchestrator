@@ -1,0 +1,114 @@
+package kubernetes
+
+import (
+	"orchestrator/internal/config"
+	"orchestrator/internal/kube"
+	"orchestrator/pkg/pool"
+	"strconv"
+	"time"
+)
+
+const (
+	defaultNamespace       = "orchestrator"
+	defaultRunAsUser       = 65532 // distroless "nonroot"
+	defaultGatewayName     = "orchestrator"
+	defaultPoolDomain      = "localhost"
+	defaultLeaderLeaseName = "deployments-service-pools-leader"
+
+	defaultActivationRetention = 15 * time.Minute
+	defaultOrphanTTL           = 60 * time.Second
+)
+
+// Config holds configuration for the Kubernetes pool orchestrator.
+type Config struct {
+	SidecarImage string      // deployments-sidecar (proxy) image (set by the caller)
+	ShimImage    string      // pool-shim image for the shim-install init container (set by the caller)
+	Pools        []pool.Pool // configured pools (set by the caller from POOLS_JSON)
+
+	Kubeconfig             string
+	Context                string // kubeconfig context to pin; empty uses current-context
+	Namespace              string
+	SidecarImagePullPolicy string // applied to shim-install + proxy; empty = kubelet default
+	WorkerImagePullPolicy  string // applied to the workload (pool image) container; empty = kubelet default
+	RunAsUser              int64  // UID/GID for every container; default 65532
+
+	GatewayEnabled   bool   // reconcile per-activation HTTPRoutes; off for pre-Gateway clusters
+	GatewayName      string // parentRef Gateway name
+	GatewayNamespace string // parentRef Gateway namespace; default = Namespace
+
+	PoolDomain          string        // default hostname suffix for HTTP activations: {id}.{PoolDomain}
+	ActivationRetention time.Duration // how long finished exec pods stay queryable before GC
+	OrphanTTL           time.Duration // discard claimed-but-unlabeled pods (crashed mid-claim) after this
+
+	// LeaderElection gates the control loop (replenishment + GC) to one
+	// replica; disabled = single-replica mode.
+	LeaderElection kube.LeaderElectionConfig
+}
+
+// LoadConfigFromEnv loads orchestrator configuration from environment
+// variables, mirroring the deployments Kubernetes backend's names where the
+// concept matches. SidecarImage, ShimImage, and Pools are provided by the
+// caller.
+func LoadConfigFromEnv() Config {
+	return Config{
+		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
+		Context:                config.GetEnv("KUBE_CONTEXT", ""),
+		Namespace:              config.GetEnv("KUBE_NAMESPACE", defaultNamespace),
+		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
+		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
+		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
+
+		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
+		GatewayName:      config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
+		GatewayNamespace: config.GetEnv("KUBE_GATEWAY_NAMESPACE", ""),
+
+		PoolDomain:          config.GetEnv("POOL_DOMAIN", defaultPoolDomain),
+		ActivationRetention: config.GetDurationEnv("POOL_ACTIVATION_RETENTION", defaultActivationRetention),
+		OrphanTTL:           config.GetDurationEnv("POOL_ORPHAN_TTL", defaultOrphanTTL),
+
+		LeaderElection: kube.LeaderElectionConfig{
+			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
+			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", defaultLeaderLeaseName),
+			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
+			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),
+			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),
+			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
+		},
+	}
+}
+
+// boolEnv parses a boolean environment variable, falling back to the default
+// on absence or a malformed value.
+func boolEnv(key string, defaultValue bool) bool {
+	if v, err := strconv.ParseBool(config.GetEnv(key, strconv.FormatBool(defaultValue))); err == nil {
+		return v
+	}
+	return defaultValue
+}
+
+func (c *Config) applyDefaults() {
+	if c.Namespace == "" {
+		c.Namespace = defaultNamespace
+	}
+	if c.RunAsUser <= 0 {
+		c.RunAsUser = defaultRunAsUser
+	}
+	if c.GatewayName == "" {
+		c.GatewayName = defaultGatewayName
+	}
+	if c.GatewayNamespace == "" {
+		c.GatewayNamespace = c.Namespace
+	}
+	if c.PoolDomain == "" {
+		c.PoolDomain = defaultPoolDomain
+	}
+	if c.ActivationRetention <= 0 {
+		c.ActivationRetention = defaultActivationRetention
+	}
+	if c.OrphanTTL <= 0 {
+		c.OrphanTTL = defaultOrphanTTL
+	}
+	if c.LeaderElection.Enabled {
+		c.LeaderElection.ApplyDefaults(defaultLeaderLeaseName)
+	}
+}

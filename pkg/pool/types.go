@@ -108,8 +108,8 @@ type ActivationStatus struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// PoolStatus is the API view of a configured pool.
-type PoolStatus struct {
+// Status is the API view of a configured pool.
+type Status struct {
 	ID      string `json:"id"`
 	Image   string `json:"image"`
 	Size    int    `json:"size"`

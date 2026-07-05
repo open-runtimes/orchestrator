@@ -74,6 +74,17 @@ deployments:
   # limit. Deliberately no default cpu limit — see resource-model.md.
   limitRange:
     enabled: false
+  # Warm pools (docs/design/pools.md): config-declared fleets an activation
+  # late-binds onto. Each entry is a pkg/pool.Pool: {id, image, size, cpu,
+  # memory, port (0 = exec pool), burst (reject|cold), environment}.
+  # Adding/resizing/removing a pool is a values change + rollout, not an API call.
+  pools: []
+  # Image for the pool-shim (warm-pod entrypoint; installed into workload
+  # containers by the shim-install init container).
+  shimImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/pool-shim
+    tag: latest
   # The buffering edge for cold/async traffic (deployments-activator).
   activator:
     replicaCount: 1

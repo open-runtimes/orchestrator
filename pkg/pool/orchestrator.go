@@ -12,7 +12,7 @@ type Orchestrator interface {
 	Start(ctx context.Context) error
 
 	// Pools reports the configured pools with live warm/claimed counts.
-	Pools(ctx context.Context) ([]PoolStatus, error)
+	Pools(ctx context.Context) ([]Status, error)
 
 	// Activate claims a warm pod and late-binds the activation onto it.
 	// Exec pools: blocks until the workload exits (bounded by

@@ -22,9 +22,9 @@ const drainDeregisterDelay = 2 * time.Second
 // Proxy fronts the user container: proxied traffic on ProxyPort, /ready and
 // /stats on AdminPort.
 type Proxy struct {
-	cfg     Config
-	prober  *prober
-	reverse *httputil.ReverseProxy
+	cfg  Config
+	pool *pool                   // pool mode (cfg.ClaimToken set); nil = direct mode
+	bind atomic.Pointer[binding] // armed at New in direct mode, by a claim in pool mode
 
 	sem      chan struct{} // concurrency slots; nil = unlimited
 	waiters  atomic.Int64  // requests queued for a slot
@@ -42,28 +42,50 @@ type Proxy struct {
 
 	deregisterDelay time.Duration // drainDeregisterDelay; shortened in tests
 
+	runCtx context.Context // Start's ctx; late-armed probers run under it
+
 	data    *http.Server
 	admin   *http.Server
 	dataLn  net.Listener
 	adminLn net.Listener
 }
 
+// binding is the armed data plane: where to proxy, how to probe it, and how
+// long a request may take. Direct mode arms it at New from cfg.Target; pool
+// mode starts with none and arms it when an HTTP claim late-binds the target.
+type binding struct {
+	reverse *httputil.ReverseProxy
+	prober  *prober
+	timeout time.Duration // per-request total → 504
+}
+
+func newBinding(cfg Config) *binding {
+	return &binding{
+		reverse: &httputil.ReverseProxy{
+			Rewrite: func(r *httputil.ProxyRequest) {
+				r.SetURL(&url.URL{Scheme: "http", Host: cfg.Target})
+				r.SetXForwarded()
+			},
+			ErrorHandler: writeProxyError,
+		},
+		prober:  newProber(cfg),
+		timeout: cfg.Timeout,
+	}
+}
+
 // New creates a proxy from cfg. Call Run (or Start) to serve.
 func New(cfg Config) *Proxy {
 	p := &Proxy{
 		cfg:             cfg,
-		prober:          newProber(cfg),
 		deregisterDelay: drainDeregisterDelay,
 	}
 	if cfg.Concurrency > 0 {
 		p.sem = make(chan struct{}, cfg.Concurrency)
 	}
-	p.reverse = &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(&url.URL{Scheme: "http", Host: cfg.Target})
-			r.SetXForwarded()
-		},
-		ErrorHandler: writeProxyError,
+	if cfg.ClaimToken != "" {
+		p.pool = newPool(cfg)
+	} else {
+		p.bind.Store(newBinding(cfg))
 	}
 	p.data = &http.Server{Handler: http.HandlerFunc(p.handleData)}
 	p.admin = &http.Server{Handler: p.adminMux()}
@@ -95,15 +117,26 @@ func (p *Proxy) Start(ctx context.Context) error {
 		return err
 	}
 	p.dataLn, p.adminLn = dataLn, adminLn
+	p.runCtx = ctx
 
-	go p.prober.run(ctx)
+	if b := p.bind.Load(); b != nil {
+		go b.prober.run(ctx)
+	}
 	go func() { _ = p.data.Serve(dataLn) }()
 	go func() { _ = p.admin.Serve(adminLn) }()
 	return nil
 }
 
-// Ready reports whether the user container is passing its readiness probe.
-func (p *Proxy) Ready() bool { return p.prober.Ready() }
+// Ready reports whether the fronted workload is passing its readiness probe.
+// In pool mode with no target armed yet (unclaimed, or claimed for exec where
+// there is nothing to probe) it reports warm-readiness instead: true unless
+// the pod is poisoned. See handleReady for the full inversion story.
+func (p *Proxy) Ready() bool {
+	if b := p.bind.Load(); b != nil {
+		return b.prober.Ready()
+	}
+	return p.pool != nil && !p.pool.snapshot().Failed
+}
 
 // DataAddr returns the data listener's bound address. Valid after Start.
 func (p *Proxy) DataAddr() string { return p.dataLn.Addr().String() }
@@ -112,7 +145,8 @@ func (p *Proxy) DataAddr() string { return p.dataLn.Addr().String() }
 func (p *Proxy) AdminAddr() string { return p.adminLn.Addr().String() }
 
 func (p *Proxy) handleData(w http.ResponseWriter, r *http.Request) {
-	if p.draining.Load() || !p.prober.Ready() {
+	b := p.bind.Load()
+	if b == nil || p.draining.Load() || !b.prober.Ready() {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -129,12 +163,12 @@ func (p *Proxy) handleData(w http.ResponseWriter, r *http.Request) {
 	defer p.accumulate(-1)
 
 	ctx := r.Context()
-	if p.cfg.Timeout > 0 {
+	if b.timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, p.cfg.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, b.timeout)
 		defer cancel()
 	}
-	p.reverse.ServeHTTP(w, r.WithContext(ctx))
+	b.reverse.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // acquire reserves a concurrency slot. Requests beyond Concurrency wait in a
@@ -178,13 +212,24 @@ func (p *Proxy) adminMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ready", p.handleReady)
 	mux.HandleFunc("GET /stats", p.handleStats)
+	if p.pool != nil {
+		mux.HandleFunc("POST "+ClaimPath, p.handleActivate)
+		mux.HandleFunc("GET "+ClaimStatePath, p.handleClaimState)
+	}
 	return mux
 }
 
 // handleReady is the combined readiness signal probed by kubelet, Docker
 // healthchecks, and the activator: container ready and not draining.
+//
+// Pool mode INVERTS what 200 means while unclaimed: it is warm-readiness —
+// "this pod can accept an activation" (the replenishment controller's gate) —
+// while the data plane is still 503 because nothing serves yet. An HTTP claim
+// arms the target and /ready reverts to serving-readiness (the workload
+// answers its probe); an exec claim keeps 200 with nothing to probe — the
+// pod's fate is the container exit. A poisoned pod reports 503 forever.
 func (p *Proxy) handleReady(w http.ResponseWriter, _ *http.Request) {
-	if p.draining.Load() || !p.prober.Ready() {
+	if p.draining.Load() || !p.Ready() {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}
@@ -230,7 +275,7 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 		InFlight:           p.inFlight.Load(),
 		Requests:           p.requests.Load(),
 		ConcurrencySeconds: p.concurrencySeconds(),
-		Ready:              p.prober.Ready(),
+		Ready:              p.Ready(),
 	})
 }
 

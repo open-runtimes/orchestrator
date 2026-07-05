@@ -41,8 +41,8 @@ func main() {
 // run serves the proxy until SIGINT/SIGTERM, then drains.
 func run() error {
 	cfg := proxy.LoadConfigFromEnv()
-	if cfg.Target == "" {
-		return errors.New(proxy.EnvTarget + " environment variable is required")
+	if cfg.Target == "" && cfg.ClaimToken == "" {
+		return errors.New(proxy.EnvTarget + " (direct mode) or " + proxy.EnvClaimToken + " (pool mode) is required")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

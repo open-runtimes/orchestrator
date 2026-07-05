@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
 	"orchestrator/pkg/deployment"
+	"orchestrator/pkg/pool"
 )
 
 // DeploymentsRouterConfig holds dependencies for the deployments API router.
@@ -14,6 +16,11 @@ type DeploymentsRouterConfig struct {
 	Metrics       *observability.Metrics
 	HealthChecker *health.Checker
 	APIKey        string
+
+	// PoolService mounts /v1/deployment-pools when pools are configured
+	// (nil = no pool routes). Dispatcher delivers async activation results.
+	PoolService *pool.Service
+	Dispatcher  dispatcher.Queue
 }
 
 // NewDeploymentsRouter creates the management router for the deployments
@@ -32,6 +39,10 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 	mux.Handle("GET /v1/deployments/{id}/revisions", auth(http.HandlerFunc(h.revisions)))
 	mux.Handle("POST /v1/deployments/{id}/traffic", auth(http.HandlerFunc(h.setTraffic)))
 	mux.Handle("DELETE /v1/deployments/{id}", auth(http.HandlerFunc(h.remove)))
+
+	if cfg.PoolService != nil {
+		registerPoolRoutes(mux, auth, cfg.PoolService, cfg.Dispatcher)
+	}
 
 	var handler http.Handler = mux
 	handler = ContentTypeMiddleware()(handler)

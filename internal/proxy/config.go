@@ -32,6 +32,11 @@ const (
 	EnvReadinessPeriodMillis     = "PROXY_READINESS_PERIOD_MS"
 	EnvReadinessTimeoutMillis    = "PROXY_READINESS_TIMEOUT_MS"
 	EnvReadinessFailureThreshold = "PROXY_READINESS_FAILURE_THRESHOLD"
+
+	// EnvTargetHost is the pool-mode host the claimed workload serves on; the
+	// claim's Port is joined to it. Docker warm containers front a sibling
+	// container, not localhost — hence a distinct knob from EnvTarget.
+	EnvTargetHost = "PROXY_TARGET_HOST"
 )
 
 // Config configures the proxy.
@@ -50,6 +55,13 @@ type Config struct {
 	ReadinessPeriod           time.Duration
 	ReadinessTimeout          time.Duration
 	ReadinessFailureThreshold int
+
+	// Pool mode (see claim.go) — armed when ClaimToken is set: the proxy
+	// starts unclaimed with no target, and POST /activate late-binds one.
+	// Target is ignored in pool mode.
+	ClaimToken string // bearer token required to claim; empty = direct mode
+	TargetHost string // host the claimed workload serves on, joined with the claim's Port
+	Workspace  string // shared volume: artifact root + shim FIFO directory
 }
 
 // LoadConfigFromEnv loads proxy configuration from the environment.
@@ -69,5 +81,9 @@ func LoadConfigFromEnv() Config {
 		ReadinessPeriod:           time.Duration(config.GetIntEnv(EnvReadinessPeriodMillis, 100)) * time.Millisecond,
 		ReadinessTimeout:          time.Duration(config.GetIntEnv(EnvReadinessTimeoutMillis, 1000)) * time.Millisecond,
 		ReadinessFailureThreshold: config.GetIntEnv(EnvReadinessFailureThreshold, 3),
+
+		ClaimToken: config.GetEnv(EnvClaimToken, ""),
+		TargetHost: config.GetEnv(EnvTargetHost, "127.0.0.1"),
+		Workspace:  config.GetEnv("SHARED_VOLUME_PATH", "/workspace"), // same contract as the shim and job sidecar
 	}
 }

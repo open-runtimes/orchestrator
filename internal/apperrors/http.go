@@ -14,6 +14,8 @@ func HTTPStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, ErrConflict):
 		return http.StatusConflict
+	case errors.Is(err, ErrExhausted):
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}

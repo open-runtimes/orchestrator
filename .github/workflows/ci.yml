@@ -77,6 +77,7 @@ jobs:
           go build -o /dev/null ./cmd/deployments-service
           go build -o /dev/null ./cmd/deployments-sidecar
           go build -o /dev/null ./cmd/deployments-activator
+          go build -o /dev/null ./cmd/pool-shim
 
   images:
     needs: [lint, helm, test, build]
@@ -158,6 +159,15 @@ jobs:
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
 
+      - name: Build and push pool-shim
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/pool-shim
+        run: |
+          ko build ./cmd/pool-shim \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
   chart:
     needs: [lint, helm, test, build]
     # Only publish charts on tag pushes — avoids OCI registry churn on every main commit.
@@ -200,6 +210,7 @@ jobs:
         run: |
           KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
           KO_DOCKER_REPO=ko.local/deployments-sidecar ko build --local --bare ./cmd/deployments-sidecar
+          KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
 
       - name: Pull test images
         run: |
@@ -259,7 +270,8 @@ jobs:
           KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
           KO_DOCKER_REPO=ko.local/deployments-sidecar ko build --local --bare ./cmd/deployments-sidecar
           KO_DOCKER_REPO=ko.local/deployments-activator ko build --local --bare ./cmd/deployments-activator
-          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest --name orchestrator-dev
+          KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
+          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-shim:latest --name orchestrator-dev
 
       - name: Install Gateway API + Traefik
         run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-gateway.sh

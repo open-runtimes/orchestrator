@@ -18,6 +18,7 @@ JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
 DEPLOYMENTS_SIDECAR_IMAGE = 'ko.local/deployments-sidecar'
 DEPLOYMENTS_ACTIVATOR_IMAGE = 'ko.local/deployments-activator'
+POOL_SHIM_IMAGE = 'ko.local/pool-shim'
 
 # --- Image builds ------------------------------------------------------------
 
@@ -91,6 +92,16 @@ if DEPLOYMENTS_ENABLED:
             'go.sum',
         ],
     )
+    custom_build(
+        POOL_SHIM_IMAGE,
+        'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/pool-shim && docker tag {0} $EXPECTED_REF'.format(POOL_SHIM_IMAGE),
+        deps=[
+            'cmd/pool-shim',
+            'internal/proxy',
+            'go.mod',
+            'go.sum',
+        ],
+    )
     helm_set = [
         'deployments.enabled=true',
         'deployments.image.repository=' + DEPLOYMENTS_SERVICE_IMAGE,
@@ -98,6 +109,7 @@ if DEPLOYMENTS_ENABLED:
         'deployments.sidecarImage.repository=' + DEPLOYMENTS_SIDECAR_IMAGE,
         'deployments.activator.image.repository=' + DEPLOYMENTS_ACTIVATOR_IMAGE,
         'deployments.activator.image.pullPolicy=Never',
+        'deployments.shimImage.repository=' + POOL_SHIM_IMAGE,
     ]
 
 k8s_yaml(helm(
