@@ -12,11 +12,17 @@ kubectl --context "$CONTEXT" apply -f \
 
 helm repo add traefik https://traefik.github.io/charts >/dev/null
 helm repo update traefik >/dev/null
-helm upgrade --install traefik traefik/traefik \
+if ! helm upgrade --install traefik traefik/traefik \
   --kube-context "$CONTEXT" \
   --namespace traefik-system --create-namespace \
   --version "$TRAEFIK_CHART_VERSION" \
   --values "$(dirname "$0")/gateway-poc/traefik-values.yaml" \
-  --wait --timeout 5m
+  --wait --timeout 5m; then
+  echo "--- traefik install failed; dumping state ---" >&2
+  kubectl --context "$CONTEXT" -n traefik-system get pods -o wide >&2 || true
+  kubectl --context "$CONTEXT" -n traefik-system describe pods >&2 || true
+  kubectl --context "$CONTEXT" -n traefik-system get events --sort-by=.lastTimestamp >&2 | tail -20 || true
+  exit 1
+fi
 
 echo "Gateway API ${GATEWAY_API_VERSION} + Traefik chart ${TRAEFIK_CHART_VERSION} installed."
