@@ -6,6 +6,8 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
+	"io"
 	"log/slog"
 	"orchestrator/internal/config"
 	"orchestrator/internal/proxy"
@@ -18,10 +20,50 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "pool-shim"))
 
+	var installTo string
+	flag.StringVar(&installTo, "install", "", "copy this binary to the given path and exit (the shim-install init container: the pool image is the user's runtime and has no shim)")
+	flag.Parse()
+
+	if installTo != "" {
+		if err := install(installTo); err != nil {
+			slog.Error("Shim install failed", "path", installTo, "error", err)
+			os.Exit(1)
+		}
+		slog.Info("Shim installed", "path", installTo)
+		return
+	}
+
 	if err := run(); err != nil {
 		slog.Error("Shim failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// install copies the running binary to path (0755) so the workload container
+// can use it as its entrypoint.
+func install(path string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	src, err := os.Open(self)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	dst, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	return dst.Close()
 }
 
 func run() error {
