@@ -96,6 +96,15 @@ func (o *Orchestrator) ensureService(ctx context.Context, req *deployment.Reques
 	return nil
 }
 
+// SetTraffic reconciles the deployment's HTTPRoute weights. Placeholder until
+// the Phase 3 revision rework lands in this package.
+func (o *Orchestrator) SetTraffic(ctx context.Context, id string, targets []deployment.Target) error {
+	if _, err := o.Spec(ctx, id); err != nil {
+		return err
+	}
+	return apperrors.Validation("traffic", "traffic splitting arrives with the revision rework")
+}
+
 // Scale sets the replica count via the scale subresource — the same write the
 // activator's cold raise and the idle-to-zero loop perform, so they can't
 // conflict with a concurrent Apply (which never touches a live spec.replicas

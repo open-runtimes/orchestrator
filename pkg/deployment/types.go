@@ -73,14 +73,23 @@ const (
 	StateDeleting = "deleting"
 )
 
+// Target is one entry in a deployment's traffic table: a revision and its
+// share of requests. Percents across a table sum to 100.
+type Target struct {
+	RevisionName string `json:"revisionName"`
+	Percent      int    `json:"percent"`
+}
+
 // StatusResponse is the API view of a deployment.
 type StatusResponse struct {
-	ID                string `json:"id"`
-	State             string `json:"status"` // pending|ready|degraded|failed|deleting
-	URL               string `json:"url"`    // activator URL (Phase 1) / gateway URL (Phase 3+)
-	DesiredReplicas   int    `json:"desiredReplicas"`
-	AvailableReplicas int    `json:"availableReplicas"`
-	Error             string `json:"error,omitempty"`
+	ID                string   `json:"id"`
+	State             string   `json:"status"` // pending|ready|idle|degraded|failed|deleting
+	URL               string   `json:"url"`    // gateway URL (K8s) / activator URL (Docker)
+	Revisions         []string `json:"revisions,omitempty"` // newest first; empty on Docker (single-revision)
+	Traffic           []Target `json:"traffic,omitempty"`
+	DesiredReplicas   int      `json:"desiredReplicas"`
+	AvailableReplicas int      `json:"availableReplicas"`
+	Error             string   `json:"error,omitempty"`
 }
 
 // ListResponse is the response for listing deployments.

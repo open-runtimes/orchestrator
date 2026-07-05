@@ -31,15 +31,29 @@ type Orchestrator interface {
 	// Spec returns the last-applied request, reconstructed from the backend.
 	Spec(ctx context.Context, id string) (*Request, error)
 
-	// Endpoints returns ready proxy endpoints for the deployment — the
-	// activator forwards requests to these.
-	Endpoints(ctx context.Context, id string) ([]*url.URL, error)
+	Routing
 
 	// Status returns the deployment's current state, derived from the backend.
 	Status(ctx context.Context, id string) (*StatusResponse, error)
 
 	// List returns all deployments' statuses.
 	List(ctx context.Context) ([]StatusResponse, error)
+}
+
+// Routing is the traffic surface of an orchestrator backend.
+type Routing interface {
+	// SetTraffic replaces the deployment's traffic table — canary,
+	// blue-green, or rollback are all weight edits across existing
+	// revisions. Also switches the rollout mode to manual: a new revision
+	// no longer auto-cuts until traffic is reset to a single 100% target on
+	// the latest revision. Docker is single-revision: setting 100% to the
+	// deployment's own ID is a no-op, anything else is a validation error.
+	SetTraffic(ctx context.Context, id string, targets []Target) error
+
+	// Endpoints returns ready proxy endpoints for the deployment's
+	// traffic-receiving revisions — the in-process activator forwards
+	// requests to these (Docker data path).
+	Endpoints(ctx context.Context, id string) ([]*url.URL, error)
 }
 
 // Lifecycle is the process-lifecycle surface of an orchestrator backend.

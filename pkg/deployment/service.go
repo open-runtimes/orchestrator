@@ -151,6 +151,38 @@ func (s *Service) Scale(ctx context.Context, id string, replicas int) error {
 	return s.orchestrator.Scale(ctx, id, replicas)
 }
 
+// SetTraffic validates and applies a traffic table — canary, blue-green, or
+// rollback are all weight edits across existing revisions.
+func (s *Service) SetTraffic(ctx context.Context, id string, targets []Target) (*StatusResponse, error) {
+	if len(targets) == 0 {
+		return nil, apperrors.Validation("traffic", "at least one target is required")
+	}
+	sum := 0
+	seen := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		if t.RevisionName == "" {
+			return nil, apperrors.Validation("traffic.revisionName", "revision name is required")
+		}
+		if seen[t.RevisionName] {
+			return nil, apperrors.Validation("traffic.revisionName", fmt.Sprintf("duplicate revision %q", t.RevisionName))
+		}
+		seen[t.RevisionName] = true
+		if t.Percent < 0 || t.Percent > 100 {
+			return nil, apperrors.Validation("traffic.percent", "percent must be between 0 and 100")
+		}
+		sum += t.Percent
+	}
+	if sum != 100 {
+		return nil, apperrors.Validation("traffic", fmt.Sprintf("percents must sum to 100, got %d", sum))
+	}
+
+	if err := s.orchestrator.SetTraffic(ctx, id, targets); err != nil {
+		return nil, err
+	}
+	slog.Info("Traffic table applied", "deploymentId", id, "targets", len(targets))
+	return s.Get(ctx, id)
+}
+
 func (s *Service) fillURL(ctx context.Context, status *StatusResponse) {
 	spec, err := s.orchestrator.Spec(ctx, status.ID)
 	if err != nil || s.urlFor == nil {

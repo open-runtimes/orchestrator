@@ -303,6 +303,19 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 	return nil
 }
 
+// SetTraffic is meaningful only across revisions, and Docker is
+// single-revision: routing 100% to the deployment itself is the no-op it
+// already does; anything else can't be honored.
+func (o *Orchestrator) SetTraffic(ctx context.Context, id string, targets []deployment.Target) error {
+	if _, err := o.volumeFor(ctx, id); err != nil {
+		return err
+	}
+	if len(targets) == 1 && targets[0].RevisionName == id && targets[0].Percent == 100 {
+		return nil
+	}
+	return apperrors.Validation("traffic", "the Docker backend is single-revision; traffic splitting requires the Kubernetes backend")
+}
+
 // Delete tears down the deployment's containers and volume.
 func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 	if _, err := o.volumeFor(ctx, id); err != nil {
