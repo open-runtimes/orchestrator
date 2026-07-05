@@ -17,6 +17,6 @@ helm upgrade --install traefik traefik/traefik \
   --namespace traefik-system --create-namespace \
   --version "$TRAEFIK_CHART_VERSION" \
   --values "$(dirname "$0")/gateway-poc/traefik-values.yaml" \
-  --wait --timeout 3m
+  --wait --timeout 5m
 
 echo "Gateway API ${GATEWAY_API_VERSION} + Traefik chart ${TRAEFIK_CHART_VERSION} installed."
