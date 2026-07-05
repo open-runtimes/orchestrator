@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -30,6 +31,14 @@ type Proxy struct {
 	inFlight atomic.Int64  // requests currently being proxied
 	requests atomic.Int64  // cumulative accepted requests — the scrape-based idle signal
 	draining atomic.Bool
+
+	// integral accumulates concurrency-seconds (∫ inFlight dt) as a monotonic
+	// counter: instantaneous in-flight sampling under-reads fast handlers, so
+	// the autoscaler derives true average concurrency from Δintegral/Δt
+	// between its scrapes (the queue-proxy lesson).
+	integralMu sync.Mutex
+	integral   float64
+	integralAt time.Time
 
 	deregisterDelay time.Duration // drainDeregisterDelay; shortened in tests
 
@@ -115,9 +124,9 @@ func (p *Proxy) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	p.inFlight.Add(1)
+	p.accumulate(1)
 	p.requests.Add(1)
-	defer p.inFlight.Add(-1)
+	defer p.accumulate(-1)
 
 	ctx := r.Context()
 	if p.cfg.Timeout > 0 {
@@ -182,19 +191,46 @@ func (p *Proxy) handleReady(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// accumulate advances the concurrency-seconds integral and applies the
+// in-flight delta, time-weighting the level held since the last transition.
+func (p *Proxy) accumulate(delta int64) {
+	now := time.Now()
+	p.integralMu.Lock()
+	if !p.integralAt.IsZero() {
+		p.integral += float64(p.inFlight.Load()) * now.Sub(p.integralAt).Seconds()
+	}
+	p.integralAt = now
+	p.integralMu.Unlock()
+	p.inFlight.Add(delta)
+}
+
+// concurrencySeconds flushes the integral up to now and returns it.
+func (p *Proxy) concurrencySeconds() float64 {
+	now := time.Now()
+	p.integralMu.Lock()
+	defer p.integralMu.Unlock()
+	if !p.integralAt.IsZero() {
+		p.integral += float64(p.inFlight.Load()) * now.Sub(p.integralAt).Seconds()
+		p.integralAt = now
+	}
+	return p.integral
+}
+
 // stats is the per-pod scrape payload for the autoscaler.
 type stats struct {
-	InFlight int64 `json:"inFlight"`
-	Requests int64 `json:"requests"` // cumulative; deltas of zero across a window mean idle
-	Ready    bool  `json:"ready"`
+	InFlight           int64   `json:"inFlight"`
+	Requests           int64   `json:"requests"`           // cumulative; deltas of zero across a window mean idle
+	ConcurrencySeconds float64 `json:"concurrencySeconds"` // monotonic ∫ inFlight dt; rate() it for average concurrency
+	Ready              bool    `json:"ready"`
 }
 
 func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats{
-		InFlight: p.inFlight.Load(),
-		Requests: p.requests.Load(),
-		Ready:    p.prober.Ready(),
+		InFlight:           p.inFlight.Load(),
+		Requests:           p.requests.Load(),
+		ConcurrencySeconds: p.concurrencySeconds(),
+		Ready:              p.prober.Ready(),
 	})
 }
 

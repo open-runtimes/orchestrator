@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -17,18 +18,30 @@ type EndpointLister interface {
 	Endpoints(ctx context.Context, id string) ([]*url.URL, error)
 }
 
-// SidecarConcurrency sums in-flight requests across a deployment's
-// deployments-sidecar /stats endpoints — the warm-traffic metric source (the
-// sidecar is the metering point once warm traffic is off the activator path).
+// SidecarConcurrency derives each replica's average concurrency from the
+// deployments-sidecar /stats concurrency-seconds integral: Δintegral/Δt
+// between our own scrapes. Instantaneous in-flight sampling under-reads fast
+// handlers (a 2s tick sees ~0 between millisecond requests); the integral
+// measures the true time-averaged load. First sight of a pod falls back to
+// its instantaneous in-flight.
 type SidecarConcurrency struct {
 	endpoints EndpointLister
 	adminPort int
 	client    *http.Client
+
+	mu   sync.Mutex
+	prev map[string]integralSample // endpoint host → last scrape
+}
+
+type integralSample struct {
+	integral float64
+	at       time.Time
 }
 
 // sidecarStats mirrors the deployments-sidecar /stats payload.
 type sidecarStats struct {
-	InFlight int64 `json:"inFlight"`
+	InFlight           int64   `json:"inFlight"`
+	ConcurrencySeconds float64 `json:"concurrencySeconds"`
 }
 
 // NewSidecarConcurrency creates the scraper. adminPort is the sidecar admin
@@ -38,24 +51,42 @@ func NewSidecarConcurrency(endpoints EndpointLister, adminPort int) *SidecarConc
 		endpoints: endpoints,
 		adminPort: adminPort,
 		client:    &http.Client{Timeout: 2 * time.Second},
+		prev:      make(map[string]integralSample),
 	}
 }
 
-// Concurrency sums in-flight requests across the deployment's ready replicas.
+// Concurrency sums average concurrency across the deployment's ready replicas.
 func (s *SidecarConcurrency) Concurrency(ctx context.Context, id string) (float64, error) {
 	endpoints, err := s.endpoints.Endpoints(ctx, id)
 	if err != nil {
 		return 0, err
 	}
+	now := time.Now()
 	var total float64
 	for _, endpoint := range endpoints {
 		stats, err := s.scrape(ctx, endpoint)
 		if err != nil {
 			continue // a churning pod mid-scrape is not an evaluation failure
 		}
-		total += float64(stats.InFlight)
+		total += s.rate(endpoint.Host, stats, now)
 	}
 	return total, nil
+}
+
+// rate converts one replica's integral into its average concurrency since our
+// previous scrape. A shrinking integral means the pod restarted — treat as
+// first sight.
+func (s *SidecarConcurrency) rate(host string, stats *sidecarStats, now time.Time) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev, seen := s.prev[host]
+	s.prev[host] = integralSample{integral: stats.ConcurrencySeconds, at: now}
+
+	elapsed := now.Sub(prev.at).Seconds()
+	if !seen || stats.ConcurrencySeconds < prev.integral || elapsed <= 0 {
+		return float64(stats.InFlight)
+	}
+	return (stats.ConcurrencySeconds - prev.integral) / elapsed
 }
 
 func (s *SidecarConcurrency) scrape(ctx context.Context, endpoint *url.URL) (*sidecarStats, error) {
