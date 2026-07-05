@@ -29,6 +29,8 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 	mux.Handle("POST /v1/deployments", auth(http.HandlerFunc(h.apply)))
 	mux.Handle("GET /v1/deployments", auth(http.HandlerFunc(h.list)))
 	mux.Handle("GET /v1/deployments/{id}", auth(http.HandlerFunc(h.get)))
+	mux.Handle("GET /v1/deployments/{id}/revisions", auth(http.HandlerFunc(h.revisions)))
+	mux.Handle("POST /v1/deployments/{id}/traffic", auth(http.HandlerFunc(h.setTraffic)))
 	mux.Handle("DELETE /v1/deployments/{id}", auth(http.HandlerFunc(h.remove)))
 
 	var handler http.Handler = mux
@@ -81,6 +83,37 @@ func (h *deploymentsHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// setTraffic handles POST /v1/deployments/{id}/traffic — canary, blue-green,
+// or rollback as weight edits across existing revisions.
+func (h *deploymentsHandler) setTraffic(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
+	var req struct {
+		Targets []deployment.Target `json:"targets"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	status, err := h.svc.SetTraffic(r.Context(), r.PathValue("id"), req.Targets)
+	if err != nil {
+		handleServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// revisions handles GET /v1/deployments/{id}/revisions.
+func (h *deploymentsHandler) revisions(w http.ResponseWriter, r *http.Request) {
+	status, err := h.svc.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		handleServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revisions": status.Revisions, "traffic": status.Traffic})
 }
 
 func (h *deploymentsHandler) remove(w http.ResponseWriter, r *http.Request) {

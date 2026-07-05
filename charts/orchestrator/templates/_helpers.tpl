@@ -57,6 +57,25 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.activatorImage" -}}
+{{- if .Values.deployments.activator.image.ref -}}
+{{- .Values.deployments.activator.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.deployments.activator.image.repository .Values.deployments.activator.image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.activatorLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: deployments-activator
+{{- end -}}
+
+{{- define "orchestrator.activatorSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: deployments-activator
+{{- end -}}
+
 {{- define "orchestrator.deploymentsLabels" -}}
 {{ include "orchestrator.labels" . }}
 app.kubernetes.io/component: deployments

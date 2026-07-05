@@ -28,6 +28,7 @@ type Proxy struct {
 	sem      chan struct{} // concurrency slots; nil = unlimited
 	waiters  atomic.Int64  // requests queued for a slot
 	inFlight atomic.Int64  // requests currently being proxied
+	requests atomic.Int64  // cumulative accepted requests — the scrape-based idle signal
 	draining atomic.Bool
 
 	deregisterDelay time.Duration // drainDeregisterDelay; shortened in tests
@@ -115,6 +116,7 @@ func (p *Proxy) handleData(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	p.inFlight.Add(1)
+	p.requests.Add(1)
 	defer p.inFlight.Add(-1)
 
 	ctx := r.Context()
@@ -183,6 +185,7 @@ func (p *Proxy) handleReady(w http.ResponseWriter, _ *http.Request) {
 // stats is the per-pod scrape payload for the autoscaler.
 type stats struct {
 	InFlight int64 `json:"inFlight"`
+	Requests int64 `json:"requests"` // cumulative; deltas of zero across a window mean idle
 	Ready    bool  `json:"ready"`
 }
 
@@ -190,6 +193,7 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats{
 		InFlight: p.inFlight.Load(),
+		Requests: p.requests.Load(),
 		Ready:    p.prober.Ready(),
 	})
 }

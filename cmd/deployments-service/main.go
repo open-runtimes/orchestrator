@@ -17,6 +17,7 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/server"
 	"os"
@@ -51,8 +52,13 @@ func main() {
 	}
 	slog.Info("Orchestrator ready")
 
+	// Data plane and URL shape differ by backend: on Kubernetes the gateway
+	// is the data plane (HTTPRoute per deployment, host on port 80) and the
+	// idle signal comes from scraping sidecar /stats; on Docker the
+	// in-process activator serves data on dataPort and, being on-path for
+	// all traffic, is itself the activity source.
 	urlFor := func(host string) string {
-		if dataPort == "80" {
+		if backend == "kubernetes" || dataPort == "80" {
 			return "http://" + host
 		}
 		return "http://" + host + ":" + dataPort
@@ -60,13 +66,27 @@ func main() {
 	svc := deployment.NewService(orchestrator, artifact.DefaultRegistry(), domain, urlFor)
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
-	act := activator.New(svc, eventDispatcher)
 
-	// Idle-to-zero loop: the activator is its activity source while all
-	// traffic flows through it (pre-gateway).
+	var extra []*http.Server
+	var activity autoscaler.ActivitySource
+	if backend == "kubernetes" {
+		activity = autoscaler.NewScrapeActivity(orchestrator, proxy.DefaultAdminPort)
+	} else {
+		act := activator.New(svc, eventDispatcher)
+		activity = act
+		// Data-plane listener: requests can legitimately run for minutes
+		// (the per-request timeout lives in the deployments-sidecar), so no
+		// WriteTimeout here.
+		extra = append(extra, &http.Server{
+			Addr:              ":" + dataPort,
+			Handler:           act,
+			ReadHeaderTimeout: 10 * time.Second,
+		})
+	}
+
 	idlerCtx, stopIdler := context.WithCancel(ctx)
 	defer stopIdler()
-	go autoscaler.New(orchestrator, act, autoscaler.LoadConfigFromEnv()).Run(idlerCtx)
+	go autoscaler.New(orchestrator, activity, autoscaler.LoadConfigFromEnv()).Run(idlerCtx)
 
 	healthChecker := health.NewChecker(orchestrator)
 	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{
@@ -80,21 +100,12 @@ func main() {
 		slog.Warn("API authentication disabled - no API_KEY configured")
 	}
 
-	// Data-plane listener: requests can legitimately run for minutes (the
-	// per-request timeout lives in the deployments-sidecar), so no
-	// WriteTimeout here.
-	dataServer := &http.Server{
-		Addr:              ":" + dataPort,
-		Handler:           act,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
 	if err := server.Serve(ctx, server.Options{
 		Handler:        router,
 		MetricsHandler: metricsHandler,
 		Port:           svcCfg.Port,
 		MetricsPort:    svcCfg.MetricsPort,
-		Extra:          []*http.Server{dataServer},
+		Extra:          extra,
 		DrainWait:      svcCfg.ShutdownDrainWait,
 		SetDraining:    healthChecker.SetShuttingDown,
 		Cleanup: func(cleanupCtx context.Context) {

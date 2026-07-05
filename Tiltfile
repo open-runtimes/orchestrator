@@ -17,6 +17,7 @@ JOBS_SERVICE_IMAGE        = 'ko.local/jobs-service'
 JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
 DEPLOYMENTS_SIDECAR_IMAGE = 'ko.local/deployments-sidecar'
+DEPLOYMENTS_ACTIVATOR_IMAGE = 'ko.local/deployments-activator'
 
 # --- Image builds ------------------------------------------------------------
 
@@ -80,11 +81,23 @@ if DEPLOYMENTS_ENABLED:
             'go.sum',
         ],
     )
+    custom_build(
+        DEPLOYMENTS_ACTIVATOR_IMAGE,
+        'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/deployments-activator && docker tag {0} $EXPECTED_REF'.format(DEPLOYMENTS_ACTIVATOR_IMAGE),
+        deps=[
+            'cmd/deployments-activator',
+            'internal',
+            'go.mod',
+            'go.sum',
+        ],
+    )
     helm_set = [
         'deployments.enabled=true',
         'deployments.image.repository=' + DEPLOYMENTS_SERVICE_IMAGE,
         'deployments.image.pullPolicy=Never',
         'deployments.sidecarImage.repository=' + DEPLOYMENTS_SIDECAR_IMAGE,
+        'deployments.activator.image.repository=' + DEPLOYMENTS_ACTIVATOR_IMAGE,
+        'deployments.activator.image.pullPolicy=Never',
     ]
 
 k8s_yaml(helm(

@@ -49,6 +49,16 @@ spec:
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+            - name: KUBE_GATEWAY_ENABLED
+              value: {{ .Values.deployments.gateway.enabled | quote }}
+            - name: KUBE_GATEWAY_NAME
+              value: {{ .Values.deployments.gateway.name | quote }}
+            - name: KUBE_GATEWAY_NAMESPACE
+              value: {{ default .Release.Namespace .Values.deployments.gateway.namespace | quote }}
+            - name: ACTIVATOR_SERVICE
+              value: "deployments-activator"
+            - name: ACTIVATOR_PORT
+              value: {{ .Values.deployments.activator.port | quote }}
             {{- if .Values.orchestrator.sidecarImagePullPolicy }}
             - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
               value: {{ .Values.orchestrator.sidecarImagePullPolicy | quote }}
@@ -127,6 +137,15 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

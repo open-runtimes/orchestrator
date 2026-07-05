@@ -1,0 +1,23 @@
+# Traefik chart values for the Gateway API PoC.
+#
+# - kubernetesGateway provider on (kubernetes ingress provider stays on, default).
+# - gateway.enabled=false: we define our own Gateway (20-gateway.yaml) instead of
+#   the chart's default one.
+# - Traefik only accepts a Gateway listener whose port matches an entrypoint port,
+#   so the web entrypoint is moved from 8000 to 80 to satisfy a listener on port 80.
+#   Binding <1024 as non-root needs the (kubelet-safe) unprivileged-port sysctl.
+providers:
+  kubernetesGateway:
+    enabled: true
+
+gateway:
+  enabled: false
+
+ports:
+  web:
+    port: 80
+
+podSecurityContext:
+  sysctls:
+    - name: net.ipv4.ip_unprivileged_port_start
+      value: "0"

@@ -48,6 +48,30 @@ deployments:
   dataPort: 8081
   # Base domain for auto-assigned hosts: {id}.{domain}.
   domain: localhost
+  # Gateway API integration: the deployments-service reconciles an HTTPRoute
+  # per deployment against this Gateway (Traefik / Envoy Gateway / Istio with
+  # Extended backendRef-filter support).
+  gateway:
+    enabled: true
+    name: orchestrator
+    # Empty = release namespace.
+    namespace: ""
+  # The buffering edge for cold/async traffic (deployments-activator).
+  activator:
+    replicaCount: 1
+    image:
+      ref: ""
+      repository: ghcr.io/open-runtimes/orchestrator/deployments-activator
+      tag: latest
+      pullPolicy: IfNotPresent
+    port: 8081
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
   resources:
     requests:
       cpu: 50m

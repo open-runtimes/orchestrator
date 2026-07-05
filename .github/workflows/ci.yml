@@ -76,6 +76,7 @@ jobs:
           go build -o /dev/null ./cmd/job-sidecar
           go build -o /dev/null ./cmd/deployments-service
           go build -o /dev/null ./cmd/deployments-sidecar
+          go build -o /dev/null ./cmd/deployments-activator
 
   images:
     needs: [lint, helm, test, build]
@@ -144,6 +145,15 @@ jobs:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-sidecar
         run: |
           ko build ./cmd/deployments-sidecar \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push deployments-activator
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-activator
+        run: |
+          ko build ./cmd/deployments-activator \
             --bare \
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
@@ -248,7 +258,11 @@ jobs:
           KO_DOCKER_REPO=ko.local/jobs-service ko build --local --bare ./cmd/jobs-service
           KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
           KO_DOCKER_REPO=ko.local/deployments-sidecar ko build --local --bare ./cmd/deployments-sidecar
-          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-sidecar:latest --name orchestrator-dev
+          KO_DOCKER_REPO=ko.local/deployments-activator ko build --local --bare ./cmd/deployments-activator
+          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest --name orchestrator-dev
+
+      - name: Install Gateway API + Traefik
+        run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-gateway.sh
 
       - name: Preload worker images
         # Speeds up tests by avoiding kubelet pulling from upstream during each run.
