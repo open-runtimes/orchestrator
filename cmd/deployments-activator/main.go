@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -56,6 +57,12 @@ func run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	// The autoscaler scrapes queued-per-revision as its cold-start hold-up
+	// signal (there are no sidecars to scrape while a revision is at zero).
+	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"queued": act.QueuedByRevision()})
 	})
 	mux.Handle("/", act)
 

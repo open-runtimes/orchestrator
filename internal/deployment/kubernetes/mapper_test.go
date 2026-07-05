@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 )
 
 func testRequest() *deployment.Request {
@@ -172,14 +173,141 @@ func TestBuildDeployment_Worker(t *testing.T) {
 		t.Errorf("VolumeMounts: got %v", mounts)
 	}
 
-	if cpu := w.Resources.Limits.Cpu(); cpu.MilliValue() != 500 {
-		t.Errorf("cpu limit: want 500m, got %s", cpu)
+	// Burstable, memory-protected (resource-model.md): memory request ==
+	// limit, cpu request derived from the limit, NO cpu limit (CFS throttling).
+	if _, ok := w.Resources.Limits[corev1.ResourceCPU]; ok {
+		t.Errorf("cpu limit: want none, got %s", w.Resources.Limits.Cpu())
+	}
+	if cpu := w.Resources.Requests.Cpu(); cpu.MilliValue() != 500 {
+		t.Errorf("cpu request: want 500m (overcommit 1), got %s", cpu)
 	}
 	if mem := w.Resources.Limits.Memory(); mem.Value() != 128*1024*1024 {
 		t.Errorf("memory limit: want 128Mi, got %s", mem)
 	}
-	if !reflect.DeepEqual(w.Resources.Requests, w.Resources.Limits) {
-		t.Errorf("requests != limits: %+v", w.Resources)
+	if !w.Resources.Requests.Memory().Equal(*w.Resources.Limits.Memory()) {
+		t.Errorf("memory request != limit: %+v", w.Resources)
+	}
+}
+
+func TestWorkerResources_CPUOvercommit(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		cpu        float64
+		overcommit float64
+		wantMilli  int64
+	}{
+		"no overcommit":         {cpu: 0.5, overcommit: 1, wantMilli: 500},
+		"overcommit 4":          {cpu: 0.5, overcommit: 4, wantMilli: 125},
+		"zero means 1":          {cpu: 0.5, overcommit: 0, wantMilli: 500},
+		"negative means 1":      {cpu: 2, overcommit: -3, wantMilli: 2000},
+		"rounds up":             {cpu: 1, overcommit: 3, wantMilli: 334},
+		"floored at 1m":         {cpu: 0.001, overcommit: 8, wantMilli: 1},
+		"multi-core overcommit": {cpu: 8, overcommit: 4, wantMilli: 2000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			req := testRequest()
+			req.CPU = tc.cpu
+			r := workerResources(req, Config{CPUOvercommit: tc.overcommit})
+			if got := r.Requests.Cpu().MilliValue(); got != tc.wantMilli {
+				t.Errorf("cpu request: want %dm, got %dm", tc.wantMilli, got)
+			}
+			if _, ok := r.Limits[corev1.ResourceCPU]; ok {
+				t.Errorf("cpu limit: want none, got %s", r.Limits.Cpu())
+			}
+			if !r.Requests.Memory().Equal(*r.Limits.Memory()) || r.Limits.Memory().Value() != 128*1024*1024 {
+				t.Errorf("memory: want request == limit == 128Mi, got %+v", r)
+			}
+		})
+	}
+}
+
+func TestBuildDeployment_ProxyResources(t *testing.T) {
+	t.Parallel()
+	p := buildDeployment(testRequest(), Config{}, "web-00001").Spec.Template.Spec.InitContainers[0]
+
+	if cpu := p.Resources.Requests.Cpu(); cpu.MilliValue() != 25 {
+		t.Errorf("proxy cpu request: want 25m, got %s", cpu)
+	}
+	if mem := p.Resources.Requests.Memory(); mem.Value() != 32*1024*1024 {
+		t.Errorf("proxy memory request: want 32Mi, got %s", mem)
+	}
+	if mem := p.Resources.Limits.Memory(); mem.Value() != 64*1024*1024 {
+		t.Errorf("proxy memory limit: want 64Mi, got %s", mem)
+	}
+	if _, ok := p.Resources.Limits[corev1.ResourceCPU]; ok {
+		t.Errorf("proxy cpu limit: want none, got %s", p.Resources.Limits.Cpu())
+	}
+}
+
+func TestBuildDeployment_TopologySpread(t *testing.T) {
+	t.Parallel()
+	spec := buildDeployment(testRequest(), Config{}, "web-00001").Spec.Template.Spec
+
+	if len(spec.TopologySpreadConstraints) != 1 {
+		t.Fatalf("TopologySpreadConstraints: want 1, got %+v", spec.TopologySpreadConstraints)
+	}
+	c := spec.TopologySpreadConstraints[0]
+	if c.MaxSkew != 1 || c.TopologyKey != "kubernetes.io/hostname" {
+		t.Errorf("spread: want maxSkew 1 over hostname, got skew=%d key=%s", c.MaxSkew, c.TopologyKey)
+	}
+	// Soft: spreading a revision's replicas must never block scheduling.
+	if c.WhenUnsatisfiable != corev1.ScheduleAnyway {
+		t.Errorf("whenUnsatisfiable: want ScheduleAnyway, got %s", c.WhenUnsatisfiable)
+	}
+	// Scoped to the revision's OWN pods: pack across deployments, spread within one.
+	if c.LabelSelector == nil || !reflect.DeepEqual(c.LabelSelector.MatchLabels, map[string]string{LabelRevision: "web-00001"}) {
+		t.Errorf("labelSelector: want revision label alone, got %+v", c.LabelSelector)
+	}
+}
+
+func TestBuildPDB(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		replicas    int
+		autoscaling *deployment.Autoscaling
+		want        bool
+	}{
+		"fixed 1":           {replicas: 1, want: false},
+		"fixed 3":           {replicas: 3, want: true},
+		"autoscaling min 0": {replicas: 3, autoscaling: &deployment.Autoscaling{MinReplicas: 0}, want: false},
+		"autoscaling min 1": {replicas: 1, autoscaling: &deployment.Autoscaling{MinReplicas: 1}, want: false},
+		"autoscaling min 2": {replicas: 1, autoscaling: &deployment.Autoscaling{MinReplicas: 2}, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			req := testRequest()
+			req.Replicas = tc.replicas
+			req.Autoscaling = tc.autoscaling
+			pdb := buildPDB(req, "web-00001")
+			if (pdb != nil) != tc.want {
+				t.Fatalf("buildPDB: want pdb=%v, got %+v", tc.want, pdb)
+			}
+		})
+	}
+}
+
+func TestBuildPDB_Shape(t *testing.T) {
+	t.Parallel()
+	req := testRequest() // Replicas: 2, no autoscaling
+	pdb := buildPDB(req, "web-00001")
+	if pdb == nil {
+		t.Fatal("want a PDB for a fixed 2-replica deployment")
+	}
+	if pdb.Name != "dep-web-00001" {
+		t.Errorf("Name: got %s", pdb.Name)
+	}
+	if pdb.Labels[LabelManagedBy] != ManagedByValue || pdb.Labels[LabelDeploymentID] != "web" || pdb.Labels[LabelRevision] != "web-00001" {
+		t.Errorf("labels: got %v", pdb.Labels)
+	}
+	if pdb.Spec.MinAvailable == nil || pdb.Spec.MinAvailable.IntValue() != 1 {
+		t.Errorf("minAvailable: want 1, got %v", pdb.Spec.MinAvailable)
+	}
+	if pdb.Spec.Selector == nil || !reflect.DeepEqual(pdb.Spec.Selector.MatchLabels, map[string]string{LabelRevision: "web-00001"}) {
+		t.Errorf("selector: want revision label alone, got %+v", pdb.Spec.Selector)
+	}
+	if pdb.Spec.UnhealthyPodEvictionPolicy == nil || *pdb.Spec.UnhealthyPodEvictionPolicy != policyv1.AlwaysAllow {
+		t.Errorf("unhealthyPodEvictionPolicy: want AlwaysAllow, got %v", pdb.Spec.UnhealthyPodEvictionPolicy)
 	}
 }
 

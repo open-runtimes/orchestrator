@@ -56,6 +56,24 @@ deployments:
     name: orchestrator
     # Empty = release namespace.
     namespace: ""
+  # Divisor deriving a workload's CPU request from its declared limit:
+  # request = cpu / cpuOvercommit (docs/design/resource-model.md). CPU is
+  # compressible, so raising this packs deployments denser. Values <= 0 mean 1.
+  cpuOvercommit: 1
+  # Leader election gates the background reconcilers (rollout auto-cut, cold
+  # endpoint flip, autoscaler) to one replica. Required when replicaCount > 1.
+  leaderElection:
+    enabled: false
+    # Empty = "<deployments name>-leader".
+    leaseName: ""
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  # Optional LimitRange in the release namespace: default requests for
+  # containers that declare none (no BestEffort creep) and a default memory
+  # limit. Deliberately no default cpu limit — see resource-model.md.
+  limitRange:
+    enabled: false
   # The buffering edge for cold/async traffic (deployments-activator).
   activator:
     replicaCount: 1

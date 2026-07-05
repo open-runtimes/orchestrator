@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"orchestrator/internal/apperrors"
@@ -449,6 +450,53 @@ func TestScale_NotFound(t *testing.T) {
 	}
 }
 
+// --- PodDisruptionBudget lifecycle ---
+
+func TestApply_PDBCreatedForMultiReplica(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	mustApply(t, o, testRequest()) // Replicas: 2
+
+	pdb, err := cs.PolicyV1().PodDisruptionBudgets("orchestrator").Get(t.Context(), "dep-web-00001", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected revision PDB: %v", err)
+	}
+	// Belt-and-braces ownerReference on the revision Deployment.
+	if len(pdb.OwnerReferences) != 1 || pdb.OwnerReferences[0].Kind != "Deployment" || pdb.OwnerReferences[0].Name != "dep-web-00001" {
+		t.Errorf("ownerReferences: got %+v", pdb.OwnerReferences)
+	}
+}
+
+func TestApply_NoPDBForSingleReplica(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	req := testRequest()
+	req.Replicas = 1
+	mustApply(t, o, req)
+
+	if _, err := cs.PolicyV1().PodDisruptionBudgets("orchestrator").Get(t.Context(), "dep-web-00001", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("single replica must not get a PDB (minAvailable:1 would deadlock drains), got err=%v", err)
+	}
+}
+
+func TestDelete_RemovesPDBs(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	twoRevisions(t, o) // Replicas: 2 → both revisions carry PDBs
+
+	if _, err := cs.PolicyV1().PodDisruptionBudgets("orchestrator").Get(t.Context(), "dep-web-00002", metav1.GetOptions{}); err != nil {
+		t.Fatalf("expected PDB for revision 00002: %v", err)
+	}
+	if err := o.Delete(t.Context(), "web"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	for _, rev := range []string{"web-00001", "web-00002"} {
+		if _, err := cs.PolicyV1().PodDisruptionBudgets("orchestrator").Get(t.Context(), objectNameFor(rev), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Errorf("expected PDB %s deleted, got err=%v", rev, err)
+		}
+	}
+}
+
 // --- Ready / Start / Close ---
 
 func TestReadyStartClose(t *testing.T) {
@@ -464,6 +512,27 @@ func TestReadyStartClose(t *testing.T) {
 	}
 	if err := o.Close(); err != nil {
 		t.Errorf("Close: %v", err)
+	}
+}
+
+// TestRunLeaderElected_DisabledRunsDirectly is the Start-under-election smoke
+// for the disabled (single-replica) path: run executes synchronously, no
+// Lease objects involved.
+func TestRunLeaderElected_DisabledRunsDirectly(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+
+	ran := false
+	o.RunLeaderElected(t.Context(), func(context.Context) { ran = true })
+	if !ran {
+		t.Error("RunLeaderElected with election disabled must call run directly")
+	}
+	leases, err := cs.CoordinationV1().Leases("orchestrator").List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list leases: %v", err)
+	}
+	if len(leases.Items) != 0 {
+		t.Errorf("election disabled must not touch Leases, got %d", len(leases.Items))
 	}
 }
 

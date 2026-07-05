@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"maps"
+	"math"
 	"net"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/proxy"
@@ -11,6 +12,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -74,7 +76,7 @@ func buildDeployment(req *deployment.Request, cfg Config, revision string) *apps
 		},
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: labels},
-			Spec:       buildPodSpec(req, cfg),
+			Spec:       buildPodSpec(req, cfg, revision),
 		},
 	}
 	if req.Replicas > 0 {
@@ -117,7 +119,7 @@ func buildService(id, revision string) *corev1.Service {
 	}
 }
 
-func buildPodSpec(req *deployment.Request, cfg Config) corev1.PodSpec {
+func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.PodSpec {
 	autoMount := false
 
 	var initContainers []corev1.Container
@@ -135,6 +137,17 @@ func buildPodSpec(req *deployment.Request, cfg Config) corev1.PodSpec {
 		},
 		InitContainers: initContainers,
 		Containers:     []corev1.Container{workerContainer(req, cfg)},
+		// Pack across deployments, spread within one (resource-model.md): a
+		// soft per-node spread over the revision's own replicas so a node loss
+		// can't take all of them, without fighting bin-packing for everyone else.
+		TopologySpreadConstraints: []corev1.TopologySpreadConstraint{{
+			MaxSkew:           1,
+			TopologyKey:       "kubernetes.io/hostname",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{LabelRevision: revision},
+			},
+		}},
 	}
 }
 
@@ -188,9 +201,22 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 			FailureThreshold: 3,
 		},
 		RestartPolicy:   &alwaysRestart,
+		Resources:       proxyResources(),
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
 		SecurityContext: hardenedSecurityContext(cfg),
 	}
+}
+
+// proxyResources is the sidecar's small fixed overhead shape, counted into
+// the pod request per resource-model.md: modest requests, a memory ceiling,
+// and no cpu limit (same CFS-throttling rationale as the worker).
+func proxyResources() corev1.ResourceRequirements {
+	requests := corev1.ResourceList{}
+	requests[corev1.ResourceCPU] = resource.MustParse("25m")
+	requests[corev1.ResourceMemory] = resource.MustParse("32Mi")
+	limits := corev1.ResourceList{}
+	limits[corev1.ResourceMemory] = resource.MustParse("64Mi")
+	return corev1.ResourceRequirements{Requests: requests, Limits: limits}
 }
 
 // proxyEnv stamps the internal/proxy env contract into the proxy container.
@@ -250,23 +276,74 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 			{Name: VolumeWorkspace, MountPath: workspacePath},
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		},
-		Resources:       workerResources(req),
+		Resources:       workerResources(req, cfg),
 		LivenessProbe:   kubeletProbe(probes.Liveness, req.Port),
 		StartupProbe:    kubeletProbe(probes.Startup, req.Port),
 		SecurityContext: hardenedSecurityContext(cfg),
 	}
 }
 
-// workerResources sets requests = limits so deployment pods are Guaranteed QoS.
-func workerResources(req *deployment.Request) corev1.ResourceRequirements {
+// workerResources derives the worker's resources from the spec per
+// resource-model.md — the user declares the limit, the platform derives the
+// request:
+//
+//   - Memory: request = limit (incompressible; overcommit risks node OOM).
+//   - CPU: request = limit / CPUOvercommit, and NO cpu limit — CFS-quota
+//     throttling at a limit is a tail-latency killer; cpu requests (shares)
+//     handle fairness, bursting rides idle headroom.
+//
+// Result: Burstable, memory-protected. Zero fields stay unset (a bare spec
+// keeps no resources at all, existing behavior).
+func workerResources(req *deployment.Request, cfg Config) corev1.ResourceRequirements {
+	requests := corev1.ResourceList{}
 	limits := corev1.ResourceList{}
 	if req.CPU > 0 {
-		limits[corev1.ResourceCPU] = resource.MustParse(strconv.FormatFloat(req.CPU, 'f', 3, 64))
+		requests[corev1.ResourceCPU] = *resource.NewMilliQuantity(cpuRequestMilli(req.CPU, cfg.CPUOvercommit), resource.DecimalSI)
 	}
 	if req.Memory > 0 {
-		limits[corev1.ResourceMemory] = resource.MustParse(strconv.Itoa(req.Memory) + "Mi")
+		mem := resource.MustParse(strconv.Itoa(req.Memory) + "Mi")
+		requests[corev1.ResourceMemory] = mem
+		limits[corev1.ResourceMemory] = mem
 	}
-	return corev1.ResourceRequirements{Limits: limits, Requests: maps.Clone(limits)}
+	return corev1.ResourceRequirements{Limits: limits, Requests: requests}
+}
+
+// cpuRequestMilli converts a cpu limit (cores) into the request in milliCPU:
+// limit / overcommit, rounded up, floored at 1m. Overcommit ≤ 0 means 1.
+func cpuRequestMilli(cores, overcommit float64) int64 {
+	if overcommit <= 0 {
+		overcommit = 1
+	}
+	return max(int64(math.Ceil(cores*1000/overcommit)), 1)
+}
+
+// buildPDB returns the revision's PodDisruptionBudget, or nil when the
+// deployment is not durably multi-replica (fixed 1 replica, or autoscaling
+// with minReplicas < 2). At one replica a minAvailable:1 PDB deadlocks node
+// drains; the activator's buffering already turns eviction into a latency
+// event, not downtime — the design's default posture (resource-model.md).
+func buildPDB(req *deployment.Request, revision string) *policyv1.PodDisruptionBudget {
+	durablyMultiReplica := req.Autoscaling == nil && req.Replicas > 1 ||
+		req.Autoscaling != nil && req.Autoscaling.MinReplicas >= 2
+	if !durablyMultiReplica {
+		return nil
+	}
+	minAvailable := intstr.FromInt32(1)
+	alwaysAllow := policyv1.AlwaysAllow
+	return &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   objectNameFor(revision),
+			Labels: revisionLabels(req.ID, revision),
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &minAvailable,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{LabelRevision: revision},
+			},
+			// Broken pods never deadlock a drain.
+			UnhealthyPodEvictionPolicy: &alwaysAllow,
+		},
+	}
 }
 
 // kubeletProbe maps a deployment.Probe to a kubelet-run probe against the

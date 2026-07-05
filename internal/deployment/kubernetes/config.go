@@ -2,7 +2,9 @@ package kubernetes
 
 import (
 	"orchestrator/internal/config"
+	"orchestrator/internal/kube"
 	"strconv"
+	"time"
 )
 
 const (
@@ -13,6 +15,7 @@ const (
 	defaultActivatorPort        = 8081
 	defaultActivatorSelector    = "app.kubernetes.io/component=deployments-activator"
 	defaultRevisionHistoryLimit = 3
+	defaultLeaderLeaseName      = "deployments-service-leader"
 )
 
 // Config holds configuration for the Kubernetes deployment orchestrator.
@@ -22,10 +25,11 @@ type Config struct {
 	Kubeconfig             string
 	Context                string // kubeconfig context to pin; empty uses current-context
 	Namespace              string
-	ServiceAccount         string // pod ServiceAccount; empty uses the namespace default
-	SidecarImagePullPolicy string // applied to artifact-pre + proxy; empty = kubelet default
-	WorkerImagePullPolicy  string // applied to the worker (user) container; empty = kubelet default
-	RunAsUser              int64  // UID/GID for every container; default 65532
+	ServiceAccount         string  // pod ServiceAccount; empty uses the namespace default
+	SidecarImagePullPolicy string  // applied to artifact-pre + proxy; empty = kubelet default
+	WorkerImagePullPolicy  string  // applied to the worker (user) container; empty = kubelet default
+	RunAsUser              int64   // UID/GID for every container; default 65532
+	CPUOvercommit          float64 // divisor deriving the worker's cpu request from its declared limit; ≤0 means 1 (no overcommit)
 
 	GatewayEnabled       bool   // reconcile HTTPRoutes + the cold endpoint flip; off for pre-Gateway clusters
 	GatewayName          string // parentRef Gateway name
@@ -34,6 +38,10 @@ type Config struct {
 	ActivatorPort        int    // activator listen port
 	ActivatorSelector    string // pod selector for activator endpoints (cold endpoint flip)
 	RevisionHistoryLimit int    // retained revisions beyond the routed set; default 3
+
+	// LeaderElection gates the background reconcilers (and any caller-supplied
+	// loop via RunLeaderElected) to one replica; disabled = single-replica mode.
+	LeaderElection kube.LeaderElectionConfig
 }
 
 // LoadConfigFromEnv loads orchestrator configuration from environment
@@ -49,6 +57,7 @@ func LoadConfigFromEnv() Config {
 		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
+		CPUOvercommit:          floatEnv("KUBE_CPU_OVERCOMMIT", 1),
 
 		GatewayEnabled:       boolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:          config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
@@ -57,6 +66,15 @@ func LoadConfigFromEnv() Config {
 		ActivatorPort:        config.GetIntEnv("ACTIVATOR_PORT", defaultActivatorPort),
 		ActivatorSelector:    config.GetEnv("ACTIVATOR_SELECTOR", defaultActivatorSelector),
 		RevisionHistoryLimit: config.GetIntEnv("REVISION_HISTORY_LIMIT", defaultRevisionHistoryLimit),
+
+		LeaderElection: kube.LeaderElectionConfig{
+			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
+			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", defaultLeaderLeaseName),
+			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
+			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),
+			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),
+			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
+		},
 	}
 }
 
@@ -64,6 +82,15 @@ func LoadConfigFromEnv() Config {
 // on absence or a malformed value.
 func boolEnv(key string, defaultValue bool) bool {
 	if v, err := strconv.ParseBool(config.GetEnv(key, strconv.FormatBool(defaultValue))); err == nil {
+		return v
+	}
+	return defaultValue
+}
+
+// floatEnv parses a float environment variable, falling back to the default
+// on absence or a malformed value.
+func floatEnv(key string, defaultValue float64) float64 {
+	if v, err := strconv.ParseFloat(config.GetEnv(key, ""), 64); err == nil {
 		return v
 	}
 	return defaultValue
@@ -93,5 +120,11 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RevisionHistoryLimit <= 0 {
 		c.RevisionHistoryLimit = defaultRevisionHistoryLimit
+	}
+	if c.CPUOvercommit <= 0 {
+		c.CPUOvercommit = 1
+	}
+	if c.LeaderElection.Enabled {
+		c.LeaderElection.ApplyDefaults(defaultLeaderLeaseName)
 	}
 }

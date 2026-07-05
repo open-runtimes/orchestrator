@@ -59,6 +59,24 @@ spec:
               value: "deployments-activator"
             - name: ACTIVATOR_PORT
               value: {{ .Values.deployments.activator.port | quote }}
+            - name: KUBE_CPU_OVERCOMMIT
+              value: {{ .Values.deployments.cpuOvercommit | quote }}
+            {{- if .Values.deployments.leaderElection.enabled }}
+            - name: KUBE_LEADER_ELECTION
+              value: "true"
+            - name: KUBE_LEADER_LEASE_NAME
+              value: {{ default (printf "%s-leader" (include "orchestrator.deploymentsName" .)) .Values.deployments.leaderElection.leaseName | quote }}
+            - name: KUBE_LEADER_IDENTITY
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KUBE_LEADER_LEASE_DURATION
+              value: {{ printf "%ds" (int .Values.deployments.leaderElection.leaseDurationSeconds) | quote }}
+            - name: KUBE_LEADER_RENEW_DEADLINE
+              value: {{ printf "%ds" (int .Values.deployments.leaderElection.renewDeadlineSeconds) | quote }}
+            - name: KUBE_LEADER_RETRY_PERIOD
+              value: {{ printf "%ds" (int .Values.deployments.leaderElection.retryPeriodSeconds) | quote }}
+            {{- end }}
             {{- if .Values.orchestrator.sidecarImagePullPolicy }}
             - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
               value: {{ .Values.orchestrator.sidecarImagePullPolicy | quote }}
@@ -146,6 +164,16 @@ rules:
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Replica-aware PDBs per revision (docs/design/resource-model.md).
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- if .Values.deployments.leaderElection.enabled }}
+  # Lease for leader election across replicas.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -162,4 +190,25 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.deploymentsName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.deployments.limitRange.enabled }}
+---
+# Default requests/limits for containers that declare none (resource-model.md):
+# no BestEffort creep, a memory ceiling, and deliberately NO default cpu limit
+# (CFS throttling). Explicit values on managed pods always win.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        memory: 512Mi
+{{- end }}
 {{- end }}

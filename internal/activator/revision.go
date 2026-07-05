@@ -74,6 +74,7 @@ type RevisionActivator struct {
 
 	mu        sync.Mutex
 	lastRaise map[string]time.Time // revision → last cold scale-up
+	queued    map[string]int       // revision → requests waiting for a pod (the scale-from-zero hold-up signal)
 }
 
 // NewRevisionActivator creates a RevisionActivator. queue delivers async
@@ -94,7 +95,32 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 		cfg:       cfg,
 		source:    "orchestrator/deployments",
 		lastRaise: make(map[string]time.Time),
+		queued:    make(map[string]int),
 	}
+}
+
+// QueuedByRevision snapshots how many requests are waiting for each
+// revision's first pod — the autoscaler's hold-up signal while a cold start
+// is in flight (scraped via GET /stats on the data listener).
+func (a *RevisionActivator) QueuedByRevision() map[string]int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make(map[string]int, len(a.queued))
+	for rev, n := range a.queued {
+		if n > 0 {
+			out[rev] = n
+		}
+	}
+	return out
+}
+
+func (a *RevisionActivator) trackQueued(rev string, delta int) {
+	a.mu.Lock()
+	a.queued[rev] += delta
+	if a.queued[rev] <= 0 {
+		delete(a.queued, rev)
+	}
+	a.mu.Unlock()
 }
 
 // Start runs the managed pod + Deployment informers on ctx and blocks until
@@ -258,6 +284,9 @@ func (a *RevisionActivator) forward(ctx context.Context, r *http.Request, rev st
 func (a *RevisionActivator) waitForPod(ctx context.Context, rev string) (*url.URL, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, a.cfg.ResponseStartTimeout)
 	defer cancel()
+
+	a.trackQueued(rev, 1)
+	defer a.trackQueued(rev, -1)
 
 	selector := labels.SelectorFromSet(labels.Set{revisionLabel: rev})
 	for {

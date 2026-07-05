@@ -67,13 +67,18 @@ func main() {
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 
+	// The autoscaler's metric sources differ by backend: sidecar /stats
+	// scrapes supply warm concurrency on both; the cold hold-up signal comes
+	// from the standalone activator's /stats on Kubernetes and directly from
+	// the in-process activator on Docker.
+	concurrency := autoscaler.NewSidecarConcurrency(orchestrator, proxy.DefaultAdminPort)
+	var queue autoscaler.QueueSource
 	var extra []*http.Server
-	var activity autoscaler.ActivitySource
 	if backend == "kubernetes" {
-		activity = autoscaler.NewScrapeActivity(orchestrator, proxy.DefaultAdminPort)
+		queue = autoscaler.NewActivatorQueue(config.GetEnv("ACTIVATOR_STATS_URL", "http://deployments-activator:8081/stats"))
 	} else {
 		act := activator.New(svc, eventDispatcher)
-		activity = act
+		queue = autoscaler.QueuedDepthFunc(act.QueuedDepth)
 		// Data-plane listener: requests can legitimately run for minutes
 		// (the per-request timeout lives in the deployments-sidecar), so no
 		// WriteTimeout here.
@@ -84,9 +89,18 @@ func main() {
 		})
 	}
 
-	idlerCtx, stopIdler := context.WithCancel(ctx)
-	defer stopIdler()
-	go autoscaler.New(orchestrator, activity, autoscaler.LoadConfigFromEnv()).Run(idlerCtx)
+	scaler := autoscaler.New(orchestrator, concurrency, queue, autoscaler.LoadConfigFromEnv())
+	scalerCtx, stopScaler := context.WithCancel(ctx)
+	defer stopScaler()
+	// Exactly one replica may write scales: gate under the backend's lease
+	// when it offers one (the K8s orchestrator; Docker runs directly).
+	if gated, ok := orchestrator.(interface {
+		RunLeaderElected(ctx context.Context, run func(context.Context))
+	}); ok {
+		go gated.RunLeaderElected(scalerCtx, scaler.Run)
+	} else {
+		go scaler.Run(scalerCtx)
+	}
 
 	healthChecker := health.NewChecker(orchestrator)
 	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{

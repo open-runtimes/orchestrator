@@ -57,8 +57,8 @@ type Activator struct {
 
 	mu        sync.Mutex
 	cache     map[string]resolveEntry // host → spec, TTL-bounded
-	activity  map[string]time.Time    // deployment id → last request seen
 	lastRaise map[string]time.Time    // deployment id → last cold scale-up
+	queued    map[string]int          // deployment id → requests waiting for an endpoint
 }
 
 type resolveEntry struct {
@@ -73,26 +73,18 @@ func New(resolver Resolver, queue dispatcher.Queue) *Activator {
 		queue:     queue,
 		source:    "orchestrator/deployments",
 		cache:     make(map[string]resolveEntry),
-		activity:  make(map[string]time.Time),
 		lastRaise: make(map[string]time.Time),
+		queued:    make(map[string]int),
 	}
 }
 
-// LastActivity reports when the deployment last received a request through
-// this activator. While the activator is on the request path for all traffic
-// (pre-gateway), this is the idle-to-zero loop's activity source.
-func (a *Activator) LastActivity(id string) (time.Time, bool) {
+// QueuedDepth reports how many requests are currently waiting for the
+// deployment's first endpoint — the autoscaler's hold-up signal during a
+// cold start.
+func (a *Activator) QueuedDepth(id string) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	t, ok := a.activity[id]
-	return t, ok
-}
-
-// touch records request activity for the deployment.
-func (a *Activator) touch(id string) {
-	a.mu.Lock()
-	a.activity[id] = time.Now()
-	a.mu.Unlock()
+	return a.queued[id]
 }
 
 // resolve is the cached host→spec lookup for the data path; misses fall
@@ -124,7 +116,6 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no deployment for host "+host, http.StatusNotFound)
 		return
 	}
-	a.touch(spec.ID)
 
 	// Exact-literal match by design; combined RFC 7240 forms are not recognized.
 	if r.Header.Get("Prefer") == "respond-async" {
@@ -249,6 +240,17 @@ func (a *Activator) waitForEndpoint(ctx context.Context, spec *deployment.Reques
 	deadline := time.Duration(spec.ResponseStartTimeoutSeconds) * time.Second
 	waitCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
+
+	a.mu.Lock()
+	a.queued[spec.ID]++
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		if a.queued[spec.ID]--; a.queued[spec.ID] <= 0 {
+			delete(a.queued, spec.ID)
+		}
+		a.mu.Unlock()
+	}()
 
 	for {
 		endpoints, err := a.resolver.Endpoints(waitCtx, spec.ID)

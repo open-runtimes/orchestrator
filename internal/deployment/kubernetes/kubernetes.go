@@ -48,8 +48,10 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 }
 
 // Start surveys pre-existing managed deployments (their markers), then
-// launches the background reconcilers: the rollout loop (auto-cut + retire)
-// and, when the gateway is enabled, the cold endpoint flip.
+// launches the background reconcilers — the rollout loop (auto-cut + retire)
+// and, when the gateway is enabled, the cold endpoint flip — under the
+// leader-election config: with election enabled only the lease holder runs
+// them; disabled, they run directly (single-replica mode).
 func (o *Orchestrator) Start(ctx context.Context) error {
 	markers, err := o.client.CoreV1().ConfigMaps(o.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: LabelManagedBy + "=" + ManagedByValue,
@@ -61,17 +63,32 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	o.stop = cancel
-	go o.runRollouts(runCtx)
+	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runReconcilers, nil)
+	return nil
+}
 
+// runReconcilers runs the background loops for one leadership term (or the
+// process lifetime when election is disabled), blocking until ctx ends.
+func (o *Orchestrator) runReconcilers(ctx context.Context) {
 	if o.cfg.GatewayEnabled {
 		flip := endpointflip.New(o.client, o.namespace, endpointflip.Options{
 			ActivatorSelector: o.cfg.ActivatorSelector,
 			ProxyPort:         proxy.DefaultProxyPort,
 			ActivatorPort:     int32(o.cfg.ActivatorPort),
 		})
-		go flip.Run(runCtx)
+		go flip.Run(ctx)
 	}
-	return nil
+	o.runRollouts(ctx)
+}
+
+// RunLeaderElected runs `run` under the orchestrator's leader-election config
+// — the SAME lease that gates the built-in reconcilers, so one elected replica
+// runs every leader-gated loop (rollouts, endpoint flip, and the caller's,
+// e.g. the shared autoscaler). With election disabled it simply calls
+// run(ctx). Blocks until ctx cancels. Deliberately not part of
+// deployment.Orchestrator: it is Kubernetes-specific wiring for main.
+func (o *Orchestrator) RunLeaderElected(ctx context.Context, run func(context.Context)) {
+	kube.RunLeaderElected(ctx, o.client, o.namespace, o.cfg.LeaderElection, run, nil)
 }
 
 // Apply is the declarative create-or-update:
@@ -143,13 +160,28 @@ func (o *Orchestrator) mintNextRevision(ctx context.Context, req *deployment.Req
 	return o.ensureRoute(ctx, m, fallbackTargets(m))
 }
 
-// ensureRevisionObjects creates the revision's Deployment and Service,
-// tolerating pre-existing ones — revisions are immutable, so create-if-missing
-// is also the heal for a partial earlier Apply.
+// ensureRevisionObjects creates the revision's Deployment, PDB (durably
+// multi-replica deployments only), and Service, tolerating pre-existing ones —
+// revisions are immutable, so create-if-missing is also the heal for a
+// partial earlier Apply.
 func (o *Orchestrator) ensureRevisionObjects(ctx context.Context, req *deployment.Request, rev string) error {
-	_, err := o.client.AppsV1().Deployments(o.namespace).Create(ctx, buildDeployment(req, o.cfg, rev), metav1.CreateOptions{})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
+	dep, err := o.client.AppsV1().Deployments(o.namespace).Create(ctx, buildDeployment(req, o.cfg, rev), metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		dep, err = o.client.AppsV1().Deployments(o.namespace).Get(ctx, objectNameFor(rev), metav1.GetOptions{})
+	}
+	if err != nil {
 		return apperrors.Internal("kubernetes.createDeployment", err)
+	}
+	if pdb := buildPDB(req, rev); pdb != nil {
+		// The PDB is deleted explicitly with the revision; the ownerReference
+		// is belt-and-braces so GC reaps it if the Deployment goes first.
+		pdb.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "apps/v1", Kind: "Deployment", Name: dep.Name, UID: dep.UID,
+		}}
+		_, err = o.client.PolicyV1().PodDisruptionBudgets(o.namespace).Create(ctx, pdb, metav1.CreateOptions{})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			return apperrors.Internal("kubernetes.createPodDisruptionBudget", err)
+		}
 	}
 	_, err = o.client.CoreV1().Services(o.namespace).Create(ctx, buildService(req.ID, rev), metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
@@ -231,8 +263,8 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// deleteRevisionObjects removes one revision's Deployment and Service,
-// tolerating already-gone objects.
+// deleteRevisionObjects removes one revision's Deployment, PDB, and Service,
+// tolerating already-gone objects (not every revision has a PDB).
 func (o *Orchestrator) deleteRevisionObjects(ctx context.Context, rev string) error {
 	prop := metav1.DeletePropagationForeground
 	err := o.client.AppsV1().Deployments(o.namespace).Delete(ctx, objectNameFor(rev), metav1.DeleteOptions{
@@ -240,6 +272,10 @@ func (o *Orchestrator) deleteRevisionObjects(ctx context.Context, rev string) er
 	})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return apperrors.Internal("kubernetes.deleteDeployment", err)
+	}
+	err = o.client.PolicyV1().PodDisruptionBudgets(o.namespace).Delete(ctx, objectNameFor(rev), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return apperrors.Internal("kubernetes.deletePodDisruptionBudget", err)
 	}
 	err = o.client.CoreV1().Services(o.namespace).Delete(ctx, objectNameFor(rev), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {

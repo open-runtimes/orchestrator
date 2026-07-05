@@ -229,6 +229,15 @@ func (s *Service) applyDefaults(req *Request) {
 		req.Host = req.ID + "." + s.domain
 	}
 	req.Host = strings.ToLower(req.Host)
+
+	if req.Autoscaling != nil {
+		if req.Autoscaling.MaxReplicas <= 0 {
+			req.Autoscaling.MaxReplicas = max(req.Replicas, 1)
+		}
+		if req.Autoscaling.Target <= 0 {
+			req.Autoscaling.Target = 100
+		}
+	}
 }
 
 func (s *Service) validate(req *Request) error {
@@ -269,8 +278,20 @@ func (s *Service) validate(req *Request) error {
 	if req.Concurrency < 0 {
 		return apperrors.Validation("concurrency", "concurrency must be non-negative")
 	}
-	if req.Autoscaling != nil && req.Autoscaling.MinReplicas != 0 {
-		return apperrors.Validation("autoscaling.minReplicas", "only 0 (scale-to-zero) is supported until concurrency autoscaling lands")
+	if req.Autoscaling != nil {
+		a := req.Autoscaling
+		if a.MinReplicas < 0 {
+			return apperrors.Validation("autoscaling.minReplicas", "minReplicas must be non-negative")
+		}
+		if a.MaxReplicas < a.MinReplicas {
+			return apperrors.Validation("autoscaling.maxReplicas", "maxReplicas must be >= minReplicas")
+		}
+		if a.MaxReplicas > maxReplicas {
+			return apperrors.Validation("autoscaling.maxReplicas", fmt.Sprintf("maxReplicas exceeds maximum of %d", maxReplicas))
+		}
+		if a.Target < 0 {
+			return apperrors.Validation("autoscaling.target", "target must be non-negative")
+		}
 	}
 	if req.TimeoutSeconds > maxTimeoutSecs {
 		return apperrors.Validation("timeoutSeconds", fmt.Sprintf("timeout exceeds maximum of %d seconds", maxTimeoutSecs))

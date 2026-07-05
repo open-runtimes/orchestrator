@@ -178,8 +178,8 @@ func TestSync_ColdStartRaisesAndServes(t *testing.T) {
 		t.Fatalf("scale calls: want [2] (declared replicas, debounced), got %v", calls)
 	}
 
-	if _, ok := act.LastActivity("test"); !ok {
-		t.Fatal("expected activity recorded for the deployment")
+	if act.QueuedDepth("test") != 0 {
+		t.Fatal("queued gauge must drain back to zero after the cold start completes")
 	}
 }
 

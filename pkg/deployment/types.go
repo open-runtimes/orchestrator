@@ -48,12 +48,14 @@ type Probe struct {
 	FailureThreshold int    `json:"failureThreshold,omitempty"` // give-up = threshold × period
 }
 
-// Autoscaling opts a deployment into managed replicas. minReplicas: 0 enables
-// scale-to-zero — idle past the operator's window scales down, the next
-// request cold-starts it back to `replicas`. Concurrency-driven 1↔N
-// (maxReplicas/target) arrives in Phase 4.
+// Autoscaling opts a deployment into concurrency-managed replicas:
+// desired = clamp(ceil(avgConcurrency / target), minReplicas, maxReplicas),
+// averaged over the operator's window. minReplicas: 0 enables scale-to-zero;
+// the activator owns the 0→N raise on a cold hit. Docker honors only 0↔1.
 type Autoscaling struct {
-	MinReplicas int `json:"minReplicas"` // 0 = scale-to-zero
+	MinReplicas int `json:"minReplicas"`           // 0 = scale-to-zero
+	MaxReplicas int `json:"maxReplicas,omitempty"` // default max(replicas, 1)
+	Target      int `json:"target,omitempty"`      // in-flight per replica driving scaling; default 100
 }
 
 // Callback is where async responses (and, later, lifecycle events) are delivered.
