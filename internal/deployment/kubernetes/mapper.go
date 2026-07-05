@@ -19,11 +19,10 @@ import (
 const (
 	LabelManagedBy    = "managed-by"
 	LabelDeploymentID = "deployment.id"
+	LabelRevision     = "deployment.revision"
 	ManagedByValue    = "deployments-service"
 
-	// AnnotationSpec carries the canonical JSON of the last-applied Request —
-	// the source of truth for Spec() and for Apply's no-op check.
-	AnnotationSpec = "deployment.spec"
+	// AnnotationHost carries the deployment's hostname on the marker ConfigMap.
 	AnnotationHost = "deployment.host"
 
 	ContainerWorker      = "worker"
@@ -38,11 +37,26 @@ const (
 	portNameAdmin = "admin"
 )
 
-func deploymentNameFor(id string) string {
-	return "dep-" + id
+// objectNameFor prefixes a deployment ID or revision name into a managed
+// object name: the marker ConfigMap and HTTPRoute are dep-{id}, a revision's
+// Deployment and Service are dep-{revisionName}.
+func objectNameFor(name string) string {
+	return "dep-" + name
 }
 
-// buildDeployment maps a deployment.Request to an apps/v1.Deployment.
+// revisionLabels are stamped on every revision-scoped object (Deployment,
+// Service, pod template).
+func revisionLabels(id, revision string) map[string]string {
+	return map[string]string{
+		LabelManagedBy:    ManagedByValue,
+		LabelDeploymentID: id,
+		LabelRevision:     revision,
+	}
+}
+
+// buildDeployment maps a deployment.Request to the revision's immutable
+// apps/v1.Deployment. The pod selector is the revision label alone, so each
+// revision owns exactly its own pods.
 //
 // Pod template, all sharing an emptyDir workspace:
 //   - initContainer "artifact-pre" (only when the request has artifacts):
@@ -51,19 +65,12 @@ func deploymentNameFor(id string) string {
 //     the worker; its /ready probe gates pod readiness (and so EndpointSlice
 //     membership)
 //   - container "worker": the user workload
-func buildDeployment(req *deployment.Request, cfg Config, specJSON string) *appsv1.Deployment {
-	labels := map[string]string{
-		LabelManagedBy:    ManagedByValue,
-		LabelDeploymentID: req.ID,
-	}
-	annotations := map[string]string{
-		AnnotationSpec: specJSON,
-		AnnotationHost: req.Host,
-	}
+func buildDeployment(req *deployment.Request, cfg Config, revision string) *appsv1.Deployment {
+	labels := revisionLabels(req.ID, revision)
 
 	spec := appsv1.DeploymentSpec{
 		Selector: &metav1.LabelSelector{
-			MatchLabels: map[string]string{LabelDeploymentID: req.ID},
+			MatchLabels: map[string]string{LabelRevision: revision},
 		},
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: labels},
@@ -81,32 +88,30 @@ func buildDeployment(req *deployment.Request, cfg Config, specJSON string) *apps
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        deploymentNameFor(req.ID),
-			Labels:      labels,
-			Annotations: annotations,
+			Name:   objectNameFor(revision),
+			Labels: labels,
 		},
 		Spec: spec,
 	}
 }
 
-// buildService maps a deployment.Request to the ClusterIP Service fronting its
-// pods: port 80 → the proxy sidecar's data port (8000, named "proxy").
-func buildService(req *deployment.Request) *corev1.Service {
+// buildService maps a revision to its routable Service: port 80 → the proxy
+// sidecar's data port (8000). The Service is SELECTORLESS — the endpointflip
+// reconciler owns its EndpointSlice (ready workload pods when warm, activator
+// pods when cold/draining), which is why the target port is numeric: there
+// are no pods behind a selector to resolve a named port against.
+func buildService(id, revision string) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: deploymentNameFor(req.ID),
-			Labels: map[string]string{
-				LabelManagedBy:    ManagedByValue,
-				LabelDeploymentID: req.ID,
-			},
+			Name:   objectNameFor(revision),
+			Labels: revisionLabels(id, revision),
 		},
 		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeClusterIP,
-			Selector: map[string]string{LabelDeploymentID: req.ID},
+			Type: corev1.ServiceTypeClusterIP,
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       80,
-				TargetPort: intstr.FromString(portNameProxy),
+				TargetPort: intstr.FromInt32(proxy.DefaultProxyPort),
 			}},
 		},
 	}
@@ -138,7 +143,7 @@ func buildPodSpec(req *deployment.Request, cfg Config) corev1.PodSpec {
 // completion first.
 func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container {
 	env := []corev1.EnvVar{
-		{Name: "JOB_ID", Value: deploymentNameFor(req.ID)},
+		{Name: "JOB_ID", Value: objectNameFor(req.ID)},
 		{Name: "SHARED_VOLUME_PATH", Value: workspacePath},
 	}
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar

@@ -40,24 +40,17 @@ func mustSpecJSON(t *testing.T, req *deployment.Request) string {
 func TestBuildDeployment_BasicStructure(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
-	specJSON := mustSpecJSON(t, req)
 	cfg := Config{SidecarImage: "sidecar:latest", ServiceAccount: "deployments", RunAsUser: 65532}
 
-	d := buildDeployment(req, cfg, specJSON)
+	d := buildDeployment(req, cfg, "web-00001")
 
-	if d.Name != "dep-web" {
-		t.Errorf("Name: want dep-web, got %s", d.Name)
+	if d.Name != "dep-web-00001" {
+		t.Errorf("Name: want dep-web-00001, got %s", d.Name)
 	}
 	for _, labels := range []map[string]string{d.Labels, d.Spec.Template.Labels} {
-		if labels[LabelManagedBy] != ManagedByValue || labels[LabelDeploymentID] != "web" {
+		if labels[LabelManagedBy] != ManagedByValue || labels[LabelDeploymentID] != "web" || labels[LabelRevision] != "web-00001" {
 			t.Errorf("labels: got %v", labels)
 		}
-	}
-	if d.Annotations[AnnotationSpec] != specJSON {
-		t.Errorf("spec annotation: got %s", d.Annotations[AnnotationSpec])
-	}
-	if d.Annotations[AnnotationHost] != "web.example.com" {
-		t.Errorf("host annotation: got %s", d.Annotations[AnnotationHost])
 	}
 	if d.Spec.Replicas == nil || *d.Spec.Replicas != 2 {
 		t.Errorf("Replicas: want 2, got %v", d.Spec.Replicas)
@@ -65,7 +58,9 @@ func TestBuildDeployment_BasicStructure(t *testing.T) {
 	if d.Spec.ProgressDeadlineSeconds == nil || *d.Spec.ProgressDeadlineSeconds != 600 {
 		t.Errorf("ProgressDeadlineSeconds: want 600, got %v", d.Spec.ProgressDeadlineSeconds)
 	}
-	if !reflect.DeepEqual(d.Spec.Selector.MatchLabels, map[string]string{LabelDeploymentID: "web"}) {
+	// Pod selector is the revision label ALONE — each immutable revision owns
+	// exactly its own pods.
+	if !reflect.DeepEqual(d.Spec.Selector.MatchLabels, map[string]string{LabelRevision: "web-00001"}) {
 		t.Errorf("Selector: got %v", d.Spec.Selector.MatchLabels)
 	}
 
@@ -95,7 +90,7 @@ func TestBuildDeployment_ProxySidecar(t *testing.T) {
 	req := testRequest()
 	cfg := Config{SidecarImage: "sidecar:latest", SidecarImagePullPolicy: "Never", RunAsUser: 65532}
 
-	p := buildDeployment(req, cfg, "{}").Spec.Template.Spec.InitContainers[0]
+	p := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.InitContainers[0]
 
 	if p.Image != "sidecar:latest" || p.ImagePullPolicy != corev1.PullNever {
 		t.Errorf("image/pull: got %s/%s", p.Image, p.ImagePullPolicy)
@@ -135,7 +130,7 @@ func TestBuildDeployment_ProxyReadinessEnv(t *testing.T) {
 		Readiness: &deployment.Probe{Path: "/healthz", PeriodMillis: 250, TimeoutMillis: 100, FailureThreshold: 5},
 	}
 
-	p := buildDeployment(req, Config{}, "{}").Spec.Template.Spec.InitContainers[0]
+	p := buildDeployment(req, Config{}, "web-00001").Spec.Template.Spec.InitContainers[0]
 
 	for name, want := range map[string]string{
 		"PROXY_READINESS_PATH":              "/healthz",
@@ -154,7 +149,7 @@ func TestBuildDeployment_Worker(t *testing.T) {
 	req := testRequest()
 	cfg := Config{WorkerImagePullPolicy: "IfNotPresent"}
 
-	w := buildDeployment(req, cfg, "{}").Spec.Template.Spec.Containers[0]
+	w := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.Containers[0]
 
 	if w.Image != "nginx:1.27" || w.ImagePullPolicy != corev1.PullIfNotPresent {
 		t.Errorf("image/pull: got %s/%s", w.Image, w.ImagePullPolicy)
@@ -192,7 +187,7 @@ func TestBuildDeployment_WorkerNoCommandNoResources(t *testing.T) {
 	t.Parallel()
 	req := &deployment.Request{ID: "bare", Image: "nginx", Port: 80}
 
-	d := buildDeployment(req, Config{}, "{}")
+	d := buildDeployment(req, Config{}, "bare-00001")
 
 	w := d.Spec.Template.Spec.Containers[0]
 	if w.Command != nil {
@@ -217,7 +212,7 @@ func TestBuildDeployment_KubeletProbes(t *testing.T) {
 		Startup:  &deployment.Probe{PeriodMillis: 1000},
 	}
 
-	w := buildDeployment(req, Config{}, "{}").Spec.Template.Spec.Containers[0]
+	w := buildDeployment(req, Config{}, "web-00001").Spec.Template.Spec.Containers[0]
 
 	live := w.LivenessProbe
 	if live == nil || live.HTTPGet == nil || live.HTTPGet.Path != "/live" || live.HTTPGet.Port.IntValue() != 8080 {
@@ -239,7 +234,7 @@ func TestBuildDeployment_KubeletProbes(t *testing.T) {
 
 func TestBuildDeployment_NoProbes(t *testing.T) {
 	t.Parallel()
-	w := buildDeployment(testRequest(), Config{}, "{}").Spec.Template.Spec.Containers[0]
+	w := buildDeployment(testRequest(), Config{}, "web-00001").Spec.Template.Spec.Containers[0]
 	if w.LivenessProbe != nil || w.StartupProbe != nil {
 		t.Errorf("want no kubelet probes, got liveness=%+v startup=%+v", w.LivenessProbe, w.StartupProbe)
 	}
@@ -252,7 +247,7 @@ func TestBuildDeployment_Artifacts(t *testing.T) {
 		&artifact.Write{ID: "w", In: "hello", Out: "index.html"},
 	}
 
-	spec := buildDeployment(req, Config{SidecarImage: "sidecar:latest", JobSidecarImage: "artifact:latest"}, "{}").Spec.Template.Spec
+	spec := buildDeployment(req, Config{SidecarImage: "sidecar:latest", JobSidecarImage: "artifact:latest"}, "web-00001").Spec.Template.Spec
 
 	if len(spec.InitContainers) != 2 {
 		t.Fatalf("InitContainers: want [artifact-pre proxy], got %d", len(spec.InitContainers))
@@ -285,7 +280,7 @@ func TestBuildDeployment_SecurityFloor(t *testing.T) {
 	req.Artifacts = []artifact.Artifact{&artifact.Write{ID: "w", In: "x", Out: "y"}}
 	cfg := Config{SidecarImage: "sidecar:latest", RunAsUser: 65532}
 
-	spec := buildDeployment(req, cfg, "{}").Spec.Template.Spec
+	spec := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec
 	all := append(spec.InitContainers, spec.Containers...)
 	if len(all) != 3 {
 		t.Fatalf("want 3 containers, got %d", len(all))
@@ -319,22 +314,42 @@ func TestBuildDeployment_SecurityFloor(t *testing.T) {
 
 func TestBuildService(t *testing.T) {
 	t.Parallel()
-	svc := buildService(testRequest())
+	svc := buildService("web", "web-00001")
 
-	if svc.Name != "dep-web" {
+	if svc.Name != "dep-web-00001" {
 		t.Errorf("Name: got %s", svc.Name)
 	}
 	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
 		t.Errorf("Type: got %s", svc.Spec.Type)
 	}
-	if !reflect.DeepEqual(svc.Spec.Selector, map[string]string{LabelDeploymentID: "web"}) {
-		t.Errorf("Selector: got %v", svc.Spec.Selector)
+	// Selectorless: the endpointflip reconciler owns the EndpointSlice (ready
+	// pods when warm, activator pods when cold).
+	if svc.Spec.Selector != nil {
+		t.Errorf("Selector: want none (endpoint-managed), got %v", svc.Spec.Selector)
 	}
-	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.String() != "proxy" {
-		t.Errorf("Ports: want 80→proxy(8000), got %+v", svc.Spec.Ports)
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Name != "http" || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != 8000 {
+		t.Errorf("Ports: want http 80→8000, got %+v", svc.Spec.Ports)
 	}
-	if svc.Labels[LabelManagedBy] != ManagedByValue || svc.Labels[LabelDeploymentID] != "web" {
+	if svc.Labels[LabelManagedBy] != ManagedByValue || svc.Labels[LabelDeploymentID] != "web" || svc.Labels[LabelRevision] != "web-00001" {
 		t.Errorf("labels: got %v", svc.Labels)
+	}
+}
+
+func TestRevisionNaming(t *testing.T) {
+	t.Parallel()
+	if got := revisionName("web", 1); got != "web-00001" {
+		t.Errorf("revisionName: got %s", got)
+	}
+	if got := revisionName("web", 123); got != "web-00123" {
+		t.Errorf("revisionName: got %s", got)
+	}
+	for rev, want := range map[string]int{"web-00001": 1, "web-00123": 123, "my-app-00007": 7, "weird": 0, "web-x": 0} {
+		if got := revisionNumber(rev); got != want {
+			t.Errorf("revisionNumber(%s): want %d, got %d", rev, want, got)
+		}
+	}
+	if next := revisionName("web", revisionNumber("web-00009")+1); next != "web-00010" {
+		t.Errorf("mint next: got %s", next)
 	}
 }
 

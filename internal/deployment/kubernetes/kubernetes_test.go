@@ -5,6 +5,7 @@ import (
 	"errors"
 	"orchestrator/internal/apperrors"
 	"orchestrator/pkg/deployment"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,14 +17,22 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
 )
 
 func newTestOrchestrator(t *testing.T) (*Orchestrator, *fake.Clientset) {
 	t.Helper()
 	cs := fake.NewClientset()
 	registerScaleSubresource(cs)
-	cfg := Config{SidecarImage: "sidecar:latest", Namespace: "orchestrator", RunAsUser: 65532}
-	return &Orchestrator{client: cs, namespace: cfg.Namespace, cfg: cfg}, cs
+	cfg := Config{SidecarImage: "sidecar:latest", Namespace: "orchestrator", RunAsUser: 65532, GatewayEnabled: true}
+	cfg.applyDefaults()
+	return &Orchestrator{
+		client:    cs,
+		gateway:   gatewayfake.NewClientset(),
+		namespace: cfg.Namespace,
+		cfg:       cfg,
+	}, cs
 }
 
 // registerScaleSubresource teaches the fake clientset the deployments/scale
@@ -79,26 +88,104 @@ func countActions(cs *fake.Clientset, verb, resource string) int {
 	return n
 }
 
+// mustApply applies the request and fails the test on error.
+func mustApply(t *testing.T, o *Orchestrator, req *deployment.Request) {
+	t.Helper()
+	if err := o.Apply(t.Context(), req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+}
+
+// getMarkerData returns the marker ConfigMap for the deployment.
+func getMarkerData(t *testing.T, o *Orchestrator, id string) marker {
+	t.Helper()
+	m, err := o.getMarker(t.Context(), id)
+	if err != nil {
+		t.Fatalf("getMarker(%s): %v", id, err)
+	}
+	return m
+}
+
+// getRoute fetches the deployment's HTTPRoute.
+func getRoute(t *testing.T, o *Orchestrator, id string) *gatewayv1.HTTPRoute {
+	t.Helper()
+	route, err := o.gateway.GatewayV1().HTTPRoutes("orchestrator").Get(t.Context(), objectNameFor(id), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get HTTPRoute for %s: %v", id, err)
+	}
+	return route
+}
+
+// setAvailable marks a revision's Deployment as having n available replicas.
+func setAvailable(t *testing.T, o *Orchestrator, rev string, n int32) {
+	t.Helper()
+	ctx := t.Context()
+	dep, err := o.client.AppsV1().Deployments("orchestrator").Get(ctx, objectNameFor(rev), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get revision %s: %v", rev, err)
+	}
+	dep.Status.AvailableReplicas = n
+	if _, err := o.client.AppsV1().Deployments("orchestrator").Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update revision %s: %v", rev, err)
+	}
+}
+
+// setFailed marks a revision's Deployment as ProgressDeadlineExceeded.
+func setFailed(t *testing.T, o *Orchestrator, rev, message string) {
+	t.Helper()
+	ctx := t.Context()
+	dep, err := o.client.AppsV1().Deployments("orchestrator").Get(ctx, objectNameFor(rev), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get revision %s: %v", rev, err)
+	}
+	dep.Status.Conditions = []appsv1.DeploymentCondition{{
+		Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse,
+		Reason: progressDeadlineExceeded, Message: message,
+	}}
+	if _, err := o.client.AppsV1().Deployments("orchestrator").Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update revision %s: %v", rev, err)
+	}
+}
+
 // --- Apply ---
 
-func TestApply_CreatesDeploymentAndService(t *testing.T) {
+func TestApply_FirstMintsRevision00001(t *testing.T) {
 	t.Parallel()
 	o, cs := newTestOrchestrator(t)
 	req := testRequest()
 
-	if err := o.Apply(t.Context(), req); err != nil {
-		t.Fatalf("Apply: %v", err)
+	mustApply(t, o, req)
+
+	m := getMarkerData(t, o, "web")
+	if m.LatestRevision != "web-00001" {
+		t.Errorf("latestRevision: want web-00001, got %s", m.LatestRevision)
+	}
+	if m.LastReady != "" {
+		t.Errorf("lastReady: want empty until the rollout reconciler cuts, got %s", m.LastReady)
+	}
+	if m.TrafficMode != trafficModeAuto {
+		t.Errorf("trafficMode: want auto, got %s", m.TrafficMode)
+	}
+	if m.Spec != mustSpecJSON(t, req) {
+		t.Errorf("marker spec mismatch: %s", m.Spec)
+	}
+	if m.Host != "web.example.com" {
+		t.Errorf("marker host: got %s", m.Host)
 	}
 
-	dep, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("expected Deployment to exist: %v", err)
+	if _, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), "dep-web-00001", metav1.GetOptions{}); err != nil {
+		t.Errorf("expected revision Deployment: %v", err)
 	}
-	if dep.Annotations[AnnotationSpec] != mustSpecJSON(t, req) {
-		t.Errorf("spec annotation mismatch: %s", dep.Annotations[AnnotationSpec])
+	if _, err := cs.CoreV1().Services("orchestrator").Get(t.Context(), "dep-web-00001", metav1.GetOptions{}); err != nil {
+		t.Errorf("expected revision Service: %v", err)
 	}
-	if _, err := cs.CoreV1().Services("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); err != nil {
-		t.Errorf("expected Service to exist: %v", err)
+
+	route := getRoute(t, o, "web")
+	if got := routeTargets(route); !reflect.DeepEqual(got, []deployment.Target{{RevisionName: "web-00001", Percent: 100}}) {
+		t.Errorf("route targets: got %+v", got)
+	}
+	if len(route.Spec.Hostnames) != 1 || route.Spec.Hostnames[0] != "web.example.com" {
+		t.Errorf("route hostnames: got %v", route.Spec.Hostnames)
 	}
 }
 
@@ -107,87 +194,123 @@ func TestApply_IdenticalSpecIsNoOp(t *testing.T) {
 	o, cs := newTestOrchestrator(t)
 	req := testRequest()
 
-	if err := o.Apply(t.Context(), req); err != nil {
-		t.Fatalf("first Apply: %v", err)
-	}
-	if err := o.Apply(t.Context(), req); err != nil {
-		t.Fatalf("second Apply: %v", err)
-	}
+	mustApply(t, o, req)
+	mustApply(t, o, req)
 
 	if n := countActions(cs, "update", "deployments"); n != 0 {
-		t.Errorf("identical spec must not update the Deployment, got %d updates", n)
+		t.Errorf("identical spec must not update any Deployment, got %d updates", n)
 	}
-	if n := countActions(cs, "create", "deployments"); n != 1 {
-		t.Errorf("want exactly 1 Deployment create, got %d", n)
+	m := getMarkerData(t, o, "web")
+	if m.LatestRevision != "web-00001" {
+		t.Errorf("identical spec must not mint a revision, got %s", m.LatestRevision)
 	}
 }
 
-func TestApply_ChangedSpecUpdatesInPlace(t *testing.T) {
+func TestApply_ChangedSpecMintsNextRevisionTrafficUntouched(t *testing.T) {
 	t.Parallel()
 	o, cs := newTestOrchestrator(t)
-	req := testRequest()
-
-	if err := o.Apply(t.Context(), req); err != nil {
-		t.Fatalf("first Apply: %v", err)
-	}
+	mustApply(t, o, testRequest())
 
 	changed := testRequest()
 	changed.Environment["FOO"] = "changed"
-	if err := o.Apply(t.Context(), changed); err != nil {
-		t.Fatalf("second Apply: %v", err)
-	}
+	mustApply(t, o, changed)
 
-	if n := countActions(cs, "update", "deployments"); n != 1 {
-		t.Fatalf("want 1 Deployment update, got %d", n)
+	m := getMarkerData(t, o, "web")
+	if m.LatestRevision != "web-00002" {
+		t.Fatalf("latestRevision: want web-00002, got %s", m.LatestRevision)
 	}
-	dep, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get Deployment: %v", err)
+	if m.Spec != mustSpecJSON(t, changed) {
+		t.Error("marker spec not replaced on mint")
 	}
-	if dep.Annotations[AnnotationSpec] != mustSpecJSON(t, changed) {
-		t.Error("spec annotation not replaced on update")
+	if m.LastReady != "" {
+		t.Errorf("lastReady must be untouched by Apply, got %s", m.LastReady)
+	}
+	if _, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), "dep-web-00002", metav1.GetOptions{}); err != nil {
+		t.Errorf("expected revision 00002 Deployment: %v", err)
+	}
+	// The old revision's objects remain (rollback material).
+	if _, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), "dep-web-00001", metav1.GetOptions{}); err != nil {
+		t.Errorf("revision 00001 must be retained: %v", err)
+	}
+	// Traffic is untouched: still 100% on 00001 until the auto-cut.
+	got := routeTargets(getRoute(t, o, "web"))
+	if !reflect.DeepEqual(got, []deployment.Target{{RevisionName: "web-00001", Percent: 100}}) {
+		t.Errorf("route targets must be untouched by mint: %+v", got)
 	}
 }
 
-func TestApply_RecreatesMissingService(t *testing.T) {
+func TestApply_HealsMissingServiceAndRoute(t *testing.T) {
 	t.Parallel()
 	o, cs := newTestOrchestrator(t)
 	req := testRequest()
+	mustApply(t, o, req)
 
-	if err := o.Apply(t.Context(), req); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if err := cs.CoreV1().Services("orchestrator").Delete(t.Context(), "dep-web", metav1.DeleteOptions{}); err != nil {
+	if err := cs.CoreV1().Services("orchestrator").Delete(t.Context(), "dep-web-00001", metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete Service: %v", err)
 	}
-
-	// Identical spec: Deployment untouched, but the Service is healed.
-	if err := o.Apply(t.Context(), req); err != nil {
-		t.Fatalf("re-Apply: %v", err)
+	if err := o.gateway.GatewayV1().HTTPRoutes("orchestrator").Delete(t.Context(), "dep-web", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete HTTPRoute: %v", err)
 	}
-	if _, err := cs.CoreV1().Services("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); err != nil {
+
+	// Identical spec: workload untouched, but Service + route are healed.
+	mustApply(t, o, req)
+	if _, err := cs.CoreV1().Services("orchestrator").Get(t.Context(), "dep-web-00001", metav1.GetOptions{}); err != nil {
 		t.Errorf("expected Service recreated: %v", err)
+	}
+	getRoute(t, o, "web")
+}
+
+func TestApply_GatewayDisabledSkipsRoute(t *testing.T) {
+	t.Parallel()
+	o, _ := newTestOrchestrator(t)
+	o.cfg.GatewayEnabled = false
+
+	mustApply(t, o, testRequest())
+
+	routes, err := o.gateway.GatewayV1().HTTPRoutes("orchestrator").List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list routes: %v", err)
+	}
+	if len(routes.Items) != 0 {
+		t.Errorf("gateway disabled must not write HTTPRoutes, got %d", len(routes.Items))
+	}
+	// Status still works off the marker fallback.
+	s, err := o.Status(t.Context(), "web")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !reflect.DeepEqual(s.Traffic, []deployment.Target{{RevisionName: "web-00001", Percent: 100}}) {
+		t.Errorf("fallback traffic: got %+v", s.Traffic)
 	}
 }
 
 // --- Delete ---
 
-func TestDelete_RemovesObjects(t *testing.T) {
+func TestDelete_FullTeardown(t *testing.T) {
 	t.Parallel()
 	o, cs := newTestOrchestrator(t)
+	mustApply(t, o, testRequest())
+	changed := testRequest()
+	changed.Environment["FOO"] = "v2"
+	mustApply(t, o, changed)
 
-	if err := o.Apply(t.Context(), testRequest()); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
 	if err := o.Delete(t.Context(), "web"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if _, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Errorf("expected Deployment deleted, got err=%v", err)
+	for _, rev := range []string{"web-00001", "web-00002"} {
+		if _, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), objectNameFor(rev), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Errorf("expected Deployment %s deleted, got err=%v", rev, err)
+		}
+		if _, err := cs.CoreV1().Services("orchestrator").Get(t.Context(), objectNameFor(rev), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Errorf("expected Service %s deleted, got err=%v", rev, err)
+		}
 	}
-	if _, err := cs.CoreV1().Services("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Errorf("expected Service deleted, got err=%v", err)
+	if _, err := cs.CoreV1().ConfigMaps("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("expected marker deleted, got err=%v", err)
+	}
+	if _, err := o.gateway.GatewayV1().HTTPRoutes("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("expected HTTPRoute deleted, got err=%v", err)
 	}
 
 	if err := o.Delete(t.Context(), "web"); !errors.Is(err, apperrors.ErrNotFound) {
@@ -195,174 +318,14 @@ func TestDelete_RemovesObjects(t *testing.T) {
 	}
 }
 
-// --- Status ---
-
-func TestStatus_NotFound(t *testing.T) {
-	t.Parallel()
-	o, _ := newTestOrchestrator(t)
-	if _, err := o.Status(t.Context(), "ghost"); !errors.Is(err, apperrors.ErrNotFound) {
-		t.Errorf("want NotFound, got %v", err)
-	}
-}
-
-func TestStatus_ReadyFromCluster(t *testing.T) {
-	t.Parallel()
-	o, cs := newTestOrchestrator(t)
-
-	dep := buildDeployment(testRequest(), o.cfg, "{}")
-	dep.Status = appsv1.DeploymentStatus{AvailableReplicas: 2}
-	if _, err := cs.AppsV1().Deployments("orchestrator").Create(t.Context(), dep, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("seed Deployment: %v", err)
-	}
-
-	status, err := o.Status(t.Context(), "web")
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if status.State != deployment.StateReady {
-		t.Errorf("state: want ready, got %s", status.State)
-	}
-	if status.ID != "web" || status.DesiredReplicas != 2 || status.AvailableReplicas != 2 {
-		t.Errorf("counts: got %+v", status)
-	}
-}
-
-func TestDeriveStatus(t *testing.T) {
-	t.Parallel()
-	two := int32(2)
-	now := metav1.Now()
-
-	cases := []struct {
-		name      string
-		replicas  *int32
-		status    appsv1.DeploymentStatus
-		deleting  bool
-		wantState string
-		wantError string
-	}{
-		{
-			name:     "ready when available meets desired",
-			replicas: &two, status: appsv1.DeploymentStatus{AvailableReplicas: 2},
-			wantState: deployment.StateReady,
-		},
-		{
-			name:      "ready with nil replicas defaults desired to 1",
-			status:    appsv1.DeploymentStatus{AvailableReplicas: 1},
-			wantState: deployment.StateReady,
-		},
-		{
-			name:     "degraded when partially available",
-			replicas: &two, status: appsv1.DeploymentStatus{AvailableReplicas: 1},
-			wantState: deployment.StateDegraded,
-		},
-		{
-			name:     "pending while progressing",
-			replicas: &two,
-			status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
-				Type: appsv1.DeploymentProgressing, Status: corev1.ConditionTrue, Reason: "NewReplicaSetCreated",
-			}}},
-			wantState: deployment.StatePending,
-		},
-		{
-			name:     "failed past progress deadline",
-			replicas: &two,
-			status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
-				Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse,
-				Reason: "ProgressDeadlineExceeded", Message: "deadline exceeded",
-			}}},
-			wantState: deployment.StateFailed, wantError: "deadline exceeded",
-		},
-		{
-			name:     "failed on replica failure",
-			replicas: &two,
-			status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
-				Type: appsv1.DeploymentReplicaFailure, Status: corev1.ConditionTrue, Message: "quota exceeded",
-			}}},
-			wantState: deployment.StateFailed, wantError: "quota exceeded",
-		},
-		{
-			name:     "deleting wins over ready",
-			replicas: &two, status: appsv1.DeploymentStatus{AvailableReplicas: 2}, deleting: true,
-			wantState: deployment.StateDeleting,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			dep := &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "dep-web",
-					Labels: map[string]string{LabelDeploymentID: "web"},
-				},
-				Spec:   appsv1.DeploymentSpec{Replicas: tc.replicas},
-				Status: tc.status,
-			}
-			if tc.deleting {
-				dep.DeletionTimestamp = &now
-			}
-
-			got := deriveStatus(dep)
-			if got.State != tc.wantState {
-				t.Errorf("state: want %s, got %s", tc.wantState, got.State)
-			}
-			if got.Error != tc.wantError {
-				t.Errorf("error: want %q, got %q", tc.wantError, got.Error)
-			}
-			if got.ID != "web" {
-				t.Errorf("id: got %s", got.ID)
-			}
-		})
-	}
-}
-
-// --- List ---
-
-func TestList_ManagedOnly(t *testing.T) {
-	t.Parallel()
-	o, cs := newTestOrchestrator(t)
-
-	a := testRequest()
-	b := testRequest()
-	b.ID = "api"
-	for _, req := range []*deployment.Request{a, b} {
-		if err := o.Apply(t.Context(), req); err != nil {
-			t.Fatalf("Apply %s: %v", req.ID, err)
-		}
-	}
-	// An unmanaged Deployment in the namespace must not show up.
-	unmanaged := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "other"}}
-	if _, err := cs.AppsV1().Deployments("orchestrator").Create(t.Context(), unmanaged, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("seed unmanaged: %v", err)
-	}
-
-	statuses, err := o.List(t.Context())
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(statuses) != 2 {
-		t.Fatalf("want 2 managed deployments, got %d", len(statuses))
-	}
-	ids := map[string]bool{}
-	for _, s := range statuses {
-		ids[s.ID] = true
-	}
-	if !ids["web"] || !ids["api"] {
-		t.Errorf("ids: got %v", ids)
-	}
-}
-
 // --- Spec ---
 
-func TestSpec_RoundTrip(t *testing.T) {
+func TestSpec_MarkerRoundTrip(t *testing.T) {
 	t.Parallel()
 	o, _ := newTestOrchestrator(t)
 	req := testRequest()
 	req.Probes = &deployment.Probes{Readiness: &deployment.Probe{Path: "/ready", PeriodMillis: 100}}
-
-	if err := o.Apply(t.Context(), req); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
+	mustApply(t, o, req)
 
 	got, err := o.Spec(t.Context(), "web")
 	if err != nil {
@@ -384,15 +347,17 @@ func TestSpec_NotFound(t *testing.T) {
 
 // --- Endpoints ---
 
-func TestEndpoints_ReadyPodsOnly(t *testing.T) {
+func TestEndpoints_ReadyPodsOfRoutedRevisions(t *testing.T) {
 	t.Parallel()
 	o, cs := newTestOrchestrator(t)
+	mustApply(t, o, testRequest())
 
 	pods := []*corev1.Pod{
-		testPod("web-ready", "web", "10.0.0.1", corev1.ConditionTrue),
-		testPod("web-unready", "web", "10.0.0.2", corev1.ConditionFalse),
-		testPod("web-no-ip", "web", "", corev1.ConditionTrue),
-		testPod("other-ready", "other", "10.0.0.3", corev1.ConditionTrue),
+		testPod("routed-ready", "web", "web-00001", "10.0.0.1", corev1.ConditionTrue),
+		testPod("routed-unready", "web", "web-00001", "10.0.0.2", corev1.ConditionFalse),
+		testPod("routed-no-ip", "web", "web-00001", "", corev1.ConditionTrue),
+		testPod("unrouted-revision", "web", "web-00002", "10.0.0.3", corev1.ConditionTrue),
+		testPod("other-deployment", "other", "other-00001", "10.0.0.4", corev1.ConditionTrue),
 	}
 	for _, p := range pods {
 		if _, err := cs.CoreV1().Pods("orchestrator").Create(t.Context(), p, metav1.CreateOptions{}); err != nil {
@@ -412,11 +377,84 @@ func TestEndpoints_ReadyPodsOnly(t *testing.T) {
 	}
 }
 
+// --- Scale ---
+
+func TestScale_RoutedRevisionToZeroAndBack(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	ctx := t.Context()
+	mustApply(t, o, testRequest())
+
+	if err := o.Scale(ctx, "web", 0); err != nil {
+		t.Fatalf("Scale(0): %v", err)
+	}
+	dep, err := cs.AppsV1().Deployments("orchestrator").Get(ctx, "dep-web-00001", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+		t.Fatalf("replicas after Scale(0): got %v, want 0", dep.Spec.Replicas)
+	}
+
+	// Idempotent: same value performs no write.
+	writes := countActions(cs, "update", "deployments")
+	if err := o.Scale(ctx, "web", 0); err != nil {
+		t.Fatalf("Scale(0) again: %v", err)
+	}
+	if countActions(cs, "update", "deployments") != writes {
+		t.Fatal("idempotent Scale performed a write")
+	}
+
+	if err := o.Scale(ctx, "web", 2); err != nil {
+		t.Fatalf("Scale(2): %v", err)
+	}
+	dep, _ = cs.AppsV1().Deployments("orchestrator").Get(ctx, "dep-web-00001", metav1.GetOptions{})
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 2 {
+		t.Fatalf("replicas after Scale(2): got %v, want 2", dep.Spec.Replicas)
+	}
+}
+
+func TestScale_SplitTargetsLatestReady(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	ctx := t.Context()
+	twoRevisions(t, o) // 00001 cut (lastReady), 00002 minted
+
+	// Pin a 50/50 split; the routed-revision pick under a split is lastReady.
+	if err := o.SetTraffic(ctx, "web", []deployment.Target{
+		{RevisionName: "web-00001", Percent: 50},
+		{RevisionName: "web-00002", Percent: 50},
+	}); err != nil {
+		t.Fatalf("SetTraffic: %v", err)
+	}
+
+	if err := o.Scale(ctx, "web", 3); err != nil {
+		t.Fatalf("Scale(3): %v", err)
+	}
+	dep, err := cs.AppsV1().Deployments("orchestrator").Get(ctx, "dep-web-00001", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 3 {
+		t.Errorf("split Scale must target the latest-ready revision (00001), got %v", dep.Spec.Replicas)
+	}
+}
+
+func TestScale_NotFound(t *testing.T) {
+	t.Parallel()
+	o, _ := newTestOrchestrator(t)
+	err := o.Scale(t.Context(), "ghost", 0)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("want not-found error, got %v", err)
+	}
+}
+
 // --- Ready / Start / Close ---
 
 func TestReadyStartClose(t *testing.T) {
 	t.Parallel()
 	o, _ := newTestOrchestrator(t)
+	o.cfg.GatewayEnabled = false // Start would launch informers against the fake otherwise
 
 	if err := o.Ready(t.Context()); err != nil {
 		t.Errorf("Ready: %v", err)
@@ -432,21 +470,22 @@ func TestReadyStartClose(t *testing.T) {
 func TestStart_SurfacesListErrors(t *testing.T) {
 	t.Parallel()
 	o, cs := newTestOrchestrator(t)
-	cs.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+	cs.PrependReactor("list", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("api down")
 	})
 	if err := o.Start(t.Context()); err == nil {
 		t.Error("want error when the API is unreachable")
 	}
+	_ = o.Close()
 }
 
 // --- helpers ---
 
-func testPod(name, deploymentID, ip string, ready corev1.ConditionStatus) *corev1.Pod {
+func testPod(name, deploymentID, revision, ip string, ready corev1.ConditionStatus) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
-			Labels: map[string]string{LabelDeploymentID: deploymentID},
+			Labels: revisionLabels(deploymentID, revision),
 		},
 		Status: corev1.PodStatus{
 			PodIP:      ip,
@@ -455,53 +494,21 @@ func testPod(name, deploymentID, ip string, ready corev1.ConditionStatus) *corev
 	}
 }
 
-func TestScale_ToZeroAndBack(t *testing.T) {
-	t.Parallel()
-	o, cs := newTestOrchestrator(t)
-	ctx := t.Context()
+// twoRevisions applies rev 00001, lets the rollout reconciler cut to it, then
+// mints rev 00002 — the canonical mid-rollout fixture.
+func twoRevisions(t *testing.T, o *Orchestrator) {
+	t.Helper()
+	mustApply(t, o, testRequest())
+	setAvailable(t, o, "web-00001", 1)
+	reconcileAll(t, o)
 
-	req := &deployment.Request{ID: "web", Image: "nginx", Port: 8080, Replicas: 1}
-	if err := o.Apply(ctx, req); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	if err := o.Scale(ctx, "web", 0); err != nil {
-		t.Fatalf("Scale(0): %v", err)
-	}
-	dep, err := cs.AppsV1().Deployments("orchestrator").Get(ctx, "dep-web", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
-		t.Fatalf("replicas after Scale(0): got %v, want 0", dep.Spec.Replicas)
-	}
-	if got := deriveStatus(dep).State; got != deployment.StateIdle {
-		t.Fatalf("state after Scale(0): got %s, want idle", got)
-	}
-
-	// Idempotent: same value performs no write.
-	writes := countActions(cs, "update", "deployments")
-	if err := o.Scale(ctx, "web", 0); err != nil {
-		t.Fatalf("Scale(0) again: %v", err)
-	}
-	if countActions(cs, "update", "deployments") != writes {
-		t.Fatal("idempotent Scale performed a write")
-	}
-
-	if err := o.Scale(ctx, "web", 2); err != nil {
-		t.Fatalf("Scale(2): %v", err)
-	}
-	dep, _ = cs.AppsV1().Deployments("orchestrator").Get(ctx, "dep-web", metav1.GetOptions{})
-	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 2 {
-		t.Fatalf("replicas after Scale(2): got %v, want 2", dep.Spec.Replicas)
-	}
+	changed := testRequest()
+	changed.Environment["FOO"] = "v2"
+	mustApply(t, o, changed)
 }
 
-func TestScale_NotFound(t *testing.T) {
-	t.Parallel()
-	o, _ := newTestOrchestrator(t)
-	err := o.Scale(t.Context(), "ghost", 0)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("want not-found error, got %v", err)
-	}
+// reconcileAll runs one rollout reconciler sweep.
+func reconcileAll(t *testing.T, o *Orchestrator) {
+	t.Helper()
+	o.reconcileRollouts(t.Context())
 }

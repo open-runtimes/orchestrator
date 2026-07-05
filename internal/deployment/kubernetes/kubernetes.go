@@ -1,34 +1,36 @@
 // Package kubernetes implements the deployment.Orchestrator interface using
-// the Kubernetes API. Each deployment is an apps/v1.Deployment plus a
-// ClusterIP Service in a configured namespace. Kubernetes is the source of
-// truth — Status, List, Spec, and Endpoints derive from it live, so any
-// replica can serve any request and a restart loses nothing.
+// the Kubernetes API. A deployment is a series of immutable revisions — each
+// an apps/v1.Deployment plus a selectorless Service — fronted by a Gateway
+// API HTTPRoute holding the traffic table, anchored by a marker ConfigMap.
+// Kubernetes is the source of truth — Status, List, Spec, and Endpoints
+// derive from it live, so any replica can serve any request and a restart
+// loses nothing.
 package kubernetes
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
-	"net"
-	"net/url"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/deployment/endpointflip"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
-	"strconv"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	gatewayclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 // Orchestrator implements deployment.Orchestrator using Kubernetes.
 type Orchestrator struct {
 	client    kubernetes.Interface
+	gateway   gatewayclient.Interface
 	namespace string
 	cfg       Config
+	stop      context.CancelFunc
 }
 
 // NewOrchestrator creates a Kubernetes deployment orchestrator.
@@ -38,83 +40,140 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{client: cs, namespace: cfg.Namespace, cfg: cfg}, nil
+	gw, err := kube.NewGatewayClient(cfg.Kubeconfig, cfg.Context)
+	if err != nil {
+		return nil, err
+	}
+	return &Orchestrator{client: cs, gateway: gw, namespace: cfg.Namespace, cfg: cfg}, nil
 }
 
-// Start surveys pre-existing managed deployments. Kubernetes reconciles them
-// autonomously, so there is nothing to resume — this just confirms API access
-// and logs what the backend is already running.
+// Start surveys pre-existing managed deployments (their markers), then
+// launches the background reconcilers: the rollout loop (auto-cut + retire)
+// and, when the gateway is enabled, the cold endpoint flip.
 func (o *Orchestrator) Start(ctx context.Context) error {
-	deps, err := o.client.AppsV1().Deployments(o.namespace).List(ctx, metav1.ListOptions{
+	markers, err := o.client.CoreV1().ConfigMaps(o.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: LabelManagedBy + "=" + ManagedByValue,
 	})
 	if err != nil {
-		return apperrors.Internal("kubernetes.listDeployments", err)
+		return apperrors.Internal("kubernetes.listMarkers", err)
 	}
-	slog.Info("Deployment orchestrator started", "namespace", o.namespace, "deployments", len(deps.Items))
+	slog.Info("Deployment orchestrator started", "namespace", o.namespace, "deployments", len(markers.Items))
+
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	o.stop = cancel
+	go o.runRollouts(runCtx)
+
+	if o.cfg.GatewayEnabled {
+		flip := endpointflip.New(o.client, o.namespace, endpointflip.Options{
+			ActivatorSelector: o.cfg.ActivatorSelector,
+			ProxyPort:         proxy.DefaultProxyPort,
+			ActivatorPort:     int32(o.cfg.ActivatorPort),
+		})
+		go flip.Run(runCtx)
+	}
 	return nil
 }
 
-// Apply creates the deployment or replaces its spec in place. The canonical
-// JSON of the request is stored in the deployment.spec annotation; when the
-// incoming request marshals to the same JSON, the workload is untouched (no
-// rollout). The fronting Service is ensured on every call — its shape never
-// changes, so create-if-missing also heals a partial earlier Apply.
+// Apply is the declarative create-or-update:
+//   - no marker → the deployment is new: mint revision {id}-00001 and route
+//     100% of traffic to it (the cold endpoint flip covers it until ready);
+//   - identical spec → heal any missing revision objects, otherwise no-op;
+//   - changed spec → mint the next revision. Traffic is UNTOUCHED — the
+//     rollout reconciler auto-cuts once the new revision reports ready
+//     (unless traffic was pinned manually).
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error {
 	specJSON, err := json.Marshal(req)
 	if err != nil {
 		return apperrors.Internal("kubernetes.marshalSpec", err)
 	}
-	desired := buildDeployment(req, o.cfg, string(specJSON))
 
-	deployments := o.client.AppsV1().Deployments(o.namespace)
-	existing, err := deployments.Get(ctx, desired.Name, metav1.GetOptions{})
+	m, err := o.getMarker(ctx, req.ID)
 	switch {
-	case apierrors.IsNotFound(err):
-		if _, err := deployments.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-			return apperrors.Internal("kubernetes.createDeployment", err)
-		}
+	case errors.Is(err, apperrors.ErrNotFound):
+		return o.createFirstRevision(ctx, req, string(specJSON))
 	case err != nil:
-		return apperrors.Internal("kubernetes.getDeployment", err)
-	case existing.Annotations[AnnotationSpec] == string(specJSON):
-		// Identical spec — leave the workload alone.
-	default:
-		desired.ResourceVersion = existing.ResourceVersion
-		if _, err := deployments.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-			return apperrors.Internal("kubernetes.updateDeployment", err)
+		return err
+	case m.Spec == string(specJSON):
+		// Identical spec — ensure the head revision's objects still exist.
+		if err := o.ensureRevisionObjects(ctx, req, m.LatestRevision); err != nil {
+			return err
 		}
+		return o.ensureRoute(ctx, m, fallbackTargets(m))
+	default:
+		return o.mintNextRevision(ctx, req, m, string(specJSON))
 	}
-
-	return o.ensureService(ctx, req)
 }
 
-func (o *Orchestrator) ensureService(ctx context.Context, req *deployment.Request) error {
-	_, err := o.client.CoreV1().Services(o.namespace).Create(ctx, buildService(req), metav1.CreateOptions{})
+// createFirstRevision brings a brand-new deployment up: marker, revision
+// {id}-00001, and its HTTPRoute at 100%. lastReady stays empty — the rollout
+// reconciler records it once the revision reports ready.
+func (o *Orchestrator) createFirstRevision(ctx context.Context, req *deployment.Request, specJSON string) error {
+	rev := revisionName(req.ID, 1)
+	m := marker{
+		ID:             req.ID,
+		Host:           req.Host,
+		Spec:           specJSON,
+		LatestRevision: rev,
+		TrafficMode:    trafficModeAuto,
+	}
+	if err := o.createMarker(ctx, m); err != nil {
+		return err
+	}
+	if err := o.ensureRevisionObjects(ctx, req, rev); err != nil {
+		return err
+	}
+	return o.ensureRoute(ctx, m, []deployment.Target{{RevisionName: rev, Percent: 100}})
+}
+
+// mintNextRevision materializes the changed spec as a new immutable revision
+// and records it as the head. Traffic is left alone.
+func (o *Orchestrator) mintNextRevision(ctx context.Context, req *deployment.Request, m marker, specJSON string) error {
+	rev := revisionName(req.ID, revisionNumber(m.LatestRevision)+1)
+	if err := o.ensureRevisionObjects(ctx, req, rev); err != nil {
+		return err
+	}
+	if err := o.updateMarker(ctx, req.ID, func(m *marker) {
+		m.Spec = specJSON
+		m.LatestRevision = rev
+		m.Host = req.Host
+	}); err != nil {
+		return err
+	}
+	m.Host = req.Host
+	return o.ensureRoute(ctx, m, fallbackTargets(m))
+}
+
+// ensureRevisionObjects creates the revision's Deployment and Service,
+// tolerating pre-existing ones — revisions are immutable, so create-if-missing
+// is also the heal for a partial earlier Apply.
+func (o *Orchestrator) ensureRevisionObjects(ctx context.Context, req *deployment.Request, rev string) error {
+	_, err := o.client.AppsV1().Deployments(o.namespace).Create(ctx, buildDeployment(req, o.cfg, rev), metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return apperrors.Internal("kubernetes.createDeployment", err)
+	}
+	_, err = o.client.CoreV1().Services(o.namespace).Create(ctx, buildService(req.ID, rev), metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return apperrors.Internal("kubernetes.createService", err)
 	}
 	return nil
 }
 
-// SetTraffic reconciles the deployment's HTTPRoute weights. Placeholder until
-// the Phase 3 revision rework lands in this package.
-func (o *Orchestrator) SetTraffic(ctx context.Context, id string, targets []deployment.Target) error {
-	if _, err := o.Spec(ctx, id); err != nil {
-		return err
-	}
-	return apperrors.Validation("traffic", "traffic splitting arrives with the revision rework")
-}
-
-// Scale sets the replica count via the scale subresource — the same write the
-// activator's cold raise and the idle-to-zero loop perform, so they can't
-// conflict with a concurrent Apply (which never touches a live spec.replicas
-// unless the spec changed).
+// Scale sets the replica count of the ROUTED revision via the scale
+// subresource — the same write the activator's cold raise and the
+// idle-to-zero loop perform, so they can't conflict with a concurrent Apply
+// (which never touches a live revision's spec.replicas).
 func (o *Orchestrator) Scale(ctx context.Context, id string, replicas int) error {
 	if replicas < 0 {
 		replicas = 0
 	}
+	m, err := o.getMarker(ctx, id)
+	if err != nil {
+		return err
+	}
+	rev := o.routedRevision(ctx, m)
+
 	deployments := o.client.AppsV1().Deployments(o.namespace)
-	scale, err := deployments.GetScale(ctx, deploymentNameFor(id), metav1.GetOptions{})
+	scale, err := deployments.GetScale(ctx, objectNameFor(rev), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return apperrors.NotFound("deployment", id)
 	}
@@ -125,111 +184,81 @@ func (o *Orchestrator) Scale(ctx context.Context, id string, replicas int) error
 		return nil
 	}
 	scale.Spec.Replicas = int32(replicas)
-	if _, err := deployments.UpdateScale(ctx, deploymentNameFor(id), scale, metav1.UpdateOptions{}); err != nil {
+	if _, err := deployments.UpdateScale(ctx, objectNameFor(rev), scale, metav1.UpdateOptions{}); err != nil {
 		return apperrors.Internal("kubernetes.updateScale", err)
 	}
 	return nil
 }
 
-// Delete tears down the deployment's Service and apps/v1.Deployment (foreground
-// propagation, so pods are gone before the Deployment object is). NotFound only
-// when neither object existed.
+// routedRevision picks the revision a whole-deployment operation acts on: a
+// single 100% target names it outright; under a split it is the latest-ready
+// revision (falling back to the head).
+func (o *Orchestrator) routedRevision(ctx context.Context, m marker) string {
+	targets := o.currentTargets(ctx, m)
+	if len(targets) == 1 {
+		return targets[0].RevisionName
+	}
+	if m.LastReady != "" {
+		return m.LastReady
+	}
+	return m.LatestRevision
+}
+
+// Delete tears down the deployment: its HTTPRoute, every revision's
+// Deployment (foreground propagation, so pods are gone before the objects
+// are) and Service, and finally the marker — last, so a crashed teardown is
+// still visible and retryable.
 func (o *Orchestrator) Delete(ctx context.Context, id string) error {
-	name := deploymentNameFor(id)
-
-	svcErr := o.client.CoreV1().Services(o.namespace).Delete(ctx, name, metav1.DeleteOptions{})
-	if svcErr != nil && !apierrors.IsNotFound(svcErr) {
-		return apperrors.Internal("kubernetes.deleteService", svcErr)
+	if _, err := o.getMarker(ctx, id); err != nil {
+		return err
 	}
-
-	prop := metav1.DeletePropagationForeground
-	depErr := o.client.AppsV1().Deployments(o.namespace).Delete(ctx, name, metav1.DeleteOptions{
-		PropagationPolicy: &prop,
-	})
-	if depErr != nil && !apierrors.IsNotFound(depErr) {
-		return apperrors.Internal("kubernetes.deleteDeployment", depErr)
+	if err := o.deleteRoute(ctx, id); err != nil {
+		return err
 	}
-
-	if apierrors.IsNotFound(svcErr) && apierrors.IsNotFound(depErr) {
-		return apperrors.NotFound("deployment", id)
+	revs, err := o.revisionNames(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, rev := range revs {
+		if err := o.deleteRevisionObjects(ctx, rev); err != nil {
+			return err
+		}
+	}
+	err = o.client.CoreV1().ConfigMaps(o.namespace).Delete(ctx, objectNameFor(id), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return apperrors.Internal("kubernetes.deleteMarker", err)
 	}
 	return nil
 }
 
-// Spec reconstructs the last-applied request from the deployment.spec annotation.
+// deleteRevisionObjects removes one revision's Deployment and Service,
+// tolerating already-gone objects.
+func (o *Orchestrator) deleteRevisionObjects(ctx context.Context, rev string) error {
+	prop := metav1.DeletePropagationForeground
+	err := o.client.AppsV1().Deployments(o.namespace).Delete(ctx, objectNameFor(rev), metav1.DeleteOptions{
+		PropagationPolicy: &prop,
+	})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return apperrors.Internal("kubernetes.deleteDeployment", err)
+	}
+	err = o.client.CoreV1().Services(o.namespace).Delete(ctx, objectNameFor(rev), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return apperrors.Internal("kubernetes.deleteService", err)
+	}
+	return nil
+}
+
+// Spec reconstructs the head revision's request from the marker.
 func (o *Orchestrator) Spec(ctx context.Context, id string) (*deployment.Request, error) {
-	dep, err := o.client.AppsV1().Deployments(o.namespace).Get(ctx, deploymentNameFor(id), metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, apperrors.NotFound("deployment", id)
-	}
+	m, err := o.getMarker(ctx, id)
 	if err != nil {
-		return nil, apperrors.Internal("kubernetes.getDeployment", err)
-	}
-	raw := dep.Annotations[AnnotationSpec]
-	if raw == "" {
-		return nil, apperrors.Internal("kubernetes.readSpec", fmt.Errorf("deployment %s missing %s annotation", dep.Name, AnnotationSpec))
+		return nil, err
 	}
 	var req deployment.Request
-	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+	if err := json.Unmarshal([]byte(m.Spec), &req); err != nil {
 		return nil, apperrors.Internal("kubernetes.unmarshalSpec", err)
 	}
 	return &req, nil
-}
-
-// Endpoints returns the proxy data-port URL of every ready pod — the
-// activator's direct forward targets.
-func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, error) {
-	pods, err := o.client.CoreV1().Pods(o.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: LabelDeploymentID + "=" + id,
-	})
-	if err != nil {
-		return nil, apperrors.Internal("kubernetes.listPods", err)
-	}
-	var endpoints []*url.URL
-	for i := range pods.Items {
-		pod := &pods.Items[i]
-		if !isPodReady(pod) || pod.Status.PodIP == "" {
-			continue
-		}
-		endpoints = append(endpoints, &url.URL{
-			Scheme: "http",
-			Host:   net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(proxy.DefaultProxyPort)),
-		})
-	}
-	return endpoints, nil
-}
-
-// Status returns the deployment's current state, derived live from the
-// apps/v1.Deployment.
-func (o *Orchestrator) Status(ctx context.Context, id string) (*deployment.StatusResponse, error) {
-	dep, err := o.client.AppsV1().Deployments(o.namespace).Get(ctx, deploymentNameFor(id), metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, apperrors.NotFound("deployment", id)
-	}
-	if err != nil {
-		return nil, apperrors.Internal("kubernetes.getDeployment", err)
-	}
-	status := deriveStatus(dep)
-	return &status, nil
-}
-
-// List returns the status of all managed deployments.
-func (o *Orchestrator) List(ctx context.Context) ([]deployment.StatusResponse, error) {
-	deps, err := o.client.AppsV1().Deployments(o.namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: LabelManagedBy + "=" + ManagedByValue,
-	})
-	if err != nil {
-		return nil, apperrors.Internal("kubernetes.listDeployments", err)
-	}
-	statuses := make([]deployment.StatusResponse, 0, len(deps.Items))
-	for i := range deps.Items {
-		if deps.Items[i].Labels[LabelDeploymentID] == "" {
-			slog.Warn("Skipping managed deployment without a deployment.id label", "name", deps.Items[i].Name)
-			continue
-		}
-		statuses = append(statuses, deriveStatus(&deps.Items[i]))
-	}
-	return statuses, nil
 }
 
 // Ready checks that the K8s API server is reachable.
@@ -238,19 +267,13 @@ func (o *Orchestrator) Ready(ctx context.Context) error {
 	return err
 }
 
-// Close releases orchestrator resources. Running deployments are NOT stopped —
-// Kubernetes keeps serving them independently.
+// Close stops the background reconcilers. Running deployments are NOT
+// stopped — Kubernetes keeps serving them independently.
 func (o *Orchestrator) Close() error {
-	return nil
-}
-
-func isPodReady(pod *corev1.Pod) bool {
-	for _, c := range pod.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
+	if o.stop != nil {
+		o.stop()
 	}
-	return false
+	return nil
 }
 
 // Verify Orchestrator implements deployment.Orchestrator.
