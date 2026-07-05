@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"orchestrator/internal/apperrors"
 	"orchestrator/pkg/deployment"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,12 +42,23 @@ func (o *Orchestrator) SetTraffic(ctx context.Context, id string, targets []depl
 		}
 	}
 
-	if err := o.writeRouteTraffic(ctx, m, targets); err != nil {
-		return err
-	}
 	mode := trafficModeManual
 	if len(targets) == 1 && targets[0].RevisionName == m.LatestRevision && targets[0].Percent == 100 {
 		mode = trafficModeAuto
+	}
+
+	// Mode before route when pinning manual: a rollout tick landing between
+	// the two writes must already see manual, or it would stomp the fresh
+	// split with an auto-cut. Re-arming auto is the reverse — the route write
+	// lands first so the tick never cuts based on a stale table.
+	if mode == trafficModeManual {
+		if err := o.updateMarker(ctx, id, func(m *marker) { m.TrafficMode = mode }); err != nil {
+			return err
+		}
+		return o.writeRouteTraffic(ctx, m, targets)
+	}
+	if err := o.writeRouteTraffic(ctx, m, targets); err != nil {
+		return err
 	}
 	return o.updateMarker(ctx, id, func(m *marker) { m.TrafficMode = mode })
 }
@@ -79,10 +91,14 @@ func fallbackTargets(m marker) []deployment.Target {
 }
 
 // routeTargets parses the weighted revision split back out of the route's
-// default (match-less) rule.
+// default rule — the one WITHOUT the Prefer header match. The async rule is
+// identified by its header match rather than the default rule by having no
+// matches, because API-server defaulting stamps a PathPrefix match onto every
+// rule (the fake clientset doesn't, which is exactly the kind of drift that
+// hides this).
 func routeTargets(route *gatewayv1.HTTPRoute) []deployment.Target {
 	for _, rule := range route.Spec.Rules {
-		if len(rule.Matches) > 0 {
+		if hasPreferMatch(rule.Matches) {
 			continue
 		}
 		targets := make([]deployment.Target, 0, len(rule.BackendRefs))
@@ -96,6 +112,19 @@ func routeTargets(route *gatewayv1.HTTPRoute) []deployment.Target {
 		return targets
 	}
 	return nil
+}
+
+// hasPreferMatch reports whether any match in the rule keys on the Prefer
+// header — the async rule's signature.
+func hasPreferMatch(matches []gatewayv1.HTTPRouteMatch) bool {
+	for _, m := range matches {
+		for _, h := range m.Headers {
+			if strings.EqualFold(string(h.Name), headerPrefer) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // revisionFromFilters extracts the X-Revision set-header value stamped on a

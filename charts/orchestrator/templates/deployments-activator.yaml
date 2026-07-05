@@ -27,7 +27,7 @@ spec:
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
           env:
-            - name: PORT
+            - name: ACTIVATOR_PORT
               value: {{ .Values.deployments.activator.port | quote }}
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}

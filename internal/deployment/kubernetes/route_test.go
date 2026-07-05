@@ -172,3 +172,34 @@ func TestRouteTargets_RoundTrip(t *testing.T) {
 		t.Errorf("targets round-trip: want %+v, got %+v", want, got)
 	}
 }
+
+// TestRouteTargets_SurvivesAPIServerDefaulting parses a route the way a real
+// API server returns it: CRD defaulting stamps a PathPrefix match onto every
+// rule, so the default rule must be identified by NOT carrying the Prefer
+// header match — not by being match-less.
+func TestRouteTargets_SurvivesAPIServerDefaulting(t *testing.T) {
+	t.Parallel()
+	targets := []deployment.Target{
+		{RevisionName: "web-00002", Percent: 90},
+		{RevisionName: "web-00001", Percent: 10},
+	}
+	o := &Orchestrator{cfg: Config{GatewayName: "orchestrator", ActivatorService: "deployments-activator", ActivatorPort: 8081}}
+	route := o.buildHTTPRoute(marker{ID: "web", Host: "web.example.com"}, targets)
+
+	// Simulate API-server defaulting: every rule gains a PathPrefix / match.
+	prefix := gatewayv1.PathMatchPathPrefix
+	slash := "/"
+	for i := range route.Spec.Rules {
+		if len(route.Spec.Rules[i].Matches) == 0 {
+			route.Spec.Rules[i].Matches = []gatewayv1.HTTPRouteMatch{{}}
+		}
+		for j := range route.Spec.Rules[i].Matches {
+			route.Spec.Rules[i].Matches[j].Path = &gatewayv1.HTTPPathMatch{Type: &prefix, Value: &slash}
+		}
+	}
+
+	got := routeTargets(route)
+	if len(got) != 2 || got[0] != targets[0] || got[1] != targets[1] {
+		t.Fatalf("routeTargets after defaulting: got %+v, want %+v", got, targets)
+	}
+}

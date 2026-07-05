@@ -131,7 +131,7 @@ tasks:
     desc: Run real-cluster K8s integration tests (requires kind + built images)
     deps: [build, kind:up]
     cmds:
-      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest --name {{.KIND_CLUSTER}}
+      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest --name {{.KIND_CLUSTER}}
       - bash hack/install-gateway.sh
       - go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/... ./internal/deployment/kubernetes/...
 
