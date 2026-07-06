@@ -1,6 +1,7 @@
 # Helm value overrides for local development (applied on top of charts/orchestrator/values.yaml).
 # Used by the Tiltfile when running against the kind-orchestrator-dev cluster.
 jobs:
+  enabled: true
   image:
     repository: ko.local/jobs-service
     tag: latest

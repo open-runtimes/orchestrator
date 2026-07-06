@@ -197,7 +197,7 @@ func TestProxyEnv_Full(t *testing.T) {
 	}
 }
 
-func TestProgressDeadline(t *testing.T) {
+func TestReadyTimeout(t *testing.T) {
 	t.Parallel()
 
 	if got := readyTimeout(0); got != defaultReadyTimeout {

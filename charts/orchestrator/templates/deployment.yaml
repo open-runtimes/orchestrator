@@ -1,3 +1,4 @@
+{{- if .Values.jobs.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,7 +7,14 @@ metadata:
   labels:
     {{- include "orchestrator.jobsLabels" . | nindent 4 }}
 spec:
+  {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection.enabled) }}
+  {{- fail "replicaCount > 1 requires leaderElection.enabled=true (watcher ownership must be coordinated)" }}
+  {{- end }}
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
   selector:
     matchLabels:
       {{- include "orchestrator.jobsSelectorLabels" . | nindent 6 }}
@@ -20,10 +28,29 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "orchestrator.serviceAccountName" . }}
+      securityContext:
+        {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orchestrator.jobsSelectorLabels" . | nindent 14 }}
+      volumes:
+        # Scratch space so readOnlyRootFilesystem never bites a stray temp
+        # write (the services themselves write nothing).
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: jobs-service
           image: {{ include "orchestrator.jobsImage" . | quote }}
           imagePullPolicy: {{ .Values.jobs.image.pullPolicy }}
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}
@@ -93,3 +120,52 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+
+{{- /*
+Replica-aware PDB: rendered only when the jobs service is DURABLY
+multi-replica — a fixed replicaCount > 1, or an HPA whose floor is above 1.
+A PDB on anything that can legally be a singleton would block node drains.
+*/}}
+{{- if or (gt (int .Values.replicaCount) 1) (and .Values.autoscaling.enabled (gt (int .Values.autoscaling.minReplicas) 1)) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "orchestrator.jobsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "orchestrator.jobsSelectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.autoscaling.enabled }}
+{{- if not .Values.leaderElection.enabled }}
+{{- fail "autoscaling.enabled requires leaderElection.enabled=true" }}
+{{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "orchestrator.jobsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "orchestrator.jobsName" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}

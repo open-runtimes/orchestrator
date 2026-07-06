@@ -1,4 +1,4 @@
-{{- if .Values.deployments.enabled }}
+{{- if and .Values.deployments.enabled .Values.deployments.activator.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,7 +7,11 @@ metadata:
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
 spec:
+  {{- if not .Values.deployments.activator.autoscaling.enabled }}
   replicas: {{ .Values.deployments.activator.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
   selector:
     matchLabels:
       {{- include "orchestrator.activatorSelectorLabels" . | nindent 6 }}
@@ -17,10 +21,29 @@ spec:
         {{- include "orchestrator.activatorSelectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-activator
+      securityContext:
+        {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orchestrator.activatorSelectorLabels" . | nindent 14 }}
+      volumes:
+        # Scratch space so readOnlyRootFilesystem never bites a stray temp
+        # write (the services themselves write nothing).
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: deployments-activator
           image: {{ include "orchestrator.activatorImage" . | quote }}
           imagePullPolicy: {{ .Values.deployments.activator.image.pullPolicy }}
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           ports:
             - name: data
               containerPort: {{ .Values.deployments.activator.port }}
@@ -112,4 +135,47 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.deploymentsName" . }}-activator
     namespace: {{ .Release.Namespace }}
+
+{{- /*
+Replica-aware PDB — see the jobs PDB note; singletons never get one.
+*/}}
+{{- if or (gt (int .Values.deployments.activator.replicaCount) 1) (and .Values.deployments.activator.autoscaling.enabled (gt (int .Values.deployments.activator.autoscaling.minReplicas) 1)) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "orchestrator.activatorSelectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.deployments.activator.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "orchestrator.deploymentsName" . }}-activator
+  minReplicas: {{ .Values.deployments.activator.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.deployments.activator.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.deployments.activator.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
 {{- end }}

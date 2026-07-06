@@ -34,6 +34,8 @@ Metrics follow Google's Golden 4 Signals pattern: Latency, Traffic, Errors, Satu
 
 **HTTP & Job Metrics:**
 
+The `path` label is normalized per route (`/v1/jobs/{id}`, `/v1/deployments/{id}/traffic`, …) so cardinality is bounded by the route table. Note: the jobs placeholder changed from `{jobId}` to `{id}` when the serving-plane routes were added — dashboards filtering on the old value need updating.
+
 | Signal | Metrics |
 |--------|---------|
 | Latency | `http_request_duration_seconds`, `job_duration_seconds` |
