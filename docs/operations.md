@@ -161,7 +161,11 @@ The NetworkPolicy admits ingress only from the gateway, the activator, and the c
 
 ## Scaling the control plane
 
-Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=true`: all replicas serve the API (any replica can answer anything — state lives in the cluster), while the background reconcilers (rollout auto-cut, endpoint flip, autoscaler, pool control) run on the elected leader only. The activator scales independently via `deployments.activator.replicaCount`.
+Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=true`: all replicas serve the API (any replica can answer anything — state lives in the cluster), while the background reconcilers (rollout auto-cut, endpoint flip, autoscaler, pool control) run on the elected leader only. The activator scales independently via `deployments.activator.replicaCount`. The chart **fails fast at render time** if you ask for multiple replicas without leader election.
+
+Each component can also autoscale on CPU (`autoscaling.enabled`, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
+
+The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
 
 ## Local development backend
 

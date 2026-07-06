@@ -6,7 +6,14 @@ metadata:
   labels:
     {{- include "orchestrator.jobsLabels" . | nindent 4 }}
 spec:
+  {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection.enabled) }}
+  {{- fail "replicaCount > 1 requires leaderElection.enabled=true (watcher ownership must be coordinated)" }}
+  {{- end }}
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
   selector:
     matchLabels:
       {{- include "orchestrator.jobsSelectorLabels" . | nindent 6 }}
@@ -20,10 +27,21 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "orchestrator.serviceAccountName" . }}
+      securityContext:
+        {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orchestrator.jobsSelectorLabels" . | nindent 14 }}
       containers:
         - name: jobs-service
           image: {{ include "orchestrator.jobsImage" . | quote }}
           imagePullPolicy: {{ .Values.jobs.image.pullPolicy }}
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}

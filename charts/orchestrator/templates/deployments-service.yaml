@@ -7,7 +7,14 @@ metadata:
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 spec:
+  {{- if and (gt (int .Values.deployments.replicaCount) 1) (not .Values.deployments.leaderElection.enabled) }}
+  {{- fail "deployments.replicaCount > 1 requires deployments.leaderElection.enabled=true (the reconcilers must be leader-gated)" }}
+  {{- end }}
+  {{- if not .Values.deployments.autoscaling.enabled }}
   replicas: {{ .Values.deployments.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
   selector:
     matchLabels:
       {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 6 }}
@@ -21,10 +28,21 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "orchestrator.deploymentsName" . }}
+      securityContext:
+        {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 14 }}
       containers:
         - name: deployments-service
           image: {{ include "orchestrator.deploymentsImage" . | quote }}
           imagePullPolicy: {{ .Values.deployments.image.pullPolicy }}
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}

@@ -7,7 +7,11 @@ metadata:
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
 spec:
+  {{- if not .Values.deployments.activator.autoscaling.enabled }}
   replicas: {{ .Values.deployments.activator.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
   selector:
     matchLabels:
       {{- include "orchestrator.activatorSelectorLabels" . | nindent 6 }}
@@ -17,10 +21,21 @@ spec:
         {{- include "orchestrator.activatorSelectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-activator
+      securityContext:
+        {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orchestrator.activatorSelectorLabels" . | nindent 14 }}
       containers:
         - name: deployments-activator
           image: {{ include "orchestrator.activatorImage" . | quote }}
           imagePullPolicy: {{ .Values.deployments.activator.image.pullPolicy }}
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
           ports:
             - name: data
               containerPort: {{ .Values.deployments.activator.port }}

@@ -65,14 +65,20 @@ deployments:
 
   # HA control plane: every replica serves the API; the background
   # reconcilers (auto-cut, endpoint flip, autoscaler, pools) run on the
-  # elected leader. leaderElection is required when replicaCount > 1.
+  # elected leader. leaderElection is required when replicaCount > 1 (the
+  # chart fails at render time otherwise). Multi-replica components get a
+  # PodDisruptionBudget automatically.
   replicaCount: 2
   leaderElection:
     enabled: true
 
-  # The buffering edge for cold-start and async traffic.
+  # The buffering edge for cold-start and async traffic — autoscaled on CPU.
   activator:
-    replicaCount: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
 
 # ── Autoscaler tuning + API auth (both services) ─────────────────────────────
 extraEnv:

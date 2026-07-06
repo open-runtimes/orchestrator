@@ -119,28 +119,48 @@ deployments:
   # The buffering edge for cold/async traffic (deployments-activator).
   activator:
     replicaCount: 1
+    # HPA for the buffering edge (stateless; no leader election needed).
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
     image:
       ref: ""
       repository: ghcr.io/open-runtimes/orchestrator/deployments-activator
       tag: latest
       pullPolicy: IfNotPresent
     port: 8081
+    # No CPU limit by design (same rule as workloads — CFS throttling hurts
+    # a latency-critical proxy most of all); memory request = limit.
     resources:
       requests:
         cpu: 50m
         memory: 64Mi
       limits:
-        cpu: 500m
         memory: 256Mi
+  # HPA for the deployments service. Requires deployments.leaderElection.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # No CPU limit by design — see the activator note.
   resources:
     requests:
       cpu: 50m
       memory: 64Mi
     limits:
-      cpu: 500m
       memory: 256Mi
 
 replicaCount: 1
+
+# HPA for the jobs service. Requires leaderElection.enabled.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
 
 # Leader election coordinates watcher ownership across replicas. Required when
 # replicaCount > 1 to avoid duplicate lifecycle callbacks; optional at
@@ -193,12 +213,13 @@ orchestrator:
   workerImagePullPolicy: ""
   sidecarImagePullPolicy: ""
 
+# No CPU limit by design (same rule as workloads — CPU is compressible and
+# limits cause needless throttling); memory is capped.
 resources:
   requests:
     cpu: 50m
     memory: 64Mi
   limits:
-    cpu: 500m
     memory: 256Mi
 
 podAnnotations: {}

@@ -173,3 +173,34 @@ app.kubernetes.io/name: {{ include "orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: jobs
 {{- end -}}
+
+{{/*
+Hardened pod-level security context for control-plane pods — the same floor
+the orchestrator stamps on workload pods.
+*/}}
+{{- define "orchestrator.podSecurityContext" -}}
+runAsNonRoot: true
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{/*
+Hardened container-level security context for control-plane containers.
+*/}}
+{{- define "orchestrator.containerSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+capabilities:
+  drop: ["ALL"]
+{{- end }}
+
+{{/*
+Zero-downtime rollout strategy: surge a replacement before taking a replica
+away. Safe for leader-elected components — surged replicas are followers.
+*/}}
+{{- define "orchestrator.rolloutStrategy" -}}
+type: RollingUpdate
+rollingUpdate:
+  maxUnavailable: 0
+  maxSurge: 1
+{{- end }}
