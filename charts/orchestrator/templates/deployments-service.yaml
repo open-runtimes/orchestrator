@@ -37,12 +37,20 @@ spec:
           labelSelector:
             matchLabels:
               {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 14 }}
+      volumes:
+        # Scratch space so readOnlyRootFilesystem never bites a stray temp
+        # write (the services themselves write nothing).
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: deployments-service
           image: {{ include "orchestrator.deploymentsImage" . | quote }}
           imagePullPolicy: {{ .Values.deployments.image.pullPolicy }}
           securityContext:
             {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}

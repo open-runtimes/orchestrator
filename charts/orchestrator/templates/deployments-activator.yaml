@@ -30,12 +30,20 @@ spec:
           labelSelector:
             matchLabels:
               {{- include "orchestrator.activatorSelectorLabels" . | nindent 14 }}
+      volumes:
+        # Scratch space so readOnlyRootFilesystem never bites a stray temp
+        # write (the services themselves write nothing).
+        - name: tmp
+          emptyDir: {}
       containers:
         - name: deployments-activator
           image: {{ include "orchestrator.activatorImage" . | quote }}
           imagePullPolicy: {{ .Values.deployments.activator.image.pullPolicy }}
           securityContext:
             {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           ports:
             - name: data
               containerPort: {{ .Values.deployments.activator.port }}
