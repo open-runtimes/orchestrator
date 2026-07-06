@@ -33,7 +33,7 @@ type Resolver interface {
 // Activator routes data-plane traffic by Host.
 type Activator struct {
 	resolver Resolver
-	broker   *Broker
+	broker   *broker
 
 	mu    sync.Mutex
 	cache map[string]resolveEntry // host → spec, TTL-bounded
@@ -48,7 +48,7 @@ type resolveEntry struct {
 func New(resolver Resolver, queue dispatcher.Queue) *Activator {
 	return &Activator{
 		resolver: resolver,
-		broker:   NewBroker(queue),
+		broker:   newBroker(queue),
 		cache:    make(map[string]resolveEntry),
 	}
 }
@@ -57,7 +57,7 @@ func New(resolver Resolver, queue dispatcher.Queue) *Activator {
 // deployment's first endpoint — the autoscaler's hold-up signal during a
 // cold start.
 func (a *Activator) QueuedDepth(id string) int {
-	return a.broker.QueuedDepth(id)
+	return a.broker.queuedDepth(id)
 }
 
 // resolve is the cached host→spec lookup for the data path; misses fall
@@ -96,10 +96,10 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Exact-literal match by design; combined RFC 7240 forms are not recognized.
 	if r.Header.Get("Prefer") == "respond-async" {
-		a.broker.Async(w, r, spec.ID, spec.Host, spec, hold, c)
+		a.broker.async(w, r, spec.ID, spec.Host, spec, hold, c)
 		return
 	}
-	a.broker.Sync(w, r, spec.ID, spec.Host, hold, c)
+	a.broker.sync(w, r, spec.ID, spec.Host, hold, c)
 }
 
 // deploymentCapacity adapts one resolved deployment to the broker's seam:

@@ -101,8 +101,6 @@
 | **Cold** | The state of a Revision scaled to zero replicas | Idle, off |
 | **Endpoint flip** | The swap of a Revision's endpoints between its ready pods (warm) and Activator pods (cold) | Slice swap, SKS flip |
 | **Activator** | The buffering edge that holds cold and async requests, raises cold Revisions, and forwards | Buffer, edge proxy |
-| **Broker** | The shared hold-raise-forward pipeline inside the Activator, common to both backends' edges | RequestBroker, pipeline |
-| **Capacity** | What an edge binds per request for the Broker: how to find a target and how to raise one | Backend, resolver |
 | **Raise** | The Activator's scale-up of a cold Revision from zero so a held request can be served | Wake, cold scale-up |
 | **Cold start** | The end-to-end latency of a request that arrives while its Revision is cold | Spin-up time |
 | **Async request** | A request marked `Prefer: respond-async`, accepted immediately and answered via the Callback | Background request |
@@ -159,7 +157,6 @@
 - The **Traffic table** distributes a **Deployment**'s traffic across **traffic targets**, each naming exactly one **Revision**.
 - Every **Revision** replica pairs the workload with one **Deployment sidecar**; the **endpoint flip** decides whether the Revision's endpoints are its own pods (**warm**) or the **Activator** (**cold**).
 - The **Activator** owns 0→N (**raise**); the **Autoscaler** owns 1↔N and **scale to zero** — the two never overlap.
-- Both Activator edges delegate to one **Broker**; each binds a per-request **Capacity** (Docker: spec + endpoints; Kubernetes: revision pods + scale subresource).
 - A **Pool** maintains N **warm pods**; a **Claim** takes one, an **Activation** turns it into a running workload, and the Pool **replenishes**; a failed activation **poisons** the pod.
 - Workload pods live in the **Workload namespace**; the control plane and **Activator** live in the **Release namespace**.
 

@@ -33,24 +33,24 @@ const (
 	raiseDebounce = 2 * time.Second
 )
 
-// Capacity is what a data-plane edge knows about reaching one workload: how
+// capacity is what a data-plane edge knows about reaching one workload: how
 // to find a serving endpoint, and how to ask for one when there is none.
 // Bound per request by the edge (to a deployment spec on Docker, a revision
-// on Kubernetes); the Broker owns everything either side of it.
-type Capacity interface {
+// on Kubernetes); the broker owns everything either side of it.
+type capacity interface {
 	// Target returns a reachable endpoint, or nil when none is ready yet.
 	Target(ctx context.Context) (*url.URL, error)
-	// Raise requests capacity for a cold workload. The Broker debounces
+	// Raise requests capacity for a cold workload. The broker debounces
 	// calls per key; implementations own idempotence and success logging.
 	Raise(ctx context.Context) error
 }
 
-// Broker is the hold-raise-forward pipeline shared by both data-plane edges:
-// it holds requests until the edge's Capacity yields a target (raising cold
+// broker is the hold-raise-forward pipeline shared by both data-plane edges:
+// it holds requests until the edge's capacity yields a target (raising cold
 // workloads, debounced), proxies sync requests, and runs the async accept →
 // forward → response-callback flow. Delivery is at-most-once: nothing is
 // stored, X-Invocation-Id is a correlation id only.
-type Broker struct {
+type broker struct {
 	queue  dispatcher.Queue
 	source string // CloudEvents source
 
@@ -59,9 +59,9 @@ type Broker struct {
 	queued    map[string]int       // key → requests waiting for an endpoint
 }
 
-// NewBroker creates a Broker. queue delivers async response callbacks.
-func NewBroker(queue dispatcher.Queue) *Broker {
-	return &Broker{
+// newBroker creates a broker. queue delivers async response callbacks.
+func newBroker(queue dispatcher.Queue) *broker {
+	return &broker{
 		queue:     queue,
 		source:    "orchestrator/deployments",
 		lastRaise: make(map[string]time.Time),
@@ -71,14 +71,14 @@ func NewBroker(queue dispatcher.Queue) *Broker {
 
 // QueuedDepth reports how many requests are waiting for the key's first
 // endpoint — the autoscaler's hold-up signal during a cold start.
-func (b *Broker) QueuedDepth(key string) int {
+func (b *broker) queuedDepth(key string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.queued[key]
 }
 
 // Queued snapshots the waiting-request count per key.
-func (b *Broker) Queued() map[string]int {
+func (b *broker) depths() map[string]int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := make(map[string]int, len(b.queued))
@@ -93,7 +93,7 @@ func (b *Broker) Queued() map[string]int {
 // Sync holds for a target (bounded by hold) and proxies the request to it,
 // preserving host as the workload's virtual host. The per-request 504
 // timeout is enforced by the deployments-sidecar, not here.
-func (b *Broker) Sync(w http.ResponseWriter, r *http.Request, key, host string, hold time.Duration, c Capacity) {
+func (b *broker) sync(w http.ResponseWriter, r *http.Request, key, host string, hold time.Duration, c capacity) {
 	target, err := b.await(r.Context(), key, hold, c)
 	if err != nil {
 		http.Error(w, "no serving capacity became ready", http.StatusServiceUnavailable)
@@ -106,7 +106,7 @@ func (b *Broker) Sync(w http.ResponseWriter, r *http.Request, key, host string, 
 // eventual response to the deployment's callback as a CloudEvent. hold
 // bounds the wait for the first endpoint; spec.TimeoutSeconds extends the
 // total forward window.
-func (b *Broker) Async(w http.ResponseWriter, r *http.Request, key, host string, spec *deployment.Request, hold time.Duration, c Capacity) {
+func (b *broker) async(w http.ResponseWriter, r *http.Request, key, host string, spec *deployment.Request, hold time.Duration, c capacity) {
 	if spec.Callback == nil || spec.Callback.URL == "" {
 		http.Error(w, "async requires a callback on the deployment", http.StatusBadRequest)
 		return
@@ -133,7 +133,7 @@ func (b *Broker) Async(w http.ResponseWriter, r *http.Request, key, host string,
 
 // forwardAsync executes the buffered request against a ready endpoint and
 // dispatches the response callback.
-func (b *Broker) forwardAsync(r *http.Request, key string, spec *deployment.Request, invocationID string, hold time.Duration, c Capacity) {
+func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Request, invocationID string, hold time.Duration, c capacity) {
 	ctx, cancel := context.WithTimeout(context.Background(),
 		hold+time.Duration(spec.TimeoutSeconds)*time.Second)
 	defer cancel()
@@ -171,7 +171,7 @@ func (b *Broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 }
 
 // dispatchResponse emits the orchestrator.deployment.response CloudEvent.
-func (b *Broker) dispatchResponse(spec *deployment.Request, invocationID string, status int, body []byte, truncated bool, errMsg string) {
+func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, status int, body []byte, truncated bool, errMsg string) {
 	data := map[string]any{
 		"deploymentId": spec.ID,
 		"invocationId": invocationID,
@@ -205,10 +205,10 @@ func (b *Broker) dispatchResponse(spec *deployment.Request, invocationID string,
 	}
 }
 
-// await polls Capacity for a target until hold expires. A cold workload (no
+// await polls capacity for a target until hold expires. A cold workload (no
 // target — scaled to zero, or its last replica crashed/was evicted) is
 // raised first: the broker owns 0→N, never waiting on an autoscaler tick.
-func (b *Broker) await(ctx context.Context, key string, hold time.Duration, c Capacity) (*url.URL, error) {
+func (b *broker) await(ctx context.Context, key string, hold time.Duration, c capacity) (*url.URL, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, hold)
 	defer cancel()
 
@@ -242,7 +242,7 @@ func (b *Broker) await(ctx context.Context, key string, hold time.Duration, c Ca
 // cold hits (and the poll loop) issue one write. Failures are logged, not
 // returned — the hold carries on and the request fails with 503 only if
 // nothing becomes ready in time.
-func (b *Broker) raise(ctx context.Context, key string, c Capacity) {
+func (b *broker) raise(ctx context.Context, key string, c capacity) {
 	b.mu.Lock()
 	if time.Since(b.lastRaise[key]) < raiseDebounce {
 		b.mu.Unlock()

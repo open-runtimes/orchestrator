@@ -68,7 +68,7 @@ type RevisionConfig struct {
 // whose endpoints are this activator during the cold window (loop).
 type RevisionActivator struct {
 	client kubernetes.Interface
-	broker *Broker
+	broker *broker
 	cfg    RevisionConfig
 
 	pods        corelisters.PodLister
@@ -89,7 +89,7 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 	}
 	return &RevisionActivator{
 		client: client,
-		broker: NewBroker(queue),
+		broker: newBroker(queue),
 		cfg:    cfg,
 	}
 }
@@ -98,7 +98,7 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 // revision's first pod — the autoscaler's hold-up signal while a cold start
 // is in flight (scraped via GET /stats on the data listener).
 func (a *RevisionActivator) QueuedByRevision() map[string]int {
-	return a.broker.Queued()
+	return a.broker.depths()
 }
 
 // Start runs the managed pod + Deployment informers on ctx and blocks until
@@ -143,10 +143,10 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)
 			return
 		}
-		a.broker.Async(w, r, rev, r.Host, spec, a.cfg.ResponseStartTimeout, c)
+		a.broker.async(w, r, rev, r.Host, spec, a.cfg.ResponseStartTimeout, c)
 		return
 	}
-	a.broker.Sync(w, r, rev, r.Host, a.cfg.ResponseStartTimeout, c)
+	a.broker.sync(w, r, rev, r.Host, a.cfg.ResponseStartTimeout, c)
 }
 
 // revisionCapacity adapts one revision to the broker's seam: targets are the
