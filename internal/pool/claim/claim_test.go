@@ -205,7 +205,7 @@ type countRecorder struct {
 
 func (c *countRecorder) RecordPoolConflict(context.Context, string) { c.conflicts++ }
 func (c *countRecorder) RecordPoolPoisoned(context.Context, string) { c.poisons++ }
-func (c *countRecorder) RecordPoolBurst(_ context.Context, _ string, policy string) {
+func (c *countRecorder) RecordPoolBurst(_ context.Context, _, policy string) {
 	c.bursts = append(c.bursts, policy)
 }
 
