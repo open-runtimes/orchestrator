@@ -157,7 +157,7 @@ func revisionSpecSecret(t *testing.T, rev string, spec *deployment.Request) *cor
 }
 
 func TestRevision_MissingHeader400(t *testing.T) {
-	act, _, _ := newTestRevisionActivator(t, RevisionConfig{ResponseStartTimeout: time.Second})
+	act, _, _ := newTestRevisionActivator(t, RevisionConfig{StartTimeout: time.Second})
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://app.example.test/", nil)
 	rec := httptest.NewRecorder()
@@ -179,7 +179,7 @@ func TestRevision_WarmForwardsToReadyPod(t *testing.T) {
 		_, _ = io.WriteString(w, "hello")
 	}))
 	act, _, _ := newTestRevisionActivator(t,
-		RevisionConfig{ProxyPort: port, AdminPort: port, ResponseStartTimeout: time.Second},
+		RevisionConfig{ProxyPort: port, AdminPort: port, StartTimeout: time.Second},
 		revisionPod("rev1", "pod-1", ip, true))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://app.example.test/x", nil)
@@ -204,7 +204,7 @@ func TestRevision_ColdRaisesScaleAndProbes(t *testing.T) {
 		_, _ = io.WriteString(w, "warmed")
 	}))
 	act, cs, _ := newTestRevisionActivator(t,
-		RevisionConfig{ProxyPort: port, AdminPort: port, ResponseStartTimeout: 5 * time.Second},
+		RevisionConfig{ProxyPort: port, AdminPort: port, StartTimeout: 5 * time.Second},
 		revisionDeployment(t, "rev1", 0, nil))
 
 	// When the scale patch lands, a Running-but-NOT-ready pod appears: the
@@ -236,7 +236,7 @@ func TestRevision_ColdRaisesScaleAndProbes(t *testing.T) {
 
 func TestRevision_ColdTimeout503(t *testing.T) {
 	act, _, _ := newTestRevisionActivator(t,
-		RevisionConfig{ResponseStartTimeout: 100 * time.Millisecond},
+		RevisionConfig{StartTimeout: 100 * time.Millisecond},
 		revisionDeployment(t, "rev1", 0, nil))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://app.example.test/", nil)
@@ -272,7 +272,7 @@ func TestRevisionAsync_AcceptsAndDeliversCallback(t *testing.T) {
 		Callback:       &deployment.Callback{URL: "http://callbacks.test/hook", Key: "k"},
 	}
 	act, _, queue := newTestRevisionActivator(t,
-		RevisionConfig{ProxyPort: port, AdminPort: port, ResponseStartTimeout: time.Second},
+		RevisionConfig{ProxyPort: port, AdminPort: port, StartTimeout: time.Second},
 		revisionPod("rev1", "pod-1", ip, true),
 		revisionDeployment(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
 
@@ -322,7 +322,7 @@ func TestRevisionAsync_RequiresCallback(t *testing.T) {
 	// must be rejected, not silently dropped.
 	spec := &deployment.Request{ID: "app", Host: "app.example.test", Port: 8080}
 	act, _, _ := newTestRevisionActivator(t,
-		RevisionConfig{ResponseStartTimeout: time.Second},
+		RevisionConfig{StartTimeout: time.Second},
 		revisionDeployment(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://app.example.test/", strings.NewReader("{}"))

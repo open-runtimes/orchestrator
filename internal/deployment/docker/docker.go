@@ -287,7 +287,7 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 		Test:          []string{"CMD", "/ko-app/deployments-sidecar", "-check-ready"},
 		Interval:      500 * time.Millisecond,
 		Timeout:       5 * time.Second,
-		StartPeriod:   progressDeadline(req.ProgressDeadlineSeconds),
+		StartPeriod:   readyTimeout(req.ReadyTimeoutSeconds),
 		StartInterval: 500 * time.Millisecond,
 	}
 

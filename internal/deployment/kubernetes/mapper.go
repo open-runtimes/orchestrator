@@ -84,8 +84,8 @@ func buildDeployment(req *deployment.Request, cfg Config, revision string) *apps
 		replicas := int32(req.Replicas)
 		spec.Replicas = &replicas
 	}
-	if req.ProgressDeadlineSeconds > 0 {
-		deadline := int32(req.ProgressDeadlineSeconds)
+	if req.ReadyTimeoutSeconds > 0 {
+		deadline := int32(req.ReadyTimeoutSeconds)
 		spec.ProgressDeadlineSeconds = &deadline
 	}
 

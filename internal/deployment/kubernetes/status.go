@@ -18,7 +18,7 @@ import (
 )
 
 // progressDeadlineExceeded is the Progressing condition reason set by the
-// deployment controller when spec.progressDeadlineSeconds elapses without
+// deployment controller when spec.readyTimeoutSeconds elapses without
 // progress. Not exported by k8s.io/api.
 const progressDeadlineExceeded = "ProgressDeadlineExceeded"
 

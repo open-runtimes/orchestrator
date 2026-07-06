@@ -31,8 +31,8 @@ const (
 // Defaults applied by Apply.
 const (
 	DefaultTimeoutSeconds              = 300
-	DefaultResponseStartTimeoutSeconds = 300
-	DefaultProgressDeadlineSeconds     = 600
+	DefaultStartTimeoutSeconds = 300
+	DefaultReadyTimeoutSeconds     = 600
 )
 
 // idPattern is an RFC-1123 label: lowercase alphanumeric with interior hyphens.
@@ -233,11 +233,11 @@ func (s *Service) applyDefaults(req *Request) {
 	if req.TimeoutSeconds <= 0 {
 		req.TimeoutSeconds = DefaultTimeoutSeconds
 	}
-	if req.ResponseStartTimeoutSeconds <= 0 {
-		req.ResponseStartTimeoutSeconds = DefaultResponseStartTimeoutSeconds
+	if req.StartTimeoutSeconds <= 0 {
+		req.StartTimeoutSeconds = DefaultStartTimeoutSeconds
 	}
-	if req.ProgressDeadlineSeconds <= 0 {
-		req.ProgressDeadlineSeconds = DefaultProgressDeadlineSeconds
+	if req.ReadyTimeoutSeconds <= 0 {
+		req.ReadyTimeoutSeconds = DefaultReadyTimeoutSeconds
 	}
 	if req.Host == "" && req.ID != "" {
 		req.Host = req.ID + "." + s.domain

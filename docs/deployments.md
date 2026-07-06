@@ -78,8 +78,8 @@ Every deployment owns exactly one host. By default it's `{id}.{domain}` (the ope
   },
   "sandbox": "gvisor",            // isolation tier: runc (default) | gvisor | kata — K8s only
   "timeoutSeconds": 300,              // per-request total → 504; default 300
-  "responseStartTimeoutSeconds": 300, // wait for capacity on a cold start → 503; default 300
-  "progressDeadlineSeconds": 600      // ready deadline before a rollout is marked failed; default 600
+  "startTimeoutSeconds": 300, // wait for capacity on a cold start → 503; default 300
+  "readyTimeoutSeconds": 600      // ready deadline before a rollout is marked failed; default 600
 }
 ```
 
@@ -99,7 +99,7 @@ Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the wo
 | `ready` | At least one replica serving |
 | `idle` | Scaled to zero — the next request cold-starts it |
 | `degraded` | Fewer ready replicas than desired |
-| `failed` | Rollout did not become ready within `progressDeadlineSeconds`, or the workload crashed |
+| `failed` | Rollout did not become ready within `readyTimeoutSeconds`, or the workload crashed |
 | `deleting` | Teardown in progress |
 
 `DELETE /v1/deployments/{id}` returns `204` and tears everything down; the host stops resolving immediately.
@@ -150,7 +150,7 @@ Without `autoscaling`, a deployment runs a fixed `replicas` count. With it:
 - `target` defaults to 100; `maxReplicas` defaults to `max(replicas, 1)`.
 - `minReplicas: 0` enables **scale-to-zero**: after a window with no traffic the deployment idles (status `idle`), costing nothing.
 
-A request arriving while idle is **held, not failed**: the orchestrator buffers it, scales the deployment back up, and forwards the request to the first replica that becomes reachable. The client just sees a slower response (typically a few seconds, bounded by `responseStartTimeoutSeconds`). Traffic splits and cold starts compose — a canary whose 10% leg is cold still sends that 10% to the right revision.
+A request arriving while idle is **held, not failed**: the orchestrator buffers it, scales the deployment back up, and forwards the request to the first replica that becomes reachable. The client just sees a slower response (typically a few seconds, bounded by `startTimeoutSeconds`). Traffic splits and cold starts compose — a canary whose 10% leg is cold still sends that 10% to the right revision.
 
 `concurrency` (the hard cap) and `autoscaling.target` (the scaling goal) are independent: the cap rejects excess load per replica; the target adds replicas before the cap is reached.
 
@@ -178,9 +178,9 @@ Notes:
 
 | Setting | Bounds | Client sees |
 | --- | --- | --- |
-| `responseStartTimeoutSeconds` | Waiting for a ready replica (cold start, crash recovery) | `503` if nothing becomes ready in time |
+| `startTimeoutSeconds` | Waiting for a ready replica (cold start, crash recovery) | `503` if nothing becomes ready in time |
 | `timeoutSeconds` | The whole request once a replica has it | `504` |
-| `progressDeadlineSeconds` | A rollout reaching ready | status `failed`; previous revision keeps serving |
+| `readyTimeoutSeconds` | A rollout reaching ready | status `failed`; previous revision keeps serving |
 
 An unknown host at the gateway is `404`. A replica crash mid-rollout leaves the previous revision serving; a crash of the *only* replica behaves like a cold start — the next request raises the deployment again.
 

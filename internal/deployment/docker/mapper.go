@@ -33,8 +33,8 @@ const (
 // workspacePath is where the shared volume is mounted in every container.
 const workspacePath = "/workspace"
 
-// defaultProgressDeadline matches the API default for ProgressDeadlineSeconds.
-const defaultProgressDeadline = 600 * time.Second
+// defaultReadyTimeout matches the API default for ReadyTimeoutSeconds.
+const defaultReadyTimeout = 600 * time.Second
 
 func workerName(id string) string    { return "dep-" + id + "-worker" }
 func proxyName(id string) string     { return "dep-" + id + "-proxy" }
@@ -61,10 +61,10 @@ func volumeLabels(req *deployment.Request, spec string) map[string]string {
 	}
 }
 
-// progressDeadline returns the ready deadline, applying the API default.
-func progressDeadline(seconds int) time.Duration {
+// readyTimeout returns the ready deadline, applying the API default.
+func readyTimeout(seconds int) time.Duration {
 	if seconds <= 0 {
-		return defaultProgressDeadline
+		return defaultReadyTimeout
 	}
 	return time.Duration(seconds) * time.Second
 }
@@ -85,7 +85,7 @@ func specDeadline(raw string) time.Duration {
 	if raw != "" {
 		_ = json.Unmarshal([]byte(raw), &req)
 	}
-	return progressDeadline(req.ProgressDeadlineSeconds)
+	return readyTimeout(req.ReadyTimeoutSeconds)
 }
 
 // containerIP returns the container's address on the configured network, or

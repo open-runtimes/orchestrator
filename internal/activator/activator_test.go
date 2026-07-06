@@ -90,7 +90,7 @@ func newTestSpec(host string) *deployment.Request {
 		Host:                        host,
 		Port:                        8080,
 		TimeoutSeconds:              5,
-		ResponseStartTimeoutSeconds: 1,
+		StartTimeoutSeconds: 1,
 	}
 }
 

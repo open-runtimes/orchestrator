@@ -49,7 +49,7 @@ const (
 	// probeTimeout bounds each direct sidecar /ready probe.
 	probeTimeout = 500 * time.Millisecond
 
-	defaultResponseStartTimeout = 300 * time.Second
+	defaultStartTimeout = 300 * time.Second
 
 	revisionInformerResync = 30 * time.Second
 )
@@ -59,7 +59,7 @@ type RevisionConfig struct {
 	Namespace            string
 	ProxyPort            int32         // workload pod data port (proxy.DefaultProxyPort)
 	AdminPort            int32         // workload pod admin port for direct probing (proxy.DefaultAdminPort)
-	ResponseStartTimeout time.Duration // wait for the first reachable pod → 503; default 300s
+	StartTimeout time.Duration // wait for the first reachable pod → 503; default 300s
 }
 
 // RevisionActivator is the K8s data-plane edge: the gateway routes cold/async
@@ -85,8 +85,8 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 	if cfg.AdminPort == 0 {
 		cfg.AdminPort = proxy.DefaultAdminPort
 	}
-	if cfg.ResponseStartTimeout <= 0 {
-		cfg.ResponseStartTimeout = defaultResponseStartTimeout
+	if cfg.StartTimeout <= 0 {
+		cfg.StartTimeout = defaultStartTimeout
 	}
 	return &RevisionActivator{
 		client: client,
@@ -143,10 +143,10 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)
 			return
 		}
-		a.broker.async(w, r, rev, r.Host, spec, a.cfg.ResponseStartTimeout, c)
+		a.broker.async(w, r, rev, r.Host, spec, a.cfg.StartTimeout, c)
 		return
 	}
-	a.broker.sync(w, r, rev, r.Host, a.cfg.ResponseStartTimeout, c)
+	a.broker.sync(w, r, rev, r.Host, a.cfg.StartTimeout, c)
 }
 
 // revisionCapacity adapts one revision to the broker's seam: targets are the
