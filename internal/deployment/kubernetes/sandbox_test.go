@@ -55,7 +55,7 @@ func TestApply_SandboxRuntimeClassChecked(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	o, cs := newTestOrchestrator(t)
-	req := &deployment.Request{ID: "web", Image: "nginx:1.27", Host: "web.example.com", Port: 8080, Sandbox: deployment.SandboxGvisor}
+	req := &deployment.Request{ID: "web", Image: "nginx:1.27", Hosts: []string{"web.example.com"}, Port: 8080, Sandbox: deployment.SandboxGvisor}
 
 	// Missing RuntimeClass → validation error, nothing minted.
 	if _, err := o.Apply(ctx, req); !errors.Is(err, apperrors.ErrValidation) {

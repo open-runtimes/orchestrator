@@ -177,8 +177,8 @@ func TestApply_FirstMintsRevision00001(t *testing.T) {
 	if m.TrafficMode != trafficModeAuto {
 		t.Errorf("trafficMode: want auto, got %s", m.TrafficMode)
 	}
-	if m.Host != "web.example.com" {
-		t.Errorf("marker host: got %s", m.Host)
+	if len(m.Hosts) != 1 || m.Hosts[0] != "web.example.com" {
+		t.Errorf("marker hosts: got %v", m.Hosts)
 	}
 
 	// The spec lives on the dep-{id} Secret (it carries callback keys), with

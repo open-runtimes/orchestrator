@@ -7,6 +7,7 @@ import (
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -57,7 +58,7 @@ func volumeLabels(req *deployment.Request, spec string) map[string]string {
 		labelManagedBy: managedByValue,
 		labelID:        req.ID,
 		labelSpec:      spec,
-		labelHost:      req.Host,
+		labelHost:      strings.Join(req.Hosts, ","),
 	}
 }
 

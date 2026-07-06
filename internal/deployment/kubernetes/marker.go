@@ -34,7 +34,7 @@ const specSecretKey = "spec"
 // marker is the decoded per-deployment marker ConfigMap.
 type marker struct {
 	ID             string
-	Host           string // from the deployment.host annotation
+	Hosts          []string // from the deployment.host annotation (comma-separated)
 	LatestRevision string
 	LastReady      string
 	TrafficMode    string
@@ -44,7 +44,7 @@ type marker struct {
 func markerFromConfigMap(cm *corev1.ConfigMap) marker {
 	return marker{
 		ID:             cm.Labels[LabelDeploymentID],
-		Host:           cm.Annotations[AnnotationHost],
+		Hosts:          splitHosts(cm.Annotations[AnnotationHost]),
 		LatestRevision: cm.Data[markerKeyLatestRevision],
 		LastReady:      cm.Data[markerKeyLastReady],
 		TrafficMode:    cm.Data[markerKeyTrafficMode],
@@ -60,7 +60,7 @@ func (m marker) configMap() *corev1.ConfigMap {
 				LabelManagedBy:    ManagedByValue,
 				LabelDeploymentID: m.ID,
 			},
-			Annotations: map[string]string{AnnotationHost: m.Host},
+			Annotations: map[string]string{AnnotationHost: strings.Join(m.Hosts, ",")},
 		},
 		Data: map[string]string{
 			markerKeyLatestRevision: m.LatestRevision,
@@ -185,4 +185,13 @@ func revisionNumber(rev string) int {
 		return 0
 	}
 	return n
+}
+
+// splitHosts decodes the comma-joined hosts annotation (hosts are RFC-1123
+// subdomains, so commas can never appear inside one).
+func splitHosts(v string) []string {
+	if v == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
 }

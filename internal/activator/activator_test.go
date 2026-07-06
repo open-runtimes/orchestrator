@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/pkg/deployment"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,7 @@ type fakeResolver struct {
 }
 
 func (f *fakeResolver) Resolve(_ context.Context, host string) (*deployment.Request, error) {
-	if f.spec != nil && f.spec.Host == host {
+	if f.spec != nil && slices.Contains(f.spec.Hosts, host) {
 		return f.spec, nil
 	}
 	return nil, apperrors.NotFound("deployment", host)
@@ -86,10 +87,10 @@ func (q *captureQueue) last() *dispatcher.Event {
 
 func newTestSpec(host string) *deployment.Request {
 	return &deployment.Request{
-		ID:                          "test",
-		Host:                        host,
-		Port:                        8080,
-		TimeoutSeconds:              5,
+		ID:                  "test",
+		Hosts:               []string{host},
+		Port:                8080,
+		TimeoutSeconds:      5,
 		StartTimeoutSeconds: 1,
 	}
 }

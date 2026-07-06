@@ -11,6 +11,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/observability"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -18,6 +19,7 @@ import (
 const (
 	maxIDLength     = 63  // RFC-1123 label: becomes part of object names
 	maxHostLength   = 253 // RFC-1123 subdomain
+	maxHosts        = 16
 	maxCPU          = 64
 	maxMemory       = 65536
 	maxTimeoutSecs  = 3600
@@ -87,7 +89,7 @@ func (s *Service) Apply(ctx context.Context, req *Request) (*StatusResponse, boo
 		logger.Error("Deployment apply failed", "error", err)
 		return nil, false, err
 	}
-	logger.Info("Deployment applied", "host", req.Host, "created", created)
+	logger.Info("Deployment applied", "hosts", req.Hosts, "created", created)
 	if s.metrics != nil {
 		s.metrics.RecordDeploymentApplied(ctx, created)
 	}
@@ -141,7 +143,7 @@ func (s *Service) Resolve(ctx context.Context, host string) (*Request, error) {
 		if err != nil {
 			continue
 		}
-		if spec.Host == host {
+		if slices.Contains(spec.Hosts, host) {
 			return spec, nil
 		}
 	}
@@ -202,20 +204,25 @@ func (s *Service) fillURL(ctx context.Context, status *StatusResponse) {
 	if err != nil || s.urlFor == nil {
 		return
 	}
-	status.URL = s.urlFor(spec.Host)
+	if len(spec.Hosts) > 0 {
+		status.URL = s.urlFor(spec.Hosts[0])
+	}
 }
 
-// checkHostOwnership rejects a host already owned by another deployment.
+// checkHostOwnership rejects any requested host already owned by another
+// deployment — each host routes to exactly one deployment.
 func (s *Service) checkHostOwnership(ctx context.Context, req *Request) error {
-	owner, err := s.Resolve(ctx, req.Host)
-	if err != nil {
-		if apperrors.HTTPStatus(err) == http.StatusNotFound {
-			return nil // no owner — free to claim
+	for _, h := range req.Hosts {
+		owner, err := s.Resolve(ctx, h)
+		if err != nil {
+			if apperrors.HTTPStatus(err) == http.StatusNotFound {
+				continue // no owner — free to claim
+			}
+			return err
 		}
-		return err
-	}
-	if owner.ID != req.ID {
-		return apperrors.Conflict("host", req.Host, fmt.Sprintf("host already owned by deployment %q", owner.ID))
+		if owner.ID != req.ID {
+			return apperrors.Conflict("host", h, fmt.Sprintf("host %q already owned by deployment %q", h, owner.ID))
+		}
 	}
 	return nil
 }
@@ -239,10 +246,12 @@ func (s *Service) applyDefaults(req *Request) {
 	if req.ReadyTimeoutSeconds <= 0 {
 		req.ReadyTimeoutSeconds = DefaultReadyTimeoutSeconds
 	}
-	if req.Host == "" && req.ID != "" {
-		req.Host = req.ID + "." + s.domain
+	if len(req.Hosts) == 0 && req.ID != "" {
+		req.Hosts = []string{req.ID + "." + s.domain}
 	}
-	req.Host = strings.ToLower(req.Host)
+	for i := range req.Hosts {
+		req.Hosts[i] = strings.ToLower(req.Hosts[i])
+	}
 
 	if req.Autoscaling != nil {
 		if req.Autoscaling.MaxReplicas <= 0 {
@@ -277,11 +286,21 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("port", "port must be between 1 and 65535")
 	}
 
-	if len(req.Host) > maxHostLength {
-		return apperrors.Validation("host", fmt.Sprintf("host exceeds maximum length of %d", maxHostLength))
+	if len(req.Hosts) > maxHosts {
+		return apperrors.Validation("hosts", fmt.Sprintf("hosts exceed maximum of %d", maxHosts))
 	}
-	if !hostPattern.MatchString(req.Host) {
-		return apperrors.Validation("host", "host must be an RFC-1123 subdomain")
+	seenHosts := make(map[string]bool, len(req.Hosts))
+	for _, h := range req.Hosts {
+		if len(h) > maxHostLength {
+			return apperrors.Validation("hosts", fmt.Sprintf("host %q exceeds maximum length of %d", h, maxHostLength))
+		}
+		if !hostPattern.MatchString(h) {
+			return apperrors.Validation("hosts", fmt.Sprintf("host %q must be an RFC-1123 subdomain", h))
+		}
+		if seenHosts[h] {
+			return apperrors.Validation("hosts", fmt.Sprintf("duplicate host %q", h))
+		}
+		seenHosts[h] = true
 	}
 
 	if req.CPU > maxCPU {

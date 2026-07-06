@@ -6,6 +6,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -166,8 +167,8 @@ func (o *Orchestrator) ensureRoute(ctx context.Context, m marker, targets []depl
 	if err != nil {
 		return apperrors.Internal("kubernetes.getRoute", err)
 	}
-	hostnames := []gatewayv1.Hostname{gatewayv1.Hostname(m.Host)}
-	if len(existing.Spec.Hostnames) == 1 && existing.Spec.Hostnames[0] == hostnames[0] {
+	hostnames := routeHostnames(m.Hosts)
+	if slices.Equal(existing.Spec.Hostnames, hostnames) {
 		return nil
 	}
 	existing.Spec.Hostnames = hostnames
@@ -230,7 +231,7 @@ func (o *Orchestrator) buildHTTPRoute(m marker, targets []deployment.Target) *ga
 					Namespace: ptr.To(gatewayv1.Namespace(o.cfg.GatewayNamespace)),
 				}},
 			},
-			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(m.Host)},
+			Hostnames: routeHostnames(m.Hosts),
 			Rules:     o.buildRouteRules(targets),
 		},
 	}
@@ -298,4 +299,14 @@ func backendRef(service string, port int32, t deployment.Target) gatewayv1.HTTPB
 			},
 		}},
 	}
+}
+
+// routeHostnames renders the deployment's hosts as route hostnames,
+// preserving order (hosts[0] is the primary).
+func routeHostnames(hosts []string) []gatewayv1.Hostname {
+	out := make([]gatewayv1.Hostname, len(hosts))
+	for i, h := range hosts {
+		out[i] = gatewayv1.Hostname(h)
+	}
+	return out
 }

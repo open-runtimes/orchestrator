@@ -21,6 +21,7 @@ import (
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"strconv"
+	"strings"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -281,7 +282,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, workerIP, spec string) error {
 	labels := containerLabels(req.ID, typeProxy)
 	labels[labelSpec] = spec
-	labels[labelHost] = req.Host
+	labels[labelHost] = strings.Join(req.Hosts, ",")
 
 	healthCheck := &container.HealthConfig{
 		Test:          []string{"CMD", "/ko-app/deployments-sidecar", "-check-ready"},
