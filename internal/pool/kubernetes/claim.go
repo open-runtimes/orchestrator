@@ -1,30 +1,27 @@
 package kubernetes
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
+	"orchestrator/internal/pool/claim"
 	"orchestrator/internal/proxy"
 	"strconv"
-	"strings"
 	"time"
 )
 
 // errClaimConflict is the racing loser's result: the pod's sidecar already
-// accepted another activation. The caller retries the next warm pod.
-var errClaimConflict = errors.New("pod already claimed")
+// accepted another activation. The claim flow retries the next warm pod.
+var errClaimConflict = claim.ErrConflict
 
 // claimClient is the sidecar-facing HTTP surface — the claim POST plus the
 // probes the control loops rely on. Factored behind an interface so unit
 // tests can fake pods' sidecars: fake-clientset pods have no reachable IPs.
 type claimClient interface {
 	// Claim POSTs the activation to the pod's sidecar with the pod's bearer
-	// token. 409 → errClaimConflict.
+	// token. 409 → errClaimConflict; 422 → *claim.PoisonError.
 	Claim(ctx context.Context, podIP, token string, req *proxy.ClaimRequest) error
 	// State reads the sidecar's authoritative claim record — the poison and
 	// orphan-GC source of truth.
@@ -37,13 +34,27 @@ type claimClient interface {
 	Requests(ctx context.Context, podIP string) (int64, error)
 }
 
+// clientPoster adapts a claimClient to the claim flow's Poster seam, so unit
+// tests faking the claimClient intercept flow claims too.
+type clientPoster struct {
+	claims claimClient
+}
+
+func (p clientPoster) Post(ctx context.Context, u claim.Unit, req *proxy.ClaimRequest) error {
+	return p.claims.Claim(ctx, u.Addr, u.Token, req)
+}
+
 // httpClaimClient talks to sidecar admin ports directly by pod IP.
 type httpClaimClient struct {
 	client *http.Client
+	poster *claim.HTTPPoster
 }
 
 func newClaimClient() *httpClaimClient {
-	return &httpClaimClient{client: &http.Client{Timeout: 10 * time.Second}}
+	return &httpClaimClient{
+		client: &http.Client{Timeout: 10 * time.Second},
+		poster: claim.NewHTTPPoster(),
+	}
 }
 
 // adminURL addresses the sidecar admin port on a pod.
@@ -52,32 +63,7 @@ func adminURL(podIP, path string) string {
 }
 
 func (c *httpClaimClient) Claim(ctx context.Context, podIP, token string, req *proxy.ClaimRequest) error {
-	// ClaimRequest's custom codec routes artifacts through the registry so
-	// each carries its "type" discriminator.
-	body, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, adminURL(podIP, proxy.ClaimPath), bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := c.client.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return nil
-	case http.StatusConflict:
-		return errClaimConflict
-	default:
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("claim rejected with status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
-	}
+	return c.poster.Post(ctx, claim.Unit{Addr: podIP, Token: token}, req)
 }
 
 func (c *httpClaimClient) State(ctx context.Context, podIP string) (*proxy.ClaimState, error) {

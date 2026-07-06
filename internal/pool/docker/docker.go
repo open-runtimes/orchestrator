@@ -11,7 +11,6 @@
 package docker
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -22,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/pool/claim"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
@@ -46,20 +46,6 @@ const (
 	defaultTimeout   = 300 // seconds, matches the service default
 )
 
-// errSlotClaimed is the 409 claim-race signal: another activation won the
-// slot, try the next one.
-var errSlotClaimed = errors.New("slot already claimed")
-
-// poisonError is the 422 claim outcome: the sidecar accepted the claim but
-// artifact materialization failed — the slot is poisoned and the activation
-// has failed.
-type poisonError struct {
-	slot string
-	msg  string
-}
-
-func (e *poisonError) Error() string { return e.msg }
-
 // activation is the in-memory fast-path record of a claimed slot. The
 // sidecar's ClaimState is the durable record; this index only spares Status
 // and List a sidecar round-trip per call.
@@ -82,6 +68,7 @@ type Orchestrator struct {
 	cfg    Config
 	pools  map[string]pool.Pool
 	http   *http.Client
+	poster claim.Poster
 
 	mu       sync.Mutex
 	acts     map[string]*activation // by activation ID
@@ -112,6 +99,7 @@ func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 		cfg:      cfg,
 		pools:    pools,
 		http:     &http.Client{},
+		poster:   claim.NewHTTPPoster(),
 		acts:     make(map[string]*activation),
 		creating: make(map[string]string),
 	}, nil
@@ -394,11 +382,11 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 
 	slotID, err := o.claimSlot(ctx, p, act, timeoutSeconds)
 	if err != nil {
-		var poison *poisonError
+		var poison *claim.PoisonError
 		if errors.As(err, &poison) {
 			return &pool.ActivationStatus{
-				ID: act.ID, PoolID: poolID, PodID: slotPrefix(poolID, poison.slot),
-				State: pool.StateFailed, Error: poison.msg,
+				ID: act.ID, PoolID: poolID, PodID: slotPrefix(poolID, poison.UnitID),
+				State: pool.StateFailed, Error: poison.Msg,
 			}, nil
 		}
 		return nil, err
@@ -412,141 +400,93 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 	return o.awaitExit(ctx, rec, time.Duration(timeoutSeconds)*time.Second)
 }
 
-// claimSlot picks an unclaimed warm slot and claims it via the sidecar — the
-// slot is the serialization point, a 409 loser just tries the next. With no
-// free slot the pool's burst policy decides: reject (429) or cold-create.
+// claimSlot wins an unclaimed warm slot via the shared claim flow — the slot
+// is the serialization point, so the service stays stateless. The bearer
+// token is re-read from the sidecar's label (dev backend: the token never
+// leaves the local daemon).
 func (o *Orchestrator) claimSlot(ctx context.Context, p pool.Pool, act *pool.Activation, timeoutSeconds int) (string, error) {
-	slotID, err := o.claimWarm(ctx, p, act, timeoutSeconds)
-	if err != nil || slotID != "" {
-		return slotID, err
-	}
-
-	if p.Burst != pool.BurstCold {
-		slog.Warn("Pool exhausted, rejecting activation", "poolId", p.ID, "activationId", act.ID)
-		return "", apperrors.Exhausted("pool", "pool "+p.ID+" has no free warm capacity")
-	}
-
-	slog.Warn("Pool exhausted, cold-creating a slot", "poolId", p.ID, "activationId", act.ID)
-	slotID, err = o.createSlot(ctx, p)
-	if err != nil {
-		return "", err
-	}
-	if err := o.waitSidecarHealthy(ctx, p.ID, slotID); err != nil {
-		o.removeSlot(context.WithoutCancel(ctx), p.ID, slotID)
-		return "", apperrors.Internal("docker.coldSlot", err)
-	}
-	err = o.claimSlotByID(ctx, p.ID, slotID, act, timeoutSeconds)
-	if errors.Is(err, errSlotClaimed) {
-		// The cold slot was stolen by a racing activation; one more warm pass.
-		if slotID, err = o.claimWarm(ctx, p, act, timeoutSeconds); err != nil || slotID != "" {
-			return slotID, err
-		}
-		return "", apperrors.Exhausted("pool", "pool "+p.ID+" has no free warm capacity")
-	}
-	if err != nil {
-		return "", err
-	}
-	return slotID, nil
-}
-
-// claimWarm tries each unclaimed healthy slot in turn; "" with nil error
-// means none was free.
-func (o *Orchestrator) claimWarm(ctx context.Context, p pool.Pool, act *pool.Activation, timeoutSeconds int) (string, error) {
-	views, err := o.slotsFor(ctx, p.ID)
-	if err != nil {
-		return "", apperrors.Internal("docker.listSlots", err)
-	}
-	for slotID, s := range views {
-		if o.isCreating(slotID) || s.sidecar == nil || s.sidecar.State != container.StateRunning {
-			continue
-		}
-		if o.sidecarHealth(ctx, s.sidecar.ID) != container.Healthy {
-			continue
-		}
-		cs, err := o.claimState(ctx, s.sidecar)
-		if err != nil || cs.Claimed || cs.Failed {
-			continue
-		}
-		err = o.postClaim(ctx, s.sidecar, act, p.Port, timeoutSeconds)
-		switch {
-		case err == nil:
-			return slotID, nil
-		case errors.Is(err, errSlotClaimed):
-			continue // lost the race, next slot
-		default:
-			var poison *poisonError
-			if errors.As(err, &poison) {
-				poison.slot = slotID
-				return "", err
-			}
-			slog.Warn("Claim attempt failed", "poolId", p.ID, "slot", slotID, "error", err)
-		}
-	}
-	return "", nil
-}
-
-// claimSlotByID claims one specific slot (the cold-create path).
-func (o *Orchestrator) claimSlotByID(ctx context.Context, poolID, slotID string, act *pool.Activation, timeoutSeconds int) error {
-	summaries, err := o.listManaged(ctx,
-		filters.Arg("label", labelPoolID+"="+poolID),
-		filters.Arg("label", labelSlot+"="+slotID),
-		filters.Arg("label", labelType+"="+typeSidecar))
-	if err != nil || len(summaries) == 0 {
-		return apperrors.Internal("docker.findSidecar", fmt.Errorf("sidecar for slot %s not found: %w", slotID, err))
-	}
-	p := o.pools[poolID]
-	if err := o.postClaim(ctx, &summaries[0], act, p.Port, timeoutSeconds); err != nil {
-		var poison *poisonError
-		if errors.As(err, &poison) {
-			poison.slot = slotID
-		}
-		return err
-	}
-	return nil
-}
-
-// postClaim POSTs the activation to the sidecar — the POST is the claim. The
-// bearer token is re-read from the sidecar's label (dev backend: the token
-// never leaves the local daemon).
-func (o *Orchestrator) postClaim(ctx context.Context, sidecar *container.Summary, act *pool.Activation, port, timeoutSeconds int) error {
-	ip := o.summaryIP(sidecar)
-	if ip == "" {
-		return errors.New("sidecar has no IP address")
-	}
-	body, err := json.Marshal(proxy.ClaimRequest{
+	req := &proxy.ClaimRequest{
 		ActivationID:   act.ID,
 		Command:        act.Command,
 		Environment:    act.Environment,
 		Artifacts:      act.Artifacts,
-		Port:           port,
+		Port:           p.Port,
 		TimeoutSeconds: timeoutSeconds,
-	})
-	if err != nil {
-		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.sidecarURL(ip, proxy.ClaimPath), bytes.NewReader(body))
+	unit, err := claim.Claim(ctx, &slotInventory{o: o, p: p}, o.poster, p.ID, p.Burst, req)
 	if err != nil {
-		return err
+		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+sidecar.Labels[labelClaimToken])
+	return unit.ID, nil
+}
 
-	resp, err := o.http.Do(req)
+// slotInventory is the Docker warm-unit surface behind the claim flow's
+// seam: free units are healthy, unclaimed slots, a cold create pays the
+// burst cold start.
+type slotInventory struct {
+	o *Orchestrator
+	p pool.Pool
+}
+
+func (inv *slotInventory) Free(ctx context.Context) ([]claim.Unit, error) {
+	views, err := inv.o.slotsFor(ctx, inv.p.ID)
 	if err != nil {
-		return err
+		return nil, apperrors.Internal("docker.listSlots", err)
 	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return nil
-	case http.StatusConflict:
-		return errSlotClaimed
-	case http.StatusUnprocessableEntity:
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return &poisonError{msg: "artifacts failed: " + string(bytes.TrimSpace(msg))}
-	default:
-		return fmt.Errorf("claim returned status %d", resp.StatusCode)
+	var units []claim.Unit
+	for slotID, s := range views {
+		if inv.o.isCreating(slotID) || s.sidecar == nil || s.sidecar.State != container.StateRunning {
+			continue
+		}
+		if inv.o.sidecarHealth(ctx, s.sidecar.ID) != container.Healthy {
+			continue
+		}
+		// Container labels cannot show live claims, so ask the sidecar — its
+		// ClaimState is the durable record.
+		cs, err := inv.o.claimState(ctx, s.sidecar)
+		if err != nil || cs.Claimed || cs.Failed {
+			continue
+		}
+		if unit, ok := inv.o.slotUnit(slotID, s.sidecar); ok {
+			units = append(units, unit)
+		}
 	}
+	return units, nil
+}
+
+// ColdCreate provisions a slot and waits for its sidecar to turn healthy
+// (bounded); a slot that never warms is removed so the burst does not leak
+// capacity beyond the pool size.
+func (inv *slotInventory) ColdCreate(ctx context.Context) (*claim.Unit, error) {
+	slotID, err := inv.o.createSlot(ctx, inv.p)
+	if err != nil {
+		return nil, err
+	}
+	if err := inv.o.waitSidecarHealthy(ctx, inv.p.ID, slotID); err != nil {
+		inv.o.removeSlot(context.WithoutCancel(ctx), inv.p.ID, slotID)
+		return nil, apperrors.Internal("docker.coldSlot", err)
+	}
+	summaries, err := inv.o.listManaged(ctx,
+		filters.Arg("label", labelPoolID+"="+inv.p.ID),
+		filters.Arg("label", labelSlot+"="+slotID),
+		filters.Arg("label", labelType+"="+typeSidecar))
+	if err != nil || len(summaries) == 0 {
+		return nil, apperrors.Internal("docker.findSidecar", fmt.Errorf("sidecar for slot %s not found: %w", slotID, err))
+	}
+	unit, ok := inv.o.slotUnit(slotID, &summaries[0])
+	if !ok {
+		return nil, apperrors.Internal("docker.findSidecar", errors.New("sidecar has no IP address"))
+	}
+	return &unit, nil
+}
+
+// slotUnit maps a slot's sidecar container to a claimable unit.
+func (o *Orchestrator) slotUnit(slotID string, sidecar *container.Summary) (claim.Unit, bool) {
+	ip := o.summaryIP(sidecar)
+	if ip == "" {
+		return claim.Unit{}, false
+	}
+	return claim.Unit{ID: slotID, Addr: ip, Token: sidecar.Labels[labelClaimToken]}, true
 }
 
 // awaitExit blocks until the claimed workload exits and returns its exit code

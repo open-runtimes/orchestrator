@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/kube"
+	"orchestrator/internal/pool/claim"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
 	"sync"
@@ -192,6 +193,13 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 
 	pod, err := o.claimWarmPod(ctx, p, act)
 	if err != nil {
+		var poison *claim.PoisonError
+		if errors.As(err, &poison) {
+			return &pool.ActivationStatus{
+				ID: act.ID, PoolID: poolID, PodID: poison.UnitID,
+				State: pool.StateFailed, Error: poison.Msg,
+			}, nil
+		}
 		return nil, err
 	}
 	if err := o.bindPod(ctx, pod.Name, act); err != nil {
@@ -203,42 +211,86 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 	return o.exposeHTTP(ctx, p, act, pod)
 }
 
-// claimWarmPod finds a free warm pod and wins it via the sidecar claim POST
-// — the pod is the serialization point, so the service stays stateless. The
-// bearer token is derived from the pod name (token.go), not stored anywhere.
-// With no free pod the pool's burst policy decides: reject (429) or
-// cold-create.
+// claimWarmPod wins a free warm pod via the shared claim flow — the pod is
+// the serialization point, so the service stays stateless. The bearer token
+// is derived from the pod name (token.go), not stored anywhere.
 func (o *Orchestrator) claimWarmPod(ctx context.Context, p *pool.Pool, act *pool.Activation) (*corev1.Pod, error) {
 	key, err := o.claimKey(ctx)
 	if err != nil {
 		return nil, err
 	}
-	pods, err := o.poolPods(ctx, p.ID)
+	inv := &podInventory{o: o, p: p, key: key, byName: make(map[string]*corev1.Pod)}
+	unit, err := claim.Claim(ctx, inv, clientPoster{o.claims}, p.ID, p.Burst, claimRequest(p, act))
 	if err != nil {
 		return nil, err
 	}
-	req := claimRequest(p, act)
+	return inv.byName[unit.ID], nil
+}
+
+// podInventory is the Kubernetes warm-unit surface behind the claim flow's
+// seam: free units are claimable pool pods, a cold create pays the burst
+// cold start. Pods are cached by name so the winner's object is at hand
+// without re-fetching.
+type podInventory struct {
+	o      *Orchestrator
+	p      *pool.Pool
+	key    []byte
+	byName map[string]*corev1.Pod
+}
+
+func (inv *podInventory) Free(ctx context.Context) ([]claim.Unit, error) {
+	pods, err := inv.o.poolPods(ctx, inv.p.ID)
+	if err != nil {
+		return nil, err
+	}
+	var units []claim.Unit
 	for i := range pods {
 		pod := &pods[i]
 		if !claimable(pod) {
 			continue
 		}
-		err := o.claims.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req)
-		switch {
-		case err == nil:
-			return pod, nil
-		case errors.Is(err, errClaimConflict):
-			continue // racing loser — try the next warm pod
-		default:
-			return nil, apperrors.Internal("kubernetes.claim", err)
+		inv.byName[pod.Name] = pod
+		units = append(units, inv.unitFor(pod))
+	}
+	return units, nil
+}
+
+// ColdCreate creates a pod and waits for it to turn warm-ready (bounded). A
+// pod that never warms is deleted so the burst does not leak capacity beyond
+// the pool size.
+func (inv *podInventory) ColdCreate(ctx context.Context) (*claim.Unit, error) {
+	created, err := inv.o.createWarmPod(ctx, inv.p)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(inv.o.coldWait)
+	for {
+		pod, err := inv.o.client.CoreV1().Pods(inv.o.namespace).Get(ctx, created.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, apperrors.Internal("kubernetes.getPod", err)
+		}
+		if claimable(pod) {
+			inv.byName[pod.Name] = pod
+			unit := inv.unitFor(pod)
+			return &unit, nil
+		}
+		if time.Now().After(deadline) {
+			_ = inv.o.deletePod(ctx, created.Name)
+			return nil, apperrors.Internal("kubernetes.coldClaim",
+				fmt.Errorf("cold pod %s not warm-ready within %s", created.Name, inv.o.coldWait))
+		}
+		if err := inv.o.sleep(ctx); err != nil {
+			return nil, err
 		}
 	}
-	if p.Burst != pool.BurstCold {
-		slog.Warn("Pool exhausted, rejecting activation", "poolId", p.ID, "activationId", act.ID)
-		return nil, apperrors.Exhausted("pool", "pool "+p.ID+" has no free warm capacity")
+}
+
+func (inv *podInventory) unitFor(pod *corev1.Pod) claim.Unit {
+	return claim.Unit{
+		ID:    pod.Name,
+		Addr:  pod.Status.PodIP,
+		Token: deriveClaimToken(inv.key, pod.Name),
 	}
-	slog.Warn("Pool exhausted, cold-creating a pod", "poolId", p.ID, "activationId", act.ID)
-	return o.coldClaim(ctx, p, req)
 }
 
 // claimable reports whether a pod is in the free warm set: unclaimed, not
@@ -260,41 +312,6 @@ func claimRequest(p *pool.Pool, act *pool.Activation) *proxy.ClaimRequest {
 		Artifacts:      act.Artifacts,
 		Port:           p.Port,
 		TimeoutSeconds: act.TimeoutSeconds,
-	}
-}
-
-// coldClaim pays the cold start: create a pod, wait for it to turn
-// warm-ready (bounded), claim it. A pod that never warms is deleted so the
-// burst does not leak capacity beyond the pool size.
-func (o *Orchestrator) coldClaim(ctx context.Context, p *pool.Pool, req *proxy.ClaimRequest) (*corev1.Pod, error) {
-	key, err := o.claimKey(ctx)
-	if err != nil {
-		return nil, err
-	}
-	created, err := o.createWarmPod(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-	deadline := time.Now().Add(o.coldWait)
-	for {
-		pod, err := o.client.CoreV1().Pods(o.namespace).Get(ctx, created.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil, apperrors.Internal("kubernetes.getPod", err)
-		}
-		if claimable(pod) {
-			if err := o.claims.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req); err != nil {
-				return nil, apperrors.Internal("kubernetes.claim", err)
-			}
-			return pod, nil
-		}
-		if time.Now().After(deadline) {
-			_ = o.deletePod(ctx, created.Name)
-			return nil, apperrors.Internal("kubernetes.coldClaim",
-				fmt.Errorf("cold pod %s not warm-ready within %s", created.Name, o.coldWait))
-		}
-		if err := o.sleep(ctx); err != nil {
-			return nil, err
-		}
 	}
 }
 

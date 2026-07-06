@@ -124,6 +124,8 @@
 | **Shim** | The PID-1 entrypoint in a warm pod that blocks on a FIFO and execs the activation payload | Launcher, init |
 | **Claim** | The atomic, token-authenticated take of one warm pod; the sidecar's accepted POST *is* the claim | Reservation, checkout |
 | **Claim token** | The per-pod credential (HMAC of the pod name under the install key) that authorizes a claim | Secret, password |
+| **Claim flow** | The shared claim protocol (iterate free units, 409-retry, poison, burst) common to both Pool backends | ClaimFlow, claim loop |
+| **Inventory** | What a Pool backend supplies to the Claim flow: how to list, create, and address warm units | Backend, provider |
 | **Activation** | The materialization of artifacts and exec of a payload inside a claimed warm pod | Cold start, launch |
 | **Poison** | The marking of a claimed pod as unusable after a failed activation so it is never reissued | Taint, quarantine |
 | **Replenish** | The pool's creation of new warm pods to restore its declared size after claims | Refill, top-up |
@@ -158,6 +160,7 @@
 - Every **Revision** replica pairs the workload with one **Deployment sidecar**; the **endpoint flip** decides whether the Revision's endpoints are its own pods (**warm**) or the **Activator** (**cold**).
 - The **Activator** owns 0→N (**raise**); the **Autoscaler** owns 1↔N and **scale to zero** — the two never overlap.
 - A **Pool** maintains N **warm pods**; a **Claim** takes one, an **Activation** turns it into a running workload, and the Pool **replenishes**; a failed activation **poisons** the pod.
+- Both Pool backends delegate claiming to one **Claim flow**; each supplies an **Inventory** (Kubernetes: pool pods + HMAC tokens; Docker: slots + label tokens).
 - Workload pods live in the **Workload namespace**; the control plane and **Activator** live in the **Release namespace**.
 
 ## Example dialogue

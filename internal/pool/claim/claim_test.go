@@ -1,0 +1,198 @@
+package claim
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"orchestrator/internal/apperrors"
+	"orchestrator/internal/proxy"
+	"orchestrator/pkg/pool"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// fakeInventory yields a fixed free set; ColdCreate mints cold-N units.
+type fakeInventory struct {
+	free    []Unit
+	freeErr error
+
+	coldErr   error
+	coldCalls int
+}
+
+func (f *fakeInventory) Free(context.Context) ([]Unit, error) {
+	return f.free, f.freeErr
+}
+
+func (f *fakeInventory) ColdCreate(context.Context) (*Unit, error) {
+	f.coldCalls++
+	if f.coldErr != nil {
+		return nil, f.coldErr
+	}
+	return &Unit{ID: "cold-" + strconv.Itoa(f.coldCalls), Addr: "10.0.0.99", Token: "t"}, nil
+}
+
+// fakePoster scripts each unit's claim outcome by unit ID; unscripted units
+// accept.
+type fakePoster struct {
+	outcomes map[string]error
+	posted   []string
+}
+
+func (f *fakePoster) Post(_ context.Context, u Unit, _ *proxy.ClaimRequest) error {
+	f.posted = append(f.posted, u.ID)
+	return f.outcomes[u.ID]
+}
+
+func unit(id string) Unit { return Unit{ID: id, Addr: "10.0.0.1", Token: "t"} }
+
+func req() *proxy.ClaimRequest { return &proxy.ClaimRequest{ActivationID: "act"} }
+
+func TestClaimWinsFirstFreeUnit(t *testing.T) {
+	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
+	post := &fakePoster{}
+
+	won, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if won.ID != "a" || len(post.posted) != 1 {
+		t.Errorf("won %q after %v, want a after one post", won.ID, post.posted)
+	}
+}
+
+func TestClaimRetriesNextUnitOnConflict(t *testing.T) {
+	inv := &fakeInventory{free: []Unit{unit("a"), unit("b"), unit("c")}}
+	post := &fakePoster{outcomes: map[string]error{"a": ErrConflict, "b": ErrConflict}}
+
+	won, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	if err != nil || won.ID != "c" {
+		t.Fatalf("won %v (%v), want c — racing losers must try the next unit", won, err)
+	}
+}
+
+func TestClaimSkipsTransientFailures(t *testing.T) {
+	inv := &fakeInventory{free: []Unit{unit("broken"), unit("b")}}
+	post := &fakePoster{outcomes: map[string]error{"broken": errors.New("connection refused")}}
+
+	won, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	if err != nil || won.ID != "b" {
+		t.Fatalf("won %v (%v), want b — one broken unit must not fail the activation", won, err)
+	}
+}
+
+func TestClaimPoisonStopsAndStampsUnit(t *testing.T) {
+	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
+	post := &fakePoster{outcomes: map[string]error{"a": &PoisonError{Msg: "artifacts failed"}}}
+
+	_, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	var poison *PoisonError
+	if !errors.As(err, &poison) {
+		t.Fatalf("got %v, want PoisonError — the sidecar accepted, the activation is spent", err)
+	}
+	if poison.UnitID != "a" {
+		t.Errorf("poison stamped %q, want a", poison.UnitID)
+	}
+	if len(post.posted) != 1 {
+		t.Errorf("posted to %v after poison, want no further units", post.posted)
+	}
+}
+
+func TestClaimExhaustedRejectsWithoutColdCreate(t *testing.T) {
+	inv := &fakeInventory{}
+	post := &fakePoster{}
+
+	_, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	if !errors.Is(err, apperrors.ErrExhausted) {
+		t.Fatalf("got %v, want Exhausted", err)
+	}
+	if inv.coldCalls != 0 {
+		t.Errorf("cold-created %d units under burst=reject, want 0", inv.coldCalls)
+	}
+}
+
+func TestClaimBurstColdCreatesAndClaims(t *testing.T) {
+	inv := &fakeInventory{}
+	post := &fakePoster{}
+
+	won, err := Claim(t.Context(), inv, post, "p", pool.BurstCold, req())
+	if err != nil || won.ID != "cold-1" {
+		t.Fatalf("won %v (%v), want cold-1", won, err)
+	}
+}
+
+func TestClaimStolenColdUnitRetriesWarmPass(t *testing.T) {
+	inv := &fakeInventory{}
+	post := &fakePoster{outcomes: map[string]error{"cold-1": ErrConflict}}
+	// After the cold unit is stolen, a warm unit has appeared (the thief's
+	// pool replenished, or another slot freed).
+	inv.free = []Unit{unit("late")}
+
+	won, err := Claim(t.Context(), inv, post, "p", pool.BurstCold, req())
+	if err != nil || won.ID != "late" {
+		t.Fatalf("won %v (%v), want late via the post-steal warm pass", won, err)
+	}
+}
+
+func TestClaimStolenColdUnitExhaustsWhenNothingFrees(t *testing.T) {
+	inv := &fakeInventory{}
+	post := &fakePoster{outcomes: map[string]error{"cold-1": ErrConflict}}
+
+	_, err := Claim(t.Context(), inv, post, "p", pool.BurstCold, req())
+	if !errors.Is(err, apperrors.ErrExhausted) {
+		t.Fatalf("got %v, want Exhausted after the stolen cold unit", err)
+	}
+}
+
+func TestHTTPPosterMapsProtocolStatuses(t *testing.T) {
+	var status int
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.URL.Path != proxy.ClaimPath {
+			t.Errorf("posted to %s, want %s", r.URL.Path, proxy.ClaimPath)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("because"))
+	}))
+	defer server.Close()
+
+	// The poster addresses Addr on the fixed admin port; point it at the test
+	// server instead by rewriting through its URL.
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poster := &HTTPPoster{client: server.Client()}
+	target := Unit{ID: "u", Addr: u.Hostname(), Token: "tok"}
+	post := func() error {
+		return poster.postTo(t.Context(), server.URL+proxy.ClaimPath, target, req())
+	}
+
+	status = http.StatusOK
+	if err := post(); err != nil {
+		t.Errorf("200: got %v, want nil", err)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization = %q, want the unit's bearer token", gotAuth)
+	}
+
+	status = http.StatusConflict
+	if err := post(); !errors.Is(err, ErrConflict) {
+		t.Errorf("409: got %v, want ErrConflict", err)
+	}
+
+	status = http.StatusUnprocessableEntity
+	var poison *PoisonError
+	if err := post(); !errors.As(err, &poison) || !strings.Contains(poison.Msg, "because") {
+		t.Errorf("422: got %v, want PoisonError carrying the sidecar's message", err)
+	}
+
+	status = http.StatusInternalServerError
+	if err := post(); err == nil || errors.Is(err, ErrConflict) {
+		t.Errorf("500: got %v, want a plain error", err)
+	}
+}

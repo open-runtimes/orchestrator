@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/pool/claim"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
@@ -34,6 +35,7 @@ var testInstallKey = []byte("0123456789abcdef0123456789abcdef")
 type fakeClaims struct {
 	mu        sync.Mutex
 	conflict  map[string]bool             // Claim → 409
+	poison    map[string]bool             // Claim → 422 (artifacts failed)
 	state     map[string]proxy.ClaimState // State responses
 	notReady  map[string]bool             // Ready → false (default ready)
 	requests  map[string]int64            // Requests responses
@@ -45,6 +47,7 @@ type fakeClaims struct {
 func newFakeClaims() *fakeClaims {
 	return &fakeClaims{
 		conflict: map[string]bool{},
+		poison:   map[string]bool{},
 		state:    map[string]proxy.ClaimState{},
 		notReady: map[string]bool{},
 		requests: map[string]int64{},
@@ -56,6 +59,9 @@ func (f *fakeClaims) Claim(_ context.Context, podIP, token string, req *proxy.Cl
 	defer f.mu.Unlock()
 	if f.conflict[podIP] {
 		return errClaimConflict
+	}
+	if f.poison[podIP] {
+		return &claim.PoisonError{Msg: "artifacts failed: boom"}
 	}
 	f.claimed = append(f.claimed, podIP)
 	f.tokens = append(f.tokens, token)
@@ -251,6 +257,30 @@ func TestActivate_ClaimConflictRetriesNextPod(t *testing.T) {
 	}
 	if len(claims.claimed) != 1 || claims.claimed[0] != "10.0.0.2" {
 		t.Errorf("claimed IPs: got %v", claims.claimed)
+	}
+}
+
+// A 422 poison claim fails the ACTIVATION, not the request — this backend
+// used to surface it as a 500, diverging from Docker and the documented
+// claim protocol until the shared claim flow unified them.
+func TestActivate_PoisonedClaimReportsFailedActivation(t *testing.T) {
+	t.Parallel()
+	o, cs, claims := newTestOrchestrator(t, execPool("std"))
+	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
+	claims.poison["10.0.0.1"] = true
+
+	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "run"})
+	if err != nil {
+		t.Fatalf("Activate: %v (poison must not be an error)", err)
+	}
+	if status.State != pool.StateFailed {
+		t.Errorf("state = %s, want failed", status.State)
+	}
+	if status.PodID != "pod-a" {
+		t.Errorf("PodID = %s, want the poisoned pod", status.PodID)
+	}
+	if !strings.Contains(status.Error, "artifacts failed") {
+		t.Errorf("error = %q, want the sidecar's artifact failure", status.Error)
 	}
 }
 
