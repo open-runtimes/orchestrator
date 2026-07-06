@@ -27,9 +27,9 @@ type Request struct {
 	Probes      *Probes             `json:"probes,omitempty"`
 	Callback    *Callback           `json:"callback,omitempty"`
 
-	TimeoutSeconds              int `json:"timeoutSeconds,omitempty"`              // per-request total → 504; default 300
-	ResponseStartTimeoutSeconds int `json:"responseStartTimeoutSeconds,omitempty"` // activator wait for a ready endpoint → 503; default 300
-	ProgressDeadlineSeconds     int `json:"progressDeadlineSeconds,omitempty"`     // ready deadline → failed; default 600
+	TimeoutSeconds      int `json:"timeoutSeconds,omitempty"`      // per-request total → 504; default 300
+	StartTimeoutSeconds int `json:"startTimeoutSeconds,omitempty"` // activator wait for a ready endpoint → 503; default 300
+	ReadyTimeoutSeconds int `json:"readyTimeoutSeconds,omitempty"` // ready deadline → failed; default 600
 }
 
 // Probes — only Readiness is sidecar-run (honors ms granularity); Liveness and
@@ -140,9 +140,9 @@ type requestJSON struct {
 	Probes      *Probes           `json:"probes,omitempty"`
 	Callback    *Callback         `json:"callback,omitempty"`
 
-	TimeoutSeconds              int `json:"timeoutSeconds,omitempty"`
-	ResponseStartTimeoutSeconds int `json:"responseStartTimeoutSeconds,omitempty"`
-	ProgressDeadlineSeconds     int `json:"progressDeadlineSeconds,omitempty"`
+	TimeoutSeconds      int `json:"timeoutSeconds,omitempty"`
+	StartTimeoutSeconds int `json:"startTimeoutSeconds,omitempty"`
+	ReadyTimeoutSeconds int `json:"readyTimeoutSeconds,omitempty"`
 }
 
 // Parse decodes an API request body, rejecting unknown fields — a typo'd
@@ -187,8 +187,8 @@ func (r *Request) fromRaw(raw *requestJSON) error {
 	r.Probes = raw.Probes
 	r.Callback = raw.Callback
 	r.TimeoutSeconds = raw.TimeoutSeconds
-	r.ResponseStartTimeoutSeconds = raw.ResponseStartTimeoutSeconds
-	r.ProgressDeadlineSeconds = raw.ProgressDeadlineSeconds
+	r.StartTimeoutSeconds = raw.StartTimeoutSeconds
+	r.ReadyTimeoutSeconds = raw.ReadyTimeoutSeconds
 
 	if len(raw.Artifacts) > 0 && string(raw.Artifacts) != "null" {
 		artifacts, err := artifact.UnmarshalArtifacts(raw.Artifacts)
@@ -220,9 +220,9 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		Probes:      r.Probes,
 		Callback:    r.Callback,
 
-		TimeoutSeconds:              r.TimeoutSeconds,
-		ResponseStartTimeoutSeconds: r.ResponseStartTimeoutSeconds,
-		ProgressDeadlineSeconds:     r.ProgressDeadlineSeconds,
+		TimeoutSeconds:      r.TimeoutSeconds,
+		StartTimeoutSeconds: r.StartTimeoutSeconds,
+		ReadyTimeoutSeconds: r.ReadyTimeoutSeconds,
 	}
 
 	if len(r.Artifacts) > 0 {

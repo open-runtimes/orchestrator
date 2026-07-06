@@ -94,7 +94,7 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c := deploymentCapacity{resolver: a.resolver, spec: spec}
-	hold := time.Duration(spec.ResponseStartTimeoutSeconds) * time.Second
+	hold := time.Duration(spec.StartTimeoutSeconds) * time.Second
 
 	if proxy.PreferAsync(r) {
 		a.broker.async(w, r, spec.ID, spec.Host, spec, hold, c)

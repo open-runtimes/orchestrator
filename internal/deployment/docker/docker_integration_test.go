@@ -134,7 +134,7 @@ func TestDeployment_ApplyServeUpdateDelete(t *testing.T) {
 		CPU:                     1,
 		Memory:                  128,
 		Port:                    80,
-		ProgressDeadlineSeconds: 60,
+		ReadyTimeoutSeconds: 60,
 	}
 	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to apply deployment: %v", err)
@@ -206,7 +206,7 @@ func TestDeployment_ScaleToZeroAndBack(t *testing.T) {
 		CPU:                     1,
 		Memory:                  128,
 		Port:                    80,
-		ProgressDeadlineSeconds: 60,
+		ReadyTimeoutSeconds: 60,
 		Autoscaling:             &deployment.Autoscaling{MinReplicas: 0},
 	}
 	if _, err := o.Apply(ctx, req); err != nil {
@@ -274,7 +274,7 @@ func TestDeployment_NeverReadyFails(t *testing.T) {
 		CPU:                     1,
 		Memory:                  64,
 		Port:                    80,
-		ProgressDeadlineSeconds: 5,
+		ReadyTimeoutSeconds: 5,
 	}
 	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to apply deployment: %v", err)

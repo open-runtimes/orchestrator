@@ -25,7 +25,7 @@ func testRequest() *deployment.Request {
 		Replicas:                2,
 		Concurrency:             4,
 		TimeoutSeconds:          300,
-		ProgressDeadlineSeconds: 600,
+		ReadyTimeoutSeconds: 600,
 	}
 }
 

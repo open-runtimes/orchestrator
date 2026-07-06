@@ -200,11 +200,11 @@ func TestProxyEnv_Full(t *testing.T) {
 func TestProgressDeadline(t *testing.T) {
 	t.Parallel()
 
-	if got := progressDeadline(0); got != defaultProgressDeadline {
-		t.Errorf("progressDeadline(0) = %v, want %v", got, defaultProgressDeadline)
+	if got := readyTimeout(0); got != defaultReadyTimeout {
+		t.Errorf("readyTimeout(0) = %v, want %v", got, defaultReadyTimeout)
 	}
-	if got := progressDeadline(5); got != 5*time.Second {
-		t.Errorf("progressDeadline(5) = %v, want 5s", got)
+	if got := readyTimeout(5); got != 5*time.Second {
+		t.Errorf("readyTimeout(5) = %v, want 5s", got)
 	}
 }
 
@@ -250,7 +250,7 @@ func TestParseSpec_Invalid(t *testing.T) {
 func TestSpecDeadline(t *testing.T) {
 	t.Parallel()
 
-	spec, err := json.Marshal(&deployment.Request{ID: "d1", ProgressDeadlineSeconds: 30})
+	spec, err := json.Marshal(&deployment.Request{ID: "d1", ReadyTimeoutSeconds: 30})
 	if err != nil {
 		t.Fatalf("marshal spec: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestSpecDeadline(t *testing.T) {
 	if got := specDeadline(string(spec)); got != 30*time.Second {
 		t.Errorf("specDeadline() = %v, want 30s", got)
 	}
-	if got := specDeadline(""); got != defaultProgressDeadline {
+	if got := specDeadline(""); got != defaultReadyTimeout {
 		t.Errorf("specDeadline(\"\") = %v, want default", got)
 	}
 }

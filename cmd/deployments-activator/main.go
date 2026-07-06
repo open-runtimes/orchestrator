@@ -44,7 +44,7 @@ func run(ctx context.Context) error {
 	queue := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 	act := activator.NewRevisionActivator(client, queue, activator.RevisionConfig{
 		Namespace:            config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
-		ResponseStartTimeout: time.Duration(config.GetIntEnv("RESPONSE_START_TIMEOUT_SECONDS", 300)) * time.Second,
+		StartTimeout: time.Duration(config.GetIntEnv("START_TIMEOUT_SECONDS", 300)) * time.Second,
 	}, metrics)
 	if err := act.Start(ctx); err != nil {
 		return err
@@ -67,7 +67,7 @@ func run(ctx context.Context) error {
 	mux.Handle("/", act)
 
 	// The data plane goes on an Extra server: a buffered cold start
-	// legitimately holds the response up to ResponseStartTimeout, far past
+	// legitimately holds the response up to StartTimeout, far past
 	// the management server's WriteTimeout.
 	dataServer := &http.Server{
 		Addr:              ":" + config.GetEnv("ACTIVATOR_PORT", "8081"),

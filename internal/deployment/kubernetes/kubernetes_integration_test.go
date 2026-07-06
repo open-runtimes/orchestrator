@@ -149,7 +149,7 @@ func serverRequest(id string) *deployment.Request {
 		Port:                    8080,
 		Replicas:                1,
 		TimeoutSeconds:          60,
-		ProgressDeadlineSeconds: 120,
+		ReadyTimeoutSeconds: 120,
 	}
 }
 
@@ -368,7 +368,7 @@ func TestIntegration_TrafficSplitAndRollback(t *testing.T) {
 // --- failure path: never ready ---
 
 // TestIntegration_NeverReadyFails deploys a worker that exits immediately and
-// asserts the deployment reaches failed once spec.progressDeadlineSeconds
+// asserts the deployment reaches failed once spec.readyTimeoutSeconds
 // elapses — and that the failed revision is never cut to.
 func TestIntegration_NeverReadyFails(t *testing.T) {
 	o, teardown := setup(t)
@@ -377,7 +377,7 @@ func TestIntegration_NeverReadyFails(t *testing.T) {
 	id := fmt.Sprintf("crash-%d", time.Now().UnixNano()%1_000_000_000)
 	req := serverRequest(id)
 	req.Command = "exit 1"
-	req.ProgressDeadlineSeconds = 15
+	req.ReadyTimeoutSeconds = 15
 
 	if _, err := o.Apply(t.Context(), req); err != nil {
 		t.Fatalf("Apply: %v", err)
