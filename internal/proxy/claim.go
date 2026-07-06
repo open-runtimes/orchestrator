@@ -7,7 +7,7 @@ import (
 // The claim protocol — the contract between the pool backends (which POST
 // activations), this sidecar (the pod's serialization point: it accepts
 // exactly one), and the pool-shim (which it signals over the FIFO). See
-// docs/design/pools.md.
+// docs/pools.md.
 const (
 	// EnvClaimToken arms pool mode: when set, the sidecar starts unclaimed
 	// (no proxy target, not ready) and exposes the claim endpoints, requiring

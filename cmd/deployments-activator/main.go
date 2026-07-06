@@ -1,7 +1,7 @@
 // deployments-activator is the Kubernetes buffering edge: the gateway routes
 // cold-start and async traffic here, tagged X-Revision per weighted
 // backendRef; warm sync traffic bypasses it entirely. See
-// docs/design/deployments-activator.md.
+// docs/deployments.md.
 package main
 
 import (

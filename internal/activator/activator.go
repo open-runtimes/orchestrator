@@ -2,7 +2,7 @@
 // always on the request path, routing by Host to a deployment's ready proxy
 // endpoint, and owning the sync/async split (Prefer: respond-async → 202 +
 // callback). From Phase 3 the gateway takes the warm path and this component
-// only buffers cold/async traffic. See docs/design/deployments-activator.md.
+// only buffers cold/async traffic. See docs/deployments.md.
 package activator
 
 import (

@@ -150,7 +150,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 			},
 		}},
 	}
-	// Sandbox tier (docs/design/security.md): gvisor/kata stamp their mapped
+	// Sandbox tier (docs/operations.md): gvisor/kata stamp their mapped
 	// RuntimeClass; runc (the default) stamps nothing.
 	if rc := kube.RuntimeClassFor(cfg.SandboxRuntimeClasses, req.Sandbox); rc != "" {
 		spec.RuntimeClassName = &rc
@@ -385,7 +385,7 @@ func ceilSeconds(millis int) int32 {
 	return int32((millis + 999) / 1000)
 }
 
-// hardenedSecurityContext is the workload hardening floor (docs/design/security.md),
+// hardenedSecurityContext is the workload hardening floor (docs/operations.md),
 // applied to every container: non-root, no privilege escalation, all
 // capabilities dropped, default seccomp, read-only rootfs (writes go to the
 // workspace and /tmp emptyDirs).

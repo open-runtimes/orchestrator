@@ -1,5 +1,5 @@
 // deployments-service is the serving plane: long-lived HTTP workloads
-// (/v1/deployments) with an in-process activator data plane. See docs/design.
+// (/v1/deployments) with an in-process activator data plane. See docs/.
 package main
 
 import (

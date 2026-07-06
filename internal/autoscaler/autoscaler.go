@@ -5,7 +5,7 @@
 // It ticks fast and smooths slow (the window is a smoothing horizon, not the
 // reaction time), owns 1↔N and N→0, and never fights the activator, which
 // owns 0→N on a cold hit: while requests queue in the activator the queued
-// count holds the deployment up. See docs/design/deployments-autoscaler.md.
+// count holds the deployment up. See docs/deployments.md.
 package autoscaler
 
 import (

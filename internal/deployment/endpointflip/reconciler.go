@@ -1,8 +1,8 @@
 // Package endpointflip reconciles the SKS-style flip EndpointSlice for every
 // managed revision Service: endpoints are the revision's ready pods when warm
 // and the shared activator pods when cold or draining. Route backendRefs never
-// change — only endpoint membership does (docs/design/gateway-routing.md,
-// docs/design/deployments-activator.md).
+// change — only endpoint membership does (docs/operations.md,
+// docs/deployments.md).
 package endpointflip
 
 import (

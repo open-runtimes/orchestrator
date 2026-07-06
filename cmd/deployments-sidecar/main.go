@@ -1,6 +1,6 @@
 // deployments-sidecar is the reverse proxy fronting the user container in
 // every deployment replica: readiness gating, graceful drain, per-request
-// timeout, and the hard concurrency cap. See docs/design/deployments-sidecar.md.
+// timeout, and the hard concurrency cap. See docs/deployments.md.
 package main
 
 import (

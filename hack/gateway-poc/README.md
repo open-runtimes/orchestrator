@@ -1,6 +1,6 @@
 # Gateway API PoC — Traefik on kind
 
-Proves the two load-bearing assumptions in `docs/design/gateway-routing.md`:
+Proves the two load-bearing assumptions in `docs/operations.md`:
 
 - **Revision identity** — per-backendRef `RequestHeaderModifier` (`set: X-Revision`) on
   weighted `backendRefs` (Gateway API **Extended**), with `set` overwriting any

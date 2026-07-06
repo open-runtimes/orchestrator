@@ -1,5 +1,5 @@
 // Package deployment defines the serving-plane domain: a container spec that
-// becomes a long-lived, HTTP-addressable workload. See docs/design.
+// becomes a long-lived, HTTP-addressable workload. See docs/.
 package deployment
 
 import (
@@ -66,7 +66,7 @@ type Callback struct {
 	Key    string   `json:"key,omitempty"` // HMAC signing key
 }
 
-// Sandbox tiers (docs/design/security.md): the RuntimeClass isolation level
+// Sandbox tiers (docs/operations.md): the RuntimeClass isolation level
 // for the workload pod. Kubernetes only; the empty string means runc.
 const (
 	SandboxRunc   = "runc" // default: shared host kernel, hardening floor only

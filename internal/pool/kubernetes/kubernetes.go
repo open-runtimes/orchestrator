@@ -4,7 +4,7 @@
 // — claim + inject + exec instead of schedule + pull + start. Kubernetes is
 // the source of truth: a claimed pod carries its activation ID as a label
 // and its spec as an annotation, so Status, List, and a service restart
-// reconstruct everything by listing pods. See docs/design/pools.md.
+// reconstruct everything by listing pods. See docs/pools.md.
 package kubernetes
 
 import (

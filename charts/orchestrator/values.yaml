@@ -27,7 +27,6 @@ jobs:
     tag: latest
 
 # Serving-plane API (deployments + deployment-pools). Disabled by default —
-# Phase 0 ships a probe-only skeleton; see docs/design/implementation-plan.md.
 deployments:
   enabled: false
   # Empty uses "deployments" when the release is named "orchestrator",
@@ -89,7 +88,7 @@ deployments:
     # Empty = release namespace.
     namespace: ""
   # Divisor deriving a workload's CPU request from its declared limit:
-  # request = cpu / cpuOvercommit (docs/design/resource-model.md). CPU is
+  # request = cpu / cpuOvercommit (docs/operations.md). CPU is
   # compressible, so raising this packs deployments denser. Values <= 0 mean 1.
   cpuOvercommit: 1
   # Leader election gates the background reconcilers (rollout auto-cut, cold
@@ -106,7 +105,7 @@ deployments:
   # limit. Deliberately no default cpu limit — see resource-model.md.
   limitRange:
     enabled: false
-  # Warm pools (docs/design/pools.md): config-declared fleets an activation
+  # Warm pools (docs/pools.md): config-declared fleets an activation
   # late-binds onto. Each entry is a pkg/pool.Pool: {id, image, size, cpu,
   # memory, port (0 = exec pool), burst (reject|cold), environment}.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.

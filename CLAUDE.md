@@ -20,7 +20,7 @@ Job orchestration service for running containerized workloads with async callbac
 
 - `cmd/jobs-service` — main orchestration service (HTTP API on :8080, metrics on :9090)
 - `cmd/job-sidecar` — sidecar for artifact processing and job lifecycle
-- `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane, see `docs/design/`
+- `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane
 - `cmd/deployments-sidecar` — reverse proxy in every deployment replica (readiness, drain, concurrency cap)
 - `cmd/deployments-activator` — K8s buffering edge for cold/async traffic (gateway routes here with X-Revision)
 - `cmd/pool-shim` — warm-pod entrypoint: blocks on a FIFO, execs the activation payload as PID 1

@@ -2,7 +2,7 @@
 // container in every deployment replica. Traffic reaches the container only
 // through it. It owns the pod-local invariants: readiness gating, graceful
 // drain, per-request timeout, and the hard concurrency cap. See
-// docs/design/deployments-sidecar.md.
+// docs/deployments.md.
 package proxy
 
 import (

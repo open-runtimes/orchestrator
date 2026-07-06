@@ -105,7 +105,7 @@ func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
-	// Sandbox tier (docs/design/security.md): a POOL dimension — warm pods
+	// Sandbox tier (docs/operations.md): a POOL dimension — warm pods
 	// are runtime-fixed at creation, so warm fleets are keyed by (image,
 	// sandbox). gvisor/kata stamp their mapped RuntimeClass; runc (the
 	// default) stamps nothing. NOTE: replenishment only tops counts up — it
@@ -220,7 +220,7 @@ func workloadResources(p *pool.Pool) corev1.ResourceRequirements {
 }
 
 // hardenedSecurityContext is the workload hardening floor
-// (docs/design/security.md), applied to every container: non-root, no
+// (docs/operations.md), applied to every container: non-root, no
 // privilege escalation, all capabilities dropped, default seccomp, read-only
 // rootfs (writes go to the workspace and /tmp emptyDirs).
 func hardenedSecurityContext(cfg Config) *corev1.SecurityContext {

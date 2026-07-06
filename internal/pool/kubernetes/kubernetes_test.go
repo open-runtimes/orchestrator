@@ -603,7 +603,7 @@ func TestDeactivate_TearsDownEverything(t *testing.T) {
 	}
 }
 
-// --- secret material at rest (docs/design/security.md) ---
+// --- secret material at rest (docs/operations.md) ---
 
 func TestDeriveClaimToken_DeterministicPerPod(t *testing.T) {
 	t.Parallel()

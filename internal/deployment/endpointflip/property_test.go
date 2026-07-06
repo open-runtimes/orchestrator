@@ -11,7 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// The invariant under test (docs/design/deployments-activator.md): after every
+// The invariant under test (docs/deployments.md): after every
 // reconcile, slice endpoints are exactly the ready revision pods on ProxyPort
 // when any exist, else exactly the ready activator pods on ActivatorPort — so
 // the slice is never empty while at least one ready activator pod exists.

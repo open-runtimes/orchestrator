@@ -44,7 +44,6 @@ curl -H "Host: web.localhost" http://localhost:8081/
 | [Operations](docs/operations.md) | Deploying the orchestrator: Helm install, prerequisites, configuration reference, hardening |
 | [Observability](docs/observability.md) | Metrics, logging, and tracing |
 | [Development](docs/development.md) | Building, testing, and the local dev loop |
-| [Design](docs/design/README.md) | Internal architecture and design decisions |
 
 ## API at a glance
 

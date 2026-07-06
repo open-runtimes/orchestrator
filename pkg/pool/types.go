@@ -1,7 +1,7 @@
 // Package pool defines the warm-pool domain: config-declared fleets of a
 // runtime image kept idle, onto which an activation late-binds a payload —
 // claim + inject + exec instead of schedule + pull + start. See
-// docs/design/pools.md.
+// docs/pools.md.
 package pool
 
 import (
