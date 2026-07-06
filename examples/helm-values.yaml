@@ -1,0 +1,93 @@
+# Example production values for the orchestrator Helm chart.
+#
+#   helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
+#     --version <X.Y.Z> -n orchestrator --create-namespace -f helm-values.yaml
+#
+# Everything here layers on top of charts/orchestrator/values.yaml (the full
+# annotated reference). This example enables the serving plane with a real
+# domain, the hardened workload namespace, warm pools, and an HA control
+# plane. Prerequisites: K8s 1.29+, the Gateway API CRDs, and a gateway
+# controller with Extended features (Traefik, Envoy Gateway, Istio) — see
+# docs/operations.md.
+
+# ── Serving plane ────────────────────────────────────────────────────────────
+deployments:
+  enabled: true
+
+  # Deployments get hosts like {id}.apps.example.com; point a wildcard DNS
+  # record for this domain at your gateway's address.
+  domain: apps.example.com
+
+  # The Gateway resource HTTPRoutes attach to. You create and own it
+  # (listeners, TLS, load balancer) — see docs/operations.md for an example.
+  gateway:
+    enabled: true
+    name: orchestrator
+    namespace: "" # empty = release namespace
+
+  # Run workload pods in their own hardened namespace: restricted Pod
+  # Security admission, default-deny NetworkPolicy (requires an enforcing
+  # CNI), cloud-metadata egress block, and a capacity quota.
+  workloadNamespace:
+    enabled: true
+    podSecurity: restricted
+    networkPolicy:
+      enabled: true
+      gatewayNamespace: traefik-system # where your gateway controller runs
+    resourceQuota:
+      enabled: true
+      pods: 200
+      requestsCpu: "100"
+      requestsMemory: 200Gi
+
+  # Warm pools: standing capacity for near-instant activations
+  # (docs/pools.md). Resize with a values change + helm upgrade.
+  pools:
+    - id: py
+      image: python:3.12-slim
+      size: 4
+      cpu: 1
+      memory: 512
+      burst: reject # no free pod → 429; use "cold" to create on demand
+    - id: node
+      image: node:22-slim
+      size: 2
+      cpu: 1
+      memory: 512
+      port: 3000 # HTTP pool: activations serve on this port
+      burst: cold
+
+  # CPU is compressible: request = limit / overcommit, no CPU limit.
+  # 2 packs workloads twice as dense at the cost of contention under load.
+  cpuOvercommit: 2
+
+  # Default requests for workload containers that declare none.
+  limitRange:
+    enabled: true
+
+  # HA control plane: every replica serves the API; the background
+  # reconcilers (auto-cut, endpoint flip, autoscaler, pools) run on the
+  # elected leader. leaderElection is required when replicaCount > 1.
+  replicaCount: 2
+  leaderElection:
+    enabled: true
+
+  # The buffering edge for cold-start and async traffic.
+  activator:
+    replicaCount: 2
+
+# ── Autoscaler tuning + API auth (both services) ─────────────────────────────
+extraEnv:
+  # Concurrency window: shorter reacts faster, both up and down.
+  - name: AUTOSCALER_WINDOW
+    value: 60s
+  # Require `Authorization: Bearer <key>` on the APIs. Mount the secret via
+  # your pod-level tooling (extraEnv + CSI/operator of choice); with no key
+  # configured the API is open and the services log a warning.
+  # - name: API_KEY_FILE
+  #   value: /run/secrets/orchestrator/api-key
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi

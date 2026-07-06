@@ -7,31 +7,31 @@ A service for running containerized workloads on Docker or Kubernetes, in two sh
 
 The same API works against both backends (`ORCHESTRATOR_BACKEND=docker|kubernetes`): Docker for development, Kubernetes for production. The backend is the source of truth — the services are stateless, survive restarts, and any replica can serve any request.
 
-## Quick start — jobs
+## Quick start
+
+The [compose file](docker-compose.yaml) runs both services against your local Docker daemon:
 
 ```bash
-# Prerequisites: Go 1.25+, Docker
-go run github.com/go-task/task/v3/cmd/task@latest dev
+docker compose up -d
 
+# Run a job to completion
 curl -X POST http://localhost:8080/v1/jobs \
   -H "Content-Type: application/json" \
   -d '{"id": "hello", "image": "alpine:latest", "command": "echo hello world"}'
-
 curl http://localhost:8080/v1/jobs/hello
 # {"id":"hello","status":"completed","exitCode":0}
-```
 
-## Quick start — deployments
-
-```bash
-curl -X POST http://localhost:8080/v1/deployments \
+# Deploy an HTTP service
+curl -X POST http://localhost:8082/v1/deployments \
   -H "Content-Type: application/json" \
   -d '{"id": "web", "image": "traefik/whoami", "port": 80}'
 # 201 {"id":"web","status":"pending","url":"http://web.localhost", ...}
 
-# Once ready, the deployment serves on its host:
+# Once ready, it serves on its host via the data port:
 curl -H "Host: web.localhost" http://localhost:8081/
 ```
+
+(Contributors can also run the jobs service from source with hot reload: `task dev`.)
 
 ## Documentation
 

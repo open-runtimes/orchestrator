@@ -38,7 +38,7 @@ helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
   --namespace orchestrator --create-namespace
 ```
 
-This deploys the jobs service alone. Verify with:
+This deploys the jobs service alone. A complete worked example — serving plane, hardened workload namespace, pools, HA — lives at [`examples/helm-values.yaml`](../examples/helm-values.yaml). Verify with:
 
 ```bash
 kubectl -n orchestrator port-forward svc/jobs 8080:8080 &
@@ -165,4 +165,4 @@ Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=t
 
 ## Local development backend
 
-Both services also run against Docker (`ORCHESTRATOR_BACKEND=docker`) for development — `task dev` starts the jobs service with hot reload. The Docker backend is functionally reduced (single-revision deployments, exec-only pools, 0↔1 autoscaling) but exercises the same API. `task dev:k8s` runs the full Kubernetes stack against a local kind cluster with live reload; see [development](development.md).
+Both services also run against Docker (`ORCHESTRATOR_BACKEND=docker`) for development: `docker compose up -d` at the repo root brings up both against your local daemon (see [`docker-compose.yaml`](../docker-compose.yaml)), and `task dev` runs the jobs service from source with hot reload. The Docker backend is functionally reduced (single-revision deployments, exec-only pools, 0↔1 autoscaling) but exercises the same API. `task dev:k8s` runs the full Kubernetes stack against a local kind cluster with live reload; see [development](development.md).
