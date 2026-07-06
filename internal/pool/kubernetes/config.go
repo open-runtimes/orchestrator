@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
+	"orchestrator/internal/observability"
 	"orchestrator/pkg/pool"
 	"strconv"
 	"time"
@@ -49,6 +50,10 @@ type Config struct {
 	// LeaderElection gates the control loop (replenishment + GC) to one
 	// replica; disabled = single-replica mode.
 	LeaderElection kube.LeaderElectionConfig
+
+	// Metrics receives K8s API, leadership, and pool telemetry. Set by the
+	// caller (not the environment); may be nil in tests.
+	Metrics *observability.Metrics
 }
 
 // LoadConfigFromEnv loads orchestrator configuration from environment

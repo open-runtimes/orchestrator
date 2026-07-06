@@ -45,6 +45,15 @@ type capacity interface {
 	Raise(ctx context.Context) error
 }
 
+// Recorder receives the activator's domain metrics. Satisfied by
+// *observability.Metrics; nil disables recording.
+type Recorder interface {
+	RecordActivatorHold(ctx context.Context, outcome string, durationSeconds float64)
+	RecordActivatorQueueDelta(ctx context.Context, delta int64)
+	RecordActivatorRaise(ctx context.Context)
+	RecordActivatorAsync(ctx context.Context, result string)
+}
+
 // broker is the hold-raise-forward pipeline shared by both data-plane edges:
 // it holds requests until the edge's capacity yields a target (raising cold
 // workloads, debounced), proxies sync requests, and runs the async accept →
@@ -53,17 +62,20 @@ type capacity interface {
 type broker struct {
 	queue  dispatcher.Queue
 	source string // CloudEvents source
+	rec    Recorder
 
 	mu        sync.Mutex
 	lastRaise map[string]time.Time // key → last cold scale-up
 	queued    map[string]int       // key → requests waiting for an endpoint
 }
 
-// newBroker creates a broker. queue delivers async response callbacks.
-func newBroker(queue dispatcher.Queue) *broker {
+// newBroker creates a broker. queue delivers async response callbacks; rec
+// (nilable) receives the domain metrics.
+func newBroker(queue dispatcher.Queue, rec Recorder) *broker {
 	return &broker{
 		queue:     queue,
 		source:    "orchestrator/deployments",
+		rec:       rec,
 		lastRaise: make(map[string]time.Time),
 		queued:    make(map[string]int),
 	}
@@ -195,6 +207,13 @@ func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string,
 		data["error"] = errMsg
 	}
 
+	if b.rec != nil {
+		result := "delivered"
+		if errMsg != "" {
+			result = "failed"
+		}
+		b.rec.RecordActivatorAsync(context.Background(), result)
+	}
 	event := cloudevent.New("orchestrator.deployment.response", b.source, spec.ID, invocationID, data)
 	if err := b.queue.Dispatch(&dispatcher.Event{
 		Payload:     event,
@@ -208,19 +227,31 @@ func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string,
 // await polls capacity for a target until hold expires. A cold workload (no
 // target — scaled to zero, or its last replica crashed/was evicted) is
 // raised first: the broker owns 0→N, never waiting on an autoscaler tick.
-func (b *broker) await(ctx context.Context, key string, hold time.Duration, c capacity) (*url.URL, error) {
+func (b *broker) await(ctx context.Context, key string, hold time.Duration, c capacity) (target *url.URL, err error) {
 	waitCtx, cancel := context.WithTimeout(ctx, hold)
 	defer cancel()
 
+	start := time.Now()
 	b.mu.Lock()
 	b.queued[key]++
 	b.mu.Unlock()
+	if b.rec != nil {
+		b.rec.RecordActivatorQueueDelta(ctx, 1)
+	}
 	defer func() {
 		b.mu.Lock()
 		if b.queued[key]--; b.queued[key] <= 0 {
 			delete(b.queued, key)
 		}
 		b.mu.Unlock()
+		if b.rec != nil {
+			b.rec.RecordActivatorQueueDelta(ctx, -1)
+			outcome := "served"
+			if err != nil {
+				outcome = "timeout"
+			}
+			b.rec.RecordActivatorHold(ctx, outcome, time.Since(start).Seconds())
+		}
 	}()
 
 	ticker := time.NewTicker(endpointPollInterval)
@@ -252,6 +283,9 @@ func (b *broker) raise(ctx context.Context, key string, c capacity) {
 	pruneStale(b.lastRaise, raiseDebounce)
 	b.mu.Unlock()
 
+	if b.rec != nil {
+		b.rec.RecordActivatorRaise(ctx)
+	}
 	if err := c.Raise(ctx); err != nil {
 		slog.Warn("Cold-start scale-up failed", "key", key, "error", err)
 	}

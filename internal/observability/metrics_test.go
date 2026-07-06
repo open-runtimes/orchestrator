@@ -63,8 +63,16 @@ func TestNormalizePath(t *testing.T) {
 		{"/health", "/health"},
 		{"/metrics", "/metrics"},
 		{"/v1/jobs", "/v1/jobs"},
-		{"/v1/jobs/abc123", "/v1/jobs/{jobId}"},
-		{"/v1/jobs/xyz-789-def", "/v1/jobs/{jobId}"},
+		{"/v1/jobs/abc123", "/v1/jobs/{id}"},
+		{"/v1/jobs/xyz-789-def", "/v1/jobs/{id}"},
+		{"/v1/deployments", "/v1/deployments"},
+		{"/v1/deployments/web", "/v1/deployments/{id}"},
+		{"/v1/deployments/web/traffic", "/v1/deployments/{id}/traffic"},
+		{"/v1/deployments/web/revisions", "/v1/deployments/{id}/revisions"},
+		{"/v1/deployment-pools", "/v1/deployment-pools"},
+		{"/v1/deployment-pools/py", "/v1/deployment-pools/{id}"},
+		{"/v1/deployment-pools/py/activations", "/v1/deployment-pools/{id}/activations"},
+		{"/v1/deployment-pools/py/activations/run-42", "/v1/deployment-pools/{id}/activations/{actId}"},
 		{"/other/path", "/other/path"},
 	}
 

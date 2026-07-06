@@ -42,7 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest"))
+	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest"), metrics)
 	if err != nil {
 		slog.Error("Failed to build orchestrator", "error", err)
 		os.Exit(1)
@@ -66,7 +66,7 @@ func main() {
 		}
 		return "http://" + host + ":" + dataPort
 	}
-	svc := deployment.NewService(orchestrator, artifact.DefaultRegistry(), domain, urlFor)
+	svc := deployment.NewService(orchestrator, metrics, artifact.DefaultRegistry(), domain, urlFor)
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 
@@ -80,7 +80,7 @@ func main() {
 	if backend == "kubernetes" {
 		queue = autoscaler.NewActivatorQueue(config.GetEnv("ACTIVATOR_STATS_URL", "http://deployments-activator:8081/stats"))
 	} else {
-		act := activator.New(svc, eventDispatcher)
+		act := activator.New(svc, eventDispatcher, metrics)
 		queue = autoscaler.QueuedDepthFunc(act.QueuedDepth)
 		// Data-plane listener: requests can legitimately run for minutes
 		// (the per-request timeout lives in the deployments-sidecar), so no
@@ -92,7 +92,7 @@ func main() {
 		})
 	}
 
-	scaler := autoscaler.New(orchestrator, concurrency, queue, autoscaler.LoadConfigFromEnv())
+	scaler := autoscaler.New(orchestrator, concurrency, queue, autoscaler.LoadConfigFromEnv(), metrics)
 	scalerCtx, stopScaler := context.WithCancel(ctx)
 	defer stopScaler()
 	// Exactly one replica may write scales: gate under the backend's lease
@@ -114,7 +114,7 @@ func main() {
 	}
 	var poolSvc *pool.Service
 	if len(pools) > 0 {
-		poolOrchestrator, err := buildPoolOrchestrator(ctx, backend, pools)
+		poolOrchestrator, err := buildPoolOrchestrator(ctx, backend, pools, metrics)
 		if err != nil {
 			slog.Error("Failed to build pool orchestrator", "error", err)
 			os.Exit(1)
@@ -124,7 +124,7 @@ func main() {
 			slog.Error("Failed to start pool orchestrator", "error", err)
 			os.Exit(1)
 		}
-		poolSvc = pool.NewService(poolOrchestrator, pools, artifact.DefaultRegistry())
+		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.DefaultRegistry())
 		slog.Info("Pools configured", "count", len(pools))
 	}
 
@@ -163,7 +163,7 @@ func main() {
 	}
 }
 
-func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Pool) (pool.Orchestrator, error) {
+func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Pool, metrics *observability.Metrics) (pool.Orchestrator, error) {
 	sidecarImage := config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
 	shimImage := config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
 	switch backend {
@@ -172,6 +172,7 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 		cfg.SidecarImage = sidecarImage
 		cfg.ShimImage = shimImage
 		cfg.Pools = pools
+		cfg.Metrics = metrics
 		return pooldocker.NewOrchestrator(ctx, cfg)
 	case "kubernetes":
 		cfg, err := poolkubernetes.LoadConfigFromEnv()
@@ -181,13 +182,14 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 		cfg.SidecarImage = sidecarImage
 		cfg.ShimImage = shimImage
 		cfg.Pools = pools
+		cfg.Metrics = metrics
 		return poolkubernetes.NewOrchestrator(ctx, cfg)
 	default:
 		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
 	}
 }
 
-func buildOrchestrator(ctx context.Context, backend, sidecarImage string) (deployment.Orchestrator, error) {
+func buildOrchestrator(ctx context.Context, backend, sidecarImage string, metrics *observability.Metrics) (deployment.Orchestrator, error) {
 	switch backend {
 	case "docker":
 		cfg := depdocker.LoadConfigFromEnv()
@@ -199,6 +201,7 @@ func buildOrchestrator(ctx context.Context, backend, sidecarImage string) (deplo
 			return nil, err
 		}
 		cfg.SidecarImage = sidecarImage
+		cfg.Metrics = metrics
 		return depkubernetes.NewOrchestrator(ctx, cfg)
 	default:
 		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)

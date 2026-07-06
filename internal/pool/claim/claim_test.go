@@ -55,7 +55,7 @@ func TestClaimWinsFirstFreeUnit(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
 	post := &fakePoster{}
 
-	won, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	won, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstReject, req())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestClaimRetriesNextUnitOnConflict(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("a"), unit("b"), unit("c")}}
 	post := &fakePoster{outcomes: map[string]error{"a": ErrConflict, "b": ErrConflict}}
 
-	won, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	won, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstReject, req())
 	if err != nil || won.ID != "c" {
 		t.Fatalf("won %v (%v), want c — racing losers must try the next unit", won, err)
 	}
@@ -78,7 +78,7 @@ func TestClaimSkipsTransientFailures(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("broken"), unit("b")}}
 	post := &fakePoster{outcomes: map[string]error{"broken": errors.New("connection refused")}}
 
-	won, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	won, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstReject, req())
 	if err != nil || won.ID != "b" {
 		t.Fatalf("won %v (%v), want b — one broken unit must not fail the activation", won, err)
 	}
@@ -88,7 +88,7 @@ func TestClaimPoisonStopsAndStampsUnit(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
 	post := &fakePoster{outcomes: map[string]error{"a": &Poison{Msg: "artifacts failed"}}}
 
-	_, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	_, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstReject, req())
 	var poison *Poison
 	if !errors.As(err, &poison) {
 		t.Fatalf("got %v, want Poison — the sidecar accepted, the activation is spent", err)
@@ -105,7 +105,7 @@ func TestClaimExhaustedRejectsWithoutColdCreate(t *testing.T) {
 	inv := &fakeInventory{}
 	post := &fakePoster{}
 
-	_, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
+	_, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstReject, req())
 	if !errors.Is(err, apperrors.ErrExhausted) {
 		t.Fatalf("got %v, want Exhausted", err)
 	}
@@ -118,7 +118,7 @@ func TestClaimBurstColdCreatesAndClaims(t *testing.T) {
 	inv := &fakeInventory{}
 	post := &fakePoster{}
 
-	won, err := Claim(t.Context(), inv, post, "p", pool.BurstCold, req())
+	won, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstCold, req())
 	if err != nil || won.ID != "cold-1" {
 		t.Fatalf("won %v (%v), want cold-1", won, err)
 	}
@@ -131,7 +131,7 @@ func TestClaimStolenColdUnitRetriesWarmPass(t *testing.T) {
 	// pool replenished, or another slot freed).
 	inv.free = []Unit{unit("late")}
 
-	won, err := Claim(t.Context(), inv, post, "p", pool.BurstCold, req())
+	won, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstCold, req())
 	if err != nil || won.ID != "late" {
 		t.Fatalf("won %v (%v), want late via the post-steal warm pass", won, err)
 	}
@@ -141,7 +141,7 @@ func TestClaimStolenColdUnitExhaustsWhenNothingFrees(t *testing.T) {
 	inv := &fakeInventory{}
 	post := &fakePoster{outcomes: map[string]error{"cold-1": ErrConflict}}
 
-	_, err := Claim(t.Context(), inv, post, "p", pool.BurstCold, req())
+	_, err := Claim(t.Context(), inv, post, nil, "p", pool.BurstCold, req())
 	if !errors.Is(err, apperrors.ErrExhausted) {
 		t.Fatalf("got %v, want Exhausted after the stolen cold unit", err)
 	}
@@ -194,5 +194,48 @@ func TestHTTPPosterMapsProtocolStatuses(t *testing.T) {
 	status = http.StatusInternalServerError
 	if err := post(); err == nil || errors.Is(err, ErrConflict) {
 		t.Errorf("500: got %v, want a plain error", err)
+	}
+}
+
+// countRecorder captures claim protocol metric calls.
+type countRecorder struct {
+	conflicts, poisons int
+	bursts             []string
+}
+
+func (c *countRecorder) RecordPoolConflict(context.Context, string) { c.conflicts++ }
+func (c *countRecorder) RecordPoolPoisoned(context.Context, string) { c.poisons++ }
+func (c *countRecorder) RecordPoolBurst(_ context.Context, _ string, policy string) {
+	c.bursts = append(c.bursts, policy)
+}
+
+func TestClaimRecordsTelemetry(t *testing.T) {
+	// Conflict on a, poison on b: one conflict, one poison, no burst.
+	rec := &countRecorder{}
+	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
+	post := &fakePoster{outcomes: map[string]error{"a": ErrConflict, "b": &Poison{Msg: "boom"}}}
+	if _, err := Claim(t.Context(), inv, post, rec, "p", pool.BurstReject, req()); err == nil {
+		t.Fatal("want poison error")
+	}
+	if rec.conflicts != 1 || rec.poisons != 1 || len(rec.bursts) != 0 {
+		t.Errorf("got conflicts=%d poisons=%d bursts=%v, want 1/1/[]", rec.conflicts, rec.poisons, rec.bursts)
+	}
+
+	// Empty pool, burst=reject.
+	rec = &countRecorder{}
+	if _, err := Claim(t.Context(), &fakeInventory{}, &fakePoster{}, rec, "p", pool.BurstReject, req()); err == nil {
+		t.Fatal("want exhausted")
+	}
+	if len(rec.bursts) != 1 || rec.bursts[0] != pool.BurstReject {
+		t.Errorf("bursts = %v, want [reject]", rec.bursts)
+	}
+
+	// Empty pool, burst=cold.
+	rec = &countRecorder{}
+	if _, err := Claim(t.Context(), &fakeInventory{}, &fakePoster{}, rec, "p", pool.BurstCold, req()); err != nil {
+		t.Fatalf("cold create: %v", err)
+	}
+	if len(rec.bursts) != 1 || rec.bursts[0] != pool.BurstCold {
+		t.Errorf("bursts = %v, want [cold]", rec.bursts)
 	}
 }

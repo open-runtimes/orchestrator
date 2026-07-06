@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/observability"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Validation limits, shared scale with the deployments service.
@@ -26,17 +28,18 @@ var idPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 // all activation state lives in the backend.
 type Service struct {
 	orchestrator Orchestrator
+	metrics      *observability.Metrics // may be nil in tests
 	pools        map[string]*Pool
 	artifacts    *artifact.Registry
 }
 
 // NewService creates a pool service over the configured pools.
-func NewService(orchestrator Orchestrator, pools []Pool, artifacts *artifact.Registry) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, pools []Pool, artifacts *artifact.Registry) *Service {
 	byID := make(map[string]*Pool, len(pools))
 	for i := range pools {
 		byID[pools[i].ID] = &pools[i]
 	}
-	return &Service{orchestrator: orchestrator, pools: byID, artifacts: artifacts}
+	return &Service{orchestrator: orchestrator, metrics: metrics, pools: byID, artifacts: artifacts}
 }
 
 // Pools lists the configured pools with live counts.
@@ -77,7 +80,15 @@ func (s *Service) Activate(ctx context.Context, poolID string, act *Activation) 
 	}
 
 	logger := slog.With("poolId", poolID, "activationId", act.ID)
+	start := time.Now()
+	if s.metrics != nil {
+		s.metrics.RecordPoolActivationStarted(ctx, poolID)
+	}
 	status, err := s.orchestrator.Activate(ctx, poolID, act)
+	if s.metrics != nil {
+		success := err == nil && status != nil && status.State != StateFailed
+		s.metrics.RecordPoolActivationFinished(ctx, poolID, success, time.Since(start).Seconds())
+	}
 	if err != nil {
 		logger.Error("Activation failed", "error", err)
 		return nil, err

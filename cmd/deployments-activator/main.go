@@ -45,7 +45,7 @@ func run(ctx context.Context) error {
 	act := activator.NewRevisionActivator(client, queue, activator.RevisionConfig{
 		Namespace:            config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
 		ResponseStartTimeout: time.Duration(config.GetIntEnv("RESPONSE_START_TIMEOUT_SECONDS", 300)) * time.Second,
-	})
+	}, metrics)
 	if err := act.Start(ctx); err != nil {
 		return err
 	}

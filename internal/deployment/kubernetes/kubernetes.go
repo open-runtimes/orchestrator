@@ -37,7 +37,7 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes deployment orchestrator.
 func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, nil)
+	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -64,8 +64,15 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	o.stop = cancel
-	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runReconcilers, nil)
+	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runReconcilers, o.onLeadership)
 	return nil
+}
+
+// onLeadership records leadership transitions when metrics are wired.
+func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leading bool) {
+	if o.cfg.Metrics != nil {
+		o.cfg.Metrics.RecordLeadership(ctx, identity, leading)
+	}
 }
 
 // runReconcilers runs the background loops for one leadership term (or the

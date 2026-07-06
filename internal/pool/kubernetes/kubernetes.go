@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/kube"
+	"orchestrator/internal/observability"
 	"orchestrator/internal/pool/claim"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
@@ -68,7 +69,7 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes pool orchestrator.
 func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, nil)
+	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -118,8 +119,15 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	o.stop = cancel
-	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runControl, nil)
+	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runControl, o.onLeadership)
 	return nil
+}
+
+// onLeadership records leadership transitions when metrics are wired.
+func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leading bool) {
+	if o.cfg.Metrics != nil {
+		o.cfg.Metrics.RecordLeadership(ctx, identity, leading)
+	}
 }
 
 // checkRuntimeClasses verifies every pool's sandbox RuntimeClass is installed
@@ -220,11 +228,20 @@ func (o *Orchestrator) claimWarmPod(ctx context.Context, p *pool.Pool, act *pool
 		return nil, err
 	}
 	inv := &podInventory{o: o, p: p, key: key, byName: make(map[string]*corev1.Pod)}
-	unit, err := claim.Claim(ctx, inv, clientPoster{o.claims}, p.ID, p.Burst, claimRequest(p, act))
+	unit, err := claim.Claim(ctx, inv, clientPoster{o.claims}, recorder(o.cfg.Metrics), p.ID, p.Burst, claimRequest(p, act))
 	if err != nil {
 		return nil, err
 	}
 	return inv.byName[unit.ID], nil
+}
+
+// recorder converts a possibly-nil *observability.Metrics into a claim
+// Recorder without producing a typed-nil interface.
+func recorder(m *observability.Metrics) claim.Recorder {
+	if m == nil {
+		return nil
+	}
+	return m
 }
 
 // podInventory is the Kubernetes warm-unit surface behind the claim flow's

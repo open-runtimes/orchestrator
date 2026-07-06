@@ -84,7 +84,7 @@ func (c *controller) reconcilePool(ctx context.Context, p *pool.Pool, seenPods, 
 		slog.Warn("Pool reconcile list failed", "poolId", p.ID, "error", err)
 		return
 	}
-	warm := 0
+	warm, claimed := 0, 0
 	for i := range pods {
 		pod := &pods[i]
 		seenPods[pod.Name] = true
@@ -93,12 +93,16 @@ func (c *controller) reconcilePool(ctx context.Context, p *pool.Pool, seenPods, 
 		}
 		if activationID := pod.Labels[LabelActivation]; activationID != "" {
 			seenActs[activationID] = true
+			claimed++
 			c.reapClaimed(ctx, p, pod, activationID)
 			continue
 		}
 		if c.countsWarm(ctx, pod) {
 			warm++
 		}
+	}
+	if c.o.cfg.Metrics != nil {
+		c.o.cfg.Metrics.RecordPoolCapacity(ctx, p.ID, int64(warm), int64(claimed))
 	}
 	for n := warm; n < p.Size; n++ {
 		if _, err := c.o.createWarmPod(ctx, p); err != nil {

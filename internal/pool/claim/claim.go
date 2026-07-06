@@ -57,6 +57,14 @@ type Inventory interface {
 	Create(ctx context.Context) (*Unit, error)
 }
 
+// Recorder receives the claim protocol's metrics. Satisfied by
+// *observability.Metrics; nil disables recording.
+type Recorder interface {
+	RecordPoolConflict(ctx context.Context, id string)
+	RecordPoolPoisoned(ctx context.Context, id string)
+	RecordPoolBurst(ctx context.Context, id, policy string)
+}
+
 // Poster performs the sidecar claim POST. Faked in backend unit tests where
 // pods have no reachable sidecars; production uses NewPoster.
 type Poster interface {
@@ -67,17 +75,23 @@ type Poster interface {
 // burst policy decides: reject (429-mapped) or cold-create. Returns
 // *Poison when the winning unit's artifacts failed — the activation is
 // failed, not errored.
-func Claim(ctx context.Context, inv Inventory, post Poster, poolID, burst string, req *proxy.ClaimRequest) (*Unit, error) {
-	unit, ok, err := tryWarm(ctx, inv, post, poolID, req)
+func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID, burst string, req *proxy.ClaimRequest) (*Unit, error) {
+	unit, ok, err := tryWarm(ctx, inv, post, rec, poolID, req)
 	if err != nil || ok {
-		return unit, err
+		return unit, recordPoison(ctx, rec, poolID, err)
 	}
 
 	if burst != pool.BurstCold {
+		if rec != nil {
+			rec.RecordPoolBurst(ctx, poolID, pool.BurstReject)
+		}
 		slog.Warn("Pool exhausted, rejecting activation", "poolId", poolID, "activationId", req.ActivationID)
 		return nil, exhausted(poolID)
 	}
 
+	if rec != nil {
+		rec.RecordPoolBurst(ctx, poolID, pool.BurstCold)
+	}
 	slog.Warn("Pool exhausted, cold-creating capacity", "poolId", poolID, "activationId", req.ActivationID)
 	created, err := inv.Create(ctx)
 	if err != nil {
@@ -89,13 +103,26 @@ func Claim(ctx context.Context, inv Inventory, post Poster, poolID, burst string
 		return created, nil
 	case errors.Is(err, ErrConflict):
 		// The cold unit was stolen by a racing activation; one more warm pass.
-		if unit, ok, err := tryWarm(ctx, inv, post, poolID, req); err != nil || ok {
-			return unit, err
+		if rec != nil {
+			rec.RecordPoolConflict(ctx, poolID)
+		}
+		if unit, ok, err := tryWarm(ctx, inv, post, rec, poolID, req); err != nil || ok {
+			return unit, recordPoison(ctx, rec, poolID, err)
 		}
 		return nil, exhausted(poolID)
 	default:
-		return nil, poisonedOrInternal(err, created.ID)
+		return nil, recordPoison(ctx, rec, poolID, poisonedOrInternal(err, created.ID))
 	}
+}
+
+// recordPoison bumps the poison counter when err is a *Poison, passing err
+// through either way.
+func recordPoison(ctx context.Context, rec Recorder, poolID string, err error) error {
+	var poison *Poison
+	if rec != nil && errors.As(err, &poison) {
+		rec.RecordPoolPoisoned(ctx, poolID)
+	}
+	return err
 }
 
 // tryWarm claims the first free unit that accepts; ok=false with nil error
@@ -103,7 +130,7 @@ func Claim(ctx context.Context, inv Inventory, post Poster, poolID, burst string
 // failures are logged and skipped — one broken unit must not fail an
 // activation while others are free. Poison stops the pass: the sidecar
 // accepted, so the activation is spent.
-func tryWarm(ctx context.Context, inv Inventory, post Poster, poolID string, req *proxy.ClaimRequest) (*Unit, bool, error) {
+func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID string, req *proxy.ClaimRequest) (*Unit, bool, error) {
 	units, err := inv.Free(ctx)
 	if err != nil {
 		return nil, false, err
@@ -114,6 +141,9 @@ func tryWarm(ctx context.Context, inv Inventory, post Poster, poolID string, req
 		case err == nil:
 			return &u, true, nil
 		case errors.Is(err, ErrConflict):
+			if rec != nil {
+				rec.RecordPoolConflict(ctx, poolID)
+			}
 			continue // racing loser — try the next warm unit
 		default:
 			var poison *Poison

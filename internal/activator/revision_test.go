@@ -76,7 +76,7 @@ func newTestRevisionActivator(t *testing.T, cfg RevisionConfig, objs ...runtime.
 	registerScaleSubresource(cs)
 	queue := newCaptureQueue()
 	cfg.Namespace = testRevisionNamespace
-	act := NewRevisionActivator(cs, queue, cfg)
+	act := NewRevisionActivator(cs, queue, cfg, nil)
 	if err := act.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

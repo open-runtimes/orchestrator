@@ -97,7 +97,7 @@ func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	b := newBroker(newCaptureQueue())
+	b := newBroker(newCaptureQueue(), nil)
 	c := &fakeCapacity{target: mustURL(t, backend.URL)}
 
 	rec := httptest.NewRecorder()
@@ -115,7 +115,7 @@ func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
 }
 
 func TestBrokerColdHoldRaisesOnceThen503(t *testing.T) {
-	b := newBroker(newCaptureQueue())
+	b := newBroker(newCaptureQueue(), nil)
 	c := &fakeCapacity{readyAfter: 1 << 30} // never ready
 
 	const concurrent = 5
@@ -159,7 +159,7 @@ func TestBrokerColdStartServesAfterRaise(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	b := newBroker(newCaptureQueue())
+	b := newBroker(newCaptureQueue(), nil)
 	c := &fakeCapacity{target: mustURL(t, backend.URL), readyAfter: 2}
 
 	rec := httptest.NewRecorder()
@@ -174,7 +174,7 @@ func TestBrokerColdStartServesAfterRaise(t *testing.T) {
 }
 
 func TestBrokerAsyncRequiresCallback(t *testing.T) {
-	b := newBroker(newCaptureQueue())
+	b := newBroker(newCaptureQueue(), nil)
 	spec := brokerSpec()
 	spec.Callback = nil
 
@@ -187,7 +187,7 @@ func TestBrokerAsyncRequiresCallback(t *testing.T) {
 }
 
 func TestBrokerAsyncRejectsOversizedBody(t *testing.T) {
-	b := newBroker(newCaptureQueue())
+	b := newBroker(newCaptureQueue(), nil)
 
 	body := bytes.NewReader(make([]byte, maxAsyncRequestBody+1))
 	rec := httptest.NewRecorder()
@@ -206,7 +206,7 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue)
+	b := newBroker(queue, nil)
 	c := &fakeCapacity{target: mustURL(t, backend.URL)}
 
 	rec := httptest.NewRecorder()
@@ -242,7 +242,7 @@ func TestBrokerAsyncCallbackBase64ForBinaryBody(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue)
+	b := newBroker(queue, nil)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), time.Second,
@@ -269,7 +269,7 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue)
+	b := newBroker(queue, nil)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), time.Second,
@@ -286,7 +286,7 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 
 func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 	queue := newCaptureQueue()
-	b := newBroker(queue)
+	b := newBroker(queue, nil)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), 200*time.Millisecond,
@@ -305,3 +305,94 @@ func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 }
 
 func strings2reader(s string) *bytes.Reader { return bytes.NewReader([]byte(s)) }
+
+// fakeRecorder captures broker metric calls.
+type fakeRecorder struct {
+	mu     sync.Mutex
+	holds  []string
+	queue  int64
+	raises int
+	asyncs []string
+}
+
+func (f *fakeRecorder) RecordActivatorHold(_ context.Context, outcome string, _ float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holds = append(f.holds, outcome)
+}
+
+func (f *fakeRecorder) RecordActivatorQueueDelta(_ context.Context, delta int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queue += delta
+}
+
+func (f *fakeRecorder) RecordActivatorRaise(context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.raises++
+}
+
+func (f *fakeRecorder) RecordActivatorAsync(_ context.Context, result string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asyncs = append(f.asyncs, result)
+}
+
+// The broker's telemetry: a served hold and a timed-out hold record their
+// outcomes, the queue gauge returns to zero, raises are counted, and async
+// results are labelled.
+func TestBrokerRecordsTelemetry(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	rec := &fakeRecorder{}
+	b := newBroker(newCaptureQueue(), rec)
+
+	// Served (warm).
+	b.sync(httptest.NewRecorder(), newDataRequest(t, http.MethodGet, nil), "dep", "h", time.Second,
+		&fakeCapacity{target: mustURL(t, backend.URL)})
+	// Timeout (never ready) — also exercises the raise counter.
+	b.sync(httptest.NewRecorder(), newDataRequest(t, http.MethodGet, nil), "dep", "h", 150*time.Millisecond,
+		&fakeCapacity{readyAfter: 1 << 30})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.holds) != 2 || rec.holds[0] != "served" || rec.holds[1] != "timeout" {
+		t.Errorf("holds = %v, want [served timeout]", rec.holds)
+	}
+	if rec.queue != 0 {
+		t.Errorf("queue gauge = %d after all holds ended, want 0", rec.queue)
+	}
+	if rec.raises == 0 {
+		t.Error("cold hold never recorded a raise")
+	}
+}
+
+func TestBrokerRecordsAsyncResult(t *testing.T) {
+	rec := &fakeRecorder{}
+	b := newBroker(newCaptureQueue(), rec)
+
+	// Hold times out → the async response callback carries an error → failed.
+	recorder := httptest.NewRecorder()
+	b.async(recorder, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), 100*time.Millisecond,
+		&fakeCapacity{readyAfter: 1 << 30})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		n := len(rec.asyncs)
+		rec.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.asyncs) != 1 || rec.asyncs[0] != "failed" {
+		t.Errorf("asyncs = %v, want [failed]", rec.asyncs)
+	}
+}
