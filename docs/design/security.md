@@ -16,12 +16,22 @@ unlike the network-isolated jobs internal endpoint. Isolation is a first-class c
   **deployments-activator** (trusts the gateway-set `X-Revision`, so its ingress is gateway-only).
 - **Edge** — TLS per host is the gateway's `Listener` (cert-manager). Request-level filtering
   (rate-limit/auth/WAF) is out of scope for now.
-- **Secret material at rest (known gap, Phase 6)** — callback HMAC keys ride inside the spec JSON
-  on the deployment marker ConfigMap, and pool claim tokens live in pod env/annotations. Within the
-  current single-namespace model these are guarded by the same RBAC as the pods themselves (whose
-  env is equally readable), so the exposure delta is nil — but the shard-namespace split makes
-  ConfigMap-readers a broader audience than Secret-readers. Move spec storage (or at least the
-  callback key) and claim tokens into `Secret`s as part of the Phase 6 namespace work.
+- **Secret material at rest (closed, Phase 6)** — on the Kubernetes backend nothing secret rests on
+  ConfigMap/annotation surfaces anymore:
+  - the **deployment spec JSON** (carries the callback HMAC key) lives on a per-deployment `Secret`
+    `dep-{id}`; the marker ConfigMap keeps only lifecycle state (revisions/traffic mode/host) and
+    remains the identity anchor. The service and the activator read the Secret under a narrow
+    `secrets` RBAC rule.
+  - **pool claim tokens are derived, never stored**: `hex(HMAC-SHA256(installKey, podName))`, with
+    the install key in the `pool-claim-key` Secret (get-or-created on start). Warm pods still get
+    the token as sidecar env — the same exposure class as the pod's own env — but no annotation.
+  - the **pool activation-spec annotation** is written with the callback key **redacted**; the full
+    callback exists only in the in-flight request. A service restart therefore cannot deliver
+    callbacks for reconstructed activations — the already-documented at-most-once semantics.
+
+  Remaining out of scope: the **Docker backends** (single-host dev, no RBAC boundary) keep spec/
+  token material in labels, and per-activation callback keys are never persisted anywhere (by
+  design, see above).
 
 ## Workload hardening
 

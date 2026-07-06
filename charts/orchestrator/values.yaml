@@ -51,6 +51,35 @@ deployments:
   # Annotations on the deployments-service pod (the chart-level podAnnotations
   # applies only to the jobs component).
   podAnnotations: {}
+  # Hardened workload namespace: run workloads (revisions, warm pools) in a
+  # dedicated namespace instead of the release namespace, with Pod Security
+  # Admission and network isolation applied. The Gateway must allow routes
+  # from this namespace (allowedRoutes.namespaces != Same).
+  workloadNamespace:
+    enabled: false
+    # Empty = "<release namespace>-workloads".
+    name: ""
+    # Create the namespace (with the labels below). Disable if it is
+    # provisioned externally.
+    create: true
+    # Pod Security Admission enforce level label ("" = no PSA labels). The
+    # generated pods run under the hardened floor and admit cleanly at
+    # "restricted".
+    podSecurity: restricted
+    # Default-deny ingress to workload pods except from the gateway,
+    # activator, and deployments-service; egress blocks the cloud metadata
+    # endpoint. Requires an enforcing CNI — kind's default kindnet does NOT
+    # enforce NetworkPolicy.
+    networkPolicy:
+      enabled: true
+      # Namespace the gateway controller pods run in (ingress allow rule).
+      gatewayNamespace: traefik-system
+    # Per-namespace ceiling on workload consumption.
+    resourceQuota:
+      enabled: false
+      pods: 200
+      requestsCpu: "100"
+      requestsMemory: 200Gi
   # Gateway API integration: the deployments-service reconciles an HTTPRoute
   # per deployment against this Gateway (Traefik / Envoy Gateway / Istio with
   # Extended backendRef-filter support).

@@ -37,10 +37,11 @@ const (
 	revisionLabelManagedBy = "managed-by"
 	revisionManagedByValue = "deployments-service"
 	revisionLabel          = "deployment.revision"
-	// markerSpecKey is the data key on the per-deployment marker ConfigMap
-	// (named dep-{deploymentID}) holding the head revision's spec JSON —
-	// where the callback/timeout config for async requests lives.
-	markerSpecKey = "spec"
+	// specSecretKey is the data key on the per-deployment Secret (named
+	// dep-{deploymentID}) holding the head revision's spec JSON — where the
+	// callback/timeout config for async requests lives. A Secret, not the
+	// marker ConfigMap: the spec carries the callback signing key.
+	specSecretKey = "spec"
 
 	// headerRevision is set by the gateway per weighted backendRef — the
 	// activator never re-derives the traffic split. Trusted, so ingress is
@@ -382,23 +383,22 @@ func (a *RevisionActivator) probeReady(ctx context.Context, podIP string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// specFor reconstructs the deployment spec for a revision from its marker
-// ConfigMap (dep-{deploymentID}, data key "spec") — the spec's home since the
-// revision rework. Async is the cold path, so a direct GET (no informer) is
-// fine.
+// specFor reconstructs the deployment spec for a revision from its dep-{id}
+// Secret (data key "spec"). Async is the cold path, so a direct GET (no
+// informer) is fine.
 func (a *RevisionActivator) specFor(ctx context.Context, rev string) (*deployment.Request, error) {
 	deploymentID := deploymentIDOf(rev)
-	marker, err := a.client.CoreV1().ConfigMaps(a.cfg.Namespace).Get(ctx, revisionDeploymentName(deploymentID), metav1.GetOptions{})
+	secret, err := a.client.CoreV1().Secrets(a.cfg.Namespace).Get(ctx, revisionDeploymentName(deploymentID), metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	raw := marker.Data[markerSpecKey]
-	if raw == "" {
-		return nil, fmt.Errorf("marker %s missing %s data", marker.Name, markerSpecKey)
+	raw := secret.Data[specSecretKey]
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("secret %s missing %s data", secret.Name, specSecretKey)
 	}
 	var spec deployment.Request
-	if err := json.Unmarshal([]byte(raw), &spec); err != nil {
-		return nil, fmt.Errorf("marker %s has invalid %s data: %w", marker.Name, markerSpecKey, err)
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return nil, fmt.Errorf("secret %s has invalid %s data: %w", secret.Name, specSecretKey, err)
 	}
 	return &spec, nil
 }

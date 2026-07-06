@@ -32,6 +32,12 @@ type Config struct {
 	WorkerImagePullPolicy  string // applied to the workload (pool image) container; empty = kubelet default
 	RunAsUser              int64  // UID/GID for every container; default 65532
 
+	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
+	// RuntimeClass stamped on warm pods (KUBE_SANDBOX_RUNTIME_CLASSES,
+	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
+	// default. Defaults: gvisor→gvisor, kata→kata.
+	SandboxRuntimeClasses map[string]string
+
 	GatewayEnabled   bool   // reconcile per-activation HTTPRoutes; off for pre-Gateway clusters
 	GatewayName      string // parentRef Gateway name
 	GatewayNamespace string // parentRef Gateway namespace; default = Namespace
@@ -49,7 +55,11 @@ type Config struct {
 // variables, mirroring the deployments Kubernetes backend's names where the
 // concept matches. SidecarImage, ShimImage, and Pools are provided by the
 // caller.
-func LoadConfigFromEnv() Config {
+func LoadConfigFromEnv() (Config, error) {
+	sandboxClasses, err := kube.ParseSandboxRuntimeClasses(config.GetEnv("KUBE_SANDBOX_RUNTIME_CLASSES", ""))
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
 		Context:                config.GetEnv("KUBE_CONTEXT", ""),
@@ -57,6 +67,7 @@ func LoadConfigFromEnv() Config {
 		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
+		SandboxRuntimeClasses:  sandboxClasses,
 
 		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:      config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
@@ -74,7 +85,7 @@ func LoadConfigFromEnv() Config {
 			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),
 			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
 		},
-	}
+	}, nil
 }
 
 // boolEnv parses a boolean environment variable, falling back to the default
@@ -107,6 +118,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OrphanTTL <= 0 {
 		c.OrphanTTL = defaultOrphanTTL
+	}
+	if c.SandboxRuntimeClasses == nil {
+		c.SandboxRuntimeClasses, _ = kube.ParseSandboxRuntimeClasses("")
 	}
 	if c.LeaderElection.Enabled {
 		c.LeaderElection.ApplyDefaults(defaultLeaderLeaseName)

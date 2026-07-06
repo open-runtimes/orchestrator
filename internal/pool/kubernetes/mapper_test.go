@@ -3,7 +3,6 @@ package kubernetes
 import (
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
-	"regexp"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,10 +27,10 @@ func testConfig() Config {
 
 func TestBuildWarmPod_Shape(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(testPool(), testConfig(), "aabbccdd")
+	warm := buildWarmPod(testPool(), testConfig(), "pool-std-aabbc", "aabbccdd")
 
-	if warm.GenerateName != "pool-std-" || warm.Name != "" {
-		t.Errorf("want GenerateName pool-std-, got %q/%q", warm.GenerateName, warm.Name)
+	if warm.Name != "pool-std-aabbc" {
+		t.Errorf("want the caller-chosen name (the claim token derives from it), got %q", warm.Name)
 	}
 	if warm.Labels[LabelManagedBy] != ManagedByValue || warm.Labels[LabelPoolID] != "std" {
 		t.Errorf("labels: got %v", warm.Labels)
@@ -39,8 +38,8 @@ func TestBuildWarmPod_Shape(t *testing.T) {
 	if warm.Labels[LabelActivation] != "" {
 		t.Error("a warm pod must not carry an activation label")
 	}
-	if warm.Annotations[AnnotationClaimToken] != "aabbccdd" {
-		t.Errorf("claim token annotation: got %v", warm.Annotations)
+	if len(warm.Annotations) != 0 {
+		t.Errorf("a warm pod must carry no annotations (tokens are derived, never stored): got %v", warm.Annotations)
 	}
 	if warm.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Errorf("restart policy: want Never, got %s", warm.Spec.RestartPolicy)
@@ -111,7 +110,7 @@ func TestBuildWarmPod_Shape(t *testing.T) {
 
 func TestBuildWarmPod_Resources(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(testPool(), testConfig(), "tok")
+	warm := buildWarmPod(testPool(), testConfig(), "pool-std-x", "tok")
 	res := warm.Spec.Containers[0].Resources
 
 	if got := res.Requests.Cpu().MilliValue(); got != 500 {
@@ -126,7 +125,7 @@ func TestBuildWarmPod_Resources(t *testing.T) {
 	}
 
 	// A bare pool keeps no workload resources at all.
-	bare := buildWarmPod(&pool.Pool{ID: "bare", Image: "img"}, testConfig(), "tok")
+	bare := buildWarmPod(&pool.Pool{ID: "bare", Image: "img"}, testConfig(), "pool-bare-x", "tok")
 	bareRes := bare.Spec.Containers[0].Resources
 	if len(bareRes.Requests) != 0 || len(bareRes.Limits) != 0 {
 		t.Errorf("bare pool resources: got %+v", bareRes)
@@ -135,7 +134,7 @@ func TestBuildWarmPod_Resources(t *testing.T) {
 
 func TestBuildWarmPod_SecurityFloor(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(testPool(), testConfig(), "tok")
+	warm := buildWarmPod(testPool(), testConfig(), "pool-std-x", "tok")
 	containers := append(warm.Spec.InitContainers, warm.Spec.Containers...)
 	for _, c := range containers {
 		sc := c.SecurityContext
@@ -157,20 +156,5 @@ func TestBuildWarmPod_SecurityFloor(t *testing.T) {
 		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 			t.Errorf("%s: want read-only rootfs", c.Name)
 		}
-	}
-}
-
-func TestMintClaimToken(t *testing.T) {
-	t.Parallel()
-	token, err := mintClaimToken()
-	if err != nil {
-		t.Fatalf("mintClaimToken: %v", err)
-	}
-	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(token) {
-		t.Errorf("want 32 hex chars, got %q", token)
-	}
-	second, _ := mintClaimToken()
-	if token == second {
-		t.Error("tokens must be random per pod")
 	}
 }

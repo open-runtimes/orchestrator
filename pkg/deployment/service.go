@@ -255,6 +255,10 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("image", "image is required")
 	}
 
+	if !ValidSandbox(req.Sandbox) {
+		return apperrors.Validation("sandbox", fmt.Sprintf("sandbox must be one of %q, %q, %q", SandboxRunc, SandboxGvisor, SandboxKata))
+	}
+
 	if req.Port <= 0 || req.Port > 65535 {
 		return apperrors.Validation("port", "port must be between 1 and 65535")
 	}

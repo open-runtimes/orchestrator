@@ -48,7 +48,7 @@ spec:
             - name: JOB_SIDECAR_IMAGE
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
+              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
             - name: KUBE_GATEWAY_ENABLED
               value: {{ .Values.deployments.gateway.enabled | quote }}
             - name: KUBE_GATEWAY_NAME
@@ -147,7 +147,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 rules:
@@ -170,6 +170,12 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Secret material at rest (docs/design/security.md): per-deployment spec
+  # Secrets (dep-{id}, carrying callback signing keys) and the pool-claim-key
+  # install key that claim tokens derive from.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "delete"]
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -191,13 +197,43 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "orchestrator.deploymentsName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Sandbox tiers (docs/design/security.md): the service validates a workload's
+# RuntimeClass exists before minting revisions / replenishing pools.
+# RuntimeClasses are cluster-scoped, so this is the service's one
+# cluster-scoped grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-cluster
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-cluster
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "orchestrator.deploymentsName" . }}-cluster
 subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.deploymentsName" . }}

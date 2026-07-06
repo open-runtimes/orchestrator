@@ -44,7 +44,10 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("POOL_ACTIVATION_RETENTION", "5m")
 	t.Setenv("POOL_ORPHAN_TTL", "90s")
 
-	cfg := LoadConfigFromEnv()
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("LoadConfigFromEnv: %v", err)
+	}
 	if cfg.Namespace != "pools-ns" || cfg.RunAsUser != 1000 {
 		t.Errorf("namespace/uid: got %s/%d", cfg.Namespace, cfg.RunAsUser)
 	}

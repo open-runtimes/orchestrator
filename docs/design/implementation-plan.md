@@ -131,11 +131,26 @@ pressure demands — the claim protocol doesn't touch the gateway until HTTP-mod
 
 ## Phase 6 — production hardening (K8s, cross-cutting)
 
-Everything [security](security.md)/[resource-model](resource-model.md) defer beyond the pod floor:
-shard namespaces + least-loaded assignment, `ClusterwideNetworkPolicy` (incl. metadata-endpoint
-block), PSA `restricted` labels, `gvisor`/`kata` RuntimeClass validation + per-runtime pools,
-`ResourceQuota`, revision-GC pressure testing toward the scale table. Gated on real deployment
-targets; not a blocker for 1–5.
+**Shipped** (the environment-verifiable slice):
+- **Secret material at rest** — deployment specs (with callback HMAC keys) live in a `Secret`
+  per deployment; pool claim tokens are HMAC-derived from one install key, stored nowhere;
+  activation-spec annotations carry no keys. (Docker dev backend exempt — no RBAC boundary.)
+- **Sandbox tiers** — `sandbox: runc|gvisor|kata` on deployments and pools, mapped to operator-
+  configured `RuntimeClass`es (existence-validated at Apply/Start), stamped onto workload pods.
+- **Hardened workload namespace** (`deployments.workloadNamespace`) — a dedicated namespace with
+  PSA `restricted` labels (the pod floor admits cleanly), namespaced `NetworkPolicy`
+  (gateway/activator/service-only ingress; egress blocks `169.254.169.254`), optional
+  `ResourceQuota`.
+
+**Still gated on real deployment targets:**
+- Shard namespaces + least-loaded assignment and control-plane sharding — a ~10k-deployment
+  scale lever; premature before a real multi-tenant install.
+- `gvisor`/`kata` live validation + per-runtime node pools — needs nested-virt/bare-metal nodes.
+- `ClusterwideNetworkPolicy` (Cilium/Calico) — the namespaced policy is the portable fallback;
+  the cluster-wide variant is CNI-specific.
+- Informer-backed marker/spec reads (perf), revision-GC pressure testing toward the scale table,
+  Envoy Gateway conformance smoke, Traefik Retry middleware for the pod-loss blip, and an
+  in-cluster test runner for the gateway→activator async path and pool claim tests.
 
 ## Risks & checkpoints
 

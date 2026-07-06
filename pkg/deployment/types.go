@@ -13,6 +13,7 @@ type Request struct {
 	ID          string              `json:"id"` // RFC-1123 label (≤63); part of object names
 	Meta        map[string]string   `json:"meta,omitempty"`
 	Image       string              `json:"image"`
+	Sandbox     string              `json:"sandbox,omitempty"` // RuntimeClass tier: runc (default) | gvisor | kata (K8s only)
 	Command     string              `json:"command,omitempty"`
 	CPU         float64             `json:"cpu"`    // limit (cores)
 	Memory      int                 `json:"memory"` // limit (MB)
@@ -65,6 +66,19 @@ type Callback struct {
 	Key    string   `json:"key,omitempty"` // HMAC signing key
 }
 
+// Sandbox tiers (docs/design/security.md): the RuntimeClass isolation level
+// for the workload pod. Kubernetes only; the empty string means runc.
+const (
+	SandboxRunc   = "runc" // default: shared host kernel, hardening floor only
+	SandboxGvisor = "gvisor"
+	SandboxKata   = "kata"
+)
+
+// ValidSandbox reports whether s names a sandbox tier ("" = runc default).
+func ValidSandbox(s string) bool {
+	return s == "" || s == SandboxRunc || s == SandboxGvisor || s == SandboxKata
+}
+
 // Deployment states.
 const (
 	StatePending  = "pending"
@@ -85,8 +99,8 @@ type Target struct {
 // StatusResponse is the API view of a deployment.
 type StatusResponse struct {
 	ID                string   `json:"id"`
-	State             string   `json:"status"` // pending|ready|idle|degraded|failed|deleting
-	URL               string   `json:"url"`    // gateway URL (K8s) / activator URL (Docker)
+	State             string   `json:"status"`              // pending|ready|idle|degraded|failed|deleting
+	URL               string   `json:"url"`                 // gateway URL (K8s) / activator URL (Docker)
 	Revisions         []string `json:"revisions,omitempty"` // newest first; empty on Docker (single-revision)
 	Traffic           []Target `json:"traffic,omitempty"`
 	DesiredReplicas   int      `json:"desiredReplicas"`
@@ -104,6 +118,7 @@ type requestJSON struct {
 	ID          string            `json:"id"`
 	Meta        map[string]string `json:"meta,omitempty"`
 	Image       string            `json:"image"`
+	Sandbox     string            `json:"sandbox,omitempty"`
 	Command     string            `json:"command,omitempty"`
 	CPU         float64           `json:"cpu"`
 	Memory      int               `json:"memory"`
@@ -132,6 +147,7 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	r.ID = raw.ID
 	r.Meta = raw.Meta
 	r.Image = raw.Image
+	r.Sandbox = raw.Sandbox
 	r.Command = raw.Command
 	r.CPU = raw.CPU
 	r.Memory = raw.Memory
@@ -164,6 +180,7 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		ID:          r.ID,
 		Meta:        r.Meta,
 		Image:       r.Image,
+		Sandbox:     r.Sandbox,
 		Command:     r.Command,
 		CPU:         r.CPU,
 		Memory:      r.Memory,

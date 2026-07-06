@@ -95,6 +95,7 @@ func setup(t *testing.T) (*Orchestrator, func()) {
 		_ = o.client.AppsV1().Deployments(testNamespace).DeleteCollection(
 			ctx, metav1.DeleteOptions{PropagationPolicy: &prop}, managed)
 		_ = o.client.CoreV1().ConfigMaps(testNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, managed)
+		_ = o.client.CoreV1().Secrets(testNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, managed)
 		// Services and HTTPRoutes don't support DeleteCollection; one by one.
 		if svcs, err := o.client.CoreV1().Services(testNamespace).List(ctx, managed); err == nil {
 			for i := range svcs.Items {

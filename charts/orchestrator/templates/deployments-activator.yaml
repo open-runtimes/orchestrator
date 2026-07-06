@@ -32,7 +32,7 @@ spec:
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ .Release.Namespace | quote }}
+              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
           readinessProbe:
@@ -78,7 +78,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}-activator
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
 rules:
@@ -91,16 +91,17 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     verbs: ["get", "update", "patch"]
-  # Async requests read the deployment's callback config off its marker.
+  # Async requests read the deployment's callback config off its dep-{id}
+  # spec Secret (secret material never rests on ConfigMaps).
   - apiGroups: [""]
-    resources: ["configmaps"]
+    resources: ["secrets"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}-activator
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
 roleRef:

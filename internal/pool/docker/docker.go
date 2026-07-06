@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/proxy"
+	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
 	"slices"
 	"strconv"
@@ -90,8 +91,14 @@ type Orchestrator struct {
 	loopDone   chan struct{}
 }
 
-// NewOrchestrator creates a Docker pool orchestrator.
+// NewOrchestrator creates a Docker pool orchestrator. Sandbox tiers need a
+// RuntimeClass, so any non-runc pool is rejected up front.
 func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
+	for i := range cfg.Pools {
+		if s := cfg.Pools[i].Sandbox; s != "" && s != deployment.SandboxRunc {
+			return nil, apperrors.Validation("sandbox", fmt.Sprintf("pool %q: sandbox tiers require the Kubernetes backend", cfg.Pools[i].ID))
+		}
+	}
 	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)

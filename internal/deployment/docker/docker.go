@@ -65,6 +65,9 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // stays idle; any change tears down the containers and volume and recreates
 // everything, re-running artifacts.
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error {
+	if req.Sandbox != "" && req.Sandbox != deployment.SandboxRunc {
+		return apperrors.Validation("sandbox", "sandbox tiers require the Kubernetes backend")
+	}
 	spec, err := json.Marshal(req)
 	if err != nil {
 		return apperrors.Internal("docker.marshalSpec", err)

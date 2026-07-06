@@ -18,7 +18,8 @@ import (
 type Pool struct {
 	ID          string             `json:"id"`
 	Image       string             `json:"image"`
-	Size        int                `json:"size"` // warm pods kept ready
+	Sandbox     string             `json:"sandbox,omitempty"` // RuntimeClass tier: runc (default) | gvisor | kata (K8s only). A pool dimension — warm pods are runtime-fixed at creation, so warm fleets are keyed by (image, sandbox).
+	Size        int                `json:"size"`              // warm pods kept ready
 	CPU         float64            `json:"cpu"`
 	Memory      int                `json:"memory"`
 	Port        int                `json:"port,omitempty"` // >0: HTTP pool (activations serve on it); 0: exec pool (run to completion)
@@ -69,6 +70,10 @@ func LoadPools(raw string) ([]Pool, error) {
 		}
 		if p.Burst != BurstReject && p.Burst != BurstCold {
 			return nil, fmt.Errorf("pool %q: burst must be %q or %q", p.ID, BurstReject, BurstCold)
+		}
+		if !deployment.ValidSandbox(p.Sandbox) {
+			return nil, fmt.Errorf("pool %q: sandbox must be one of %q, %q, %q",
+				p.ID, deployment.SandboxRunc, deployment.SandboxGvisor, deployment.SandboxKata)
 		}
 	}
 	return pools, nil

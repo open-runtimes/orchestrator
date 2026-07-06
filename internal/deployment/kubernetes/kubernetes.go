@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/deployment/endpointflip"
@@ -99,6 +100,9 @@ func (o *Orchestrator) RunLeaderElected(ctx context.Context, run func(context.Co
 //     rollout reconciler auto-cuts once the new revision reports ready
 //     (unless traffic was pinned manually).
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error {
+	if err := o.checkRuntimeClass(ctx, req.Sandbox); err != nil {
+		return err
+	}
 	specJSON, err := json.Marshal(req)
 	if err != nil {
 		return apperrors.Internal("kubernetes.marshalSpec", err)
@@ -110,15 +114,39 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error
 		return o.createFirstRevision(ctx, req, string(specJSON))
 	case err != nil:
 		return err
-	case m.Spec == string(specJSON):
+	}
+	stored, err := o.getSpecJSON(ctx, req.ID)
+	if err != nil && !errors.Is(err, errSpecMissing) {
+		return err
+	}
+	if err == nil && stored == string(specJSON) {
 		// Identical spec — ensure the head revision's objects still exist.
 		if err := o.ensureRevisionObjects(ctx, req, m.LatestRevision); err != nil {
 			return err
 		}
 		return o.ensureRoute(ctx, m, fallbackTargets(m))
-	default:
-		return o.mintNextRevision(ctx, req, m, string(specJSON))
 	}
+	// Changed spec — or a marker whose spec Secret is gone, healed by minting
+	// a fresh head so the stored spec always describes latestRevision.
+	return o.mintNextRevision(ctx, req, m, string(specJSON))
+}
+
+// checkRuntimeClass verifies the sandbox tier's RuntimeClass is installed
+// before any revision is minted — a missing class would otherwise strand the
+// revision's pods Pending.
+func (o *Orchestrator) checkRuntimeClass(ctx context.Context, sandbox string) error {
+	rc := kube.RuntimeClassFor(o.cfg.SandboxRuntimeClasses, sandbox)
+	if rc == "" {
+		return nil
+	}
+	_, err := o.client.NodeV1().RuntimeClasses().Get(ctx, rc, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return apperrors.Validation("sandbox", fmt.Sprintf("RuntimeClass %q (sandbox %q) is not installed", rc, sandbox))
+	}
+	if err != nil {
+		return apperrors.Internal("kubernetes.getRuntimeClass", err)
+	}
+	return nil
 }
 
 // createFirstRevision brings a brand-new deployment up: marker, revision
@@ -129,11 +157,13 @@ func (o *Orchestrator) createFirstRevision(ctx context.Context, req *deployment.
 	m := marker{
 		ID:             req.ID,
 		Host:           req.Host,
-		Spec:           specJSON,
 		LatestRevision: rev,
 		TrafficMode:    trafficModeAuto,
 	}
 	if err := o.createMarker(ctx, m); err != nil {
+		return err
+	}
+	if err := o.writeSpecJSON(ctx, req.ID, specJSON); err != nil {
 		return err
 	}
 	if err := o.ensureRevisionObjects(ctx, req, rev); err != nil {
@@ -149,8 +179,10 @@ func (o *Orchestrator) mintNextRevision(ctx context.Context, req *deployment.Req
 	if err := o.ensureRevisionObjects(ctx, req, rev); err != nil {
 		return err
 	}
+	if err := o.writeSpecJSON(ctx, req.ID, specJSON); err != nil {
+		return err
+	}
 	if err := o.updateMarker(ctx, req.ID, func(m *marker) {
-		m.Spec = specJSON
 		m.LatestRevision = rev
 		m.Host = req.Host
 	}); err != nil {
@@ -256,6 +288,9 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 			return err
 		}
 	}
+	if err := o.deleteSpecSecret(ctx, id); err != nil {
+		return err
+	}
 	err = o.client.CoreV1().ConfigMaps(o.namespace).Delete(ctx, objectNameFor(id), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return apperrors.Internal("kubernetes.deleteMarker", err)
@@ -284,14 +319,23 @@ func (o *Orchestrator) deleteRevisionObjects(ctx context.Context, rev string) er
 	return nil
 }
 
-// Spec reconstructs the head revision's request from the marker.
+// Spec reconstructs the head revision's request from the dep-{id} spec
+// Secret. No marker is NotFound; a marker whose Secret is gone is a clear
+// Internal error (the next Apply heals it).
 func (o *Orchestrator) Spec(ctx context.Context, id string) (*deployment.Request, error) {
-	m, err := o.getMarker(ctx, id)
+	if _, err := o.getMarker(ctx, id); err != nil {
+		return nil, err
+	}
+	specJSON, err := o.getSpecJSON(ctx, id)
+	if errors.Is(err, errSpecMissing) {
+		return nil, apperrors.Internal("kubernetes.getSpecSecret",
+			fmt.Errorf("deployment %s exists but its spec Secret %s is missing; re-Apply to heal", id, objectNameFor(id)))
+	}
 	if err != nil {
 		return nil, err
 	}
 	var req deployment.Request
-	if err := json.Unmarshal([]byte(m.Spec), &req); err != nil {
+	if err := json.Unmarshal([]byte(specJSON), &req); err != nil {
 		return nil, apperrors.Internal("kubernetes.unmarshalSpec", err)
 	}
 	return &req, nil

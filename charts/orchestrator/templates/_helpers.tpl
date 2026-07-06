@@ -57,6 +57,19 @@
 {{- end -}}
 {{- end -}}
 
+{{/*
+  deploymentsWorkloadNamespace: where workload pods (revisions, warm pools),
+  their markers/routes, and the leader leases live. The release namespace
+  unless the hardened workload namespace is enabled.
+*/}}
+{{- define "orchestrator.deploymentsWorkloadNamespace" -}}
+{{- if .Values.deployments.workloadNamespace.enabled -}}
+{{- default (printf "%s-workloads" .Release.Namespace) .Values.deployments.workloadNamespace.name -}}
+{{- else -}}
+{{- .Release.Namespace -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.poolShimImage" -}}
 {{- if .Values.deployments.shimImage.ref -}}
 {{- .Values.deployments.shimImage.ref -}}

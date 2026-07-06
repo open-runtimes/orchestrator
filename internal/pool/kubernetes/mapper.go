@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"maps"
 	"math"
+	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
 	"slices"
@@ -22,11 +23,10 @@ const (
 	LabelActivation = "pool.activation"
 	ManagedByValue  = "deployments-service"
 
-	// AnnotationClaimToken carries the per-pod claim bearer token. The
-	// service is stateless: it re-reads the token from the pod to claim it.
-	AnnotationClaimToken = "pool.claim-token"
 	// AnnotationActivationSpec carries the accepted pool.Activation JSON on
-	// claimed pods — the Status reconstruction source.
+	// claimed pods — the Status reconstruction source. The callback signing
+	// key is stripped before writing (see bindPod); claim tokens are derived,
+	// never annotated (see token.go).
 	AnnotationActivationSpec = "pool.activation-spec"
 
 	ContainerShimInstall = "shim-install"
@@ -63,11 +63,6 @@ func activationLabels(poolID, activationID string) map[string]string {
 	}
 }
 
-// mintClaimToken generates the random 32-hex per-pod claim bearer token.
-func mintClaimToken() (string, error) {
-	return randHex(16)
-}
-
 // randHex returns n random bytes hex-encoded (2n characters, RFC-1123 safe).
 func randHex(n int) (string, error) {
 	b := make([]byte, n)
@@ -77,8 +72,9 @@ func randHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// buildWarmPod maps a pool onto one warm pod, named pool-{id}-{suffix} via
-// GenerateName. All containers share an emptyDir workspace:
+// buildWarmPod maps a pool onto one warm pod, named pool-{id}-{suffix} (the
+// name is chosen by the caller — the claim token derives from it). All
+// containers share an emptyDir workspace:
 //
 //   - initContainer "shim-install": copies the pool-shim binary into the
 //     workspace (the pool image is the user's runtime and has no shim), exits;
@@ -91,13 +87,12 @@ func randHex(n int) (string, error) {
 //
 // RestartPolicy Never: when the exec'd workload exits, the pod completes and
 // the kubelet SIGTERMs the sidecar — the pod is discarded, never reused.
-func buildWarmPod(p *pool.Pool, cfg Config, token string) *corev1.Pod {
+func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 	autoMount := false
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "pool-" + p.ID + "-",
-			Labels:       poolLabels(p.ID),
-			Annotations:  map[string]string{AnnotationClaimToken: token},
+			Name:   name,
+			Labels: poolLabels(p.ID),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyNever,
@@ -110,6 +105,16 @@ func buildWarmPod(p *pool.Pool, cfg Config, token string) *corev1.Pod {
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
+	// Sandbox tier (docs/design/security.md): a POOL dimension — warm pods
+	// are runtime-fixed at creation, so warm fleets are keyed by (image,
+	// sandbox). gvisor/kata stamp their mapped RuntimeClass; runc (the
+	// default) stamps nothing. NOTE: replenishment only tops counts up — it
+	// does not replace existing warm pods on config drift, so a sandbox
+	// change applies to newly created pods only.
+	if rc := kube.RuntimeClassFor(cfg.SandboxRuntimeClasses, p.Sandbox); rc != "" {
+		pod.Spec.RuntimeClassName = &rc
+	}
+	return pod
 }
 
 // shimInstallContainer copies the shim binary into the shared workspace

@@ -5,6 +5,7 @@ import (
 	"math"
 	"net"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"slices"
@@ -128,7 +129,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 	}
 	initContainers = append(initContainers, proxyContainer(req, cfg))
 
-	return corev1.PodSpec{
+	spec := corev1.PodSpec{
 		ServiceAccountName:           cfg.ServiceAccount,
 		AutomountServiceAccountToken: &autoMount,
 		Volumes: []corev1.Volume{
@@ -149,6 +150,12 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 			},
 		}},
 	}
+	// Sandbox tier (docs/design/security.md): gvisor/kata stamp their mapped
+	// RuntimeClass; runc (the default) stamps nothing.
+	if rc := kube.RuntimeClassFor(cfg.SandboxRuntimeClasses, req.Sandbox); rc != "" {
+		spec.RuntimeClassName = &rc
+	}
+	return spec
 }
 
 // artifactPreContainer materializes the request's artifacts into the shared

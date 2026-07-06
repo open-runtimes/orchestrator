@@ -174,7 +174,10 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 		cfg.Pools = pools
 		return pooldocker.NewOrchestrator(ctx, cfg)
 	case "kubernetes":
-		cfg := poolkubernetes.LoadConfigFromEnv()
+		cfg, err := poolkubernetes.LoadConfigFromEnv()
+		if err != nil {
+			return nil, err
+		}
 		cfg.SidecarImage = sidecarImage
 		cfg.ShimImage = shimImage
 		cfg.Pools = pools
@@ -191,7 +194,10 @@ func buildOrchestrator(ctx context.Context, backend, sidecarImage string) (deplo
 		cfg.SidecarImage = sidecarImage
 		return depdocker.NewOrchestrator(ctx, cfg)
 	case "kubernetes":
-		cfg := depkubernetes.LoadConfigFromEnv()
+		cfg, err := depkubernetes.LoadConfigFromEnv()
+		if err != nil {
+			return nil, err
+		}
 		cfg.SidecarImage = sidecarImage
 		return depkubernetes.NewOrchestrator(ctx, cfg)
 	default:

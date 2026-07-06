@@ -31,6 +31,12 @@ type Config struct {
 	RunAsUser              int64   // UID/GID for every container; default 65532
 	CPUOvercommit          float64 // divisor deriving the worker's cpu request from its declared limit; ≤0 means 1 (no overcommit)
 
+	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
+	// RuntimeClass stamped on workload pods (KUBE_SANDBOX_RUNTIME_CLASSES,
+	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
+	// default. Defaults: gvisor→gvisor, kata→kata.
+	SandboxRuntimeClasses map[string]string
+
 	GatewayEnabled       bool   // reconcile HTTPRoutes + the cold endpoint flip; off for pre-Gateway clusters
 	GatewayName          string // parentRef Gateway name
 	GatewayNamespace     string // parentRef Gateway namespace; default = Namespace
@@ -47,7 +53,11 @@ type Config struct {
 // LoadConfigFromEnv loads orchestrator configuration from environment
 // variables, mirroring the jobs Kubernetes backend's names where the concept
 // matches. SidecarImage is provided by the caller.
-func LoadConfigFromEnv() Config {
+func LoadConfigFromEnv() (Config, error) {
+	sandboxClasses, err := kube.ParseSandboxRuntimeClasses(config.GetEnv("KUBE_SANDBOX_RUNTIME_CLASSES", ""))
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		JobSidecarImage:        config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
@@ -58,6 +68,7 @@ func LoadConfigFromEnv() Config {
 		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
 		CPUOvercommit:          floatEnv("KUBE_CPU_OVERCOMMIT", 1),
+		SandboxRuntimeClasses:  sandboxClasses,
 
 		GatewayEnabled:       boolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:          config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
@@ -75,7 +86,7 @@ func LoadConfigFromEnv() Config {
 			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),
 			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
 		},
-	}
+	}, nil
 }
 
 // boolEnv parses a boolean environment variable, falling back to the default
@@ -123,6 +134,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CPUOvercommit <= 0 {
 		c.CPUOvercommit = 1
+	}
+	if c.SandboxRuntimeClasses == nil {
+		c.SandboxRuntimeClasses, _ = kube.ParseSandboxRuntimeClasses("")
 	}
 	if c.LeaderElection.Enabled {
 		c.LeaderElection.ApplyDefaults(defaultLeaderLeaseName)

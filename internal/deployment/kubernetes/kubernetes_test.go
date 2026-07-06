@@ -107,6 +107,16 @@ func getMarkerData(t *testing.T, o *Orchestrator, id string) marker {
 	return m
 }
 
+// getStoredSpec returns the head spec JSON off the dep-{id} Secret.
+func getStoredSpec(t *testing.T, o *Orchestrator, id string) string {
+	t.Helper()
+	spec, err := o.getSpecJSON(t.Context(), id)
+	if err != nil {
+		t.Fatalf("getSpecJSON(%s): %v", id, err)
+	}
+	return spec
+}
+
 // getRoute fetches the deployment's HTTPRoute.
 func getRoute(t *testing.T, o *Orchestrator, id string) *gatewayv1.HTTPRoute {
 	t.Helper()
@@ -167,11 +177,28 @@ func TestApply_FirstMintsRevision00001(t *testing.T) {
 	if m.TrafficMode != trafficModeAuto {
 		t.Errorf("trafficMode: want auto, got %s", m.TrafficMode)
 	}
-	if m.Spec != mustSpecJSON(t, req) {
-		t.Errorf("marker spec mismatch: %s", m.Spec)
-	}
 	if m.Host != "web.example.com" {
 		t.Errorf("marker host: got %s", m.Host)
+	}
+
+	// The spec lives on the dep-{id} Secret (it carries callback keys), with
+	// the managed-by + deployment.id labels, never on the marker ConfigMap.
+	secret, err := cs.CoreV1().Secrets("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected spec Secret: %v", err)
+	}
+	if string(secret.Data[specSecretKey]) != mustSpecJSON(t, req) {
+		t.Errorf("spec secret mismatch: %s", secret.Data[specSecretKey])
+	}
+	if secret.Labels[LabelManagedBy] != ManagedByValue || secret.Labels[LabelDeploymentID] != "web" {
+		t.Errorf("spec secret labels: got %v", secret.Labels)
+	}
+	cm, err := cs.CoreV1().ConfigMaps("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected marker ConfigMap: %v", err)
+	}
+	if _, ok := cm.Data["spec"]; ok {
+		t.Error("marker ConfigMap must not carry the spec (secret material)")
 	}
 
 	if _, err := cs.AppsV1().Deployments("orchestrator").Get(t.Context(), "dep-web-00001", metav1.GetOptions{}); err != nil {
@@ -201,9 +228,34 @@ func TestApply_IdenticalSpecIsNoOp(t *testing.T) {
 	if n := countActions(cs, "update", "deployments"); n != 0 {
 		t.Errorf("identical spec must not update any Deployment, got %d updates", n)
 	}
+	// The compare runs against the spec Secret and must not rewrite it.
+	if n := countActions(cs, "update", "secrets"); n != 0 {
+		t.Errorf("identical spec must not rewrite the spec Secret, got %d updates", n)
+	}
 	m := getMarkerData(t, o, "web")
 	if m.LatestRevision != "web-00001" {
 		t.Errorf("identical spec must not mint a revision, got %s", m.LatestRevision)
+	}
+}
+
+func TestApply_MissingSpecSecretHealsByMinting(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	req := testRequest()
+	mustApply(t, o, req)
+
+	if err := cs.CoreV1().Secrets("orchestrator").Delete(t.Context(), "dep-web", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete spec secret: %v", err)
+	}
+
+	// Marker present, secret gone: Apply heals by minting a fresh head, so
+	// the stored spec always describes latestRevision.
+	mustApply(t, o, req)
+	if got := getStoredSpec(t, o, "web"); got != mustSpecJSON(t, req) {
+		t.Errorf("spec secret not recreated: %s", got)
+	}
+	if m := getMarkerData(t, o, "web"); m.LatestRevision != "web-00002" {
+		t.Errorf("heal must mint the next revision, got %s", m.LatestRevision)
 	}
 }
 
@@ -220,8 +272,8 @@ func TestApply_ChangedSpecMintsNextRevisionTrafficUntouched(t *testing.T) {
 	if m.LatestRevision != "web-00002" {
 		t.Fatalf("latestRevision: want web-00002, got %s", m.LatestRevision)
 	}
-	if m.Spec != mustSpecJSON(t, changed) {
-		t.Error("marker spec not replaced on mint")
+	if getStoredSpec(t, o, "web") != mustSpecJSON(t, changed) {
+		t.Error("spec secret not replaced on mint")
 	}
 	if m.LastReady != "" {
 		t.Errorf("lastReady must be untouched by Apply, got %s", m.LastReady)
@@ -310,6 +362,9 @@ func TestDelete_FullTeardown(t *testing.T) {
 	if _, err := cs.CoreV1().ConfigMaps("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Errorf("expected marker deleted, got err=%v", err)
 	}
+	if _, err := cs.CoreV1().Secrets("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("expected spec secret deleted, got err=%v", err)
+	}
 	if _, err := o.gateway.GatewayV1().HTTPRoutes("orchestrator").Get(t.Context(), "dep-web", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Errorf("expected HTTPRoute deleted, got err=%v", err)
 	}
@@ -343,6 +398,25 @@ func TestSpec_NotFound(t *testing.T) {
 	o, _ := newTestOrchestrator(t)
 	if _, err := o.Spec(t.Context(), "ghost"); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Errorf("want NotFound, got %v", err)
+	}
+}
+
+func TestSpec_MissingSecretIsInternalNotNotFound(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	mustApply(t, o, testRequest())
+	if err := cs.CoreV1().Secrets("orchestrator").Delete(t.Context(), "dep-web", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete spec secret: %v", err)
+	}
+
+	// The marker (identity anchor) exists, so this is corruption — a clear
+	// Internal error naming the missing Secret, never NotFound.
+	_, err := o.Spec(t.Context(), "web")
+	if err == nil || errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("want an Internal error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "dep-web") {
+		t.Errorf("error should name the missing Secret: %v", err)
 	}
 }
 

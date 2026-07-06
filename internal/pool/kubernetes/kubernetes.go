@@ -18,6 +18,7 @@ import (
 	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +52,11 @@ type Orchestrator struct {
 	pools     map[string]*pool.Pool // by ID, pointing into cfg.Pools
 	claims    claimClient
 	stop      context.CancelFunc
+
+	// installKey is the HMAC key claim tokens derive from (token.go),
+	// get-or-created as the pool-claim-key Secret and cached here.
+	keyMu      sync.Mutex
+	installKey []byte
 
 	// Polling knobs, shrunk by unit tests.
 	poll      time.Duration
@@ -96,6 +102,12 @@ func wireOrchestrator(cs kubernetes.Interface, gw gatewayclient.Interface, cfg C
 // restart reconstructs), then launches the leader-elected control loop:
 // replenishment, poison/orphan GC, idle teardown, and retention GC.
 func (o *Orchestrator) Start(ctx context.Context) error {
+	if err := o.checkRuntimeClasses(ctx); err != nil {
+		return err
+	}
+	if _, err := o.claimKey(ctx); err != nil {
+		return err
+	}
 	statuses, err := o.Pools(ctx)
 	if err != nil {
 		return err
@@ -106,6 +118,27 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	o.stop = cancel
 	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runControl, nil)
+	return nil
+}
+
+// checkRuntimeClasses verifies every pool's sandbox RuntimeClass is installed
+// — a pool's sandbox is operator config, so a missing class fails Start
+// loudly instead of stranding warm pods Pending.
+func (o *Orchestrator) checkRuntimeClasses(ctx context.Context) error {
+	for i := range o.cfg.Pools {
+		p := &o.cfg.Pools[i]
+		rc := kube.RuntimeClassFor(o.cfg.SandboxRuntimeClasses, p.Sandbox)
+		if rc == "" {
+			continue
+		}
+		_, err := o.client.NodeV1().RuntimeClasses().Get(ctx, rc, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("pool %q: RuntimeClass %q (sandbox %q) is not installed", p.ID, rc, p.Sandbox)
+		}
+		if err != nil {
+			return apperrors.Internal("kubernetes.getRuntimeClass", err)
+		}
+	}
 	return nil
 }
 
@@ -171,9 +204,15 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 }
 
 // claimWarmPod finds a free warm pod and wins it via the sidecar claim POST
-// — the pod is the serialization point, so the service stays stateless. With
-// no free pod the pool's burst policy decides: reject (429) or cold-create.
+// — the pod is the serialization point, so the service stays stateless. The
+// bearer token is derived from the pod name (token.go), not stored anywhere.
+// With no free pod the pool's burst policy decides: reject (429) or
+// cold-create.
 func (o *Orchestrator) claimWarmPod(ctx context.Context, p *pool.Pool, act *pool.Activation) (*corev1.Pod, error) {
+	key, err := o.claimKey(ctx)
+	if err != nil {
+		return nil, err
+	}
 	pods, err := o.poolPods(ctx, p.ID)
 	if err != nil {
 		return nil, err
@@ -184,7 +223,7 @@ func (o *Orchestrator) claimWarmPod(ctx context.Context, p *pool.Pool, act *pool
 		if !claimable(pod) {
 			continue
 		}
-		err := o.claims.Claim(ctx, pod.Status.PodIP, pod.Annotations[AnnotationClaimToken], req)
+		err := o.claims.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req)
 		switch {
 		case err == nil:
 			return pod, nil
@@ -228,6 +267,10 @@ func claimRequest(p *pool.Pool, act *pool.Activation) *proxy.ClaimRequest {
 // warm-ready (bounded), claim it. A pod that never warms is deleted so the
 // burst does not leak capacity beyond the pool size.
 func (o *Orchestrator) coldClaim(ctx context.Context, p *pool.Pool, req *proxy.ClaimRequest) (*corev1.Pod, error) {
+	key, err := o.claimKey(ctx)
+	if err != nil {
+		return nil, err
+	}
 	created, err := o.createWarmPod(ctx, p)
 	if err != nil {
 		return nil, err
@@ -239,7 +282,7 @@ func (o *Orchestrator) coldClaim(ctx context.Context, p *pool.Pool, req *proxy.C
 			return nil, apperrors.Internal("kubernetes.getPod", err)
 		}
 		if claimable(pod) {
-			if err := o.claims.Claim(ctx, pod.Status.PodIP, pod.Annotations[AnnotationClaimToken], req); err != nil {
+			if err := o.claims.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req); err != nil {
 				return nil, apperrors.Internal("kubernetes.claim", err)
 			}
 			return pod, nil
@@ -256,9 +299,21 @@ func (o *Orchestrator) coldClaim(ctx context.Context, p *pool.Pool, req *proxy.C
 }
 
 // bindPod stamps the accepted claim onto the pod: the activation label (the
-// Status/List/GC key) and the spec annotation (Status reconstruction).
+// Status/List/GC key) and the spec annotation (Status reconstruction). The
+// callback signing key is intentionally STRIPPED from the annotation — the
+// full callback lives only in the in-flight request (sync and async both
+// complete within the service process; Status/List never need the key), so
+// no secret material rests on the pod object. A restart-reconstructed
+// activation therefore cannot deliver callbacks — the documented
+// at-most-once semantics.
 func (o *Orchestrator) bindPod(ctx context.Context, podName string, act *pool.Activation) error {
-	spec, err := json.Marshal(act)
+	redacted := *act
+	if act.Callback != nil {
+		cb := *act.Callback
+		cb.Key = ""
+		redacted.Callback = &cb
+	}
+	spec, err := json.Marshal(&redacted)
 	if err != nil {
 		return apperrors.Internal("kubernetes.marshalActivation", err)
 	}
@@ -497,13 +552,19 @@ func (o *Orchestrator) activationPods(ctx context.Context, poolID, activationID 
 	return list.Items, nil
 }
 
-// createWarmPod mints a claim token and creates one warm pod.
+// createWarmPod creates one warm pod. The name is chosen client-side (not
+// GenerateName) so the claim token can be derived from it before creation.
 func (o *Orchestrator) createWarmPod(ctx context.Context, p *pool.Pool) (*corev1.Pod, error) {
-	token, err := mintClaimToken()
+	key, err := o.claimKey(ctx)
 	if err != nil {
-		return nil, apperrors.Internal("kubernetes.mintToken", err)
+		return nil, err
 	}
-	created, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, buildWarmPod(p, o.cfg, token), metav1.CreateOptions{})
+	suffix, err := randHex(5)
+	if err != nil {
+		return nil, apperrors.Internal("kubernetes.podName", err)
+	}
+	name := "pool-" + p.ID + "-" + suffix
+	created, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, buildWarmPod(p, o.cfg, name, deriveClaimToken(key, name)), metav1.CreateOptions{})
 	if err != nil {
 		return nil, apperrors.Internal("kubernetes.createPod", err)
 	}

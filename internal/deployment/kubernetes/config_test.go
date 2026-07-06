@@ -49,7 +49,10 @@ func TestLoadConfigFromEnv_LeaderElection(t *testing.T) {
 	t.Setenv("KUBE_LEADER_LEASE_DURATION", "30s")
 	t.Setenv("KUBE_CPU_OVERCOMMIT", "4")
 
-	cfg := LoadConfigFromEnv()
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("LoadConfigFromEnv: %v", err)
+	}
 	le := cfg.LeaderElection
 	if !le.Enabled || le.LeaseName != "custom-lease" || le.Identity != "pod-0" || le.LeaseDuration != 30*time.Second {
 		t.Errorf("LeaderElection from env: got %+v", le)

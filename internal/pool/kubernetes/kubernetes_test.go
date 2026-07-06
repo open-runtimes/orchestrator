@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/proxy"
+	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +25,9 @@ import (
 )
 
 const testNS = "orchestrator"
+
+// testInstallKey is a fixed claim-token HMAC key for deterministic tests.
+var testInstallKey = []byte("0123456789abcdef0123456789abcdef")
 
 // fakeClaims fakes the sidecar surface per pod IP: fake-clientset pods have
 // no reachable sidecars, and the pod IP is the claim protocol's address.
@@ -102,6 +107,7 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 	o := wireOrchestrator(cs, gatewayfake.NewClientset(), cfg)
 	claims := newFakeClaims()
 	o.claims = claims
+	o.installKey = testInstallKey // normally get-or-created from the pool-claim-key Secret on Start
 	o.poll = time.Millisecond
 	o.coldWait = time.Second
 	o.serveWait = 50 * time.Millisecond
@@ -109,14 +115,15 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 }
 
 // warmPodFixture is a running, warm-ready pool pod as the replenisher would
-// have produced it (labels, token annotation, Ready condition, IP).
+// have produced it (labels, Ready condition, IP — no token anywhere: claim
+// tokens are derived from the pod name).
 func warmPodFixture(poolID, name, ip string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
 			Namespace:   testNS,
 			Labels:      poolLabels(poolID),
-			Annotations: map[string]string{AnnotationClaimToken: "token-" + name},
+			Annotations: map[string]string{},
 		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
@@ -205,8 +212,8 @@ func TestActivate_ExecReturnsExitCodeAndOutput(t *testing.T) {
 		t.Errorf("identity: got %+v", status)
 	}
 
-	// The claim carried the pod's own token and the exec shape (Port 0).
-	if len(claims.claimed) != 1 || claims.claimed[0] != "10.0.0.1" || claims.tokens[0] != "token-pod-a" {
+	// The claim carried the pod's DERIVED token and the exec shape (Port 0).
+	if len(claims.claimed) != 1 || claims.claimed[0] != "10.0.0.1" || claims.tokens[0] != deriveClaimToken(testInstallKey, "pod-a") {
 		t.Errorf("claim: got IPs %v tokens %v", claims.claimed, claims.tokens)
 	}
 	if claims.lastClaim.ActivationID != "act1" || claims.lastClaim.Command != "run" || claims.lastClaim.Port != 0 {
@@ -563,6 +570,125 @@ func TestDeactivate_TearsDownEverything(t *testing.T) {
 	}
 	if _, err := o.gateway.GatewayV1().HTTPRoutes(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Errorf("want the route deleted, got %v", err)
+	}
+}
+
+// --- secret material at rest (docs/design/security.md) ---
+
+func TestDeriveClaimToken_DeterministicPerPod(t *testing.T) {
+	t.Parallel()
+	a1 := deriveClaimToken(testInstallKey, "pool-std-aaaaa")
+	a2 := deriveClaimToken(testInstallKey, "pool-std-aaaaa")
+	b := deriveClaimToken(testInstallKey, "pool-std-bbbbb")
+	other := deriveClaimToken([]byte("another-install-key-32-bytes-xx!"), "pool-std-aaaaa")
+	if a1 != a2 {
+		t.Error("token must be deterministic for (key, podName)")
+	}
+	if a1 == b {
+		t.Error("tokens must differ across pods")
+	}
+	if a1 == other {
+		t.Error("tokens must differ across install keys")
+	}
+	if len(a1) != 64 { // hex(HMAC-SHA256)
+		t.Errorf("token length: want 64 hex chars, got %d", len(a1))
+	}
+}
+
+func TestClaimKey_GetOrCreateIdempotent(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, execPool("std"))
+	o.installKey = nil // exercise the get-or-create path
+
+	first, err := o.claimKey(t.Context())
+	if err != nil {
+		t.Fatalf("claimKey: %v", err)
+	}
+	if len(first) != claimKeyBytes {
+		t.Fatalf("key length: want %d, got %d", claimKeyBytes, len(first))
+	}
+	secret, err := cs.CoreV1().Secrets(testNS).Get(t.Context(), claimKeySecretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("expected the pool-claim-key Secret: %v", err)
+	}
+	if string(secret.Data[claimKeySecretKey]) != string(first) {
+		t.Error("cached key must match the stored Secret")
+	}
+
+	// A second orchestrator against the same cluster adopts the same key.
+	o2 := wireOrchestrator(cs, o.gateway, o.cfg)
+	second, err := o2.claimKey(t.Context())
+	if err != nil {
+		t.Fatalf("claimKey (second): %v", err)
+	}
+	if string(second) != string(first) {
+		t.Error("get-or-create must be idempotent across replicas")
+	}
+}
+
+func TestCreateWarmPod_InjectsDerivedTokenNoAnnotation(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, execPool("std"))
+
+	created, err := o.createWarmPod(t.Context(), o.pools["std"])
+	if err != nil {
+		t.Fatalf("createWarmPod: %v", err)
+	}
+	pod := getPod(t, cs, created.Name)
+	if _, ok := pod.Annotations["pool.claim-token"]; ok {
+		t.Error("claim token must never be annotated on the pod")
+	}
+	want := deriveClaimToken(testInstallKey, pod.Name)
+	found := false
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name != ContainerProxy {
+			continue
+		}
+		for _, env := range c.Env {
+			if env.Name == proxy.EnvClaimToken {
+				found = true
+				if env.Value != want {
+					t.Errorf("POOL_CLAIM_TOKEN: want the derived token, got %q", env.Value)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("sidecar must still receive POOL_CLAIM_TOKEN env")
+	}
+}
+
+func TestBindPod_StripsCallbackKeyFromAnnotation(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, httpPool("web"))
+	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
+
+	act := &pool.Activation{
+		ID:       "site",
+		Command:  "serve",
+		Callback: &deployment.Callback{URL: "http://callbacks.test/hook", Key: "super-secret"},
+	}
+	if _, err := o.Activate(t.Context(), "web", act); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	raw := getPod(t, cs, "pod-a").Annotations[AnnotationActivationSpec]
+	if strings.Contains(raw, "super-secret") {
+		t.Errorf("annotation must not carry the callback key: %s", raw)
+	}
+	var stored pool.Activation
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("unmarshal annotation: %v", err)
+	}
+	if stored.Callback == nil || stored.Callback.URL != "http://callbacks.test/hook" {
+		t.Errorf("callback URL must survive redaction: %+v", stored.Callback)
+	}
+	if stored.Callback.Key != "" {
+		t.Errorf("callback key must be stripped, got %q", stored.Callback.Key)
+	}
+	// The in-flight request keeps the full callback for delivery.
+	if act.Callback.Key != "super-secret" {
+		t.Error("redaction must not mutate the caller's activation")
 	}
 }
 

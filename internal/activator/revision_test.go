@@ -133,26 +133,26 @@ func revisionDeployment(t *testing.T, rev string, replicas int32, spec *deployme
 		Spec: appsv1.DeploymentSpec{Replicas: &replicas},
 	}
 	if spec != nil {
-		t.Fatal("seed the spec via revisionMarker, not the Deployment (the spec lives on the marker ConfigMap)")
+		t.Fatal("seed the spec via revisionSpecSecret, not the Deployment (the spec lives on the dep-{id} Secret)")
 	}
 	return dep
 }
 
-// revisionMarker builds the per-deployment marker ConfigMap carrying the spec
-// — where the revision activator reads callback/timeout config from.
-func revisionMarker(t *testing.T, rev string, spec *deployment.Request) *corev1.ConfigMap {
+// revisionSpecSecret builds the per-deployment dep-{id} Secret carrying the
+// spec — where the revision activator reads callback/timeout config from.
+func revisionSpecSecret(t *testing.T, rev string, spec *deployment.Request) *corev1.Secret {
 	t.Helper()
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatalf("marshal spec: %v", err)
 	}
-	return &corev1.ConfigMap{
+	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      revisionDeploymentName(deploymentIDOf(rev)),
 			Namespace: testRevisionNamespace,
 			Labels:    map[string]string{revisionLabelManagedBy: revisionManagedByValue},
 		},
-		Data: map[string]string{markerSpecKey: string(specJSON)},
+		Data: map[string][]byte{specSecretKey: specJSON},
 	}
 }
 
@@ -274,7 +274,7 @@ func TestRevisionAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	act, _, queue := newTestRevisionActivator(t,
 		RevisionConfig{ProxyPort: port, AdminPort: port, ResponseStartTimeout: time.Second},
 		revisionPod("rev1", "pod-1", ip, true),
-		revisionDeployment(t, "rev1", 1, nil), revisionMarker(t, "rev1", spec))
+		revisionDeployment(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://app.example.test/", strings.NewReader("payload"))
 	req.Header.Set("Prefer", "respond-async")
@@ -323,7 +323,7 @@ func TestRevisionAsync_RequiresCallback(t *testing.T) {
 	spec := &deployment.Request{ID: "app", Host: "app.example.test", Port: 8080}
 	act, _, _ := newTestRevisionActivator(t,
 		RevisionConfig{ResponseStartTimeout: time.Second},
-		revisionDeployment(t, "rev1", 1, nil), revisionMarker(t, "rev1", spec))
+		revisionDeployment(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://app.example.test/", strings.NewReader("{}"))
 	req.Header.Set("Prefer", "respond-async")
