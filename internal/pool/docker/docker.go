@@ -99,7 +99,7 @@ func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 		cfg:      cfg,
 		pools:    pools,
 		http:     &http.Client{},
-		poster:   claim.NewHTTPPoster(),
+		poster:   claim.NewPoster(),
 		acts:     make(map[string]*activation),
 		creating: make(map[string]string),
 	}, nil
@@ -382,10 +382,10 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 
 	slotID, err := o.claimSlot(ctx, p, act, timeoutSeconds)
 	if err != nil {
-		var poison *claim.PoisonError
+		var poison *claim.Poison
 		if errors.As(err, &poison) {
 			return &pool.ActivationStatus{
-				ID: act.ID, PoolID: poolID, PodID: slotPrefix(poolID, poison.UnitID),
+				ID: act.ID, PoolID: poolID, PodID: slotPrefix(poolID, poison.Unit),
 				State: pool.StateFailed, Error: poison.Msg,
 			}, nil
 		}
@@ -454,10 +454,10 @@ func (inv *slotInventory) Free(ctx context.Context) ([]claim.Unit, error) {
 	return units, nil
 }
 
-// ColdCreate provisions a slot and waits for its sidecar to turn healthy
+// Create provisions a slot and waits for its sidecar to turn healthy
 // (bounded); a slot that never warms is removed so the burst does not leak
 // capacity beyond the pool size.
-func (inv *slotInventory) ColdCreate(ctx context.Context) (*claim.Unit, error) {
+func (inv *slotInventory) Create(ctx context.Context) (*claim.Unit, error) {
 	slotID, err := inv.o.createSlot(ctx, inv.p)
 	if err != nil {
 		return nil, err

@@ -193,10 +193,10 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 
 	pod, err := o.claimWarmPod(ctx, p, act)
 	if err != nil {
-		var poison *claim.PoisonError
+		var poison *claim.Poison
 		if errors.As(err, &poison) {
 			return &pool.ActivationStatus{
-				ID: act.ID, PoolID: poolID, PodID: poison.UnitID,
+				ID: act.ID, PoolID: poolID, PodID: poison.Unit,
 				State: pool.StateFailed, Error: poison.Msg,
 			}, nil
 		}
@@ -255,10 +255,10 @@ func (inv *podInventory) Free(ctx context.Context) ([]claim.Unit, error) {
 	return units, nil
 }
 
-// ColdCreate creates a pod and waits for it to turn warm-ready (bounded). A
+// Create creates a pod and waits for it to turn warm-ready (bounded). A
 // pod that never warms is deleted so the burst does not leak capacity beyond
 // the pool size.
-func (inv *podInventory) ColdCreate(ctx context.Context) (*claim.Unit, error) {
+func (inv *podInventory) Create(ctx context.Context) (*claim.Unit, error) {
 	created, err := inv.o.createWarmPod(ctx, inv.p)
 	if err != nil {
 		return nil, err

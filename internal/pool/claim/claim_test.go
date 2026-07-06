@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-// fakeInventory yields a fixed free set; ColdCreate mints cold-N units.
+// fakeInventory yields a fixed free set; Create mints cold-N units.
 type fakeInventory struct {
 	free    []Unit
 	freeErr error
@@ -27,7 +27,7 @@ func (f *fakeInventory) Free(context.Context) ([]Unit, error) {
 	return f.free, f.freeErr
 }
 
-func (f *fakeInventory) ColdCreate(context.Context) (*Unit, error) {
+func (f *fakeInventory) Create(context.Context) (*Unit, error) {
 	f.coldCalls++
 	if f.coldErr != nil {
 		return nil, f.coldErr
@@ -86,15 +86,15 @@ func TestClaimSkipsTransientFailures(t *testing.T) {
 
 func TestClaimPoisonStopsAndStampsUnit(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
-	post := &fakePoster{outcomes: map[string]error{"a": &PoisonError{Msg: "artifacts failed"}}}
+	post := &fakePoster{outcomes: map[string]error{"a": &Poison{Msg: "artifacts failed"}}}
 
 	_, err := Claim(t.Context(), inv, post, "p", pool.BurstReject, req())
-	var poison *PoisonError
+	var poison *Poison
 	if !errors.As(err, &poison) {
-		t.Fatalf("got %v, want PoisonError — the sidecar accepted, the activation is spent", err)
+		t.Fatalf("got %v, want Poison — the sidecar accepted, the activation is spent", err)
 	}
-	if poison.UnitID != "a" {
-		t.Errorf("poison stamped %q, want a", poison.UnitID)
+	if poison.Unit != "a" {
+		t.Errorf("poison stamped %q, want a", poison.Unit)
 	}
 	if len(post.posted) != 1 {
 		t.Errorf("posted to %v after poison, want no further units", post.posted)
@@ -166,7 +166,7 @@ func TestHTTPPosterMapsProtocolStatuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	poster := &HTTPPoster{client: server.Client()}
+	poster := &httpPoster{client: server.Client()}
 	target := Unit{ID: "u", Addr: u.Hostname(), Token: "tok"}
 	post := func() error {
 		return poster.postTo(t.Context(), server.URL+proxy.ClaimPath, target, req())
@@ -186,9 +186,9 @@ func TestHTTPPosterMapsProtocolStatuses(t *testing.T) {
 	}
 
 	status = http.StatusUnprocessableEntity
-	var poison *PoisonError
+	var poison *Poison
 	if err := post(); !errors.As(err, &poison) || !strings.Contains(poison.Msg, "because") {
-		t.Errorf("422: got %v, want PoisonError carrying the sidecar's message", err)
+		t.Errorf("422: got %v, want Poison carrying the sidecar's message", err)
 	}
 
 	status = http.StatusInternalServerError

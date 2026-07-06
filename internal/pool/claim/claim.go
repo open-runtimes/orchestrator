@@ -27,15 +27,17 @@ import (
 // accepted another activation. The flow retries the next warm unit.
 var ErrConflict = errors.New("unit already claimed")
 
-// PoisonError is the 422 claim outcome: the sidecar accepted the claim but
+// Poison is the 422 claim outcome: the sidecar accepted the claim but
 // artifact materialization failed — the unit is poisoned (never resold) and
 // the activation has failed.
-type PoisonError struct {
-	UnitID string // stamped by the flow with the poisoned unit
+//
+//nolint:errname // single-word names; the package is the namespace
+type Poison struct {
+	Unit string // stamped by the flow with the poisoned unit
 	Msg    string
 }
 
-func (e *PoisonError) Error() string { return e.Msg }
+func (e *Poison) Error() string { return e.Msg }
 
 // Unit is one claimable warm unit an Inventory yields: a pod on Kubernetes,
 // a slot on Docker.
@@ -49,21 +51,21 @@ type Unit struct {
 type Inventory interface {
 	// Free lists the currently claimable warm units, in claim order.
 	Free(ctx context.Context) ([]Unit, error)
-	// ColdCreate provisions one unit and returns it claimable — the burst
+	// Create provisions one unit and returns it claimable — the burst
 	// cold start. Implementations own the warm-up wait and discard units
 	// that never turn claimable.
-	ColdCreate(ctx context.Context) (*Unit, error)
+	Create(ctx context.Context) (*Unit, error)
 }
 
 // Poster performs the sidecar claim POST. Faked in backend unit tests where
-// pods have no reachable sidecars; production uses NewHTTPPoster.
+// pods have no reachable sidecars; production uses NewPoster.
 type Poster interface {
 	Post(ctx context.Context, u Unit, req *proxy.ClaimRequest) error
 }
 
 // Claim wins one warm unit for the request. With no free unit the pool's
 // burst policy decides: reject (429-mapped) or cold-create. Returns
-// *PoisonError when the winning unit's artifacts failed — the activation is
+// *Poison when the winning unit's artifacts failed — the activation is
 // failed, not errored.
 func Claim(ctx context.Context, inv Inventory, post Poster, poolID, burst string, req *proxy.ClaimRequest) (*Unit, error) {
 	unit, ok, err := tryWarm(ctx, inv, post, poolID, req)
@@ -77,7 +79,7 @@ func Claim(ctx context.Context, inv Inventory, post Poster, poolID, burst string
 	}
 
 	slog.Warn("Pool exhausted, cold-creating capacity", "poolId", poolID, "activationId", req.ActivationID)
-	created, err := inv.ColdCreate(ctx)
+	created, err := inv.Create(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -114,9 +116,9 @@ func tryWarm(ctx context.Context, inv Inventory, post Poster, poolID string, req
 		case errors.Is(err, ErrConflict):
 			continue // racing loser — try the next warm unit
 		default:
-			var poison *PoisonError
+			var poison *Poison
 			if errors.As(err, &poison) {
-				poison.UnitID = u.ID
+				poison.Unit = u.ID
 				return nil, true, poison
 			}
 			slog.Warn("Claim attempt failed", "poolId", poolID, "unit", u.ID, "error", err)
@@ -130,31 +132,35 @@ func exhausted(poolID string) error {
 }
 
 func poisonedOrInternal(err error, unitID string) error {
-	var poison *PoisonError
+	var poison *Poison
 	if errors.As(err, &poison) {
-		poison.UnitID = unitID
+		poison.Unit = unitID
 		return poison
 	}
 	return apperrors.Internal("pool.claim", err)
 }
 
-// HTTPPoster is the production Poster: it POSTs the activation to the unit's
+// httpPoster is the production Poster: it POSTs the activation to the unit's
 // sidecar admin port with the unit's bearer token.
-type HTTPPoster struct {
+type httpPoster struct {
 	client *http.Client
 }
 
-// NewHTTPPoster creates a Poster with a bounded per-claim timeout.
-func NewHTTPPoster() *HTTPPoster {
-	return &HTTPPoster{client: &http.Client{Timeout: 10 * time.Second}}
+// NewPoster creates the production Poster with a bounded per-claim timeout.
+// The seam is real — backend tests substitute fakes — so the concrete type
+// stays hidden.
+//
+//nolint:iface // see above
+func NewPoster() Poster {
+	return &httpPoster{client: &http.Client{Timeout: 10 * time.Second}}
 }
 
-func (p *HTTPPoster) Post(ctx context.Context, u Unit, req *proxy.ClaimRequest) error {
+func (p *httpPoster) Post(ctx context.Context, u Unit, req *proxy.ClaimRequest) error {
 	url := "http://" + net.JoinHostPort(u.Addr, strconv.Itoa(proxy.DefaultAdminPort)) + proxy.ClaimPath
 	return p.postTo(ctx, url, u, req)
 }
 
-func (p *HTTPPoster) postTo(ctx context.Context, url string, u Unit, req *proxy.ClaimRequest) error {
+func (p *httpPoster) postTo(ctx context.Context, url string, u Unit, req *proxy.ClaimRequest) error {
 	// ClaimRequest's custom codec routes artifacts through the registry so
 	// each carries its "type" discriminator.
 	body, err := json.Marshal(req)
@@ -180,7 +186,7 @@ func (p *HTTPPoster) postTo(ctx context.Context, url string, u Unit, req *proxy.
 		return ErrConflict
 	case http.StatusUnprocessableEntity:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return &PoisonError{Msg: "artifacts failed: " + string(bytes.TrimSpace(msg))}
+		return &Poison{Msg: "artifacts failed: " + string(bytes.TrimSpace(msg))}
 	default:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("claim rejected with status %d: %s", resp.StatusCode, bytes.TrimSpace(msg))

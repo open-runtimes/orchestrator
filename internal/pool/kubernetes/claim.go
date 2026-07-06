@@ -21,7 +21,7 @@ var errClaimConflict = claim.ErrConflict
 // tests can fake pods' sidecars: fake-clientset pods have no reachable IPs.
 type claimClient interface {
 	// Claim POSTs the activation to the pod's sidecar with the pod's bearer
-	// token. 409 → errClaimConflict; 422 → *claim.PoisonError.
+	// token. 409 → errClaimConflict; 422 → *claim.Poison.
 	Claim(ctx context.Context, podIP, token string, req *proxy.ClaimRequest) error
 	// State reads the sidecar's authoritative claim record — the poison and
 	// orphan-GC source of truth.
@@ -47,13 +47,13 @@ func (p clientPoster) Post(ctx context.Context, u claim.Unit, req *proxy.ClaimRe
 // httpClaimClient talks to sidecar admin ports directly by pod IP.
 type httpClaimClient struct {
 	client *http.Client
-	poster *claim.HTTPPoster
+	poster claim.Poster
 }
 
 func newClaimClient() *httpClaimClient {
 	return &httpClaimClient{
 		client: &http.Client{Timeout: 10 * time.Second},
-		poster: claim.NewHTTPPoster(),
+		poster: claim.NewPoster(),
 	}
 }
 

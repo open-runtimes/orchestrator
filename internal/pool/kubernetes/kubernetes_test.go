@@ -61,7 +61,7 @@ func (f *fakeClaims) Claim(_ context.Context, podIP, token string, req *proxy.Cl
 		return errClaimConflict
 	}
 	if f.poison[podIP] {
-		return &claim.PoisonError{Msg: "artifacts failed: boom"}
+		return &claim.Poison{Msg: "artifacts failed: boom"}
 	}
 	f.claimed = append(f.claimed, podIP)
 	f.tokens = append(f.tokens, token)
