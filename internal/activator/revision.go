@@ -76,8 +76,9 @@ type RevisionActivator struct {
 }
 
 // NewRevisionActivator creates a RevisionActivator. queue delivers async
-// response callbacks. Call Start before serving.
-func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, cfg RevisionConfig) *RevisionActivator {
+// response callbacks; rec (nilable) receives the hold/raise/async metrics.
+// Call Start before serving.
+func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, cfg RevisionConfig, rec Recorder) *RevisionActivator {
 	if cfg.ProxyPort == 0 {
 		cfg.ProxyPort = proxy.DefaultProxyPort
 	}
@@ -89,7 +90,7 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 	}
 	return &RevisionActivator{
 		client: client,
-		broker: newBroker(queue),
+		broker: newBroker(queue, rec),
 		cfg:    cfg,
 	}
 }

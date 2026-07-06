@@ -51,24 +51,34 @@ func LoadConfigFromEnv() Config {
 	}
 }
 
+// Recorder receives the loop's metrics. Satisfied by *observability.Metrics;
+// nil disables recording.
+type Recorder interface {
+	RecordAutoscalerDesired(ctx context.Context, id string, replicas int64)
+	RecordAutoscalerScale(ctx context.Context, direction string)
+	RecordAutoscalerScrapeError(ctx context.Context)
+}
+
 // Autoscaler drives replica counts for deployments with autoscaling set.
 type Autoscaler struct {
 	backend     Backend
 	concurrency ConcurrencySource
 	queue       QueueSource
 	cfg         Config
+	rec         Recorder
 
 	windows map[string]*window
 }
 
 // New creates the loop. Call Run to start it (leader-gate it on Kubernetes —
 // exactly one replica may write scales).
-func New(backend Backend, concurrency ConcurrencySource, queue QueueSource, cfg Config) *Autoscaler {
+func New(backend Backend, concurrency ConcurrencySource, queue QueueSource, cfg Config, rec Recorder) *Autoscaler {
 	return &Autoscaler{
 		backend:     backend,
 		concurrency: concurrency,
 		queue:       queue,
 		cfg:         cfg,
+		rec:         rec,
 		windows:     make(map[string]*window),
 	}
 }
@@ -120,6 +130,11 @@ func (a *Autoscaler) evaluateOne(ctx context.Context, now time.Time, status *dep
 	sample, err := a.concurrency.Concurrency(ctx, status.ID)
 	if err != nil {
 		sample = 0 // cold or unready — the queue signal carries the load
+		// With replicas serving, a failed scrape is a real input outage, not
+		// a cold deployment.
+		if a.rec != nil && status.AvailableReplicas > 0 {
+			a.rec.RecordAutoscalerScrapeError(ctx)
+		}
 	}
 	queued := a.queue.Queued(ctx, status.ID)
 	sample += float64(queued)
@@ -146,6 +161,9 @@ func (a *Autoscaler) evaluateOne(ctx context.Context, now time.Time, status *dep
 		// Requests are waiting in the activator: never conclude zero.
 		desired = max(desired, 1)
 	}
+	if a.rec != nil {
+		a.rec.RecordAutoscalerDesired(ctx, status.ID, int64(desired))
+	}
 
 	current := status.DesiredReplicas
 	if desired == current {
@@ -160,6 +178,13 @@ func (a *Autoscaler) evaluateOne(ctx context.Context, now time.Time, status *dep
 	if err := a.backend.Scale(ctx, status.ID, desired); err != nil {
 		slog.Warn("Autoscale failed", "deploymentId", status.ID, "desired", desired, "error", err)
 		return
+	}
+	if a.rec != nil {
+		direction := "up"
+		if desired < current {
+			direction = "down"
+		}
+		a.rec.RecordAutoscalerScale(ctx, direction)
 	}
 	slog.Info("Autoscaled", "deploymentId", status.ID, "from", current, "to", desired,
 		"avgConcurrency", math.Round(w.average()*10)/10, "queued", queued)

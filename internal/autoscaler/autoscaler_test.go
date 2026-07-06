@@ -54,7 +54,7 @@ type fixedQueue int
 func (f fixedQueue) Queued(context.Context, string) int { return int(f) }
 
 func newTest(backend *fakeBackend, c ConcurrencySource, q QueueSource) *Autoscaler {
-	return New(backend, c, q, Config{Tick: time.Second, Window: time.Minute})
+	return New(backend, c, q, Config{Tick: time.Second, Window: time.Minute}, nil)
 }
 
 // tickPast pushes enough sample history that the window guard allows

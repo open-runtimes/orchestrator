@@ -45,11 +45,12 @@ type resolveEntry struct {
 	expires time.Time
 }
 
-// New creates an Activator. queue delivers async response callbacks.
-func New(resolver Resolver, queue dispatcher.Queue) *Activator {
+// New creates an Activator. queue delivers async response callbacks; rec
+// (nilable) receives the hold/raise/async metrics.
+func New(resolver Resolver, queue dispatcher.Queue, rec Recorder) *Activator {
 	return &Activator{
 		resolver: resolver,
-		broker:   newBroker(queue),
+		broker:   newBroker(queue, rec),
 		cache:    make(map[string]resolveEntry),
 	}
 }

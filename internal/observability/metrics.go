@@ -58,6 +58,83 @@ type Metrics struct {
 	// rises with it — surface the cause.
 	K8sAPIDuration metric.Float64Histogram
 	K8sAPIErrors   metric.Int64Counter
+
+	// Deployment metrics (Latency, Traffic, Saturation). Rollout duration is
+	// revision-minted → traffic-cut, observed by the leader's reconciler.
+	DeploymentsApplied metric.Int64Counter
+	DeploymentsActive  metric.Int64Gauge
+	RolloutDuration    metric.Float64Histogram
+	RolloutCuts        metric.Int64Counter
+
+	// Activator metrics: the cold/async edge. Hold duration is the time a
+	// request waits for serving capacity (the client-visible cold-start cost);
+	// queued is the autoscaler's hold-up signal as a gauge.
+	ActivatorHoldDuration metric.Float64Histogram
+	ActivatorQueued       metric.Int64UpDownCounter
+	ActivatorRaises       metric.Int64Counter
+	ActivatorAsync        metric.Int64Counter
+
+	// Autoscaler metrics: what the loop decided and whether its inputs are
+	// healthy. Desired is labelled per deployment (bounded by deployment
+	// count, like jobs' image label).
+	AutoscalerDesired      metric.Int64Gauge
+	AutoscalerScales       metric.Int64Counter
+	AutoscalerScrapeErrors metric.Int64Counter
+
+	// Pool metrics (Latency, Traffic, Errors, Saturation). Warm/claimed are
+	// recorded by the leader's control loop; claim conflicts are the racing
+	// losers (healthy at low rates), poisoned pods are failed activations.
+	PoolActivations        metric.Int64Counter
+	PoolActivationsActive  metric.Int64UpDownCounter
+	PoolActivationDuration metric.Float64Histogram
+	PoolClaimConflicts     metric.Int64Counter
+	PoolPoisoned           metric.Int64Counter
+	PoolBurst              metric.Int64Counter
+	PoolWarm               metric.Int64Gauge
+	PoolClaimed            metric.Int64Gauge
+}
+
+// instruments builds meters while accumulating the first error, sparing
+// NewMetrics an if-err block per instrument.
+type instruments struct {
+	meter metric.Meter
+	err   error
+}
+
+func (b *instruments) counter(name, desc string) metric.Int64Counter {
+	c, err := b.meter.Int64Counter(name, metric.WithDescription(desc))
+	if b.err == nil {
+		b.err = err
+	}
+	return c
+}
+
+func (b *instruments) upDown(name, desc string) metric.Int64UpDownCounter {
+	c, err := b.meter.Int64UpDownCounter(name, metric.WithDescription(desc))
+	if b.err == nil {
+		b.err = err
+	}
+	return c
+}
+
+func (b *instruments) gauge(name, desc string) metric.Int64Gauge {
+	g, err := b.meter.Int64Gauge(name, metric.WithDescription(desc))
+	if b.err == nil {
+		b.err = err
+	}
+	return g
+}
+
+func (b *instruments) histogram(name, desc string, buckets ...float64) metric.Float64Histogram {
+	h, err := b.meter.Float64Histogram(name,
+		metric.WithDescription(desc),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(buckets...),
+	)
+	if b.err == nil {
+		b.err = err
+	}
+	return h
 }
 
 // NewMetrics creates and registers all metrics with a Prometheus exporter.
@@ -70,181 +147,89 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
 	otel.SetMeterProvider(provider)
 
-	meter := provider.Meter("orchestrator")
-	m := &Metrics{meter: meter}
+	b := &instruments{meter: provider.Meter("orchestrator")}
+	m := &Metrics{meter: b.meter}
 
 	// HTTP metrics
-	m.HTTPRequestDuration, err = meter.Float64Histogram(
-		"http_request_duration_seconds",
-		metric.WithDescription("HTTP request latency in seconds"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.HTTPRequestsTotal, err = meter.Int64Counter(
-		"http_requests_total",
-		metric.WithDescription("Total number of HTTP requests"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.HTTPErrorsTotal, err = meter.Int64Counter(
-		"http_errors_total",
-		metric.WithDescription("Total number of HTTP errors (4xx and 5xx)"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
+	m.HTTPRequestDuration = b.histogram("http_request_duration_seconds",
+		"HTTP request latency in seconds",
+		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
+	m.HTTPRequestsTotal = b.counter("http_requests_total", "Total number of HTTP requests")
+	m.HTTPErrorsTotal = b.counter("http_errors_total", "Total number of HTTP errors (4xx and 5xx)")
 
 	// Job metrics
-	m.JobDuration, err = meter.Float64Histogram(
-		"job_duration_seconds",
-		metric.WithDescription("Job execution duration in seconds"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(1, 5, 10, 30, 60, 120, 300, 600, 900, 1800),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.JobsTotal, err = meter.Int64Counter(
-		"jobs_total",
-		metric.WithDescription("Total number of jobs created"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.JobErrorsTotal, err = meter.Int64Counter(
-		"job_errors_total",
-		metric.WithDescription("Total number of failed jobs"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.JobsActive, err = meter.Int64UpDownCounter(
-		"jobs_active",
-		metric.WithDescription("Number of currently running jobs (saturation)"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
+	m.JobDuration = b.histogram("job_duration_seconds",
+		"Job execution duration in seconds",
+		1, 5, 10, 30, 60, 120, 300, 600, 900, 1800)
+	m.JobsTotal = b.counter("jobs_total", "Total number of jobs created")
+	m.JobErrorsTotal = b.counter("job_errors_total", "Total number of failed jobs")
+	m.JobsActive = b.upDown("jobs_active", "Number of currently running jobs (saturation)")
 
 	// Dispatcher metrics
-	m.DispatcherDuration, err = meter.Float64Histogram(
-		"dispatcher_duration_seconds",
-		metric.WithDescription("Callback delivery latency in seconds"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.DispatcherDelivered, err = meter.Int64Counter(
-		"dispatcher_delivered_total",
-		metric.WithDescription("Total events successfully delivered"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.DispatcherFailed, err = meter.Int64Counter(
-		"dispatcher_failed_total",
-		metric.WithDescription("Total events failed after retries"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.DispatcherDropped, err = meter.Int64Counter(
-		"dispatcher_dropped_total",
-		metric.WithDescription("Total events dropped (buffer full or max requeues)"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.DispatcherRequeued, err = meter.Int64Counter(
-		"dispatcher_requeued_total",
-		metric.WithDescription("Total events requeued due to open circuit"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	m.DispatcherQueueSize, err = meter.Int64Gauge(
-		"dispatcher_queue_size",
-		metric.WithDescription("Current number of events in dispatcher queue (saturation)"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
+	m.DispatcherDuration = b.histogram("dispatcher_duration_seconds",
+		"Callback delivery latency in seconds",
+		0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
+	m.DispatcherDelivered = b.counter("dispatcher_delivered_total", "Total events successfully delivered")
+	m.DispatcherFailed = b.counter("dispatcher_failed_total", "Total events failed after retries")
+	m.DispatcherDropped = b.counter("dispatcher_dropped_total", "Total events dropped (buffer full or max requeues)")
+	m.DispatcherRequeued = b.counter("dispatcher_requeued_total", "Total events requeued due to open circuit")
+	m.DispatcherQueueSize = b.gauge("dispatcher_queue_size", "Current number of events in dispatcher queue (saturation)")
 
 	// Leadership (K8s backend).
-	m.LeaderGauge, err = meter.Int64Gauge(
-		"orchestrator_leader",
-		metric.WithDescription("1 on the replica currently holding the leader lease, 0 otherwise"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	m.LeaderTransitionsTotal, err = meter.Int64Counter(
-		"orchestrator_leader_transitions_total",
-		metric.WithDescription("Total leader acquisitions observed by this replica"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
+	m.LeaderGauge = b.gauge("orchestrator_leader", "1 on the replica currently holding the leader lease, 0 otherwise")
+	m.LeaderTransitionsTotal = b.counter("orchestrator_leader_transitions_total", "Total leader acquisitions observed by this replica")
 
 	// Status cache.
-	m.StatusCacheHits, err = meter.Int64Counter(
-		"orchestrator_status_cache_hits_total",
-		metric.WithDescription("Total Status calls served from the TTL cache"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	m.StatusCacheMisses, err = meter.Int64Counter(
-		"orchestrator_status_cache_misses_total",
-		metric.WithDescription("Total Status calls that missed the cache and hit the K8s API"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
+	m.StatusCacheHits = b.counter("orchestrator_status_cache_hits_total", "Total Status calls served from the TTL cache")
+	m.StatusCacheMisses = b.counter("orchestrator_status_cache_misses_total", "Total Status calls that missed the cache and hit the K8s API")
 
 	// Tracker saturation.
-	m.Trackers, err = meter.Int64UpDownCounter(
-		"orchestrator_trackers",
-		metric.WithDescription("In-flight per-job lifecycle trackers on the leader (saturation)"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
+	m.Trackers = b.upDown("orchestrator_trackers", "In-flight per-job lifecycle trackers on the leader (saturation)")
 
 	// K8s API.
-	m.K8sAPIDuration, err = meter.Float64Histogram(
-		"k8s_api_request_duration_seconds",
-		metric.WithDescription("K8s API request latency in seconds, by verb and resource"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-	m.K8sAPIErrors, err = meter.Int64Counter(
-		"k8s_api_errors_total",
-		metric.WithDescription("Total K8s API responses with status >= 400 (or transport errors)"),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
+	m.K8sAPIDuration = b.histogram("k8s_api_request_duration_seconds",
+		"K8s API request latency in seconds, by verb and resource",
+		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
+	m.K8sAPIErrors = b.counter("k8s_api_errors_total", "Total K8s API responses with status >= 400 (or transport errors)")
 
+	// Deployments.
+	m.DeploymentsApplied = b.counter("deployments_applied_total",
+		"Total deployment applies, labelled created=true|false (create vs update)")
+	m.DeploymentsActive = b.gauge("deployments_active",
+		"Number of managed deployments (K8s backend; recorded by the leader's reconciler)")
+	m.RolloutDuration = b.histogram("deployment_rollout_duration_seconds",
+		"Time from a revision being minted to traffic auto-cutting to it",
+		1, 2.5, 5, 10, 30, 60, 120, 300, 600)
+	m.RolloutCuts = b.counter("deployment_rollout_cuts_total", "Total traffic auto-cuts to a newly ready revision")
+
+	// Activator.
+	m.ActivatorHoldDuration = b.histogram("activator_hold_duration_seconds",
+		"Time a request waited for serving capacity, labelled outcome=served|timeout",
+		0.001, 0.01, 0.05, 0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 300)
+	m.ActivatorQueued = b.upDown("activator_queued", "Requests currently held waiting for capacity (saturation)")
+	m.ActivatorRaises = b.counter("activator_raises_total", "Total cold scale-ups requested while holding traffic")
+	m.ActivatorAsync = b.counter("activator_async_total", "Total async requests, labelled result=delivered|failed")
+
+	// Autoscaler.
+	m.AutoscalerDesired = b.gauge("autoscaler_desired_replicas", "Replicas the autoscaler wants, per deployment")
+	m.AutoscalerScales = b.counter("autoscaler_scale_events_total", "Total scale writes, labelled direction=up|down")
+	m.AutoscalerScrapeErrors = b.counter("autoscaler_scrape_errors_total", "Total failures scraping concurrency/queue sources")
+
+	// Pools.
+	m.PoolActivations = b.counter("pool_activations_total", "Total activations, per pool")
+	m.PoolActivationsActive = b.upDown("pool_activations_active", "Activations currently in flight, per pool (saturation)")
+	m.PoolActivationDuration = b.histogram("pool_activation_duration_seconds",
+		"Activation wall time (claim through exit/serving), per pool and success",
+		0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600, 1800)
+	m.PoolClaimConflicts = b.counter("pool_claim_conflicts_total", "Total 409 claim races lost (the loser retries the next warm pod)")
+	m.PoolPoisoned = b.counter("pool_poisoned_total", "Total pods poisoned by failed artifact materialization")
+	m.PoolBurst = b.counter("pool_burst_total", "Total activations arriving at an empty pool, labelled policy=reject|cold")
+	m.PoolWarm = b.gauge("pool_warm", "Unclaimed warm-ready pods, per pool")
+	m.PoolClaimed = b.gauge("pool_claimed", "Claimed (running-activation) pods, per pool")
+
+	if b.err != nil {
+		return nil, nil, b.err
+	}
 	return m, promhttp.Handler(), nil
 }
 
@@ -350,4 +335,93 @@ func (m *Metrics) RecordK8sAPIRequest(ctx context.Context, verb, resource string
 		errAttrs := metric.WithAttributes(verbAttr(verb), resourceAttr(resource), statusAttr(status))
 		m.K8sAPIErrors.Add(ctx, 1, errAttrs)
 	}
+}
+
+// RecordDeploymentApplied records a deployment apply (create or update).
+func (m *Metrics) RecordDeploymentApplied(ctx context.Context, created bool) {
+	m.DeploymentsApplied.Add(ctx, 1, metric.WithAttributes(createdAttr(created)))
+}
+
+// RecordDeploymentsActive records the managed-deployment count.
+func (m *Metrics) RecordDeploymentsActive(ctx context.Context, count int64) {
+	m.DeploymentsActive.Record(ctx, count)
+}
+
+// RecordRolloutCut records traffic auto-cutting to a newly ready revision,
+// with the revision's minted→ready duration.
+func (m *Metrics) RecordRolloutCut(ctx context.Context, durationSeconds float64) {
+	m.RolloutCuts.Add(ctx, 1)
+	m.RolloutDuration.Record(ctx, durationSeconds)
+}
+
+// RecordActivatorHold records a completed capacity hold.
+func (m *Metrics) RecordActivatorHold(ctx context.Context, outcome string, durationSeconds float64) {
+	m.ActivatorHoldDuration.Record(ctx, durationSeconds, metric.WithAttributes(outcomeAttr(outcome)))
+}
+
+// RecordActivatorQueueDelta adjusts the held-request gauge (+1 / -1).
+func (m *Metrics) RecordActivatorQueueDelta(ctx context.Context, delta int64) {
+	m.ActivatorQueued.Add(ctx, delta)
+}
+
+// RecordActivatorRaise records a cold scale-up request.
+func (m *Metrics) RecordActivatorRaise(ctx context.Context) {
+	m.ActivatorRaises.Add(ctx, 1)
+}
+
+// RecordActivatorAsync records an async request's final result.
+func (m *Metrics) RecordActivatorAsync(ctx context.Context, result string) {
+	m.ActivatorAsync.Add(ctx, 1, metric.WithAttributes(resultAttr(result)))
+}
+
+// RecordAutoscalerDesired records the autoscaler's decision for a deployment.
+func (m *Metrics) RecordAutoscalerDesired(ctx context.Context, id string, replicas int64) {
+	m.AutoscalerDesired.Record(ctx, replicas, metric.WithAttributes(deploymentAttr(id)))
+}
+
+// RecordAutoscalerScale records a scale write.
+func (m *Metrics) RecordAutoscalerScale(ctx context.Context, direction string) {
+	m.AutoscalerScales.Add(ctx, 1, metric.WithAttributes(directionAttr(direction)))
+}
+
+// RecordAutoscalerScrapeError records a failed metrics scrape.
+func (m *Metrics) RecordAutoscalerScrapeError(ctx context.Context) {
+	m.AutoscalerScrapeErrors.Add(ctx, 1)
+}
+
+// RecordPoolActivationStarted records an activation entering flight.
+func (m *Metrics) RecordPoolActivationStarted(ctx context.Context, id string) {
+	attrs := metric.WithAttributes(poolAttr(id))
+	m.PoolActivations.Add(ctx, 1, attrs)
+	m.PoolActivationsActive.Add(ctx, 1, attrs)
+}
+
+// RecordPoolActivationFinished records an activation leaving flight with its
+// wall time (claim through exit for exec pools, through serving for HTTP).
+func (m *Metrics) RecordPoolActivationFinished(ctx context.Context, id string, success bool, durationSeconds float64) {
+	m.PoolActivationsActive.Add(ctx, -1, metric.WithAttributes(poolAttr(id)))
+	m.PoolActivationDuration.Record(ctx, durationSeconds, metric.WithAttributes(poolAttr(id), successAttr(success)))
+}
+
+// RecordPoolConflict records a lost claim race.
+func (m *Metrics) RecordPoolConflict(ctx context.Context, id string) {
+	m.PoolClaimConflicts.Add(ctx, 1, metric.WithAttributes(poolAttr(id)))
+}
+
+// RecordPoolPoisoned records a pod poisoned by a failed activation.
+func (m *Metrics) RecordPoolPoisoned(ctx context.Context, id string) {
+	m.PoolPoisoned.Add(ctx, 1, metric.WithAttributes(poolAttr(id)))
+}
+
+// RecordPoolBurst records an activation arriving at an empty pool and the
+// policy that decided its fate.
+func (m *Metrics) RecordPoolBurst(ctx context.Context, id, policy string) {
+	m.PoolBurst.Add(ctx, 1, metric.WithAttributes(poolAttr(id), policyAttr(policy)))
+}
+
+// RecordPoolCapacity records a pool's warm/claimed pod counts.
+func (m *Metrics) RecordPoolCapacity(ctx context.Context, id string, warm, claimed int64) {
+	attrs := metric.WithAttributes(poolAttr(id))
+	m.PoolWarm.Record(ctx, warm, attrs)
+	m.PoolClaimed.Record(ctx, claimed, attrs)
 }

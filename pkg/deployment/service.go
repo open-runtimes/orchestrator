@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/observability"
 	"regexp"
 	"strings"
 )
@@ -49,6 +50,7 @@ type URLBuilder func(host string) string
 // all deployment state lives in the backend.
 type Service struct {
 	orchestrator Orchestrator
+	metrics      *observability.Metrics // may be nil in tests
 	artifacts    *artifact.Registry
 	domain       string // base domain for auto-assigned hosts: {id}.{domain}
 	urlFor       URLBuilder
@@ -56,9 +58,10 @@ type Service struct {
 
 // NewService creates a deployment service. domain is the base for
 // auto-assigned hosts; urlFor renders a host into the public URL.
-func NewService(orchestrator Orchestrator, artifacts *artifact.Registry, domain string, urlFor URLBuilder) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artifacts *artifact.Registry, domain string, urlFor URLBuilder) *Service {
 	return &Service{
 		orchestrator: orchestrator,
+		metrics:      metrics,
 		artifacts:    artifacts,
 		domain:       domain,
 		urlFor:       urlFor,
@@ -85,6 +88,9 @@ func (s *Service) Apply(ctx context.Context, req *Request) (*StatusResponse, boo
 		return nil, false, err
 	}
 	logger.Info("Deployment applied", "host", req.Host, "created", created)
+	if s.metrics != nil {
+		s.metrics.RecordDeploymentApplied(ctx, created)
+	}
 
 	status, err := s.Get(ctx, req.ID)
 	return status, created, err

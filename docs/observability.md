@@ -65,6 +65,30 @@ The K8s API metrics cover every call the orchestrator makes to the apiserver —
 
 See: `internal/observability/metrics.go`, `internal/orchestrator/kubernetes/transport.go`
 
+**Deployments Metrics:**
+
+Both the deployments service and the standalone activator (K8s) expose the same registry; each records the slice it owns.
+
+| Signal | Metrics |
+|--------|---------|
+| Latency | `deployment_rollout_duration_seconds` (revision minted → traffic cut), `activator_hold_duration_seconds{outcome=served\|timeout}` (the client-visible cold-start cost) |
+| Traffic | `deployments_applied_total{created}`, `deployment_rollout_cuts_total`, `activator_raises_total`, `activator_async_total{result=delivered\|failed}`, `autoscaler_scale_events_total{direction=up\|down}` |
+| Errors | `autoscaler_scrape_errors_total` (failed concurrency scrapes while replicas are serving) |
+| Saturation | `deployments_active`, `activator_queued` (requests held for capacity), `autoscaler_desired_replicas{deployment}` |
+
+Rollout metrics come from the leader's reconciler; leadership and K8s API metrics apply to the deployments service and activator exactly as to jobs.
+
+**Pool Metrics:**
+
+| Signal | Metrics |
+|--------|---------|
+| Latency | `pool_activation_duration_seconds{pool,success}` (claim through exit/serving) |
+| Traffic | `pool_activations_total{pool}`, `pool_burst_total{pool,policy=reject\|cold}` |
+| Errors | `pool_poisoned_total{pool}` (failed artifact materialization), `pool_claim_conflicts_total{pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
+| Saturation | `pool_activations_active{pool}`, `pool_warm{pool}`, `pool_claimed{pool}` |
+
+Warm/claimed capacity gauges are recorded by the leader's control loop each tick. `pool_warm` dropping to zero while `pool_burst_total{policy="reject"}` climbs is the signal to grow `size`.
+
 ### Dispatcher Statistics
 
 The event dispatcher tracks delivery statistics:

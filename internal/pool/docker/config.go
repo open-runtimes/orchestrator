@@ -2,6 +2,7 @@ package docker
 
 import (
 	"orchestrator/internal/config"
+	"orchestrator/internal/observability"
 	"orchestrator/pkg/pool"
 	"strings"
 	"time"
@@ -15,6 +16,9 @@ type Config struct {
 	Network      string      // Docker network to attach slot containers to
 	ExtraHosts   []string    // Extra /etc/hosts entries for the sidecar (e.g., ["appwrite.test:host-gateway"])
 	Retention    time.Duration
+
+	// Metrics receives pool telemetry. Set by the caller; may be nil in tests.
+	Metrics *observability.Metrics
 }
 
 // LoadConfigFromEnv loads orchestrator configuration from environment

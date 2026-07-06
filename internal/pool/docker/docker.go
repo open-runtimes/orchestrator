@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/observability"
 	"orchestrator/internal/pool/claim"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
@@ -413,11 +414,20 @@ func (o *Orchestrator) claimSlot(ctx context.Context, p pool.Pool, act *pool.Act
 		Port:           p.Port,
 		TimeoutSeconds: timeoutSeconds,
 	}
-	unit, err := claim.Claim(ctx, &slotInventory{o: o, p: p}, o.poster, p.ID, p.Burst, req)
+	unit, err := claim.Claim(ctx, &slotInventory{o: o, p: p}, o.poster, recorder(o.cfg.Metrics), p.ID, p.Burst, req)
 	if err != nil {
 		return "", err
 	}
 	return unit.ID, nil
+}
+
+// recorder converts a possibly-nil *observability.Metrics into a claim
+// Recorder without producing a typed-nil interface.
+func recorder(m *observability.Metrics) claim.Recorder {
+	if m == nil {
+		return nil
+	}
+	return m
 }
 
 // slotInventory is the Docker warm-unit surface behind the claim flow's

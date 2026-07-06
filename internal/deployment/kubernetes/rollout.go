@@ -42,6 +42,9 @@ func (o *Orchestrator) reconcileRollouts(ctx context.Context) {
 		slog.Warn("Rollout sweep failed to list markers", "error", err)
 		return
 	}
+	if o.cfg.Metrics != nil {
+		o.cfg.Metrics.RecordDeploymentsActive(ctx, int64(len(markers.Items)))
+	}
 	for i := range markers.Items {
 		m := markerFromConfigMap(&markers.Items[i])
 		if m.ID == "" {
@@ -87,6 +90,9 @@ func (o *Orchestrator) reconcileRollout(ctx context.Context, m marker) error {
 		return err
 	}
 	m.LastReady = m.LatestRevision
+	if o.cfg.Metrics != nil {
+		o.cfg.Metrics.RecordRolloutCut(ctx, time.Since(dep.CreationTimestamp.Time).Seconds())
+	}
 	slog.Info("Rollout auto-cut to latest revision", "deploymentId", m.ID, "revision", m.LatestRevision)
 	return o.retire(ctx, m)
 }

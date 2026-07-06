@@ -104,7 +104,7 @@ func testActivator(t *testing.T, backendHandler http.HandlerFunc, spec *deployme
 		resolver.endpoints = []*url.URL{u}
 	}
 	queue := newCaptureQueue()
-	return New(resolver, queue), queue
+	return New(resolver, queue, nil), queue
 }
 
 func TestSync_RoutesByHost(t *testing.T) {
@@ -164,7 +164,7 @@ func TestSync_ColdStartRaisesAndServes(t *testing.T) {
 
 	// No endpoints until Scale is called — a scaled-to-zero deployment.
 	resolver := &fakeResolver{spec: spec, endpointsOnScale: []*url.URL{u}}
-	act := New(resolver, newCaptureQueue())
+	act := New(resolver, newCaptureQueue(), nil)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://app.example.test/", nil)
 	rec := httptest.NewRecorder()
