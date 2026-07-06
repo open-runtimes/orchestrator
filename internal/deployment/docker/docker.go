@@ -64,30 +64,33 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // spec is a no-op — including when the deployment is scaled to zero, which
 // stays idle; any change tears down the containers and volume and recreates
 // everything, re-running artifacts.
-func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error {
+func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
 	if req.Sandbox != "" && req.Sandbox != deployment.SandboxRunc {
-		return apperrors.Validation("sandbox", "sandbox tiers require the Kubernetes backend")
+		return false, apperrors.Validation("sandbox", "sandbox tiers require the Kubernetes backend")
 	}
 	spec, err := json.Marshal(req)
 	if err != nil {
-		return apperrors.Internal("docker.marshalSpec", err)
+		return false, apperrors.Internal("docker.marshalSpec", err)
 	}
 
+	created := false
 	vol, err := o.client.VolumeInspect(ctx, volumeName(req.ID))
 	switch {
 	case err == nil && vol.Labels[labelSpec] == string(spec):
-		return nil
+		return false, nil
 	case err == nil:
 		o.cleanup(ctx, req.ID)
-	case !cerrdefs.IsNotFound(err):
-		return apperrors.Internal("docker.inspectVolume", err)
+	case cerrdefs.IsNotFound(err):
+		created = true // no workspace volume — this deployment is new
+	default:
+		return false, apperrors.Internal("docker.inspectVolume", err)
 	}
 
 	if err := o.create(ctx, req, string(spec)); err != nil {
 		o.cleanup(ctx, req.ID)
-		return err
+		return false, err
 	}
-	return nil
+	return created, nil
 }
 
 // Scale sets the deployment's replica count. Zero stops and removes the

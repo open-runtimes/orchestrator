@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"orchestrator/internal/dispatcher"
+	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"strings"
 	"sync"
@@ -94,9 +95,7 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := deploymentCapacity{resolver: a.resolver, spec: spec}
 	hold := time.Duration(spec.ResponseStartTimeoutSeconds) * time.Second
 
-	// Single-token match by design (case-insensitive per RFC 7240); combined
-	// forms like "respond-async, wait=10" are not recognized.
-	if strings.EqualFold(r.Header.Get("Prefer"), "respond-async") {
+	if proxy.PreferAsync(r) {
 		a.broker.async(w, r, spec.ID, spec.Host, spec, hold, c)
 		return
 	}

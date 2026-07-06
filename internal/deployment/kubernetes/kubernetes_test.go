@@ -92,7 +92,7 @@ func countActions(cs *fake.Clientset, verb, resource string) int {
 // mustApply applies the request and fails the test on error.
 func mustApply(t *testing.T, o *Orchestrator, req *deployment.Request) {
 	t.Helper()
-	if err := o.Apply(t.Context(), req); err != nil {
+	if _, err := o.Apply(t.Context(), req); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 }

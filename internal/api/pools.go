@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/dispatcher"
+	"orchestrator/internal/proxy"
 	"orchestrator/pkg/cloudevent"
 	"orchestrator/pkg/pool"
-	"strings"
 	"time"
 )
 
@@ -54,19 +54,13 @@ func (h *poolsHandler) get(w http.ResponseWriter, r *http.Request) {
 // orchestrator.pool.activation.result CloudEvent — the callback is then
 // required, since nothing is stored or pollable in-flight.
 func (h *poolsHandler) activate(w http.ResponseWriter, r *http.Request) {
-	body, err := readBody(w, r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-	act, err := pool.Parse(body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+	act, ok := parseBody(w, r, pool.Parse)
+	if !ok {
 		return
 	}
 	poolID := r.PathValue("id")
 
-	if !preferRespondAsync(r) {
+	if !proxy.PreferAsync(r) {
 		status, err := h.svc.Activate(r.Context(), poolID, act)
 		if err != nil {
 			handleServiceError(w, r, err)
@@ -82,14 +76,6 @@ func (h *poolsHandler) activate(w http.ResponseWriter, r *http.Request) {
 	}
 	go h.activateAsync(poolID, act)
 	writeJSON(w, http.StatusAccepted, map[string]string{"poolId": poolID, "status": pool.StateActivating})
-}
-
-// preferRespondAsync matches the Prefer header's respond-async token,
-// case-insensitively (RFC 7240 preference tokens are case-insensitive).
-// Combined forms ("respond-async, wait=10") are still not recognized — by
-// design, mirroring the gateway's single-token match.
-func preferRespondAsync(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Prefer"), "respond-async")
 }
 
 // activateAsync runs the activation detached and delivers the .result event.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
 	"orchestrator/pkg/job"
@@ -15,23 +16,34 @@ import (
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
 const maxRequestBodySize = 1 << 20 // 1 MB
 
-// readBody drains a size-capped request body for the strict Parse functions
-// (job.Parse, deployment.Parse, pool.Parse).
-func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+// parseBody reads a size-capped request body through one of the strict Parse
+// functions (job.Parse, deployment.Parse, pool.Parse — the types whose custom
+// UnmarshalJSON hides field names from DisallowUnknownFields). ok=false means
+// the 400 is already written.
+func parseBody[T any](w http.ResponseWriter, r *http.Request, parse func([]byte) (*T, error)) (*T, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	return io.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
+	if err == nil {
+		v, perr := parse(body)
+		if perr == nil {
+			return v, true
+		}
+		err = perr
+	}
+	writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+	return nil, false
 }
 
 // decodeStrict decodes a size-capped request body, rejecting unknown fields —
 // a typo'd field name must fail loudly, not be silently dropped. Only for
-// types without a custom UnmarshalJSON; those get a strict Parse function in
-// their own package instead, since DisallowUnknownFields cannot see inside a
-// custom unmarshaler.
+// types without a custom UnmarshalJSON; those go through parseBody instead.
 func decodeStrict(w http.ResponseWriter, r *http.Request, v any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	return dec.Decode(v)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	return artifact.UnmarshalStrict(body, v)
 }
 
 // ArtifactEmitter receives artifact results from the sidecar and dispatches
@@ -60,14 +72,8 @@ func NewHandler(svc *job.Service, metrics *observability.Metrics, healthChecker 
 
 // CreateJob handles POST /v1/jobs
 func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
-	body, err := readBody(w, r)
-	if err != nil {
-		h.writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-	req, err := job.Parse(body)
-	if err != nil {
-		h.writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+	req, ok := parseBody(w, r, job.Parse)
+	if !ok {
 		return
 	}
 

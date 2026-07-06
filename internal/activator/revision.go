@@ -136,9 +136,7 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	c := revisionCapacity{a: a, rev: rev}
 
-	// Single-token match by design (case-insensitive per RFC 7240); combined
-	// forms like "respond-async, wait=10" are not recognized.
-	if strings.EqualFold(r.Header.Get("Prefer"), "respond-async") {
+	if proxy.PreferAsync(r) {
 		spec, err := a.specFor(r.Context(), rev)
 		if err != nil {
 			http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)

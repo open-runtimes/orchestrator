@@ -1,9 +1,7 @@
 package api
 
 import (
-	"errors"
 	"net/http"
-	"orchestrator/internal/apperrors"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
@@ -65,25 +63,12 @@ type deploymentsHandler struct {
 // apply handles POST /v1/deployments — declarative create-or-update.
 // 201 when the deployment is new, 200 when an existing one is updated.
 func (h *deploymentsHandler) apply(w http.ResponseWriter, r *http.Request) {
-	body, err := readBody(w, r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-	req, err := deployment.Parse(body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+	req, ok := parseBody(w, r, deployment.Parse)
+	if !ok {
 		return
 	}
 
-	// Existence check for the status code only — Apply itself is atomic
-	// either way, so the race window here can at worst mislabel a 200 as 201.
-	created := false
-	if _, err := h.svc.Get(r.Context(), req.ID); err != nil {
-		created = errors.Is(err, apperrors.ErrNotFound)
-	}
-
-	status, err := h.svc.Apply(r.Context(), req)
+	status, created, err := h.svc.Apply(r.Context(), req)
 	if err != nil {
 		handleServiceError(w, r, err)
 		return

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/proxy"
 	"orchestrator/internal/testutil"
 	"orchestrator/pkg/deployment"
 	"testing"
@@ -183,7 +184,7 @@ func TestIntegration_RevisionLifecycle(t *testing.T) {
 	id := fmt.Sprintf("web-%d", time.Now().UnixNano()%1_000_000_000)
 	rev1, rev2 := revisionName(id, 1), revisionName(id, 2)
 
-	if err := o.Apply(t.Context(), serverRequest(id)); err != nil {
+	if _, err := o.Apply(t.Context(), serverRequest(id)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -211,7 +212,7 @@ func TestIntegration_RevisionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get revision Deployment: %v", err)
 	}
-	if err := o.Apply(t.Context(), serverRequest(id)); err != nil {
+	if _, err := o.Apply(t.Context(), serverRequest(id)); err != nil {
 		t.Fatalf("no-op Apply: %v", err)
 	}
 	after, err := o.client.AppsV1().Deployments(testNamespace).Get(t.Context(), objectNameFor(rev1), metav1.GetOptions{})
@@ -229,7 +230,7 @@ func TestIntegration_RevisionLifecycle(t *testing.T) {
 	// serving until the new one is ready, then the auto-cut shifts traffic.
 	changed := serverRequest(id)
 	changed.Environment = map[string]string{"FOO": "bar"}
-	if err := o.Apply(t.Context(), changed); err != nil {
+	if _, err := o.Apply(t.Context(), changed); err != nil {
 		t.Fatalf("changed Apply: %v", err)
 	}
 	waitForCut(t, o, id, rev2, 120*time.Second)
@@ -273,7 +274,7 @@ func TestIntegration_HTTPRouteShape(t *testing.T) {
 
 	id := fmt.Sprintf("route-%d", time.Now().UnixNano()%1_000_000_000)
 	rev1 := revisionName(id, 1)
-	if err := o.Apply(t.Context(), serverRequest(id)); err != nil {
+	if _, err := o.Apply(t.Context(), serverRequest(id)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -292,7 +293,7 @@ func TestIntegration_HTTPRouteShape(t *testing.T) {
 	}
 	async, dflt := route.Spec.Rules[0], route.Spec.Rules[1]
 	if len(async.Matches) != 1 || len(async.Matches[0].Headers) != 1 ||
-		string(async.Matches[0].Headers[0].Name) != "Prefer" || async.Matches[0].Headers[0].Value != "respond-async" {
+		string(async.Matches[0].Headers[0].Name) != "Prefer" || async.Matches[0].Headers[0].Value != proxy.PreferAsyncPattern {
 		t.Errorf("async match: got %+v", async.Matches)
 	}
 	if len(async.BackendRefs) != 1 || string(async.BackendRefs[0].Name) != o.cfg.ActivatorService {
@@ -322,13 +323,13 @@ func TestIntegration_TrafficSplitAndRollback(t *testing.T) {
 	id := fmt.Sprintf("canary-%d", time.Now().UnixNano()%1_000_000_000)
 	rev1, rev2 := revisionName(id, 1), revisionName(id, 2)
 
-	if err := o.Apply(t.Context(), serverRequest(id)); err != nil {
+	if _, err := o.Apply(t.Context(), serverRequest(id)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	waitForCut(t, o, id, rev1, 120*time.Second)
 	changed := serverRequest(id)
 	changed.Environment = map[string]string{"V": "2"}
-	if err := o.Apply(t.Context(), changed); err != nil {
+	if _, err := o.Apply(t.Context(), changed); err != nil {
 		t.Fatalf("changed Apply: %v", err)
 	}
 	waitForCut(t, o, id, rev2, 120*time.Second)
@@ -378,7 +379,7 @@ func TestIntegration_NeverReadyFails(t *testing.T) {
 	req.Command = "exit 1"
 	req.ProgressDeadlineSeconds = 15
 
-	if err := o.Apply(t.Context(), req); err != nil {
+	if _, err := o.Apply(t.Context(), req); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 
@@ -410,7 +411,7 @@ func TestIntegration_ScaleToZeroAndBack(t *testing.T) {
 	id := fmt.Sprintf("zero-%d", time.Now().UnixNano()%1_000_000_000)
 	req := serverRequest(id)
 	req.Autoscaling = &deployment.Autoscaling{MinReplicas: 0}
-	if err := o.Apply(t.Context(), req); err != nil {
+	if _, err := o.Apply(t.Context(), req); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	waitForState(t, o, id, deployment.StateReady, 120*time.Second)

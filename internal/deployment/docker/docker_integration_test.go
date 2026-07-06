@@ -136,7 +136,7 @@ func TestDeployment_ApplyServeUpdateDelete(t *testing.T) {
 		Port:                    80,
 		ProgressDeadlineSeconds: 60,
 	}
-	if err := o.Apply(ctx, req); err != nil {
+	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to apply deployment: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestDeployment_ApplyServeUpdateDelete(t *testing.T) {
 
 	// Applying the identical spec must be a no-op: same containers.
 	before := containerIDsByType(t, o, id)
-	if err := o.Apply(ctx, req); err != nil {
+	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to re-apply identical spec: %v", err)
 	}
 	if after := containerIDsByType(t, o, id); !maps.Equal(before, after) {
@@ -168,7 +168,7 @@ func TestDeployment_ApplyServeUpdateDelete(t *testing.T) {
 
 	// A changed spec must replace the containers.
 	req.Environment = map[string]string{"CHANGED": "1"}
-	if err := o.Apply(ctx, req); err != nil {
+	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to apply changed spec: %v", err)
 	}
 	after := containerIDsByType(t, o, id)
@@ -209,7 +209,7 @@ func TestDeployment_ScaleToZeroAndBack(t *testing.T) {
 		ProgressDeadlineSeconds: 60,
 		Autoscaling:             &deployment.Autoscaling{MinReplicas: 0},
 	}
-	if err := o.Apply(ctx, req); err != nil {
+	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to apply deployment: %v", err)
 	}
 	waitForState(t, o, id, deployment.StateReady)
@@ -225,7 +225,7 @@ func TestDeployment_ScaleToZeroAndBack(t *testing.T) {
 	}
 
 	// Applying the identical spec must not wake an idle deployment.
-	if err := o.Apply(ctx, req); err != nil {
+	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to re-apply identical spec: %v", err)
 	}
 	requireIdle(t, o, id)
@@ -276,7 +276,7 @@ func TestDeployment_NeverReadyFails(t *testing.T) {
 		Port:                    80,
 		ProgressDeadlineSeconds: 5,
 	}
-	if err := o.Apply(ctx, req); err != nil {
+	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to apply deployment: %v", err)
 	}
 

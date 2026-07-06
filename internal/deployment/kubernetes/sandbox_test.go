@@ -58,7 +58,7 @@ func TestApply_SandboxRuntimeClassChecked(t *testing.T) {
 	req := &deployment.Request{ID: "web", Image: "nginx:1.27", Host: "web.example.com", Port: 8080, Sandbox: deployment.SandboxGvisor}
 
 	// Missing RuntimeClass → validation error, nothing minted.
-	if err := o.Apply(ctx, req); !errors.Is(err, apperrors.ErrValidation) {
+	if _, err := o.Apply(ctx, req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Fatalf("want validation error, got %v", err)
 	}
 
@@ -70,7 +70,7 @@ func TestApply_SandboxRuntimeClassChecked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create RuntimeClass: %v", err)
 	}
-	if err := o.Apply(ctx, req); err != nil {
+	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	dep, err := cs.AppsV1().Deployments(o.namespace).Get(ctx, "dep-web-00001", metav1.GetOptions{})

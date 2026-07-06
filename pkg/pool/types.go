@@ -5,7 +5,6 @@
 package pool
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/artifact"
@@ -110,10 +109,8 @@ type activationJSON struct {
 // Strictness belongs at the API edge only: stored specs (pod annotations)
 // keep the lenient UnmarshalJSON so version skew never strands them.
 func Parse(data []byte) (*Activation, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var raw activationJSON
-	if err := dec.Decode(&raw); err != nil {
+	if err := artifact.UnmarshalStrict(data, &raw); err != nil {
 		return nil, err
 	}
 	var a Activation

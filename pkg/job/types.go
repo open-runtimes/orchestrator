@@ -1,7 +1,6 @@
 package job
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/artifact"
@@ -43,10 +42,8 @@ type requestJSON struct {
 // belongs at the API edge only: stored specs (labels, annotations) keep the
 // lenient UnmarshalJSON so version skew never strands them.
 func Parse(data []byte) (*Request, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var raw requestJSON
-	if err := dec.Decode(&raw); err != nil {
+	if err := artifact.UnmarshalStrict(data, &raw); err != nil {
 		return nil, err
 	}
 	var r Request

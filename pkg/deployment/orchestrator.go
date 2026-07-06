@@ -17,8 +17,9 @@ type Orchestrator interface {
 	Lifecycle
 
 	// Apply creates the deployment or replaces its spec in place. Applying an
-	// identical spec is a no-op.
-	Apply(ctx context.Context, req *Request) error
+	// identical spec is a no-op. Reports whether the deployment was created —
+	// the backend knows for free, and the API's 201-vs-200 hangs on it.
+	Apply(ctx context.Context, req *Request) (created bool, err error)
 
 	// Delete tears down the deployment's workloads and routing state.
 	Delete(ctx context.Context, id string) error
@@ -46,8 +47,10 @@ type Routing interface {
 	// blue-green, or rollback are all weight edits across existing
 	// revisions. Also switches the rollout mode to manual: a new revision
 	// no longer auto-cuts until traffic is reset to a single 100% target on
-	// the latest revision. Docker is single-revision: setting 100% to the
-	// deployment's own ID is a no-op, anything else is a validation error.
+	// the latest revision. Empty targets release back to auto: the backend
+	// resolves "latest" and routes 100% to it. Docker is single-revision:
+	// empty targets or 100% to the deployment's own ID are the no-op it
+	// already does, anything else is a validation error.
 	SetTraffic(ctx context.Context, id string, targets []Target) error
 
 	// Endpoints returns ready proxy endpoints for the deployment's

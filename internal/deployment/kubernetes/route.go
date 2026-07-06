@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"strings"
 
@@ -14,11 +15,8 @@ import (
 )
 
 const (
-	headerPrefer = "Prefer"
-	// preferAsyncPattern matches the respond-async token case-insensitively;
-	// combined RFC 7240 forms stay unmatched by design.
-	preferAsyncPattern = "(?i)^respond-async$"
-	headerRevision     = "X-Revision"
+	headerPrefer   = "Prefer"
+	headerRevision = "X-Revision"
 
 	// servicePort is the stable port every revision Service exposes.
 	servicePort int32 = 80
@@ -274,7 +272,7 @@ func (o *Orchestrator) buildRouteRules(targets []deployment.Target) []gatewayv1.
 					// the RequestHeaderModifier this design already requires.
 					Type:  ptr.To(gatewayv1.HeaderMatchRegularExpression),
 					Name:  headerPrefer,
-					Value: preferAsyncPattern,
+					Value: proxy.PreferAsyncPattern,
 				}},
 			}},
 			BackendRefs: async,

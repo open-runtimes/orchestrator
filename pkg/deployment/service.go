@@ -66,26 +66,28 @@ func NewService(orchestrator Orchestrator, artifacts *artifact.Registry, domain 
 }
 
 // Apply validates the spec (after applying defaults) and creates-or-updates
-// the deployment.
-func (s *Service) Apply(ctx context.Context, req *Request) (*StatusResponse, error) {
+// the deployment, reporting whether it was created.
+func (s *Service) Apply(ctx context.Context, req *Request) (*StatusResponse, bool, error) {
 	s.applyDefaults(req)
 	if err := s.validate(req); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Host uniqueness: a host is owned by one deployment.
 	if err := s.checkHostOwnership(ctx, req); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	logger := slog.With("deploymentId", req.ID, "image", req.Image)
-	if err := s.orchestrator.Apply(ctx, req); err != nil {
+	created, err := s.orchestrator.Apply(ctx, req)
+	if err != nil {
 		logger.Error("Deployment apply failed", "error", err)
-		return nil, err
+		return nil, false, err
 	}
-	logger.Info("Deployment applied", "host", req.Host)
+	logger.Info("Deployment applied", "host", req.Host, "created", created)
 
-	return s.Get(ctx, req.ID)
+	status, err := s.Get(ctx, req.ID)
+	return status, created, err
 }
 
 // Get returns the status of a deployment, with its public URL filled in.

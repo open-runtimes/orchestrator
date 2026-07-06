@@ -100,36 +100,36 @@ func (o *Orchestrator) RunLeaderElected(ctx context.Context, run func(context.Co
 //   - changed spec → mint the next revision. Traffic is UNTOUCHED — the
 //     rollout reconciler auto-cuts once the new revision reports ready
 //     (unless traffic was pinned manually).
-func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) error {
+func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
 	if err := o.checkRuntimeClass(ctx, req.Sandbox); err != nil {
-		return err
+		return false, err
 	}
 	specJSON, err := json.Marshal(req)
 	if err != nil {
-		return apperrors.Internal("kubernetes.marshalSpec", err)
+		return false, apperrors.Internal("kubernetes.marshalSpec", err)
 	}
 
 	m, err := o.getMarker(ctx, req.ID)
 	switch {
 	case errors.Is(err, apperrors.ErrNotFound):
-		return o.createFirstRevision(ctx, req, string(specJSON))
+		return true, o.createFirstRevision(ctx, req, string(specJSON))
 	case err != nil:
-		return err
+		return false, err
 	}
 	stored, err := o.getSpecJSON(ctx, req.ID)
 	if err != nil && !errors.Is(err, errSpecMissing) {
-		return err
+		return false, err
 	}
 	if err == nil && stored == string(specJSON) {
 		// Identical spec — ensure the head revision's objects still exist.
 		if err := o.ensureRevisionObjects(ctx, req, m.LatestRevision); err != nil {
-			return err
+			return false, err
 		}
-		return o.ensureRoute(ctx, m, fallbackTargets(m))
+		return false, o.ensureRoute(ctx, m, fallbackTargets(m))
 	}
 	// Changed spec — or a marker whose spec Secret is gone, healed by minting
 	// a fresh head so the stored spec always describes latestRevision.
-	return o.mintNextRevision(ctx, req, m, string(specJSON))
+	return false, o.mintNextRevision(ctx, req, m, string(specJSON))
 }
 
 // checkRuntimeClass verifies the sandbox tier's RuntimeClass is installed
