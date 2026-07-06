@@ -30,9 +30,9 @@ const (
 
 // Defaults applied by Apply.
 const (
-	DefaultTimeoutSeconds              = 300
+	DefaultTimeoutSeconds      = 300
 	DefaultStartTimeoutSeconds = 300
-	DefaultReadyTimeoutSeconds     = 600
+	DefaultReadyTimeoutSeconds = 600
 )
 
 // idPattern is an RFC-1123 label: lowercase alphanumeric with interior hyphens.

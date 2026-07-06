@@ -279,4 +279,50 @@ spec:
       default:
         memory: 512Mi
 {{- end }}
+
+{{- /*
+Replica-aware PDB — see the jobs PDB note; singletons never get one.
+*/}}
+{{- if or (gt (int .Values.deployments.replicaCount) 1) (and .Values.deployments.autoscaling.enabled (gt (int .Values.deployments.autoscaling.minReplicas) 1)) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.deployments.autoscaling.enabled }}
+{{- if not .Values.deployments.leaderElection.enabled }}
+{{- fail "deployments.autoscaling.enabled requires deployments.leaderElection.enabled=true" }}
+{{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "orchestrator.deploymentsName" . }}
+  minReplicas: {{ .Values.deployments.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.deployments.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.deployments.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
 {{- end }}
