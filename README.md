@@ -71,7 +71,9 @@ A Helm chart lives at `charts/orchestrator/` — see the [operations guide](docs
 ```bash
 helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
   --version <X.Y.Z> \
-  --namespace orchestrator --create-namespace
+  --namespace orchestrator --create-namespace \
+  --set jobs.enabled=true --set deployments.enabled=true \
+  --set deployments.activator.enabled=true
 ```
 
 Local dev loop (requires kind + tilt):

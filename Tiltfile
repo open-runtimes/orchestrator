@@ -104,6 +104,7 @@ if DEPLOYMENTS_ENABLED:
     )
     helm_set = [
         'deployments.enabled=true',
+        'deployments.activator.enabled=true',
         'deployments.image.repository=' + DEPLOYMENTS_SERVICE_IMAGE,
         'deployments.image.pullPolicy=Never',
         'deployments.sidecarImage.repository=' + DEPLOYMENTS_SIDECAR_IMAGE,

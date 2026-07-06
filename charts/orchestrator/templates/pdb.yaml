@@ -4,7 +4,7 @@ durably multi-replica (replicaCount > 1 or an HPA that can take them there) —
 a PDB on a singleton would block node drains outright. maxUnavailable: 1
 keeps quorum-free stateless services available through voluntary disruption.
 */}}
-{{- if or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled }}
+{{- if and .Values.jobs.enabled (or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -34,7 +34,7 @@ spec:
     matchLabels:
       {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 6 }}
 {{- end }}
-{{- if or (gt (int .Values.deployments.activator.replicaCount) 1) .Values.deployments.activator.autoscaling.enabled }}
+{{- if and .Values.deployments.activator.enabled (or (gt (int .Values.deployments.activator.replicaCount) 1) .Values.deployments.activator.autoscaling.enabled) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

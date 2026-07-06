@@ -1,4 +1,4 @@
-{{- if and .Values.orchestrator.jobNamespaceCreate .Values.orchestrator.jobNamespace (ne .Values.orchestrator.jobNamespace .Release.Namespace) -}}
+{{- if and .Values.jobs.enabled .Values.orchestrator.jobNamespaceCreate .Values.orchestrator.jobNamespace (ne .Values.orchestrator.jobNamespace .Release.Namespace) -}}
 apiVersion: v1
 kind: Namespace
 metadata:

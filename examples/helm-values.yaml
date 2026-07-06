@@ -10,6 +10,10 @@
 # controller with Extended features (Traefik, Envoy Gateway, Istio) — see
 # docs/operations.md.
 
+# Every component is opt-in; this example enables both planes.
+jobs:
+  enabled: true
+
 # ── Serving plane ────────────────────────────────────────────────────────────
 deployments:
   enabled: true
@@ -73,7 +77,9 @@ deployments:
     enabled: true
 
   # The buffering edge for cold-start and async traffic — autoscaled on CPU.
+  # Required for scale-to-zero and async requests.
   activator:
+    enabled: true
     autoscaling:
       enabled: true
       minReplicas: 2

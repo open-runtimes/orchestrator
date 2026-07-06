@@ -118,6 +118,10 @@ deployments:
     tag: latest
   # The buffering edge for cold/async traffic (deployments-activator).
   activator:
+    # The buffering edge for cold-start and async traffic. Opt-in like every
+    # component; without it, scale-to-zero deployments 503 when cold and
+    # async requests have nowhere to buffer.
+    enabled: false
     replicaCount: 1
     # HPA for the buffering edge (stateless; no leader election needed).
     autoscaling:

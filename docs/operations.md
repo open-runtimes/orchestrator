@@ -17,10 +17,13 @@ How to deploy and configure the orchestrator. Consumers of the API want the [job
 
 The Helm chart (`charts/orchestrator/`) installs up to two stateless services:
 
-| Service | Always? | Serves |
+Every component is opt-in — a default install renders nothing.
+
+| Service | Enable with | Serves |
 | --- | --- | --- |
-| **jobs** | yes | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
-| **deployments** | `deployments.enabled` | `/v1/deployments` and `/v1/deployment-pools` — long-lived HTTP workloads and warm pools, plus the **activator** (the buffering edge for cold and async traffic) |
+| **jobs** | `jobs.enabled` | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
+| **deployments** | `deployments.enabled` | `/v1/deployments` and `/v1/deployment-pools` — long-lived HTTP workloads and warm pools |
+| **activator** | `deployments.activator.enabled` | The buffering edge for cold and async traffic — required for scale-to-zero and `Prefer: respond-async` |
 
 Both derive all state from the cluster: restarts and replica failovers lose nothing, and there is no database.
 
@@ -35,10 +38,11 @@ Both derive all state from the cluster: restarts and replica failovers lose noth
 ```bash
 helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
   --version <X.Y.Z> \
-  --namespace orchestrator --create-namespace
+  --namespace orchestrator --create-namespace \
+  --set jobs.enabled=true
 ```
 
-This deploys the jobs service alone. A complete worked example — serving plane, hardened workload namespace, pools, HA — lives at [`examples/helm-values.yaml`](../examples/helm-values.yaml). Verify with:
+This deploys the jobs service alone (components are opt-in; a bare install renders nothing). A complete worked example — serving plane, hardened workload namespace, pools, HA — lives at [`examples/helm-values.yaml`](../examples/helm-values.yaml). Verify with:
 
 ```bash
 kubectl -n orchestrator port-forward svc/jobs 8080:8080 &
@@ -53,6 +57,8 @@ To require authentication, mount a secret and point `API_KEY_FILE` at it (via `e
 # values.yaml
 deployments:
   enabled: true
+  activator:
+    enabled: true # the cold/async buffering edge
   domain: apps.example.com        # auto-assigned hosts become {id}.apps.example.com
   gateway:
     name: orchestrator            # the Gateway resource HTTPRoutes attach to

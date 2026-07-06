@@ -4,7 +4,7 @@ stateless (state lives in the cluster), so any replica serves any request;
 the jobs and deployments services additionally require leader election so
 their background loops stay single-writer while the API scales out.
 */}}
-{{- if .Values.autoscaling.enabled }}
+{{- if and .Values.jobs.enabled .Values.autoscaling.enabled }}
 {{- if not .Values.leaderElection.enabled }}
 {{- fail "autoscaling.enabled requires leaderElection.enabled=true" }}
 {{- end }}
@@ -58,7 +58,7 @@ spec:
           type: Utilization
           averageUtilization: {{ .Values.deployments.autoscaling.targetCPUUtilizationPercentage }}
 {{- end }}
-{{- if .Values.deployments.activator.autoscaling.enabled }}
+{{- if and .Values.deployments.activator.enabled .Values.deployments.activator.autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

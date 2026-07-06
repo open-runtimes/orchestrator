@@ -1,4 +1,4 @@
-{{- if .Values.deployments.enabled }}
+{{- if and .Values.deployments.enabled .Values.deployments.activator.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
