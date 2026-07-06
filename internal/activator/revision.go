@@ -12,11 +12,9 @@ import (
 	"net/url"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/proxy"
-	"orchestrator/pkg/cloudevent"
 	"orchestrator/pkg/deployment"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
@@ -70,16 +68,11 @@ type RevisionConfig struct {
 // whose endpoints are this activator during the cold window (loop).
 type RevisionActivator struct {
 	client kubernetes.Interface
-	queue  dispatcher.Queue
+	broker *Broker
 	cfg    RevisionConfig
-	source string // CloudEvents source
 
 	pods        corelisters.PodLister
 	deployments appslisters.DeploymentLister
-
-	mu        sync.Mutex
-	lastRaise map[string]time.Time // revision → last cold scale-up
-	queued    map[string]int       // revision → requests waiting for a pod (the scale-from-zero hold-up signal)
 }
 
 // NewRevisionActivator creates a RevisionActivator. queue delivers async
@@ -95,12 +88,9 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 		cfg.ResponseStartTimeout = defaultResponseStartTimeout
 	}
 	return &RevisionActivator{
-		client:    client,
-		queue:     queue,
-		cfg:       cfg,
-		source:    "orchestrator/deployments",
-		lastRaise: make(map[string]time.Time),
-		queued:    make(map[string]int),
+		client: client,
+		broker: NewBroker(queue),
+		cfg:    cfg,
 	}
 }
 
@@ -108,24 +98,7 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 // revision's first pod — the autoscaler's hold-up signal while a cold start
 // is in flight (scraped via GET /stats on the data listener).
 func (a *RevisionActivator) QueuedByRevision() map[string]int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make(map[string]int, len(a.queued))
-	for rev, n := range a.queued {
-		if n > 0 {
-			out[rev] = n
-		}
-	}
-	return out
-}
-
-func (a *RevisionActivator) trackQueued(rev string, delta int) {
-	a.mu.Lock()
-	a.queued[rev] += delta
-	if a.queued[rev] <= 0 {
-		delete(a.queued, rev)
-	}
-	a.mu.Unlock()
+	return a.broker.Queued()
 }
 
 // Start runs the managed pod + Deployment informers on ctx and blocks until
@@ -150,8 +123,9 @@ func (a *RevisionActivator) Start(ctx context.Context) error {
 }
 
 // ServeHTTP implements the data plane: the gateway's X-Revision header names
-// the target revision, then the request is proxied synchronously or accepted
-// for async delivery.
+// the target revision, then the request is handed to the broker with that
+// revision's capacity bound in. Sync requests never read the spec — only
+// async needs the callback config from the Spec Secret.
 func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rev := r.Header.Get(headerRevision)
 	if rev == "" {
@@ -160,198 +134,66 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Header.Del(headerRevision)
 
+	c := revisionCapacity{a: a, rev: rev}
+
 	// Exact-literal match by design; combined RFC 7240 forms are not recognized.
 	if r.Header.Get("Prefer") == "respond-async" {
-		a.serveAsync(w, r, rev)
-		return
-	}
-	a.serveSync(w, r, rev)
-}
-
-// serveSync waits for a reachable pod of the revision (bounded by
-// ResponseStartTimeout) and proxies the request to it, preserving the inbound
-// Host — the workload's virtual host. The per-request 504 timeout is enforced
-// by the deployments-sidecar, not here.
-func (a *RevisionActivator) serveSync(w http.ResponseWriter, r *http.Request, rev string) {
-	target, err := a.waitForPod(r.Context(), rev)
-	if err != nil {
-		http.Error(w, "no serving capacity became ready", http.StatusServiceUnavailable)
-		return
-	}
-	proxyTo(target, r.Host).ServeHTTP(w, r)
-}
-
-// serveAsync buffers the request, responds 202 immediately, and delivers the
-// eventual response to the deployment's callback as a CloudEvent. Delivery is
-// at-most-once: nothing is stored, X-Invocation-Id is a correlation id only.
-func (a *RevisionActivator) serveAsync(w http.ResponseWriter, r *http.Request, rev string) {
-	spec, err := a.specFor(r.Context(), rev)
-	if err != nil {
-		http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)
-		return
-	}
-	if spec.Callback == nil || spec.Callback.URL == "" {
-		http.Error(w, "async requires a callback on the deployment", http.StatusBadRequest)
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxAsyncRequestBody+1))
-	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
-		return
-	}
-	if len(body) > maxAsyncRequestBody {
-		http.Error(w, "async request body too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	invocationID := newInvocationID()
-	req := cloneForForward(r, r.Host, body)
-
-	w.Header().Set("X-Invocation-Id", invocationID)
-	w.WriteHeader(http.StatusAccepted)
-
-	go a.forwardAsync(req, rev, spec, invocationID)
-}
-
-// forwardAsync executes the buffered request against the revision and
-// dispatches the orchestrator.deployment.response CloudEvent.
-func (a *RevisionActivator) forwardAsync(r *http.Request, rev string, spec *deployment.Request, invocationID string) {
-	ctx, cancel := context.WithTimeout(context.Background(),
-		a.cfg.ResponseStartTimeout+time.Duration(spec.TimeoutSeconds)*time.Second)
-	defer cancel()
-
-	status, body, truncated, errMsg := a.forward(ctx, r, rev)
-	if errMsg != "" {
-		slog.Warn("Async forward failed", "revision", rev, "invocationId", invocationID, "error", errMsg)
-	}
-
-	data := map[string]any{
-		"deploymentId": spec.ID,
-		"invocationId": invocationID,
-	}
-	if status > 0 {
-		data["statusCode"] = status
-	}
-	if body != nil {
-		data["body"] = string(body)
-		data["bodyTruncated"] = truncated
-	}
-	if errMsg != "" {
-		data["error"] = errMsg
-	}
-
-	event := cloudevent.New("orchestrator.deployment.response", a.source, spec.ID, invocationID, data)
-	if err := a.queue.Dispatch(&dispatcher.Event{
-		Payload:     event,
-		Destination: spec.Callback.URL,
-		SigningKey:  spec.Callback.Key,
-	}); err != nil {
-		slog.Warn("Failed to dispatch async response", "revision", rev, "invocationId", invocationID, "error", err)
-	}
-}
-
-// forward sends the buffered request to a reachable pod of the revision and
-// reads the response, capped at maxCallbackResponseBody (larger bodies are
-// truncated and flagged).
-func (a *RevisionActivator) forward(ctx context.Context, r *http.Request, rev string) (status int, body []byte, truncated bool, errMsg string) {
-	target, err := a.waitForPod(ctx, rev)
-	if err != nil {
-		return 0, nil, false, "no serving capacity became ready"
-	}
-
-	fwd := r.Clone(ctx)
-	fwd.URL.Scheme = target.Scheme
-	fwd.URL.Host = target.Host
-	fwd.RequestURI = ""
-
-	resp, err := http.DefaultClient.Do(fwd)
-	if err != nil {
-		return 0, nil, false, "forward failed: " + err.Error()
-	}
-	defer resp.Body.Close()
-
-	body, err = io.ReadAll(io.LimitReader(resp.Body, maxCallbackResponseBody+1))
-	if err != nil {
-		return resp.StatusCode, nil, false, "failed to read response: " + err.Error()
-	}
-	if len(body) > maxCallbackResponseBody {
-		return resp.StatusCode, body[:maxCallbackResponseBody], true, ""
-	}
-	return resp.StatusCode, body, false, ""
-}
-
-// waitForPod resolves a forward target for the revision, bounded by
-// ResponseStartTimeout: a ready pod from the informer wins immediately; a cold
-// revision is raised 0→1 and its Running pods are direct-probed so the first
-// reachable sidecar releases the request without waiting on kubelet readiness
-// propagation.
-func (a *RevisionActivator) waitForPod(ctx context.Context, rev string) (*url.URL, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, a.cfg.ResponseStartTimeout)
-	defer cancel()
-
-	a.trackQueued(rev, 1)
-	defer a.trackQueued(rev, -1)
-
-	selector := labels.SelectorFromSet(labels.Set{revisionLabel: rev})
-	for {
-		pods, err := a.pods.Pods(a.cfg.Namespace).List(selector)
-		if err == nil {
-			if target := readyPodTarget(pods, a.cfg.ProxyPort); target != nil {
-				return target, nil
-			}
-			a.raise(waitCtx, rev)
-			if target := a.probeCandidates(waitCtx, pods); target != nil {
-				return target, nil
-			}
+		spec, err := a.specFor(r.Context(), rev)
+		if err != nil {
+			http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)
+			return
 		}
-		select {
-		case <-waitCtx.Done():
-			return nil, waitCtx.Err()
-		case <-time.After(endpointPollInterval):
-		}
+		a.broker.Async(w, r, rev, r.Host, spec, a.cfg.ResponseStartTimeout, c)
+		return
 	}
+	a.broker.Sync(w, r, rev, r.Host, a.cfg.ResponseStartTimeout, c)
 }
 
-// raise patches the revision Deployment's scale subresource 0→1 — the cold
-// start the activator owns, never waiting on an autoscaler tick. Debounced per
-// revision so concurrent cold hits (and the poll loop) issue one write;
-// failures are logged, not returned — the wait carries on and the request
-// fails with 503 only if nothing becomes reachable in time.
-func (a *RevisionActivator) raise(ctx context.Context, rev string) {
-	a.mu.Lock()
-	if time.Since(a.lastRaise[rev]) < raiseDebounce {
-		a.mu.Unlock()
-		return
-	}
-	a.lastRaise[rev] = time.Now()
-	pruneStale(a.lastRaise, raiseDebounce)
-	a.mu.Unlock()
+// revisionCapacity adapts one revision to the broker's seam: targets are the
+// informer's ready pods — or, during a cold start, the first Running pod
+// whose sidecar answers a direct /ready probe (the Knative activator move,
+// skipping kubelet readiness propagation) — and a raise patches the revision
+// Deployment's scale subresource 0→1.
+type revisionCapacity struct {
+	a   *RevisionActivator
+	rev string
+}
 
-	name := revisionDeploymentName(rev)
-	dep, err := a.deployments.Deployments(a.cfg.Namespace).Get(name)
+func (c revisionCapacity) Target(ctx context.Context) (*url.URL, error) {
+	selector := labels.SelectorFromSet(labels.Set{revisionLabel: c.rev})
+	pods, err := c.a.pods.Pods(c.a.cfg.Namespace).List(selector)
 	if err != nil {
-		slog.Warn("Cold-start raise skipped", "revision", rev, "error", err)
-		return
+		return nil, err
+	}
+	if target := readyPodTarget(pods, c.a.cfg.ProxyPort); target != nil {
+		return target, nil
+	}
+	return c.a.probeCandidates(ctx, pods), nil
+}
+
+func (c revisionCapacity) Raise(ctx context.Context) error {
+	name := revisionDeploymentName(c.rev)
+	dep, err := c.a.deployments.Deployments(c.a.cfg.Namespace).Get(name)
+	if err != nil {
+		return fmt.Errorf("raise skipped: %w", err)
 	}
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
-		return // already raised; pods are on their way
+		return nil // already raised; pods are on their way
 	}
 
 	scale := &autoscalingv1.Scale{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: a.cfg.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: c.a.cfg.Namespace},
 		Spec:       autoscalingv1.ScaleSpec{Replicas: 1},
 	}
-	if _, err := a.client.AppsV1().Deployments(a.cfg.Namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{}); err != nil {
-		slog.Warn("Cold-start scale-up failed", "revision", rev, "error", err)
-		return
+	if _, err := c.a.client.AppsV1().Deployments(c.a.cfg.Namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{}); err != nil {
+		return err
 	}
-	slog.Info("Cold-start scale-up requested", "revision", rev)
+	slog.Info("Cold-start scale-up requested", "revision", c.rev)
+	return nil
 }
 
 // probeCandidates direct-probes the sidecar /ready of the revision's Running
-// (ready or not) pods, releasing the request to the first responder — the
-// Knative activator move.
+// (ready or not) pods, releasing the request to the first responder.
 func (a *RevisionActivator) probeCandidates(ctx context.Context, pods []*corev1.Pod) *url.URL {
 	for _, pod := range pods {
 		if pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" {
