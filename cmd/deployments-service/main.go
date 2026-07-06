@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,7 +18,6 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
-	pooldocker "orchestrator/internal/pool/docker"
 	poolkubernetes "orchestrator/internal/pool/kubernetes"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
@@ -168,12 +168,7 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 	shimImage := config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
 	switch backend {
 	case "docker":
-		cfg := pooldocker.LoadConfigFromEnv()
-		cfg.SidecarImage = sidecarImage
-		cfg.ShimImage = shimImage
-		cfg.Pools = pools
-		cfg.Metrics = metrics
-		return pooldocker.NewOrchestrator(ctx, cfg)
+		return nil, errors.New("pools require the Kubernetes backend")
 	case "kubernetes":
 		cfg, err := poolkubernetes.LoadConfigFromEnv()
 		if err != nil {

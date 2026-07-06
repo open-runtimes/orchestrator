@@ -35,7 +35,7 @@ type ClaimRequest struct {
 	Command        string              `json:"command"`
 	Environment    map[string]string   `json:"environment,omitempty"`
 	Artifacts      []artifact.Artifact `json:"artifacts,omitempty"`
-	Port           int                 `json:"port,omitempty"` // >0: HTTP pool — becomes the proxy target + readiness subject
+	Port           int                 `json:"port"` // the container port the activation serves — the proxy target + readiness subject
 	TimeoutSeconds int                 `json:"timeoutSeconds,omitempty"`
 }
 

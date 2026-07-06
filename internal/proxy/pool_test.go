@@ -105,7 +105,20 @@ func TestPoolStartsUnclaimed(t *testing.T) {
 	}
 }
 
-func TestPoolClaimExec(t *testing.T) {
+func TestPoolClaimSignalsShim(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "hello")
+	}))
+	t.Cleanup(backend.Close)
+	_, portStr, err := net.SplitHostPort(backend.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split backend addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse backend port: %v", err)
+	}
+
 	cfg := poolConfig(t)
 	execCh := shimReader(t, cfg.Workspace)
 	p := startProxy(t, cfg)
@@ -114,6 +127,7 @@ func TestPoolClaimExec(t *testing.T) {
 		ActivationID: "act-1",
 		Command:      "node index.js",
 		Environment:  map[string]string{"FOO": "bar"},
+		Port:         port,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("claim: got %d, want 200", status)
@@ -131,16 +145,8 @@ func TestPoolClaimExec(t *testing.T) {
 	if s := claimState(t, p); !s.Claimed || s.Failed || s.ActivationID != "act-1" {
 		t.Fatalf("claimed state: got %+v, want claimed act-1", s)
 	}
-	if status := postActivate(t, p, testClaimToken, ClaimRequest{ActivationID: "act-2", Command: "true"}); status != http.StatusConflict {
+	if status := postActivate(t, p, testClaimToken, ClaimRequest{ActivationID: "act-2", Command: "true", Port: port}); status != http.StatusConflict {
 		t.Fatalf("second claim: got %d, want 409", status)
-	}
-	// Exec claims arm nothing: /ready stays 200 (the pod's fate is the
-	// container exit), the data plane stays 503.
-	if status, _ := get(t, localURL(t, p.AdminAddr(), "/ready")); status != http.StatusOK {
-		t.Fatalf("/ready after exec claim: got %d, want 200", status)
-	}
-	if status, _ := get(t, localURL(t, p.DataAddr(), "/")); status != http.StatusServiceUnavailable {
-		t.Fatalf("data after exec claim: got %d, want 503", status)
 	}
 }
 

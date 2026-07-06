@@ -73,9 +73,9 @@ X-Signature-256: sha256=ab12...
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `orchestrator.pool.activation.result` | An [async activation](pools.md#async-activations) finished | `{"poolId", "activationId", "status", "exitCode", "output", "url", "error"}` |
+| `orchestrator.pool.activation.result` | An [async activation](pools.md#async-activations) finished | `{"poolId", "activationId", "status", "url", "error"}` |
 
-Exec pools report `exitCode` and `output`; HTTP pools report the serving `url`. `status` is the activation's final [lifecycle state](pools.md#activation-lifecycle).
+`url` is the activation's serving address on success; `status` is the activation's final [lifecycle state](pools.md#activation-lifecycle).
 
 ## Verifying signatures
 

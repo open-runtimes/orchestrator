@@ -219,7 +219,7 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	m.PoolActivations = b.counter("pool_activations_total", "Total activations, per pool")
 	m.PoolActivationsActive = b.upDown("pool_activations_active", "Activations currently in flight, per pool (saturation)")
 	m.PoolActivationDuration = b.histogram("pool_activation_duration_seconds",
-		"Activation wall time (claim through exit/serving), per pool and success",
+		"Activation wall time (claim through serving), per pool and success",
 		0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600, 1800)
 	m.PoolClaimConflicts = b.counter("pool_claim_conflicts_total", "Total 409 claim races lost (the loser retries the next warm pod)")
 	m.PoolPoisoned = b.counter("pool_poisoned_total", "Total pods poisoned by failed artifact materialization")
@@ -397,7 +397,7 @@ func (m *Metrics) RecordPoolActivationStarted(ctx context.Context, id string) {
 }
 
 // RecordPoolActivationFinished records an activation leaving flight with its
-// wall time (claim through exit for exec pools, through serving for HTTP).
+// wall time (claim through serving).
 func (m *Metrics) RecordPoolActivationFinished(ctx context.Context, id string, success bool, durationSeconds float64) {
 	m.PoolActivationsActive.Add(ctx, -1, metric.WithAttributes(poolAttr(id)))
 	m.PoolActivationDuration.Record(ctx, durationSeconds, metric.WithAttributes(poolAttr(id), successAttr(success)))

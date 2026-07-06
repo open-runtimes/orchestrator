@@ -82,7 +82,7 @@ Rollout metrics come from the leader's reconciler; leadership and K8s API metric
 
 | Signal | Metrics |
 |--------|---------|
-| Latency | `pool_activation_duration_seconds{pool,success}` (claim through exit/serving) |
+| Latency | `pool_activation_duration_seconds{pool,success}` (claim through serving) |
 | Traffic | `pool_activations_total{pool}`, `pool_burst_total{pool,policy=reject\|cold}` |
 | Errors | `pool_poisoned_total{pool}` (failed artifact materialization), `pool_claim_conflicts_total{pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
 | Saturation | `pool_activations_active{pool}`, `pool_warm{pool}`, `pool_claimed{pool}` |

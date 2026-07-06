@@ -107,7 +107,7 @@ deployments:
     enabled: false
   # Warm pools (docs/pools.md): config-declared fleets an activation
   # late-binds onto. Each entry is a pkg/pool.Pool: {id, image, size, cpu,
-  # memory, port (0 = exec pool), burst (reject|cold), environment}.
+  # memory, port (required), burst (cold|reject; default cold), environment}.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
   pools: []
   # Image for the pool-shim (warm-pod entrypoint; installed into workload

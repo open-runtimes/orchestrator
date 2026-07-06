@@ -22,7 +22,7 @@ func TestBuildWarmPod_RuntimeClass(t *testing.T) {
 		deployment.SandboxGvisor: "gvisor",
 		deployment.SandboxKata:   "kata-qemu",
 	} {
-		p := testPool()
+		p := mapperPool()
 		p.Sandbox = sandbox
 		got := buildWarmPod(p, cfg, "pool-std-1", "token").Spec.RuntimeClassName
 		switch {

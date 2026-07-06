@@ -16,7 +16,6 @@ const (
 	defaultPoolDomain      = "localhost"
 	defaultLeaderLeaseName = "deployments-service-pools-leader"
 
-	defaultActivationRetention = 15 * time.Minute
 	defaultOrphanTTL           = 60 * time.Second
 )
 
@@ -44,7 +43,6 @@ type Config struct {
 	GatewayNamespace string // parentRef Gateway namespace; default = Namespace
 
 	PoolDomain          string        // default hostname suffix for HTTP activations: {id}.{PoolDomain}
-	ActivationRetention time.Duration // how long finished exec pods stay queryable before GC
 	OrphanTTL           time.Duration // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 
 	// LeaderElection gates the control loop (replenishment + GC) to one
@@ -79,7 +77,6 @@ func LoadConfigFromEnv() (Config, error) {
 		GatewayNamespace: config.GetEnv("KUBE_GATEWAY_NAMESPACE", ""),
 
 		PoolDomain:          config.GetEnv("POOL_DOMAIN", defaultPoolDomain),
-		ActivationRetention: config.GetDurationEnv("POOL_ACTIVATION_RETENTION", defaultActivationRetention),
 		OrphanTTL:           config.GetDurationEnv("POOL_ORPHAN_TTL", defaultOrphanTTL),
 
 		LeaderElection: kube.LeaderElectionConfig{
@@ -117,9 +114,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.PoolDomain == "" {
 		c.PoolDomain = defaultPoolDomain
-	}
-	if c.ActivationRetention <= 0 {
-		c.ActivationRetention = defaultActivationRetention
 	}
 	if c.OrphanTTL <= 0 {
 		c.OrphanTTL = defaultOrphanTTL

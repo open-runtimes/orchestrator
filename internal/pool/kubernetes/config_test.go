@@ -19,8 +19,8 @@ func TestApplyDefaults(t *testing.T) {
 	if c.PoolDomain != "localhost" {
 		t.Errorf("PoolDomain: want localhost, got %s", c.PoolDomain)
 	}
-	if c.ActivationRetention != 15*time.Minute || c.OrphanTTL != 60*time.Second {
-		t.Errorf("retention/orphan defaults: got %v/%v", c.ActivationRetention, c.OrphanTTL)
+	if c.OrphanTTL != 60*time.Second {
+		t.Errorf("OrphanTTL default: got %v", c.OrphanTTL)
 	}
 
 	// Enabled election defaults the pools-specific lease name.
@@ -41,7 +41,6 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("KUBE_GATEWAY_ENABLED", "false")
 	t.Setenv("KUBE_GATEWAY_NAME", "edge")
 	t.Setenv("POOL_DOMAIN", "run.example.com")
-	t.Setenv("POOL_ACTIVATION_RETENTION", "5m")
 	t.Setenv("POOL_ORPHAN_TTL", "90s")
 
 	cfg, err := LoadConfigFromEnv()
@@ -57,8 +56,8 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.PoolDomain != "run.example.com" {
 		t.Errorf("PoolDomain: got %s", cfg.PoolDomain)
 	}
-	if cfg.ActivationRetention != 5*time.Minute || cfg.OrphanTTL != 90*time.Second {
-		t.Errorf("retention/orphan: got %v/%v", cfg.ActivationRetention, cfg.OrphanTTL)
+	if cfg.OrphanTTL != 90*time.Second {
+		t.Errorf("OrphanTTL: got %v", cfg.OrphanTTL)
 	}
 	if cfg.LeaderElection.LeaseName != "deployments-service-pools-leader" {
 		t.Errorf("lease name: got %s", cfg.LeaderElection.LeaseName)
