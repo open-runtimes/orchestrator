@@ -1,135 +1,73 @@
 # Orchestrator
 
-A job orchestration service for running containerized workloads with callbacks.
+A service for running containerized workloads on Docker or Kubernetes, in two shapes:
 
-## Features
+- **Jobs** — run a container to completion, with file artifacts in and out, and CloudEvents callbacks reporting progress and results.
+- **Deployments** — run a container as a long-lived HTTP service behind a gateway, with immutable revisions, traffic splitting, concurrency-based autoscaling, and scale-to-zero. **Pools** keep pre-warmed capacity for near-instant activations.
 
-- Async job execution on Docker or Kubernetes (select via `ORCHESTRATOR_BACKEND`)
-- Unified artifacts system (downloads, uploads, file writes, archives)
-- Dependency-based artifact ordering (pre-job and post-job)
-- CloudEvents 1.0 callbacks with HMAC-SHA256 signing
-- Async event dispatch with circuit breaker and retry
-- Prometheus metrics (Golden 4 Signals)
-- Restart resilience (jobs survive service restarts)
+The same API works against both backends (`ORCHESTRATOR_BACKEND=docker|kubernetes`): Docker for development, Kubernetes for production. The backend is the source of truth — the services are stateless, survive restarts, and any replica can serve any request.
 
-## Quick Start
+## Quick start — jobs
 
 ```bash
-# Prerequisites: Go 1.25+, Docker (or a Kubernetes cluster for the k8s backend)
-
-# Run with hot reload (Docker backend)
+# Prerequisites: Go 1.25+, Docker
 go run github.com/go-task/task/v3/cmd/task@latest dev
 
-# Create a job
 curl -X POST http://localhost:8080/v1/jobs \
   -H "Content-Type: application/json" \
-  -d '{
-    "id": "hello-world",
-    "image": "alpine:latest",
-    "command": "echo hello world"
-  }'
+  -d '{"id": "hello", "image": "alpine:latest", "command": "echo hello world"}'
 
-# Check status
-curl http://localhost:8080/v1/jobs/hello-world
+curl http://localhost:8080/v1/jobs/hello
+# {"id":"hello","status":"completed","exitCode":0}
 ```
 
-## API
+## Quick start — deployments
 
-### Create Job
+```bash
+curl -X POST http://localhost:8080/v1/deployments \
+  -H "Content-Type: application/json" \
+  -d '{"id": "web", "image": "traefik/whoami", "port": 80}'
+# 201 {"id":"web","status":"pending","url":"http://web.localhost", ...}
 
-```
-POST /v1/jobs
-```
-
-Minimal example:
-```json
-{
-  "id": "my-job",
-  "image": "alpine:latest",
-  "command": "cat data/input.txt > data/output.txt"
-}
+# Once ready, the deployment serves on its host:
+curl -H "Host: web.localhost" http://localhost:8081/
 ```
 
-Full example with artifacts and callbacks:
-```json
-{
-  "id": "my-job",
-  "image": "python:3.12-slim",
-  "command": "python scripts/process.py",
-  "cpu": 2,
-  "memory": 512,
-  "timeoutSeconds": 300,
-  "environment": {
-    "LOG_LEVEL": "debug"
-  },
-  "artifacts": [
-    {
-      "id": "script",
-      "type": "write",
-      "in": "print('hello')",
-      "out": "scripts/process.py"
-    },
-    {
-      "id": "data",
-      "type": "download",
-      "in": "https://example.com/input.txt",
-      "out": "data/input.txt"
-    },
-    {
-      "id": "result",
-      "type": "upload",
-      "in": "data/output.txt",
-      "out": "https://example.com/upload",
-      "depends": "job"
-    },
-    {
-      "id": "metrics",
-      "type": "read",
-      "in": "data/metrics.json",
-      "depends": "job"
-    }
-  ],
-  "callback": {
-    "url": "https://example.com/webhook",
-    "events": ["orchestrator.job.exit"],
-    "key": "hmac-secret"
-  }
-}
+## Documentation
+
+| Guide | What it covers |
+| --- | --- |
+| [Jobs](docs/jobs.md) | Run-to-completion workloads: the jobs API, artifacts (download, write, archive, mount, …), dependency ordering |
+| [Deployments](docs/deployments.md) | Long-lived HTTP services: revisions, canary traffic, autoscaling, scale-to-zero, async requests |
+| [Pools](docs/pools.md) | Pre-warmed capacity: configuring pools, exec and HTTP activations, burst policy |
+| [Callbacks](docs/callbacks.md) | CloudEvents delivery: every event type, payload schemas, HMAC signature verification |
+| [Operations](docs/operations.md) | Deploying the orchestrator: Helm install, prerequisites, configuration reference, hardening |
+| [Observability](docs/observability.md) | Metrics, logging, and tracing |
+| [Development](docs/development.md) | Building, testing, and the local dev loop |
+| [Design](docs/design/README.md) | Internal architecture and design decisions |
+
+## API at a glance
+
+All request and response bodies are JSON; every error is `{"error": "..."}` with a meaningful status code. Requests with unknown fields are rejected with `400` naming the field — a typo never silently deploys defaults. When an API key is configured, send `Authorization: Bearer <key>`.
+
 ```
+POST   /v1/jobs                                    # 202 — run a container to completion
+GET    /v1/jobs/{id}                               # status + exit code
+DELETE /v1/jobs/{id}                               # cancel
 
-### Other Endpoints
+POST   /v1/deployments                             # 201 created / 200 updated (declarative apply)
+GET    /v1/deployments/{id}                        # status, revisions, traffic, mode
+POST   /v1/deployments/{id}/traffic                # canary / rollback; empty targets = back to auto
+DELETE /v1/deployments/{id}                        # tear down
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/jobs` | GET | List all jobs |
-| `/v1/jobs/:id` | GET | Get job status |
-| `/v1/jobs/:id` | DELETE | Cancel job |
-| `/livez` | GET | Liveness probe |
-| `/readyz` | GET | Readiness probe |
-| `/metrics` | GET | Prometheus metrics (port 9090) |
-
-## Callback Events
-
-CloudEvents 1.0 format, optionally signed with HMAC-SHA256.
-
-| Event | Source | Description |
-|-------|--------|-------------|
-| `orchestrator.job.start` | service | Job started |
-| `orchestrator.job.log` | service | Log output |
-| `orchestrator.job.exit` | service | Job exited |
-| `orchestrator.job.artifact` | sidecar | Artifact processed |
+GET    /v1/deployment-pools                        # configured pools + warm counts
+POST   /v1/deployment-pools/{id}/activations       # 201 — claim a warm pod and run
+DELETE /v1/deployment-pools/{id}/activations/{aid} # deactivate
+```
 
 ## Deploy to Kubernetes
 
-A Helm chart lives at `charts/orchestrator/`. Local dev loop (requires kind + tilt):
-
-```bash
-task tools       # install pinned ko, golangci-lint, helm into ./bin/
-task kind:up     # create the kind-orchestrator-dev cluster
-task dev:k8s     # tilt up: live-reload the chart on source change
-```
-
-For production, install directly from the OCI registry (requires Helm 3.8+):
+A Helm chart lives at `charts/orchestrator/` — see the [operations guide](docs/operations.md) for prerequisites (K8s 1.29+; Gateway API for deployments) and the full configuration reference.
 
 ```bash
 helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
@@ -137,13 +75,13 @@ helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
   --namespace orchestrator --create-namespace
 ```
 
-The chart and container images are published to GHCR on every `v*` tag. K8s jobs run as `batch/v1.Job` with a native sidecar (requires K8s 1.29+).
+Local dev loop (requires kind + tilt):
 
-## Documentation
-
-- [Development Guide](docs/development.md) - Setup, testing, debugging
-- [Architecture](docs/architecture.md) - Design decisions
-- [Observability](docs/observability.md) - Metrics and health checks
+```bash
+task tools       # install pinned ko, golangci-lint, helm into ./bin/
+task kind:up     # create the kind-orchestrator-dev cluster
+task dev:k8s     # tilt up: live-reload the chart on source change
+```
 
 ## License
 

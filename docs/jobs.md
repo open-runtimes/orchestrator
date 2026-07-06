@@ -1,12 +1,8 @@
-# Orchestrator Usage Guide
+# Jobs Guide
 
-This guide covers how to interact with the orchestrator service as an API client.
+A **job** runs a container to completion: the orchestrator pulls your image, materializes input artifacts into a shared workspace, runs your command, processes output artifacts, and reports everything to your [callback](callbacks.md). Jobs survive orchestrator restarts — in-flight work is resumed, not lost.
 
-## API Overview
-
-Base URL: `http://localhost:8080` (default)
-
-All endpoints require the `Authorization: Bearer <token>` header when `API_KEY_FILE` is configured.
+Base URL: `http://localhost:8080` (default). When an API key is configured, send `Authorization: Bearer <key>`. Request bodies with unknown fields are rejected with `400` naming the field — a typo never silently runs with defaults.
 
 ## Endpoints
 
@@ -408,113 +404,19 @@ Use `depends` to chain artifacts. The dependent artifact waits for its dependenc
 
 ## Callbacks
 
-Receive lifecycle events via HTTP POST to your endpoint.
+Add a `callback` to receive lifecycle events — container started, log batches, per-artifact results, and the final exit — as signed CloudEvents:
 
 ```json
 {
   "callback": {
     "url": "https://your-service.example.com/webhook",
     "key": "your-hmac-secret",
-    "events": ["orchestrator.job.start", "orchestrator.job.exit"]
+    "events": ["orchestrator.job.exit", "orchestrator.job.artifact"]
   }
 }
 ```
 
-- `url` - Your webhook endpoint
-- `key` - (Optional) HMAC-SHA256 signing key for verifying events
-- `events` - (Optional) Filter which events to receive. Empty = all events.
-
-### Event Types
-
-| Type | Description |
-|------|-------------|
-| `orchestrator.job.start` | Job container started |
-| `orchestrator.job.artifact` | Artifact processed (success/failed) |
-| `orchestrator.job.log` | Log lines from stdout/stderr |
-| `orchestrator.job.exit` | Job container exited |
-
-### CloudEvent Format
-
-Events follow the [CloudEvents 1.0 specification](https://cloudevents.io/).
-
-**Headers:**
-
-```
-Content-Type: application/cloudevents+json
-Ce-Specversion: 1.0
-Ce-Type: orchestrator.job.exit
-Ce-Source: orchestrator/supervisor
-Ce-Subject: my-job-123
-Ce-Id: my-job-123-1234567890
-Ce-Time: 2024-01-15T10:30:00Z
-X-Signature-256: sha256=abc123...
-```
-
-**Body:**
-
-```json
-{
-  "specversion": "1.0",
-  "type": "orchestrator.job.exit",
-  "source": "orchestrator/supervisor",
-  "subject": "my-job-123",
-  "id": "my-job-123-1234567890",
-  "time": "2024-01-15T10:30:00.000Z",
-  "datacontenttype": "application/json",
-  "data": {
-    "jobId": "my-job-123",
-    "exitCode": 0,
-    "image": "ffmpeg:latest",
-    "durationSeconds": 12.34,
-    "meta": {
-      "userId": "user-456",
-      "requestId": "req-789"
-    }
-  }
-}
-```
-
-### Event Data Schemas
-
-**start:**
-```json
-{"jobId": "...", "meta": {...}}
-```
-
-**artifact:**
-```json
-{"jobId": "...", "artifactId": "...", "artifactType": "download|upload|write|read|archive|unarchive|list", "status": "success|failed", "content": ..., "error": "...", "meta": {...}}
-```
-
-**log:**
-```json
-{"jobId": "...", "lines": ["line1", "line2"], "stream": "stdout|stderr", "meta": {...}}
-```
-
-**exit:**
-```json
-{"jobId": "...", "exitCode": 0, "image": "alpine:latest", "durationSeconds": 12.34, "error": "...", "meta": {...}}
-```
-
-### Verifying Signatures
-
-When `callback.key` is set, events are signed with HMAC-SHA256. Verify the `X-Signature-256` header:
-
-```go
-func verifySignature(body []byte, signature, key string) bool {
-    mac := hmac.New(sha256.New, []byte(key))
-    mac.Write(body)
-    expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-    return hmac.Equal([]byte(signature), []byte(expected))
-}
-```
-
-```php
-function verifySignature(string $body, string $signature, string $key): bool {
-    $expected = 'sha256=' . hash_hmac('sha256', $body, $key);
-    return hash_equals($expected, $signature);
-}
-```
+Event schemas, the envelope format, and signature verification live in the [callbacks guide](callbacks.md).
 
 ## Complete Example
 
@@ -565,8 +467,9 @@ All errors return JSON:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Invalid request |
-| 401 | Missing/invalid API key |
+| 400 | Invalid request — malformed JSON, unknown field, or failed validation; the message names the offending field |
+| 401 | Missing or invalid API key |
 | 404 | Job not found |
-| 409 | Job already exists |
+| 409 | Job with this ID already exists |
+| 415 | `Content-Type` is not `application/json` |
 | 500 | Internal error |

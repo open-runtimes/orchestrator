@@ -1,9 +1,12 @@
 # Serving Plane — Design
 
-> Status: **proposal**. A new `cmd/deployments-service` binary that runs long-lived / late-bound HTTP
-> workloads alongside `/v1/jobs`. It exposes **two APIs**: `/v1/deployments` (declarative, long-lived)
-> and `/v1/deployment-pools` (pre-warmed, late-bound) — pools is a feature of the same service, not a separate
-> binary. Backend selected via `ORCHESTRATOR_BACKEND=docker|kubernetes`.
+> Status: **shipped** (phases 0–6, see [implementation-plan.md](implementation-plan.md)). These are
+> the internal design documents; consumers want the [user guides](../deployments.md) instead. The
+> `cmd/deployments-service` binary runs long-lived / late-bound HTTP workloads alongside `/v1/jobs`,
+> exposing **two APIs**: `/v1/deployments` (declarative, long-lived) and `/v1/deployment-pools`
+> (pre-warmed, late-bound) — pools is a feature of the same service, not a separate binary. Backend
+> selected via `ORCHESTRATOR_BACKEND=docker|kubernetes`. The jobs plane's internals are in
+> [architecture.md](../architecture.md).
 
 ## The two APIs (one service)
 
