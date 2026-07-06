@@ -48,6 +48,9 @@ deployments:
   dataPort: 8081
   # Base domain for auto-assigned hosts: {id}.{domain}.
   domain: localhost
+  # Annotations on the deployments-service pod (the chart-level podAnnotations
+  # applies only to the jobs component).
+  podAnnotations: {}
   # Gateway API integration: the deployments-service reconciles an HTTPRoute
   # per deployment against this Gateway (Traefik / Envoy Gateway / Istio with
   # Extended backendRef-filter support).

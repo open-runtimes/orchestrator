@@ -16,6 +16,12 @@ unlike the network-isolated jobs internal endpoint. Isolation is a first-class c
   **deployments-activator** (trusts the gateway-set `X-Revision`, so its ingress is gateway-only).
 - **Edge** — TLS per host is the gateway's `Listener` (cert-manager). Request-level filtering
   (rate-limit/auth/WAF) is out of scope for now.
+- **Secret material at rest (known gap, Phase 6)** — callback HMAC keys ride inside the spec JSON
+  on the deployment marker ConfigMap, and pool claim tokens live in pod env/annotations. Within the
+  current single-namespace model these are guarded by the same RBAC as the pods themselves (whose
+  env is equally readable), so the exposure delta is nil — but the shard-namespace split makes
+  ConfigMap-readers a broader audience than Secret-readers. Move spec storage (or at least the
+  callback key) and claim tokens into `Secret`s as part of the Phase 6 namespace work.
 
 ## Workload hardening
 

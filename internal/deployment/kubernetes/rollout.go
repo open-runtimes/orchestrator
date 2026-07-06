@@ -59,8 +59,15 @@ func (o *Orchestrator) reconcileRollouts(ctx context.Context) {
 // and retire surplus revisions. An unavailable or failed head is left alone —
 // traffic keeps flowing to the old revision.
 func (o *Orchestrator) reconcileRollout(ctx context.Context, m marker) error {
-	if m.Deleting || m.TrafficMode != trafficModeAuto || m.LatestRevision == "" || m.LatestRevision == m.LastReady {
+	if m.Deleting || m.LatestRevision == "" {
 		return nil
+	}
+	if m.TrafficMode != trafficModeAuto || m.LatestRevision == m.LastReady {
+		// No cut pending — but retire still runs: manually pinned traffic
+		// must not exempt a deployment from revision GC (repeated Applies
+		// would otherwise accumulate revisions without bound; retire already
+		// protects lastReady and every weighted revision).
+		return o.retire(ctx, m)
 	}
 	dep, err := o.client.AppsV1().Deployments(o.namespace).Get(ctx, objectNameFor(m.LatestRevision), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {

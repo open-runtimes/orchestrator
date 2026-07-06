@@ -103,6 +103,8 @@ func Serve(ctx context.Context, opts Options) error {
 	select {
 	case sig := <-quit:
 		slog.Info("Received shutdown signal", "signal", sig)
+	case <-ctx.Done():
+		slog.Info("Context cancelled; shutting down")
 	case err := <-serverErr:
 		slog.Error("Server failed to start", "error", err)
 		shutdown(5 * time.Second)

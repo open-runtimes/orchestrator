@@ -131,7 +131,15 @@ func (a *Autoscaler) evaluateOne(ctx context.Context, now time.Time, status *dep
 	}
 	w.push(now, sample, a.cfg.Window)
 
-	auto := spec.Autoscaling
+	// Defensive re-defaulting: specs stored before maxReplicas/target existed
+	// deserialize with zeros — never divide by zero or clamp everything to 0.
+	auto := *spec.Autoscaling
+	if auto.Target <= 0 {
+		auto.Target = 100
+	}
+	if auto.MaxReplicas <= 0 {
+		auto.MaxReplicas = max(spec.Replicas, 1)
+	}
 	desired := int(math.Ceil(w.average() / float64(auto.Target)))
 	desired = min(max(desired, auto.MinReplicas), auto.MaxReplicas)
 	if queued > 0 {

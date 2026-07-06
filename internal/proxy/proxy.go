@@ -286,7 +286,14 @@ func (p *Proxy) drain() {
 	p.draining.Store(true)
 	time.Sleep(p.deregisterDelay)
 
-	ctx, cancel := context.WithTimeout(context.Background(), min(p.cfg.Timeout, p.cfg.MaxDrain))
+	// Timeout == 0 means "no per-request timeout" (handleData skips the
+	// deadline), so it must not read as a zero drain window here — the cap is
+	// then MaxDrain alone.
+	window := p.cfg.MaxDrain
+	if p.cfg.Timeout > 0 {
+		window = min(p.cfg.Timeout, p.cfg.MaxDrain)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), window)
 	defer cancel()
 	_ = p.data.Shutdown(ctx)
 	_ = p.admin.Close()

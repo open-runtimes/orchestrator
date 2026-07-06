@@ -8,10 +8,12 @@ package activator
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -21,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -215,7 +218,15 @@ func (a *Activator) dispatchResponse(spec *deployment.Request, invocationID stri
 		data["statusCode"] = status
 	}
 	if body != nil {
-		data["body"] = string(body)
+		// JSON strings must be valid UTF-8 — Go silently replaces bad bytes
+		// with U+FFFD, corrupting binary payloads. Base64 those instead and
+		// say so.
+		if utf8.Valid(body) {
+			data["body"] = string(body)
+		} else {
+			data["body"] = base64.StdEncoding.EncodeToString(body)
+			data["bodyEncoding"] = "base64"
+		}
 		data["bodyTruncated"] = truncated
 	}
 	if errMsg != "" {
@@ -252,16 +263,20 @@ func (a *Activator) waitForEndpoint(ctx context.Context, spec *deployment.Reques
 		a.mu.Unlock()
 	}()
 
+	ticker := time.NewTicker(endpointPollInterval)
+	defer ticker.Stop()
 	for {
 		endpoints, err := a.resolver.Endpoints(waitCtx, spec.ID)
 		if err == nil && len(endpoints) > 0 {
-			return endpoints[0], nil
+			// Spread load across replicas — always taking the first would pin
+			// all activator traffic to whichever pod lists first.
+			return endpoints[rand.IntN(len(endpoints))], nil
 		}
 		a.raise(waitCtx, spec)
 		select {
 		case <-waitCtx.Done():
 			return nil, waitCtx.Err()
-		case <-time.After(endpointPollInterval):
+		case <-ticker.C:
 		}
 	}
 }
@@ -277,6 +292,8 @@ func (a *Activator) raise(ctx context.Context, spec *deployment.Request) {
 		return
 	}
 	a.lastRaise[spec.ID] = time.Now()
+	pruneStale(a.lastRaise, raiseDebounce)
+	pruneCache(a.cache)
 	a.mu.Unlock()
 
 	replicas := max(spec.Replicas, 1)
@@ -322,6 +339,37 @@ func hostOnly(hostport string) string {
 
 func newInvocationID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	_, _ = crand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// pruneMapThreshold bounds the per-deployment bookkeeping maps: beyond it,
+// stale entries (deleted deployments, retired revisions) are dropped so churn
+// can't grow them without bound. Callers hold the map's lock.
+const pruneMapThreshold = 1024
+
+// pruneStale drops timestamp entries older than 100× their useful horizon.
+func pruneStale(m map[string]time.Time, horizon time.Duration) {
+	if len(m) < pruneMapThreshold {
+		return
+	}
+	cutoff := time.Now().Add(-100 * horizon)
+	for k, t := range m {
+		if t.Before(cutoff) {
+			delete(m, k)
+		}
+	}
+}
+
+// pruneCache drops expired resolve entries.
+func pruneCache(m map[string]resolveEntry) {
+	if len(m) < pruneMapThreshold {
+		return
+	}
+	now := time.Now()
+	for k, e := range m {
+		if now.After(e.expires) {
+			delete(m, k)
+		}
+	}
 }

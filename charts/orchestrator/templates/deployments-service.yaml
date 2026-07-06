@@ -15,7 +15,7 @@ spec:
     metadata:
       labels:
         {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 8 }}
-      {{- with .Values.podAnnotations }}
+      {{- with .Values.deployments.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

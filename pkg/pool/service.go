@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"regexp"
+	"strings"
 )
 
 // Validation limits, shared scale with the deployments service.
@@ -154,7 +155,9 @@ func generateActivationID(poolID string) string {
 	_, _ = rand.Read(b)
 	id := poolID + "-" + hex.EncodeToString(b)
 	if len(id) > maxIDLength {
-		id = id[len(id)-maxIDLength:]
+		// Truncation can strand a leading hyphen (invalid RFC-1123 label) if
+		// the cut lands inside the pool id at a hyphen boundary.
+		id = strings.TrimLeft(id[len(id)-maxIDLength:], "-")
 	}
 	return id
 }

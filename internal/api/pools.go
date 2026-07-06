@@ -85,7 +85,14 @@ func (h *poolsHandler) activate(w http.ResponseWriter, r *http.Request) {
 // activateAsync runs the activation detached and delivers the .result event.
 // At-most-once: a crash mid-flight drops the callback (failure-semantics).
 func (h *poolsHandler) activateAsync(poolID string, act *pool.Activation) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(act.TimeoutSeconds+120)*time.Second)
+	// The service applies the default TimeoutSeconds during Activate — after
+	// this deadline is computed — so an omitted timeout must budget for the
+	// default (300s), not zero.
+	timeout := act.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 300
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout+120)*time.Second)
 	defer cancel()
 
 	status, err := h.svc.Activate(ctx, poolID, act)

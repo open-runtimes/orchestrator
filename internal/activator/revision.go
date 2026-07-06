@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/cloudevent"
 	"orchestrator/pkg/deployment"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +37,10 @@ const (
 	revisionLabelManagedBy = "managed-by"
 	revisionManagedByValue = "deployments-service"
 	revisionLabel          = "deployment.revision"
-	revisionAnnotationSpec = "deployment.spec"
+	// markerSpecKey is the data key on the per-deployment marker ConfigMap
+	// (named dep-{deploymentID}) holding the head revision's spec JSON —
+	// where the callback/timeout config for async requests lives.
+	markerSpecKey = "spec"
 
 	// headerRevision is set by the gateway per weighted backendRef — the
 	// activator never re-derives the traffic split. Trusted, so ingress is
@@ -180,7 +184,7 @@ func (a *RevisionActivator) serveSync(w http.ResponseWriter, r *http.Request, re
 // eventual response to the deployment's callback as a CloudEvent. Delivery is
 // at-most-once: nothing is stored, X-Invocation-Id is a correlation id only.
 func (a *RevisionActivator) serveAsync(w http.ResponseWriter, r *http.Request, rev string) {
-	spec, err := a.specFor(rev)
+	spec, err := a.specFor(r.Context(), rev)
 	if err != nil {
 		http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)
 		return
@@ -320,6 +324,7 @@ func (a *RevisionActivator) raise(ctx context.Context, rev string) {
 		return
 	}
 	a.lastRaise[rev] = time.Now()
+	pruneStale(a.lastRaise, raiseDebounce)
 	a.mu.Unlock()
 
 	name := revisionDeploymentName(rev)
@@ -377,22 +382,33 @@ func (a *RevisionActivator) probeReady(ctx context.Context, podIP string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// specFor reconstructs the revision's deployment spec from the
-// deployment.spec annotation on its apps/v1 Deployment (via the informer).
-func (a *RevisionActivator) specFor(rev string) (*deployment.Request, error) {
-	dep, err := a.deployments.Deployments(a.cfg.Namespace).Get(revisionDeploymentName(rev))
+// specFor reconstructs the deployment spec for a revision from its marker
+// ConfigMap (dep-{deploymentID}, data key "spec") — the spec's home since the
+// revision rework. Async is the cold path, so a direct GET (no informer) is
+// fine.
+func (a *RevisionActivator) specFor(ctx context.Context, rev string) (*deployment.Request, error) {
+	deploymentID := deploymentIDOf(rev)
+	marker, err := a.client.CoreV1().ConfigMaps(a.cfg.Namespace).Get(ctx, revisionDeploymentName(deploymentID), metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	raw := dep.Annotations[revisionAnnotationSpec]
+	raw := marker.Data[markerSpecKey]
 	if raw == "" {
-		return nil, fmt.Errorf("deployment %s missing %s annotation", dep.Name, revisionAnnotationSpec)
+		return nil, fmt.Errorf("marker %s missing %s data", marker.Name, markerSpecKey)
 	}
 	var spec deployment.Request
 	if err := json.Unmarshal([]byte(raw), &spec); err != nil {
-		return nil, fmt.Errorf("deployment %s has an invalid %s annotation: %w", dep.Name, revisionAnnotationSpec, err)
+		return nil, fmt.Errorf("marker %s has invalid %s data: %w", marker.Name, markerSpecKey, err)
 	}
 	return &spec, nil
+}
+
+// deploymentIDOf strips the -NNNNN revision counter off a revision name.
+func deploymentIDOf(rev string) string {
+	if i := strings.LastIndex(rev, "-"); i > 0 {
+		return rev[:i]
+	}
+	return rev
 }
 
 // readyPodTarget returns the data-port URL of the first ready pod.
@@ -413,6 +429,11 @@ func podDataTarget(pod *corev1.Pod, port int32) *url.URL {
 }
 
 func revisionPodReady(pod *corev1.Pod) bool {
+	// A terminating pod can still report Ready — draining traffic belongs on
+	// the surviving pods (same rule as the endpoint-flip reconciler).
+	if pod.DeletionTimestamp != nil {
+		return false
+	}
 	for _, c := range pod.Status.Conditions {
 		if c.Type == corev1.PodReady {
 			return c.Status == corev1.ConditionTrue
