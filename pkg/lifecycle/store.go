@@ -1,4 +1,4 @@
-package job
+package lifecycle
 
 import (
 	"context"
@@ -17,7 +17,7 @@ type Handle[T any] struct {
 
 // Viewer is the read-only surface used by HTTP handlers.
 type Viewer interface {
-	Get(jobID string) (Entry, bool)
+	Get(id string) (Entry, bool)
 	List() []Entry
 }
 
@@ -28,47 +28,50 @@ type Viewer interface {
 // Reconcile: Reserve → Commit → Apply (to replay known state) → [Apply via watcher] → Release
 type Store[T any] interface {
 	Viewer
-	Reserve(jobID string) error
-	Commit(jobID string, runtime T, cancelWatch context.CancelFunc)
-	Apply(jobID string, s Signal) error
-	Release(jobID string) (Handle[T], bool)
+	Reserve(id string) error
+	Commit(id string, runtime T, cancelWatch context.CancelFunc)
+	Apply(id string, s Signal) error
+	Release(id string) (Handle[T], bool)
 	Each(f func(string, Entry, Handle[T]))
 }
 
-// controllerEntry is the internal record in MemoryStore.
-type controllerEntry[T any] struct {
-	jobEntry    Entry
+// storeEntry is the internal record in MemoryStore.
+type storeEntry[T any] struct {
+	entry       Entry
 	handle      T
 	cancelWatch context.CancelFunc
 	released    bool // set by Release; Apply returns an error if true
 }
 
 // MemoryStore implements Store[T].
-// It is the single source of truth for job lifecycle state and runtime handles.
+// It is the single source of truth for lifecycle state and runtime handles.
 type MemoryStore[T any] struct {
-	mu   sync.RWMutex
-	jobs map[string]*controllerEntry[T]
+	kind string // resource kind used in error messages (e.g. "job")
+
+	mu      sync.RWMutex
+	entries map[string]*storeEntry[T]
 }
 
-// NewMemoryStore creates a new MemoryStore.
-func NewMemoryStore[T any]() *MemoryStore[T] {
-	return &MemoryStore[T]{jobs: make(map[string]*controllerEntry[T])}
+// NewMemoryStore creates a new MemoryStore. kind names the resource in
+// errors (e.g. "job").
+func NewMemoryStore[T any](kind string) *MemoryStore[T] {
+	return &MemoryStore[T]{kind: kind, entries: make(map[string]*storeEntry[T])}
 }
 
-// Reserve atomically claims a job ID and seeds it at StateAccepted.
+// Reserve atomically claims an ID and seeds it at StateAccepted.
 // Returns a conflict error if the ID is already taken.
-func (c *MemoryStore[T]) Reserve(jobID string) error {
+func (c *MemoryStore[T]) Reserve(id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, exists := c.jobs[jobID]; exists {
-		return apperrors.Conflict("job", jobID, "job already exists")
+	if _, exists := c.entries[id]; exists {
+		return apperrors.Conflict(c.kind, id, c.kind+" already exists")
 	}
 
 	now := time.Now()
-	c.jobs[jobID] = &controllerEntry[T]{
-		jobEntry: Entry{
-			ID:        jobID,
+	c.entries[id] = &storeEntry[T]{
+		entry: Entry{
+			ID:        id,
 			State:     StateAccepted,
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -77,21 +80,21 @@ func (c *MemoryStore[T]) Reserve(jobID string) error {
 	return nil
 }
 
-// Commit stores the runtime handle for a reserved job.
-func (c *MemoryStore[T]) Commit(jobID string, runtime T, cancelWatch context.CancelFunc) {
+// Commit stores the runtime handle for a reserved entry.
+func (c *MemoryStore[T]) Commit(id string, runtime T, cancelWatch context.CancelFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if e := c.jobs[jobID]; e != nil {
+	if e := c.entries[id]; e != nil {
 		e.handle = runtime
 		e.cancelWatch = cancelWatch
 	}
 }
 
-// Apply translates a Signal into an FSM state change for the given job.
-// LogLine signals are ignored (no state change). Returns an error if the job
+// Apply translates a Signal into an FSM state change for the given entry.
+// LogLine signals are ignored (no state change). Returns an error if the entry
 // is not found, already released, or the signal results in an invalid transition.
-func (c *MemoryStore[T]) Apply(jobID string, s Signal) error {
+func (c *MemoryStore[T]) Apply(id string, s Signal) error {
 	var targetState string
 	var exitCode *int
 	var errMsg string
@@ -119,52 +122,52 @@ func (c *MemoryStore[T]) Apply(jobID string, s Signal) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	e, ok := c.jobs[jobID]
+	e, ok := c.entries[id]
 	if !ok || e.released {
-		return fmt.Errorf("job %s: not found or released", jobID)
+		return fmt.Errorf("%s %s: not found or released", c.kind, id)
 	}
 
-	if err := validateTransition(e.jobEntry.State, targetState); err != nil {
-		return fmt.Errorf("job %s: %w", jobID, err)
+	if err := validateTransition(e.entry.State, targetState); err != nil {
+		return fmt.Errorf("%s %s: %w", c.kind, id, err)
 	}
 
-	e.jobEntry.State = targetState
-	e.jobEntry.UpdatedAt = time.Now()
+	e.entry.State = targetState
+	e.entry.UpdatedAt = time.Now()
 	if exitCode != nil {
 		cp := *exitCode
-		e.jobEntry.ExitCode = &cp
+		e.entry.ExitCode = &cp
 	}
 	if errMsg != "" {
-		e.jobEntry.Error = errMsg
+		e.entry.Error = errMsg
 	}
 	return nil
 }
 
-// Release atomically removes a job and returns its handle for cleanup.
-// Returns (zero, false) if the job does not exist.
-func (c *MemoryStore[T]) Release(jobID string) (Handle[T], bool) {
+// Release atomically removes an entry and returns its handle for cleanup.
+// Returns (zero, false) if the entry does not exist.
+func (c *MemoryStore[T]) Release(id string) (Handle[T], bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	e, exists := c.jobs[jobID]
+	e, exists := c.entries[id]
 	if !exists {
 		return Handle[T]{}, false
 	}
 	e.released = true
-	delete(c.jobs, jobID)
+	delete(c.entries, id)
 	return Handle[T]{CancelWatch: e.cancelWatch, Runtime: e.handle}, true
 }
 
-// Get returns a snapshot of the entry for the given job ID.
-func (c *MemoryStore[T]) Get(jobID string) (Entry, bool) {
+// Get returns a snapshot of the entry for the given ID.
+func (c *MemoryStore[T]) Get(id string) (Entry, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	e, exists := c.jobs[jobID]
+	e, exists := c.entries[id]
 	if !exists {
 		return Entry{}, false
 	}
-	return e.jobEntry, true
+	return e.entry, true
 }
 
 // List returns snapshots of all entries.
@@ -172,14 +175,14 @@ func (c *MemoryStore[T]) List() []Entry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	out := make([]Entry, 0, len(c.jobs))
-	for _, e := range c.jobs {
-		out = append(out, e.jobEntry)
+	out := make([]Entry, 0, len(c.entries))
+	for _, e := range c.entries {
+		out = append(out, e.entry)
 	}
 	return out
 }
 
-// Each calls f for every job. A snapshot is taken before the walk so
+// Each calls f for every entry. A snapshot is taken before the walk so
 // Release calls inside f are safe.
 func (c *MemoryStore[T]) Each(f func(string, Entry, Handle[T])) {
 	c.mu.RLock()
@@ -188,11 +191,11 @@ func (c *MemoryStore[T]) Each(f func(string, Entry, Handle[T])) {
 		e  Entry
 		h  Handle[T]
 	}
-	snaps := make([]snap, 0, len(c.jobs))
-	for id, e := range c.jobs {
+	snaps := make([]snap, 0, len(c.entries))
+	for id, e := range c.entries {
 		snaps = append(snaps, snap{
 			id: id,
-			e:  e.jobEntry,
+			e:  e.entry,
 			h:  Handle[T]{CancelWatch: e.cancelWatch, Runtime: e.handle},
 		})
 	}

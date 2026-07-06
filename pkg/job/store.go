@@ -1,22 +1,30 @@
 package job
 
-import (
-	"fmt"
-	"time"
+import "orchestrator/pkg/lifecycle"
+
+// The lifecycle state machine (Entry, Signal, MemoryStore and friends) lives
+// in pkg/lifecycle so it can be shared with the deployments/pools serving
+// plane. These aliases keep pkg/job the vocabulary for job backends.
+type (
+	Entry              = lifecycle.Entry
+	Signal             = lifecycle.Signal
+	Started            = lifecycle.Started
+	Exited             = lifecycle.Exited
+	Failed             = lifecycle.Failed
+	LogLine            = lifecycle.LogLine
+	Handle[T any]      = lifecycle.Handle[T]
+	Viewer             = lifecycle.Viewer
+	Store[T any]       = lifecycle.Store[T]
+	MemoryStore[T any] = lifecycle.MemoryStore[T]
 )
 
-// Entry represents a job's state snapshot.
-type Entry struct {
-	ID        string
-	State     string
-	ExitCode  *int
-	Error     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+// NewMemoryStore creates a MemoryStore whose errors name the "job" resource.
+func NewMemoryStore[T any]() *MemoryStore[T] {
+	return lifecycle.NewMemoryStore[T]("job")
 }
 
-// StatusResponse converts an Entry to a job.StatusResponse for API responses.
-func (e *Entry) StatusResponse() *StatusResponse {
+// StatusFromEntry converts an Entry to a job.StatusResponse for API responses.
+func StatusFromEntry(e Entry) *StatusResponse {
 	s := &StatusResponse{
 		ID:    e.ID,
 		State: e.State,
@@ -29,25 +37,5 @@ func (e *Entry) StatusResponse() *StatusResponse {
 	return s
 }
 
-// validateTransition returns an error if the from→to transition is not allowed by the FSM.
-func validateTransition(from, to string) error {
-	allowed, ok := validTransitions[from]
-	if !ok || !allowed[to] {
-		return fmt.Errorf("invalid state transition: %s -> %s", from, to)
-	}
-	return nil
-}
-
-// validTransitions defines the FSM edges.
-var validTransitions = map[string]map[string]bool{
-	StateAccepted: {
-		StateRunning:   true,
-		StateFailed:    true,
-		StateCancelled: true,
-	},
-	StateRunning: {
-		StateCompleted: true,
-		StateFailed:    true,
-		StateCancelled: true,
-	},
-}
+// Compile-time check that the alias wiring stays intact.
+var _ Store[struct{}] = (*MemoryStore[struct{}])(nil)

@@ -331,7 +331,7 @@ func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusRes
 	if !exists {
 		return nil, apperrors.NotFound("job", jobID)
 	}
-	return entry.StatusResponse(), nil
+	return job.StatusFromEntry(entry), nil
 }
 
 // List returns the status of all jobs.
@@ -339,7 +339,7 @@ func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
 	entries := o.ctrl.List()
 	statuses := make([]job.StatusResponse, len(entries))
 	for i, e := range entries {
-		statuses[i] = *e.StatusResponse()
+		statuses[i] = *job.StatusFromEntry(e)
 	}
 	return statuses, nil
 }
