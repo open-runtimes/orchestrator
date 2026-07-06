@@ -48,8 +48,8 @@ func (h *poolsHandler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // activate handles POST /v1/deployment-pools/{id}/activations. Sync by
-// default: the call blocks and returns the result inline (exec: exit code +
-// output; HTTP: the serving URL). `Prefer: respond-async` returns 202
+// default: the call blocks and returns the serving URL inline.
+// `Prefer: respond-async` returns 202
 // immediately and delivers the result as an
 // orchestrator.pool.activation.result CloudEvent — the callback is then
 // required, since nothing is stored or pollable in-flight.
@@ -100,12 +100,6 @@ func (h *poolsHandler) activateAsync(poolID string, act *pool.Activation) {
 	} else {
 		data["activationId"] = status.ID
 		data["status"] = status.State
-		if status.ExitCode != nil {
-			data["exitCode"] = *status.ExitCode
-		}
-		if status.Output != "" {
-			data["output"] = status.Output
-		}
 		if status.URL != "" {
 			data["url"] = status.URL
 		}

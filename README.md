@@ -39,7 +39,7 @@ curl -H "Host: web.localhost" http://localhost:8081/
 | --- | --- |
 | [Jobs](docs/jobs.md) | Run-to-completion workloads: the jobs API, artifacts (download, write, archive, mount, …), dependency ordering |
 | [Deployments](docs/deployments.md) | Long-lived HTTP services: revisions, canary traffic, autoscaling, scale-to-zero, async requests |
-| [Pools](docs/pools.md) | Pre-warmed capacity: configuring pools, exec and HTTP activations, burst policy |
+| [Pools](docs/pools.md) | Pre-warmed capacity: configuring pools, activations, burst policy |
 | [Callbacks](docs/callbacks.md) | CloudEvents delivery: every event type, payload schemas, HMAC signature verification |
 | [Operations](docs/operations.md) | Deploying the orchestrator: Helm install, prerequisites, configuration reference, hardening |
 | [Observability](docs/observability.md) | Metrics, logging, and tracing |
@@ -60,7 +60,7 @@ POST   /v1/deployments/{id}/traffic                # canary / rollback; empty ta
 DELETE /v1/deployments/{id}                        # tear down
 
 GET    /v1/deployment-pools                        # configured pools + warm counts
-POST   /v1/deployment-pools/{id}/activations       # 201 — claim a warm pod and run
+POST   /v1/deployment-pools/{id}/activations       # 201 — claim a warm pod, serve HTTP
 DELETE /v1/deployment-pools/{id}/activations/{aid} # deactivate
 ```
 

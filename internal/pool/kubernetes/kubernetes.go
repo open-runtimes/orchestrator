@@ -32,11 +32,6 @@ import (
 )
 
 const (
-	// defaultExecTimeoutSeconds bounds an exec activation that declares no
-	// TimeoutSeconds (matches the service default).
-	defaultExecTimeoutSeconds = 300
-	// maxOutputBytes caps the exec output read back from pod logs (1 MiB).
-	maxOutputBytes = 1 << 20
 	// controlTick is the leader-elected control loop cadence.
 	controlTick = 2 * time.Second
 
@@ -213,9 +208,6 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 	if err := o.bindPod(ctx, pod.Name, act); err != nil {
 		return nil, err
 	}
-	if !p.HTTP() {
-		return o.awaitExec(ctx, p, act, pod.Name)
-	}
 	return o.exposeHTTP(ctx, p, act, pod)
 }
 
@@ -366,51 +358,6 @@ func (o *Orchestrator) bindPod(ctx context.Context, podName string, act *pool.Ac
 	return nil
 }
 
-// awaitExec blocks until the workload container terminates — returning its
-// exit code and captured output — or the activation timeout elapses, in
-// which case the pod is discarded and the activation reported failed. The
-// finished pod is kept for Status until retention GC reaps it.
-func (o *Orchestrator) awaitExec(ctx context.Context, p *pool.Pool, act *pool.Activation, podName string) (*pool.ActivationStatus, error) {
-	status := &pool.ActivationStatus{ID: act.ID, PoolID: p.ID, PodID: podName}
-	timeout := time.Duration(cmp.Or(act.TimeoutSeconds, defaultExecTimeoutSeconds)) * time.Second
-	deadline := time.Now().Add(timeout)
-	for {
-		pod, err := o.client.CoreV1().Pods(o.namespace).Get(ctx, podName, metav1.GetOptions{})
-		if err != nil {
-			return nil, apperrors.Internal("kubernetes.getPod", err)
-		}
-		if t := workloadTerminated(pod); t != nil {
-			code := int(t.ExitCode)
-			status.State = pool.StateExited
-			status.ExitCode = &code
-			status.Output = o.workloadOutput(ctx, podName)
-			return status, nil
-		}
-		if time.Now().After(deadline) {
-			_ = o.deletePod(ctx, podName)
-			status.State = pool.StateFailed
-			status.Error = "timeout"
-			return status, nil
-		}
-		if err := o.sleep(ctx); err != nil {
-			return nil, err
-		}
-	}
-}
-
-// workloadOutput reads the workload container's logs, capped at 1 MiB.
-func (o *Orchestrator) workloadOutput(ctx context.Context, podName string) string {
-	limit := int64(maxOutputBytes)
-	raw, err := o.client.CoreV1().Pods(o.namespace).
-		GetLogs(podName, &corev1.PodLogOptions{Container: ContainerWorkload, LimitBytes: &limit}).
-		DoRaw(ctx)
-	if err != nil {
-		slog.Warn("Reading workload output failed", "pod", podName, "error", err)
-		return ""
-	}
-	return string(raw)
-}
-
 // exposeHTTP publishes the claimed pod at its gateway URL — a per-activation
 // Service (selecting the activation label) plus HTTPRoute — then waits for
 // the workload to turn serving-ready. Never ready in time → the activation
@@ -479,9 +426,8 @@ func (o *Orchestrator) List(ctx context.Context, poolID string) ([]pool.Activati
 
 // statusFromPod reconstructs an activation's status from its claimed pod:
 // the label carries the ID, the annotation the original spec, the container
-// state the phase. Exec pods report ready while the workload runs and exited
-// with its code after; HTTP pods report activating until serving-ready, then
-// ready. Infra failure → failed; deletion in flight → deactivating.
+// state the phase — activating until serving-ready, then ready. A workload
+// exit or infra failure → failed; deletion in flight → deactivating.
 func (o *Orchestrator) statusFromPod(p *pool.Pool, pod *corev1.Pod) pool.ActivationStatus {
 	status := pool.ActivationStatus{
 		ID:     pod.Labels[LabelActivation],
@@ -490,33 +436,23 @@ func (o *Orchestrator) statusFromPod(p *pool.Pool, pod *corev1.Pod) pool.Activat
 	}
 	var act pool.Activation
 	_ = json.Unmarshal([]byte(pod.Annotations[AnnotationActivationSpec]), &act)
-	if p.HTTP() {
-		status.URL = "http://" + activationHost(act.Host, status.ID, o.cfg.PoolDomain)
-	}
+	status.URL = "http://" + activationHost(act.Host, status.ID, o.cfg.PoolDomain)
 
 	if pod.DeletionTimestamp != nil {
 		status.State = pool.StateDeactivating
 		return status
 	}
 	if t := workloadTerminated(pod); t != nil {
-		if p.HTTP() {
-			// An HTTP workload has no business exiting — that is a failure.
-			status.State = pool.StateFailed
-			status.Error = fmt.Sprintf("workload exited with code %d", t.ExitCode)
-		} else {
-			code := int(t.ExitCode)
-			status.State = pool.StateExited
-			status.ExitCode = &code
-		}
+		// The workload has no business exiting — that is a failure.
+		status.State = pool.StateFailed
+		status.Error = fmt.Sprintf("workload exited with code %d", t.ExitCode)
 		return status
 	}
 	switch {
 	case pod.Status.Phase == corev1.PodFailed:
 		status.State = pool.StateFailed
 		status.Error = cmp.Or(pod.Status.Message, pod.Status.Reason)
-	case !p.HTTP() && pod.Status.Phase == corev1.PodRunning:
-		status.State = pool.StateReady
-	case p.HTTP() && isPodReady(pod):
+	case isPodReady(pod):
 		status.State = pool.StateReady
 	default:
 		status.State = pool.StateActivating

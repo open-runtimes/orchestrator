@@ -14,7 +14,7 @@
 # services and sidecars can reach each other by IP and DNS name.
 #
 # The Docker backend is the development profile: single-revision deployments,
-# one replica each, exec-only pools. Production runs the Helm chart — see
+# one replica each, no pools. Production runs the Helm chart — see
 # docs/operations.md and examples/helm-values.yaml.
 
 services:
@@ -52,9 +52,6 @@ services:
       DEPLOYMENTS_DOMAIN: localhost
       DEPLOYMENT_SIDECAR_IMAGE: ${DEPLOYMENT_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/deployments-sidecar:latest}
       ARTIFACT_ENDPOINT: http://deployments:8080
-      # Warm pools (exec-only on Docker) — see docs/pools.md:
-      # POOLS_JSON: '[{"id": "sh", "image": "alpine:latest", "size": 2, "burst": "reject"}]'
-      # POOL_SHIM_IMAGE: ghcr.io/open-runtimes/orchestrator/pool-shim:latest
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [orchestrator]

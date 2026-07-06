@@ -65,14 +65,12 @@ func (s *Service) Pool(ctx context.Context, poolID string) (*Status, error) {
 }
 
 // Activate validates the activation (applying defaults) and late-binds it
-// onto a warm pod. Blocks per the orchestrator contract: exec pools until
-// exit, HTTP pools until serving.
+// onto a warm pod, blocking until the workload is serving.
 func (s *Service) Activate(ctx context.Context, poolID string, act *Activation) (*ActivationStatus, error) {
-	p, ok := s.pools[poolID]
-	if !ok {
+	if _, ok := s.pools[poolID]; !ok {
 		return nil, apperrors.NotFound("pool", poolID)
 	}
-	if err := s.validate(p, act); err != nil {
+	if err := s.validate(act); err != nil {
 		return nil, err
 	}
 	if act.ID == "" {
@@ -125,7 +123,7 @@ func (s *Service) Deactivate(ctx context.Context, poolID, activationID string) e
 	return nil
 }
 
-func (s *Service) validate(p *Pool, act *Activation) error {
+func (s *Service) validate(act *Activation) error {
 	if act.Command == "" {
 		return apperrors.Validation("command", "command is required")
 	}
@@ -145,9 +143,6 @@ func (s *Service) validate(p *Pool, act *Activation) error {
 	}
 	if act.IdleTimeoutSeconds < 0 {
 		return apperrors.Validation("idleTimeoutSeconds", "idle timeout must be non-negative")
-	}
-	if !p.HTTP() && act.IdleTimeoutSeconds > 0 {
-		return apperrors.Validation("idleTimeoutSeconds", "idle timeout applies only to HTTP pools")
 	}
 	if len(act.Artifacts) > maxArtifacts {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))

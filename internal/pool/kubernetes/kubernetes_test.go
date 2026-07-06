@@ -162,12 +162,11 @@ func claimedPodFixture(poolID, name, ip, activationID string, act pool.Activatio
 	return pod
 }
 
-func setWorkloadTerminated(pod *corev1.Pod, exitCode int32, finishedAt time.Time) {
+func setWorkloadTerminated(pod *corev1.Pod, exitCode int32) {
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name: ContainerWorkload,
 		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
-			ExitCode:   exitCode,
-			FinishedAt: metav1.NewTime(finishedAt),
+			ExitCode: exitCode,
 		}},
 	}}
 }
@@ -187,68 +186,18 @@ func podGone(t *testing.T, cs *fake.Clientset, name string) bool {
 	return apierrors.IsNotFound(err)
 }
 
-func execPool(id string) pool.Pool {
-	return pool.Pool{ID: id, Image: "runtime:latest", Size: 1, Burst: pool.BurstReject}
-}
-
-func httpPool(id string) pool.Pool {
-	p := execPool(id)
-	p.Port = 8080
-	return p
-}
-
-func TestActivate_ExecReturnsExitCodeAndOutput(t *testing.T) {
-	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, execPool("std"))
-	pod := warmPodFixture("std", "pod-a", "10.0.0.1")
-	setWorkloadTerminated(pod, 7, time.Now())
-	addPod(t, cs, pod)
-
-	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "run"})
-	if err != nil {
-		t.Fatalf("Activate: %v", err)
-	}
-	if status.State != pool.StateExited || status.ExitCode == nil || *status.ExitCode != 7 {
-		t.Errorf("want exited/7, got %s/%v", status.State, status.ExitCode)
-	}
-	if status.Output != "fake logs" { // the fake clientset's canned log body
-		t.Errorf("Output: want 'fake logs', got %q", status.Output)
-	}
-	if status.PodID != "pod-a" || status.PoolID != "std" {
-		t.Errorf("identity: got %+v", status)
-	}
-
-	// The claim carried the pod's DERIVED token and the exec shape (Port 0).
-	if len(claims.claimed) != 1 || claims.claimed[0] != "10.0.0.1" || claims.tokens[0] != deriveClaimToken(testInstallKey, "pod-a") {
-		t.Errorf("claim: got IPs %v tokens %v", claims.claimed, claims.tokens)
-	}
-	if claims.lastClaim.ActivationID != "act1" || claims.lastClaim.Command != "run" || claims.lastClaim.Port != 0 {
-		t.Errorf("claim request: got %+v", claims.lastClaim)
-	}
-
-	// The pod is bound: activation label + reconstructable spec annotation.
-	bound := getPod(t, cs, "pod-a")
-	if bound.Labels[LabelActivation] != "act1" {
-		t.Errorf("activation label: got %q", bound.Labels[LabelActivation])
-	}
-	var spec pool.Activation
-	if err := json.Unmarshal([]byte(bound.Annotations[AnnotationActivationSpec]), &spec); err != nil || spec.Command != "run" {
-		t.Errorf("spec annotation: got %q (err %v)", bound.Annotations[AnnotationActivationSpec], err)
-	}
+func testPool(id string) pool.Pool {
+	return pool.Pool{ID: id, Image: "runtime:latest", Port: 8080, Size: 1, Burst: pool.BurstReject}
 }
 
 func TestActivate_ClaimConflictRetriesNextPod(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, execPool("std"))
-	first := warmPodFixture("std", "pod-a", "10.0.0.1")
-	setWorkloadTerminated(first, 0, time.Now())
-	addPod(t, cs, first)
-	second := warmPodFixture("std", "pod-b", "10.0.0.2")
-	setWorkloadTerminated(second, 0, time.Now())
-	addPod(t, cs, second)
+	o, cs, claims := newTestOrchestrator(t, testPool("std"))
+	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
+	addPod(t, cs, warmPodFixture("std", "pod-b", "10.0.0.2"))
 	claims.conflict["10.0.0.1"] = true // a racing replica won pod-a
 
-	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "run"})
+	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "serve"})
 	if err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
@@ -265,11 +214,11 @@ func TestActivate_ClaimConflictRetriesNextPod(t *testing.T) {
 // claim protocol until the shared claim flow unified them.
 func TestActivate_PoisonedClaimReportsFailedActivation(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, execPool("std"))
+	o, cs, claims := newTestOrchestrator(t, testPool("std"))
 	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
 	claims.poison["10.0.0.1"] = true
 
-	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "run"})
+	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "serve"})
 	if err != nil {
 		t.Fatalf("Activate: %v (poison must not be an error)", err)
 	}
@@ -286,9 +235,9 @@ func TestActivate_PoisonedClaimReportsFailedActivation(t *testing.T) {
 
 func TestActivate_BurstRejectIsExhausted(t *testing.T) {
 	t.Parallel()
-	o, _, _ := newTestOrchestrator(t, execPool("std"))
+	o, _, _ := newTestOrchestrator(t, testPool("std"))
 
-	_, err := o.Activate(t.Context(), "std", &pool.Activation{Command: "run"})
+	_, err := o.Activate(t.Context(), "std", &pool.Activation{Command: "serve"})
 	if !errors.Is(err, apperrors.ErrExhausted) {
 		t.Fatalf("want ErrExhausted, got %v", err)
 	}
@@ -299,11 +248,11 @@ func TestActivate_BurstRejectIsExhausted(t *testing.T) {
 
 func TestActivate_BurstColdCreatesPod(t *testing.T) {
 	t.Parallel()
-	p := execPool("std")
+	p := testPool("std")
 	p.Burst = pool.BurstCold
 	o, cs, claims := newTestOrchestrator(t, p)
-	// Make every created pod immediately warm-ready with a finished workload,
-	// as the kubelet eventually would.
+	// Make every created pod immediately warm-ready, as the kubelet
+	// eventually would.
 	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		pod := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
 		pod.Status = corev1.PodStatus{
@@ -313,42 +262,24 @@ func TestActivate_BurstColdCreatesPod(t *testing.T) {
 				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
 			},
 		}
-		setWorkloadTerminated(pod, 0, time.Now())
 		return false, nil, nil
 	})
 
-	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "run"})
+	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "serve"})
 	if err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
-	if status.State != pool.StateExited {
-		t.Errorf("want exited, got %s", status.State)
+	if status.State != pool.StateReady || status.URL != "http://act1.pools.example.com" {
+		t.Errorf("want ready at http://act1.pools.example.com, got %s %q", status.State, status.URL)
 	}
 	if len(claims.claimed) != 1 || claims.claimed[0] != "10.0.9.9" {
 		t.Errorf("want the cold pod claimed, got %v", claims.claimed)
 	}
 }
 
-func TestActivate_ExecTimeoutDiscardsPod(t *testing.T) {
-	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, execPool("std"))
-	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1")) // workload never exits
-
-	status, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "sleep", TimeoutSeconds: 1})
-	if err != nil {
-		t.Fatalf("Activate: %v", err)
-	}
-	if status.State != pool.StateFailed || status.Error != "timeout" {
-		t.Errorf("want failed/timeout, got %s/%q", status.State, status.Error)
-	}
-	if !podGone(t, cs, "pod-a") {
-		t.Error("want the timed-out pod deleted")
-	}
-}
-
 func TestActivate_HTTPCreatesServiceAndRoute(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, httpPool("web"))
+	o, cs, claims := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
 
 	status, err := o.Activate(t.Context(), "web", &pool.Activation{ID: "site", Command: "serve"})
@@ -398,7 +329,7 @@ func TestActivate_HTTPCreatesServiceAndRoute(t *testing.T) {
 
 func TestActivate_HTTPCustomHost(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, httpPool("web"))
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
 
 	status, err := o.Activate(t.Context(), "web", &pool.Activation{ID: "site", Host: "my.example.com", Command: "serve"})
@@ -419,7 +350,7 @@ func TestActivate_HTTPCustomHost(t *testing.T) {
 
 func TestActivate_HTTPNeverServingFailsAndTearsDown(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, httpPool("web"))
+	o, cs, claims := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
 	claims.notReady["10.0.0.1"] = true // never turns serving-ready after the claim
 
@@ -440,7 +371,7 @@ func TestActivate_HTTPNeverServingFailsAndTearsDown(t *testing.T) {
 
 func TestActivate_DuplicateActivationConflicts(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, execPool("std"))
+	o, cs, _ := newTestOrchestrator(t, testPool("std"))
 	addPod(t, cs, claimedPodFixture("std", "pod-a", "10.0.0.1", "act1", pool.Activation{Command: "run"}))
 
 	_, err := o.Activate(t.Context(), "std", &pool.Activation{ID: "act1", Command: "run"})
@@ -451,7 +382,7 @@ func TestActivate_DuplicateActivationConflicts(t *testing.T) {
 
 func TestActivate_UnknownPoolNotFound(t *testing.T) {
 	t.Parallel()
-	o, _, _ := newTestOrchestrator(t, execPool("std"))
+	o, _, _ := newTestOrchestrator(t, testPool("std"))
 	_, err := o.Activate(t.Context(), "nope", &pool.Activation{Command: "run"})
 	if !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
@@ -460,68 +391,58 @@ func TestActivate_UnknownPoolNotFound(t *testing.T) {
 
 func TestStatusFromPod_Derivation(t *testing.T) {
 	t.Parallel()
-	o, _, _ := newTestOrchestrator(t, execPool("std"), httpPool("web"))
+	o, _, _ := newTestOrchestrator(t, testPool("web"))
+	web := o.pools["web"]
 
-	exec, web := o.pools["std"], o.pools["web"]
-	running := claimedPodFixture("std", "pod-a", "10.0.0.1", "act1", pool.Activation{Command: "run"})
+	serving := claimedPodFixture("web", "pod-a", "10.0.0.1", "act1", pool.Activation{Command: "serve"})
 
-	exited := claimedPodFixture("std", "pod-b", "10.0.0.2", "act2", pool.Activation{Command: "run"})
-	setWorkloadTerminated(exited, 3, time.Now())
+	starting := claimedPodFixture("web", "pod-b", "10.0.0.2", "act2", pool.Activation{Command: "serve"})
+	starting.Status.Conditions = nil // not yet serving-ready
 
-	infraFailed := claimedPodFixture("std", "pod-c", "10.0.0.3", "act3", pool.Activation{Command: "run"})
+	exited := claimedPodFixture("web", "pod-c", "10.0.0.3", "act3", pool.Activation{Command: "serve"})
+	setWorkloadTerminated(exited, 3)
+
+	infraFailed := claimedPodFixture("web", "pod-d", "10.0.0.4", "act4", pool.Activation{Command: "serve"})
 	infraFailed.Status.Phase = corev1.PodFailed
 	infraFailed.Status.ContainerStatuses = nil
 	infraFailed.Status.Reason = "Evicted"
 
-	deleting := claimedPodFixture("std", "pod-d", "10.0.0.4", "act4", pool.Activation{Command: "run"})
+	deleting := claimedPodFixture("web", "pod-e", "10.0.0.5", "act5", pool.Activation{Command: "serve"})
 	now := metav1.Now()
 	deleting.DeletionTimestamp = &now
 
-	serving := claimedPodFixture("web", "pod-e", "10.0.0.5", "act5", pool.Activation{Command: "serve"})
-
-	starting := claimedPodFixture("web", "pod-f", "10.0.0.6", "act6", pool.Activation{Command: "serve"})
-	starting.Status.Conditions = nil // not yet serving-ready
-
-	httpExited := claimedPodFixture("web", "pod-g", "10.0.0.7", "act7", pool.Activation{Command: "serve"})
-	setWorkloadTerminated(httpExited, 1, time.Now())
-
 	tests := []struct {
 		name      string
-		pool      *pool.Pool
 		pod       *corev1.Pod
 		wantState string
-		wantCode  *int
+		wantError string
 	}{
-		{"exec running is ready", exec, running, pool.StateReady, nil},
-		{"exec terminated is exited with code", exec, exited, pool.StateExited, ptrInt(3)},
-		{"infra failure is failed", exec, infraFailed, pool.StateFailed, nil},
-		{"deletion in flight is deactivating", exec, deleting, pool.StateDeactivating, nil},
-		{"http serving-ready is ready", web, serving, pool.StateReady, nil},
-		{"http not yet ready is activating", web, starting, pool.StateActivating, nil},
-		{"http workload exit is failed", web, httpExited, pool.StateFailed, nil},
+		{"serving-ready is ready", serving, pool.StateReady, ""},
+		{"not yet ready is activating", starting, pool.StateActivating, ""},
+		{"workload exit is failed", exited, pool.StateFailed, "workload exited with code 3"},
+		{"infra failure is failed", infraFailed, pool.StateFailed, "Evicted"},
+		{"deletion in flight is deactivating", deleting, pool.StateDeactivating, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := o.statusFromPod(tt.pool, tt.pod)
+			got := o.statusFromPod(web, tt.pod)
 			if got.State != tt.wantState {
 				t.Errorf("state: want %s, got %s (error %q)", tt.wantState, got.State, got.Error)
 			}
-			if tt.wantCode != nil && (got.ExitCode == nil || *got.ExitCode != *tt.wantCode) {
-				t.Errorf("exit code: want %d, got %v", *tt.wantCode, got.ExitCode)
+			if tt.wantError != "" && !strings.Contains(got.Error, tt.wantError) {
+				t.Errorf("error: want %q, got %q", tt.wantError, got.Error)
 			}
-			if tt.pool.HTTP() && got.URL == "" {
-				t.Error("want an URL on HTTP activations")
+			if got.URL == "" {
+				t.Error("want an URL on every activation")
 			}
 		})
 	}
 }
 
-func ptrInt(v int) *int { return &v }
-
 func TestStatus_ReconstructsFromAnnotation(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, httpPool("web"))
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, claimedPodFixture("web", "pod-a", "10.0.0.1", "site", pool.Activation{Host: "my.example.com", Command: "serve"}))
 
 	status, err := o.Status(t.Context(), "web", "site")
@@ -535,7 +456,7 @@ func TestStatus_ReconstructsFromAnnotation(t *testing.T) {
 
 func TestStatus_NotFound(t *testing.T) {
 	t.Parallel()
-	o, _, _ := newTestOrchestrator(t, execPool("std"))
+	o, _, _ := newTestOrchestrator(t, testPool("std"))
 	if _, err := o.Status(t.Context(), "std", "ghost"); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
@@ -543,7 +464,7 @@ func TestStatus_NotFound(t *testing.T) {
 
 func TestList_ReturnsClaimedPodsOnly(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, execPool("std"))
+	o, cs, _ := newTestOrchestrator(t, testPool("std"))
 	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
 	addPod(t, cs, claimedPodFixture("std", "pod-b", "10.0.0.2", "act1", pool.Activation{Command: "run"}))
 	addPod(t, cs, claimedPodFixture("std", "pod-c", "10.0.0.3", "act2", pool.Activation{Command: "run"}))
@@ -559,7 +480,7 @@ func TestList_ReturnsClaimedPodsOnly(t *testing.T) {
 
 func TestPools_Counts(t *testing.T) {
 	t.Parallel()
-	p := execPool("std")
+	p := testPool("std")
 	p.Size = 3
 	o, cs, _ := newTestOrchestrator(t, p)
 	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
@@ -583,7 +504,7 @@ func TestPools_Counts(t *testing.T) {
 
 func TestDeactivate_TearsDownEverything(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, httpPool("web"))
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
 	if _, err := o.Activate(t.Context(), "web", &pool.Activation{ID: "site", Command: "serve"}); err != nil {
 		t.Fatalf("Activate: %v", err)
@@ -627,7 +548,7 @@ func TestDeriveClaimToken_DeterministicPerPod(t *testing.T) {
 
 func TestClaimKey_GetOrCreateIdempotent(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, execPool("std"))
+	o, cs, _ := newTestOrchestrator(t, testPool("std"))
 	o.installKey = nil // exercise the get-or-create path
 
 	first, err := o.claimKey(t.Context())
@@ -658,7 +579,7 @@ func TestClaimKey_GetOrCreateIdempotent(t *testing.T) {
 
 func TestCreateWarmPod_InjectsDerivedTokenNoAnnotation(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, execPool("std"))
+	o, cs, _ := newTestOrchestrator(t, testPool("std"))
 
 	created, err := o.createWarmPod(t.Context(), o.pools["std"])
 	if err != nil {
@@ -690,7 +611,7 @@ func TestCreateWarmPod_InjectsDerivedTokenNoAnnotation(t *testing.T) {
 
 func TestBindPod_StripsCallbackKeyFromAnnotation(t *testing.T) {
 	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, httpPool("web"))
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
 
 	act := &pool.Activation{
@@ -724,7 +645,7 @@ func TestBindPod_StripsCallbackKeyFromAnnotation(t *testing.T) {
 
 func TestDeactivate_NotFound(t *testing.T) {
 	t.Parallel()
-	o, _, _ := newTestOrchestrator(t, execPool("std"))
+	o, _, _ := newTestOrchestrator(t, testPool("std"))
 	if err := o.Deactivate(t.Context(), "std", "ghost"); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}

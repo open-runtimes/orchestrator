@@ -8,15 +8,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func testPool() *pool.Pool {
-	return &pool.Pool{
-		ID:          "std",
-		Image:       "runtime:latest",
-		Size:        2,
-		CPU:         0.5,
-		Memory:      256,
-		Environment: map[string]string{"B": "2", "A": "1"},
-	}
+// mapperPool is testPool plus the resource and env fields buildWarmPod maps.
+func mapperPool() *pool.Pool {
+	p := testPool("std")
+	p.CPU = 0.5
+	p.Memory = 256
+	p.Environment = map[string]string{"B": "2", "A": "1"}
+	return &p
 }
 
 func testConfig() Config {
@@ -27,7 +25,7 @@ func testConfig() Config {
 
 func TestBuildWarmPod_Shape(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(testPool(), testConfig(), "pool-std-aabbc", "aabbccdd")
+	warm := buildWarmPod(mapperPool(), testConfig(), "pool-std-aabbc", "aabbccdd")
 
 	if warm.Name != "pool-std-aabbc" {
 		t.Errorf("want the caller-chosen name (the claim token derives from it), got %q", warm.Name)
@@ -110,7 +108,7 @@ func TestBuildWarmPod_Shape(t *testing.T) {
 
 func TestBuildWarmPod_Resources(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(testPool(), testConfig(), "pool-std-x", "tok")
+	warm := buildWarmPod(mapperPool(), testConfig(), "pool-std-x", "tok")
 	res := warm.Spec.Containers[0].Resources
 
 	if got := res.Requests.Cpu().MilliValue(); got != 500 {
@@ -134,7 +132,7 @@ func TestBuildWarmPod_Resources(t *testing.T) {
 
 func TestBuildWarmPod_SecurityFloor(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(testPool(), testConfig(), "pool-std-x", "tok")
+	warm := buildWarmPod(mapperPool(), testConfig(), "pool-std-x", "tok")
 	containers := append(warm.Spec.InitContainers, warm.Spec.Containers...)
 	for _, c := range containers {
 		sc := c.SecurityContext

@@ -25,7 +25,7 @@ func unlabeledPods(t *testing.T, cs *fake.Clientset, poolID string) int {
 
 func TestReplenish_CreatesUpToSize(t *testing.T) {
 	t.Parallel()
-	p := execPool("std")
+	p := testPool("std")
 	p.Size = 3
 	o, cs, _ := newTestOrchestrator(t, p)
 	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
@@ -41,7 +41,7 @@ func TestReplenish_CreatesUpToSize(t *testing.T) {
 
 func TestReplenish_CountsPendingPods(t *testing.T) {
 	t.Parallel()
-	p := execPool("std")
+	p := testPool("std")
 	p.Size = 2
 	o, cs, _ := newTestOrchestrator(t, p)
 	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
@@ -58,7 +58,7 @@ func TestReplenish_CountsPendingPods(t *testing.T) {
 
 func TestReplenish_DeletesPoisonedPods(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, execPool("std"))
+	o, cs, claims := newTestOrchestrator(t, testPool("std"))
 	addPod(t, cs, warmPodFixture("std", "pod-a", "10.0.0.1"))
 	claims.state["10.0.0.1"] = proxy.ClaimState{Claimed: true, Failed: true, Error: "artifacts failed"}
 
@@ -74,7 +74,7 @@ func TestReplenish_DeletesPoisonedPods(t *testing.T) {
 
 func TestOrphanGC_DiscardsAfterTTL(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, execPool("std"))
+	o, cs, claims := newTestOrchestrator(t, testPool("std"))
 	o.cfg.OrphanTTL = 30 * time.Second
 	// Claimed by the sidecar's own account, but never labeled: the service
 	// crashed between accept and patch.
@@ -96,34 +96,9 @@ func TestOrphanGC_DiscardsAfterTTL(t *testing.T) {
 	}
 }
 
-func TestRetentionGC_ReapsFinishedExecPods(t *testing.T) {
-	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, execPool("std"))
-	t0 := time.Now()
-
-	old := claimedPodFixture("std", "pod-old", "10.0.0.1", "act1", pool.Activation{Command: "run"})
-	setWorkloadTerminated(old, 0, t0.Add(-20*time.Minute))
-	addPod(t, cs, old)
-
-	recent := claimedPodFixture("std", "pod-recent", "10.0.0.2", "act2", pool.Activation{Command: "run"})
-	setWorkloadTerminated(recent, 0, t0.Add(-5*time.Minute))
-	addPod(t, cs, recent)
-
-	c := newController(o)
-	c.now = func() time.Time { return t0 }
-	c.tick(t.Context())
-
-	if !podGone(t, cs, "pod-old") {
-		t.Error("want the pod past ActivationRetention reaped")
-	}
-	if podGone(t, cs, "pod-recent") {
-		t.Error("want the recently finished pod kept for Status")
-	}
-}
-
 func TestIdleTeardown_DeactivatesAfterNoRequestDelta(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, httpPool("web"))
+	o, cs, claims := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, claimedPodFixture("web", "pod-a", "10.0.0.1", "site",
 		pool.Activation{Command: "serve", IdleTimeoutSeconds: 60}))
 	claims.requests["10.0.0.1"] = 5
@@ -143,7 +118,7 @@ func TestIdleTeardown_DeactivatesAfterNoRequestDelta(t *testing.T) {
 
 func TestIdleTeardown_TrafficResetsTheClock(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, httpPool("web"))
+	o, cs, claims := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, claimedPodFixture("web", "pod-a", "10.0.0.1", "site",
 		pool.Activation{Command: "serve", IdleTimeoutSeconds: 60}))
 	claims.requests["10.0.0.1"] = 5
@@ -166,7 +141,7 @@ func TestIdleTeardown_TrafficResetsTheClock(t *testing.T) {
 
 func TestIdleTeardown_ZeroIdleTimeoutMeansUntilDelete(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, httpPool("web"))
+	o, cs, claims := newTestOrchestrator(t, testPool("web"))
 	addPod(t, cs, claimedPodFixture("web", "pod-a", "10.0.0.1", "site",
 		pool.Activation{Command: "serve"}))
 	claims.requests["10.0.0.1"] = 0

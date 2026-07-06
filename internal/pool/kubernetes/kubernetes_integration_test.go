@@ -27,7 +27,6 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/testutil"
 	"orchestrator/pkg/pool"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -180,10 +179,11 @@ func requirePodNetwork(t *testing.T, o *Orchestrator, poolID string) {
 	t.Fatal("no claimable warm pod to probe")
 }
 
-func itExecPool(id string) pool.Pool {
+func itPool(id string) pool.Pool {
 	return pool.Pool{
 		ID:     id,
 		Image:  itPoolImage,
+		Port:   8080,
 		Size:   1,
 		CPU:    0.1,
 		Memory: 64,
@@ -191,36 +191,36 @@ func itExecPool(id string) pool.Pool {
 	}
 }
 
-// TestIntegration_ExecActivation is the pools happy path: a real warm pod
-// (shim installed, sidecar armed) is claimed, the command execs, and the
-// activation returns its exit code and output inline.
-func TestIntegration_ExecActivation(t *testing.T) {
-	o := itSetup(t, itExecPool("it-exec"))
-	waitWarm(t, o, "it-exec", 1, 120*time.Second)
-	requirePodNetwork(t, o, "it-exec")
+// itServeCommand starts agnhost's HTTP echo server on the pool port — the
+// serving workload every activation late-binds onto a warm pod.
+const itServeCommand = "/agnhost netexec --http-port=8080"
 
-	status, err := o.Activate(t.Context(), "it-exec", &pool.Activation{
-		ID:             "run1",
-		Command:        "echo hello-from-pool",
-		TimeoutSeconds: 60,
+// TestIntegration_HTTPActivation is the pools happy path: a real warm pod
+// (shim installed, sidecar armed) is claimed, the serving command execs, and
+// the activation turns ready at its URL.
+func TestIntegration_HTTPActivation(t *testing.T) {
+	o := itSetup(t, itPool("it-http"))
+	waitWarm(t, o, "it-http", 1, 120*time.Second)
+	requirePodNetwork(t, o, "it-http")
+
+	status, err := o.Activate(t.Context(), "it-http", &pool.Activation{
+		ID:      "serve1",
+		Command: itServeCommand,
 	})
 	if err != nil {
 		t.Fatalf("Activate: %v", err)
 	}
-	if status.State != pool.StateExited || status.ExitCode == nil || *status.ExitCode != 0 {
-		t.Fatalf("want exited/0, got %s/%v (error %q)", status.State, status.ExitCode, status.Error)
-	}
-	if !strings.Contains(status.Output, "hello-from-pool") {
-		t.Errorf("output: want hello-from-pool, got %q", status.Output)
+	if status.State != pool.StateReady || status.URL == "" {
+		t.Fatalf("want ready with an URL, got %s %q (error %q)", status.State, status.URL, status.Error)
 	}
 
-	// The finished activation stays queryable from the labeled pod.
-	got, err := o.Status(t.Context(), "it-exec", "run1")
+	// The live activation stays queryable from the labeled pod.
+	got, err := o.Status(t.Context(), "it-http", "serve1")
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if got.State != pool.StateExited || got.ExitCode == nil || *got.ExitCode != 0 {
-		t.Errorf("Status after exec: got %s/%v", got.State, got.ExitCode)
+	if got.State != pool.StateReady || got.URL != status.URL {
+		t.Errorf("Status after activation: got %s %q", got.State, got.URL)
 	}
 }
 
@@ -228,7 +228,7 @@ func TestIntegration_ExecActivation(t *testing.T) {
 // reject pool: the sidecar serializes, so exactly one wins and the racing
 // losers get 409 → no other pod → 429 (Exhausted).
 func TestIntegration_ClaimRace(t *testing.T) {
-	o := itSetup(t, itExecPool("it-race"))
+	o := itSetup(t, itPool("it-race"))
 	waitWarm(t, o, "it-race", 1, 120*time.Second)
 	requirePodNetwork(t, o, "it-race")
 
@@ -238,14 +238,13 @@ func TestIntegration_ClaimRace(t *testing.T) {
 	for i := range 3 {
 		wg.Go(func() {
 			status, err := o.Activate(t.Context(), "it-race", &pool.Activation{
-				ID:             fmt.Sprintf("race-%d", i),
-				Command:        "echo won",
-				TimeoutSeconds: 60,
+				ID:      fmt.Sprintf("race-%d", i),
+				Command: itServeCommand,
 			})
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
-			case err == nil && status.State == pool.StateExited:
+			case err == nil && status.State == pool.StateReady:
 				wins++
 			case errors.Is(err, apperrors.ErrExhausted):
 				rejects++
@@ -261,20 +260,19 @@ func TestIntegration_ClaimRace(t *testing.T) {
 	}
 }
 
-// TestIntegration_ReplenishAfterExec checks the slot comes back off the
-// request path: after an exec activation consumes the only warm pod, the
-// control loop mints a fresh one (a NEW pod — claimed pods are never resold).
-func TestIntegration_ReplenishAfterExec(t *testing.T) {
-	o := itSetup(t, itExecPool("it-replenish"))
+// TestIntegration_ReplenishAfterClaim checks the slot comes back off the
+// request path: after an activation consumes the only warm pod, the control
+// loop mints a fresh one (a NEW pod — claimed pods are never resold).
+func TestIntegration_ReplenishAfterClaim(t *testing.T) {
+	o := itSetup(t, itPool("it-replenish"))
 	waitWarm(t, o, "it-replenish", 1, 120*time.Second)
 	requirePodNetwork(t, o, "it-replenish")
 
 	status, err := o.Activate(t.Context(), "it-replenish", &pool.Activation{
-		ID:             "consume",
-		Command:        "echo done",
-		TimeoutSeconds: 60,
+		ID:      "consume",
+		Command: itServeCommand,
 	})
-	if err != nil || status.State != pool.StateExited {
+	if err != nil || status.State != pool.StateReady {
 		t.Fatalf("Activate: status %+v err %v", status, err)
 	}
 	claimedPod := status.PodID

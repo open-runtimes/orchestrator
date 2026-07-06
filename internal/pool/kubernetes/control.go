@@ -154,18 +154,10 @@ func (c *controller) countsWarm(ctx context.Context, pod *corev1.Pod) bool {
 	return true
 }
 
-// reapClaimed applies the end-of-life rules to a claimed pod. Exec: a
-// terminated workload stays queryable for ActivationRetention, then the pod
-// is reaped. HTTP: with IdleTimeoutSeconds set, no request-count movement
-// across the window tears the activation down.
+// reapClaimed applies the end-of-life rule to a claimed pod: with
+// IdleTimeoutSeconds set, no request-count movement across the window tears
+// the activation down.
 func (c *controller) reapClaimed(ctx context.Context, p *pool.Pool, pod *corev1.Pod, activationID string) {
-	if !p.HTTP() {
-		if t := workloadTerminated(pod); t != nil && c.now().Sub(t.FinishedAt.Time) > c.o.cfg.ActivationRetention {
-			slog.Info("Reaping exec activation past retention", "activationId", activationID, "pod", pod.Name)
-			_ = c.o.deletePod(ctx, pod.Name)
-		}
-		return
-	}
 	var act pool.Activation
 	_ = json.Unmarshal([]byte(pod.Annotations[AnnotationActivationSpec]), &act)
 	if act.IdleTimeoutSeconds <= 0 || pod.Status.PodIP == "" {

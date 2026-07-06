@@ -22,7 +22,7 @@ type Pool struct {
 	Size        int                `json:"size"`              // warm pods kept ready
 	CPU         float64            `json:"cpu"`
 	Memory      int                `json:"memory"`
-	Port        int                `json:"port,omitempty"` // >0: HTTP pool (activations serve on it); 0: exec pool (run to completion)
+	Port        int                `json:"port"` // required — the container port activations serve HTTP on
 	Probes      *deployment.Probes `json:"probes,omitempty"`
 	Environment map[string]string  `json:"environment,omitempty"`
 	Meta        map[string]string  `json:"meta,omitempty"`
@@ -39,10 +39,6 @@ const (
 	BurstCold   = "cold"
 )
 
-// HTTP reports whether activations of this pool serve HTTP (vs run to
-// completion).
-func (p *Pool) HTTP() bool { return p.Port > 0 }
-
 // LoadPools parses the POOLS_JSON config value.
 func LoadPools(raw string) ([]Pool, error) {
 	if raw == "" {
@@ -57,6 +53,9 @@ func LoadPools(raw string) ([]Pool, error) {
 		p := &pools[i]
 		if p.ID == "" || p.Image == "" {
 			return nil, fmt.Errorf("pool %d: id and image are required", i)
+		}
+		if p.Port <= 0 {
+			return nil, fmt.Errorf("pool %q: port is required", p.ID)
 		}
 		if seen[p.ID] {
 			return nil, fmt.Errorf("duplicate pool id %q", p.ID)
@@ -82,12 +81,12 @@ func LoadPools(raw string) ([]Pool, error) {
 // Activation is the runtime request late-bound onto a warm pod.
 type Activation struct {
 	ID                 string               `json:"id,omitempty"`   // caller-chosen (stable URL), RFC-1123 label; else generated
-	Host               string               `json:"host,omitempty"` // HTTP pools: RFC-1123 hostname; else {id}.{pool-domain}
+	Host               string               `json:"host,omitempty"` // RFC-1123 hostname; else {id}.{pool-domain}
 	Command            string               `json:"command"`
 	Environment        map[string]string    `json:"environment,omitempty"`
 	Artifacts          []artifact.Artifact  `json:"artifacts,omitempty"`
-	TimeoutSeconds     int                  `json:"timeoutSeconds,omitempty"`     // exec: run bound; HTTP: per-request bound
-	IdleTimeoutSeconds int                  `json:"idleTimeoutSeconds,omitempty"` // HTTP: tear down after idleness; 0 = until DELETE
+	TimeoutSeconds     int                  `json:"timeoutSeconds,omitempty"`     // per-request bound → 504
+	IdleTimeoutSeconds int                  `json:"idleTimeoutSeconds,omitempty"` // tear down after idleness; 0 = until DELETE
 	Callback           *deployment.Callback `json:"callback,omitempty"`
 }
 
@@ -175,22 +174,18 @@ func (a Activation) MarshalJSON() ([]byte, error) {
 const (
 	StateActivating   = "activating"
 	StateReady        = "ready"
-	StateExited       = "exited"
 	StateFailed       = "failed"
 	StateDeactivating = "deactivating"
 )
 
-// ActivationStatus is the API view of an activation. ExitCode/Output apply
-// only to exec pools; URL only to HTTP pools.
+// ActivationStatus is the API view of an activation.
 type ActivationStatus struct {
-	ID       string `json:"id"`
-	PoolID   string `json:"poolId"`
-	PodID    string `json:"podId,omitempty"`
-	URL      string `json:"url,omitempty"`
-	State    string `json:"status"` // activating|ready|exited|failed|deactivating
-	ExitCode *int   `json:"exitCode,omitempty"`
-	Output   string `json:"output,omitempty"`
-	Error    string `json:"error,omitempty"`
+	ID     string `json:"id"`
+	PoolID string `json:"poolId"`
+	PodID  string `json:"podId,omitempty"`
+	URL    string `json:"url,omitempty"`
+	State  string `json:"status"` // activating|ready|failed|deactivating
+	Error  string `json:"error,omitempty"`
 }
 
 // Status is the API view of a configured pool.

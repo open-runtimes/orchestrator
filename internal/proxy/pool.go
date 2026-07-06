@@ -99,8 +99,8 @@ func writeClaimState(w http.ResponseWriter, status int, s ClaimState) {
 }
 
 // activate materializes the payload onto the pod: artifacts into the
-// workspace, one ShimExec line down the FIFO, and — for HTTP claims — the
-// late-bound data plane. Any error poisons the pod (the caller publishes it).
+// workspace, one ShimExec line down the FIFO, then the late-bound data
+// plane. Any error poisons the pod (the caller publishes it).
 func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
 	timeoutSeconds := req.TimeoutSeconds
 	if timeoutSeconds <= 0 {
@@ -123,9 +123,7 @@ func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
 		return err
 	}
 
-	if req.Port > 0 {
-		p.arm(req)
-	}
+	p.arm(req)
 	return nil
 }
 

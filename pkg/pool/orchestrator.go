@@ -14,11 +14,9 @@ type Orchestrator interface {
 	// Pools reports the configured pools with live warm/claimed counts.
 	Pools(ctx context.Context) ([]Status, error)
 
-	// Activate claims a warm pod and late-binds the activation onto it.
-	// Exec pools: blocks until the workload exits (bounded by
-	// TimeoutSeconds) and returns ExitCode/Output inline. HTTP pools:
-	// returns once the workload is serving, with its URL. No free warm pod →
-	// the pool's burst policy decides (429-mapped error or cold create).
+	// Activate claims a warm pod and late-binds the activation onto it,
+	// returning once the workload is serving, with its URL. No free warm pod
+	// → the pool's burst policy decides (cold create, or a 429-mapped error).
 	Activate(ctx context.Context, poolID string, act *Activation) (*ActivationStatus, error)
 
 	// Status returns one activation's state, derived from the backend.
