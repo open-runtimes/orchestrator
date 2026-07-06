@@ -23,6 +23,7 @@ Job orchestration service for running containerized workloads with async callbac
 - `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane, see `docs/design/`
 - `cmd/deployments-sidecar` — reverse proxy in every deployment replica (readiness, drain, concurrency cap)
 - `cmd/deployments-activator` — K8s buffering edge for cold/async traffic (gateway routes here with X-Revision)
+- `cmd/pool-shim` — warm-pod entrypoint: blocks on a FIFO, execs the activation payload as PID 1
 - `internal/` — core packages: api, job, artifact, dispatcher, kube (shared K8s client/leader election), orchestrator/{docker,kubernetes}, sidecar, config
 - `pkg/` — reusable utilities: backoff, circuitbreaker, cloudevent, lifecycle (shared workload FSM/store), server
 - `charts/orchestrator/` — Helm chart
