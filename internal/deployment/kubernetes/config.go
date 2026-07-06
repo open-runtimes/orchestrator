@@ -41,6 +41,7 @@ type Config struct {
 	GatewayName          string // parentRef Gateway name
 	GatewayNamespace     string // parentRef Gateway namespace; default = Namespace
 	ActivatorService     string // Service backing the Prefer: respond-async rule
+	ActivatorNamespace   string // namespace of the activator Service and pods; empty = Namespace
 	ActivatorPort        int    // activator listen port
 	ActivatorSelector    string // pod selector for activator endpoints (cold endpoint flip)
 	RevisionHistoryLimit int    // retained revisions beyond the routed set; default 3
@@ -74,6 +75,7 @@ func LoadConfigFromEnv() (Config, error) {
 		GatewayName:          config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
 		GatewayNamespace:     config.GetEnv("KUBE_GATEWAY_NAMESPACE", ""),
 		ActivatorService:     config.GetEnv("ACTIVATOR_SERVICE", defaultActivatorService),
+		ActivatorNamespace:   config.GetEnv("KUBE_ACTIVATOR_NAMESPACE", ""),
 		ActivatorPort:        config.GetIntEnv("ACTIVATOR_PORT", defaultActivatorPort),
 		ActivatorSelector:    config.GetEnv("ACTIVATOR_SELECTOR", defaultActivatorSelector),
 		RevisionHistoryLimit: config.GetIntEnv("REVISION_HISTORY_LIMIT", defaultRevisionHistoryLimit),

@@ -179,6 +179,28 @@ func TestFlipUpToRevisionPods(t *testing.T) {
 	assertSlice(t, getSlice(t, client, "dep-web-00001"), []string{"10.0.0.1"}, testProxyPort)
 }
 
+// The activator runs with the control plane, which may be a different
+// namespace than the workloads (deployments.workloadNamespace) — cold flips
+// must read its pods from there, and only from there.
+func TestColdFlipReadsActivatorsFromTheirOwnNamespace(t *testing.T) {
+	controlNS := "control"
+	act := activatorPod("act-0", "10.9.0.0", true)
+	act.Namespace = controlNS
+	client := fake.NewClientset(
+		revisionService("web-00001", "web"),
+		revisionPod("web-a", "web-00001", "10.0.0.1", false),
+		act,
+		// A decoy in the workload namespace must not count as an activator.
+		activatorPod("act-imposter", "10.6.6.6", true),
+	)
+	opts := testOptions()
+	opts.ActivatorNamespace = controlNS
+	r := New(client, testNS, opts)
+
+	mustReconcile(t, r, "dep-web-00001")
+	assertSlice(t, getSlice(t, client, "dep-web-00001"), []string{"10.9.0.0"}, testActivatorPort)
+}
+
 func TestColdWithNoActivatorsKeepsEmptySlice(t *testing.T) {
 	r, client := newTestReconciler(
 		revisionService("web-00001", "web"),

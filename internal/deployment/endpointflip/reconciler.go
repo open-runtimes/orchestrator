@@ -43,6 +43,10 @@ type Options struct {
 	// e.g. "app.kubernetes.io/component=deployments-activator". Empty or
 	// unparsable means cold revisions flip to a slice with zero endpoints.
 	ActivatorSelector string
+	// ActivatorNamespace is where the activator pods run when it differs from
+	// the reconciler's namespace (control plane vs. hardened workload
+	// namespace). Empty means the reconciler's own namespace.
+	ActivatorNamespace string
 	// ProxyPort is the endpoint target port for warm (revision pod) mode.
 	ProxyPort int32
 	// ActivatorPort is the endpoint target port for activator mode.
@@ -54,9 +58,10 @@ type Options struct {
 // Reconciler owns the {service}-flip EndpointSlice of every managed revision
 // Service in one namespace.
 type Reconciler struct {
-	client    kubernetes.Interface
-	namespace string
-	opts      Options
+	client             kubernetes.Interface
+	namespace          string
+	activatorNamespace string
+	opts               Options
 
 	// nil when Options.ActivatorSelector is unusable; the flip then degrades
 	// to empty endpoints rather than matching every pod.
@@ -76,10 +81,14 @@ func New(client kubernetes.Interface, namespace string, opts Options) *Reconcile
 		opts.Resync = defaultResync
 	}
 	r := &Reconciler{
-		client:    client,
-		namespace: namespace,
-		opts:      opts,
-		queue:     workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
+		client:             client,
+		namespace:          namespace,
+		activatorNamespace: opts.ActivatorNamespace,
+		opts:               opts,
+		queue:              workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
+	}
+	if r.activatorNamespace == "" {
+		r.activatorNamespace = namespace
 	}
 	// labels.Parse("") yields Everything — reject it too, or every pod in the
 	// namespace would count as an activator.
@@ -118,10 +127,32 @@ func (r *Reconciler) Run(ctx context.Context) {
 		DeleteFunc: r.enqueueForPod,
 	})
 
+	// Activator pods live with the control plane, which may be a different
+	// namespace than the workloads; the local pod informer cannot see them.
+	var activatorFactory informers.SharedInformerFactory
+	if r.activatorSelector != nil && r.activatorNamespace != r.namespace {
+		activatorFactory = informers.NewSharedInformerFactoryWithOptions(r.client, r.opts.Resync,
+			informers.WithNamespace(r.activatorNamespace),
+			informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+				opts.LabelSelector = r.activatorSelector.String()
+			}),
+		)
+		enqueueAll := func(any) { r.enqueueRevisionServices(labels.Everything()) }
+		_, _ = activatorFactory.Core().V1().Pods().Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc:    enqueueAll,
+			UpdateFunc: func(_, obj any) { enqueueAll(obj) },
+			DeleteFunc: enqueueAll,
+		})
+	}
+
 	serviceFactory.Start(ctx.Done())
 	podFactory.Start(ctx.Done())
 	serviceFactory.WaitForCacheSync(ctx.Done())
 	podFactory.WaitForCacheSync(ctx.Done())
+	if activatorFactory != nil {
+		activatorFactory.Start(ctx.Done())
+		activatorFactory.WaitForCacheSync(ctx.Done())
+	}
 
 	done := make(chan struct{})
 	go func() {

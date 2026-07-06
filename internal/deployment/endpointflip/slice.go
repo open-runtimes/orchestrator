@@ -40,7 +40,7 @@ func (r *Reconciler) reconcileService(ctx context.Context, name string) error {
 // intent: any ready revision pod → warm (pod IPs on ProxyPort); otherwise
 // activator IPs on ActivatorPort — possibly zero of them, never stale pod IPs.
 func (r *Reconciler) desiredMembership(ctx context.Context, revision string) ([]string, int32, error) {
-	ips, err := r.readyPodIPs(ctx, labels.Set{LabelRevision: revision}.AsSelector())
+	ips, err := r.readyPodIPs(ctx, r.namespace, labels.Set{LabelRevision: revision}.AsSelector())
 	if err != nil {
 		return nil, 0, err
 	}
@@ -50,15 +50,15 @@ func (r *Reconciler) desiredMembership(ctx context.Context, revision string) ([]
 	if r.activatorSelector == nil {
 		return nil, r.opts.ActivatorPort, nil
 	}
-	ips, err = r.readyPodIPs(ctx, r.activatorSelector)
+	ips, err = r.readyPodIPs(ctx, r.activatorNamespace, r.activatorSelector)
 	if err != nil {
 		return nil, 0, err
 	}
 	return ips, r.opts.ActivatorPort, nil
 }
 
-func (r *Reconciler) readyPodIPs(ctx context.Context, sel labels.Selector) ([]string, error) {
-	list, err := r.client.CoreV1().Pods(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: sel.String()})
+func (r *Reconciler) readyPodIPs(ctx context.Context, namespace string, sel labels.Selector) ([]string, error) {
+	list, err := r.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: sel.String()})
 	if err != nil {
 		return nil, err
 	}

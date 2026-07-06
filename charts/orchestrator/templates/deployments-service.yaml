@@ -49,6 +49,8 @@ spec:
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
+            - name: KUBE_ACTIVATOR_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             - name: KUBE_GATEWAY_ENABLED
               value: {{ .Values.deployments.gateway.enabled | quote }}
             - name: KUBE_GATEWAY_NAME

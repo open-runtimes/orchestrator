@@ -73,9 +73,10 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 func (o *Orchestrator) runReconcilers(ctx context.Context) {
 	if o.cfg.GatewayEnabled {
 		flip := endpointflip.New(o.client, o.namespace, endpointflip.Options{
-			ActivatorSelector: o.cfg.ActivatorSelector,
-			ProxyPort:         proxy.DefaultProxyPort,
-			ActivatorPort:     int32(o.cfg.ActivatorPort),
+			ActivatorSelector:  o.cfg.ActivatorSelector,
+			ActivatorNamespace: o.cfg.ActivatorNamespace,
+			ProxyPort:          proxy.DefaultProxyPort,
+			ActivatorPort:      int32(o.cfg.ActivatorPort),
 		})
 		go flip.Run(ctx)
 	}

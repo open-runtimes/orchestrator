@@ -247,7 +247,14 @@ func (o *Orchestrator) buildRouteRules(targets []deployment.Target) []gatewayv1.
 	async := make([]gatewayv1.HTTPBackendRef, 0, len(targets))
 	dflt := make([]gatewayv1.HTTPBackendRef, 0, len(targets))
 	for _, t := range targets {
-		async = append(async, backendRef(o.cfg.ActivatorService, int32(o.cfg.ActivatorPort), t))
+		ref := backendRef(o.cfg.ActivatorService, int32(o.cfg.ActivatorPort), t)
+		// The activator Service lives with the control plane; when that is a
+		// different namespace than the route, the ref must say so (and a
+		// ReferenceGrant there must allow it — the Helm chart renders one).
+		if o.cfg.ActivatorNamespace != "" && o.cfg.ActivatorNamespace != o.namespace {
+			ref.Namespace = ptr.To(gatewayv1.Namespace(o.cfg.ActivatorNamespace))
+		}
+		async = append(async, ref)
 		dflt = append(dflt, backendRef(objectNameFor(t.RevisionName), servicePort, t))
 	}
 	return []gatewayv1.HTTPRouteRule{

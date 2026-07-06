@@ -64,6 +64,61 @@ spec:
             cidr: 0.0.0.0/0
             except: ["169.254.169.254/32"]
 {{- end }}
+{{- if ne $ns .Release.Namespace }}
+---
+# The cold endpoint flip watches activator pods, which stay with the control
+# plane in the release namespace — the service's workload-namespace Role
+# cannot see them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.deployments.gateway.enabled }}
+---
+# HTTPRoutes in the workload namespace point their Prefer: respond-async rule
+# at the activator Service here; cross-namespace backendRefs need the target
+# namespace's consent.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ $ns }}
+  to:
+    - group: ""
+      kind: Service
+      name: deployments-activator
+{{- end }}
+{{- end }}
 {{- if .Values.deployments.workloadNamespace.resourceQuota.enabled }}
 ---
 apiVersion: v1
