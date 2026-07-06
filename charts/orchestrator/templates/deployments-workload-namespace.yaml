@@ -1,0 +1,137 @@
+{{- if and .Values.deployments.enabled .Values.deployments.workloadNamespace.enabled }}
+{{- $ns := include "orchestrator.deploymentsWorkloadNamespace" . }}
+{{- if .Values.deployments.workloadNamespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+    {{- with .Values.deployments.workloadNamespace.podSecurity }}
+    pod-security.kubernetes.io/enforce: {{ . }}
+    pod-security.kubernetes.io/audit: {{ . }}
+    pod-security.kubernetes.io/warn: {{ . }}
+    {{- end }}
+{{- end }}
+{{- if .Values.deployments.workloadNamespace.networkPolicy.enabled }}
+---
+# Workload isolation: default-deny ingress to managed pods, admitting only
+# the data path (gateway), the buffering edge (activator), and the control
+# plane (deployments-service: claim POSTs, /stats scrapes, direct probes).
+# Egress blocks the cloud metadata endpoint — the highest-value single rule
+# (docs/operations.md). Requires an enforcing CNI.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-workload-isolation
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      managed-by: deployments-service
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.deployments.workloadNamespace.networkPolicy.gatewayNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: deployments-activator
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: deployments
+  egress:
+    # DNS anywhere in-cluster (kube-dns lives in kube-system).
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Everything else except the cloud metadata endpoint (IAM-credential SSRF).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["169.254.169.254/32"]
+{{- end }}
+{{- if ne $ns .Release.Namespace }}
+---
+# The cold endpoint flip watches activator pods, which stay with the control
+# plane in the release namespace — the service's workload-namespace Role
+# cannot see them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.deployments.gateway.enabled }}
+---
+# HTTPRoutes in the workload namespace point their Prefer: respond-async rule
+# at the activator Service here; cross-namespace backendRefs need the target
+# namespace's consent.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ $ns }}
+  to:
+    - group: ""
+      kind: Service
+      name: deployments-activator
+{{- end }}
+{{- end }}
+{{- if .Values.deployments.workloadNamespace.resourceQuota.enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-workloads
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  hard:
+    pods: {{ .Values.deployments.workloadNamespace.resourceQuota.pods | quote }}
+    requests.cpu: {{ .Values.deployments.workloadNamespace.resourceQuota.requestsCpu | quote }}
+    requests.memory: {{ .Values.deployments.workloadNamespace.resourceQuota.requestsMemory | quote }}
+{{- end }}
+{{- end }}

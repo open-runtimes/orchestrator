@@ -10,23 +10,135 @@ jobs:
   # Empty uses "jobs" when the release is named "orchestrator", otherwise
   # "<release>-jobs" to keep resources scoped to the release.
   fullnameOverride: ""
+  # Image for the jobs-service Deployment.
+  # CI publishes ghcr.io/open-runtimes/orchestrator/jobs-service on every main push,
+  # tagged with both :latest and the commit SHA (plus the semver on release tags).
+  image:
+    # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/jobs-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Image used by job pods (worker workspace init + native sidecar), and by
+  # deployment pods' artifact-pre init container. Passed via JOB_SIDECAR_IMAGE.
+  sidecarImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
+    tag: latest
 
-# Image for the jobs-service Deployment.
-# CI publishes ghcr.io/open-runtimes/orchestrator/jobs-service on every main push,
-# tagged with both :latest and the commit SHA (plus the semver on release tags).
-image:
-  # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
-  ref: ""
-  repository: ghcr.io/open-runtimes/orchestrator/jobs-service
-  tag: latest
-  pullPolicy: IfNotPresent
-
-# Image used by job pods (worker workspace init + native sidecar).
-# Passed to jobs-service via SIDECAR_IMAGE so it can stamp it into every Job spec.
-sidecarImage:
-  ref: ""
-  repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
-  tag: latest
+# Serving-plane API (deployments + deployment-pools). Disabled by default —
+deployments:
+  enabled: false
+  # Empty uses "deployments" when the release is named "orchestrator",
+  # otherwise "<release>-deployments".
+  fullnameOverride: ""
+  replicaCount: 1
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/deployments-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Image for the deployments-sidecar (reverse proxy) in every workload pod.
+  sidecarImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/deployments-sidecar
+    tag: latest
+  # Data-plane port the in-process activator listens on (Host-based routing).
+  dataPort: 8081
+  # Base domain for auto-assigned hosts: {id}.{domain}.
+  domain: localhost
+  # Annotations on the deployments-service pod (the chart-level podAnnotations
+  # applies only to the jobs component).
+  podAnnotations: {}
+  # Hardened workload namespace: run workloads (revisions, warm pools) in a
+  # dedicated namespace instead of the release namespace, with Pod Security
+  # Admission and network isolation applied. The Gateway must allow routes
+  # from this namespace (allowedRoutes.namespaces != Same).
+  workloadNamespace:
+    enabled: false
+    # Empty = "<release namespace>-workloads".
+    name: ""
+    # Create the namespace (with the labels below). Disable if it is
+    # provisioned externally.
+    create: true
+    # Pod Security Admission enforce level label ("" = no PSA labels). The
+    # generated pods run under the hardened floor and admit cleanly at
+    # "restricted".
+    podSecurity: restricted
+    # Default-deny ingress to workload pods except from the gateway,
+    # activator, and deployments-service; egress blocks the cloud metadata
+    # endpoint. Requires an enforcing CNI — kind's default kindnet does NOT
+    # enforce NetworkPolicy.
+    networkPolicy:
+      enabled: true
+      # Namespace the gateway controller pods run in (ingress allow rule).
+      gatewayNamespace: traefik-system
+    # Per-namespace ceiling on workload consumption.
+    resourceQuota:
+      enabled: false
+      pods: 200
+      requestsCpu: "100"
+      requestsMemory: 200Gi
+  # Gateway API integration: the deployments-service reconciles an HTTPRoute
+  # per deployment against this Gateway (Traefik / Envoy Gateway / Istio with
+  # Extended backendRef-filter support).
+  gateway:
+    enabled: true
+    name: orchestrator
+    # Empty = release namespace.
+    namespace: ""
+  # Divisor deriving a workload's CPU request from its declared limit:
+  # request = cpu / cpuOvercommit (docs/operations.md). CPU is
+  # compressible, so raising this packs deployments denser. Values <= 0 mean 1.
+  cpuOvercommit: 1
+  # Leader election gates the background reconcilers (rollout auto-cut, cold
+  # endpoint flip, autoscaler) to one replica. Required when replicaCount > 1.
+  leaderElection:
+    enabled: false
+    # Empty = "<deployments name>-leader".
+    leaseName: ""
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  # Optional LimitRange in the release namespace: default requests for
+  # containers that declare none (no BestEffort creep) and a default memory
+  # limit. Deliberately no default cpu limit — see resource-model.md.
+  limitRange:
+    enabled: false
+  # Warm pools (docs/pools.md): config-declared fleets an activation
+  # late-binds onto. Each entry is a pkg/pool.Pool: {id, image, size, cpu,
+  # memory, port (0 = exec pool), burst (reject|cold), environment}.
+  # Adding/resizing/removing a pool is a values change + rollout, not an API call.
+  pools: []
+  # Image for the pool-shim (warm-pod entrypoint; installed into workload
+  # containers by the shim-install init container).
+  shimImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/pool-shim
+    tag: latest
+  # The buffering edge for cold/async traffic (deployments-activator).
+  activator:
+    replicaCount: 1
+    image:
+      ref: ""
+      repository: ghcr.io/open-runtimes/orchestrator/deployments-activator
+      tag: latest
+      pullPolicy: IfNotPresent
+    port: 8081
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
 replicaCount: 1
 

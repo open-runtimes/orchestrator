@@ -37,13 +37,32 @@ type requestJSON struct {
 	Callback       *Callback         `json:"callback,omitempty"`
 }
 
+// Parse decodes an API request body, rejecting unknown fields — a typo'd
+// field name must fail loudly, not silently run with defaults. Strictness
+// belongs at the API edge only: stored specs (labels, annotations) keep the
+// lenient UnmarshalJSON so version skew never strands them.
+func Parse(data []byte) (*Request, error) {
+	var raw requestJSON
+	if err := artifact.UnmarshalStrict(data, &raw); err != nil {
+		return nil, err
+	}
+	var r Request
+	if err := r.fromRaw(&raw); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // UnmarshalJSON implements custom unmarshaling for Request.
 func (r *Request) UnmarshalJSON(data []byte) error {
 	var raw requestJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	return r.fromRaw(&raw)
+}
 
+func (r *Request) fromRaw(raw *requestJSON) error {
 	r.ID = raw.ID
 	r.Meta = raw.Meta
 	r.Image = raw.Image

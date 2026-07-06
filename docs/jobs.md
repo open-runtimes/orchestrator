@@ -1,0 +1,475 @@
+# Jobs Guide
+
+A **job** runs a container to completion: the orchestrator pulls your image, materializes input artifacts into a shared workspace, runs your command, processes output artifacts, and reports everything to your [callback](callbacks.md). Jobs survive orchestrator restarts — in-flight work is resumed, not lost.
+
+Base URL: `http://localhost:8080` (default). When an API key is configured, send `Authorization: Bearer <key>`. Request bodies with unknown fields are rejected with `400` naming the field — a typo never silently runs with defaults.
+
+## Endpoints
+
+### Create Job
+
+```
+POST /v1/jobs
+```
+
+**Request Body:**
+
+```json
+{
+  "id": "my-job-123",
+  "meta": {
+    "userId": "user-456",
+    "requestId": "req-789"
+  },
+  "image": "alpine:latest",
+  "command": "sh -c 'echo hello > /workspace/output.txt'",
+  "cpu": 0.5,
+  "memory": 512,
+  "environment": {
+    "MY_VAR": "value"
+  },
+  "timeoutSeconds": 300,
+  "workspace": "/workspace",
+  "artifacts": [...],
+  "callback": {...}
+}
+```
+
+**Response:** `202 Accepted`
+
+```json
+{
+  "id": "my-job-123",
+  "status": "accepted"
+}
+```
+
+### Get Job Status
+
+```
+GET /v1/jobs/{jobId}
+```
+
+**Response:**
+
+```json
+{
+  "id": "my-job-123",
+  "status": "completed",
+  "exitCode": 0
+}
+```
+
+Status values: `accepted`, `running`, `completed`, `failed`, `cancelled`
+
+### List Jobs
+
+```
+GET /v1/jobs
+```
+
+**Response:**
+
+```json
+{
+  "jobs": [
+    {"id": "job-1", "status": "running"},
+    {"id": "job-2", "status": "completed", "exitCode": 0}
+  ]
+}
+```
+
+### Cancel Job
+
+```
+DELETE /v1/jobs/{jobId}
+```
+
+**Response:** `204 No Content`
+
+### Health Checks
+
+```
+GET /livez   # Liveness probe
+GET /readyz  # Readiness probe (checks backend connectivity — Docker daemon or K8s API server)
+```
+
+## Artifacts
+
+Artifacts handle file operations before and after job execution. An artifact runs **before** the job by default, or **after** the job if it depends on `"job"` (directly or transitively).
+
+### Artifact Types
+
+| Type | Description |
+|------|-------------|
+| `download` | Download file from URL |
+| `write` | Write inline content |
+| `unarchive` | Extract a tar (plain/gzip/zstd) or squashfs archive |
+| `mount` | Mount a squashfs image read-only into the workspace |
+| `upload` | Upload file to URL |
+| `read` | Include file contents in callback event |
+| `archive` | Create tar or squashfs archive |
+| `list` | List files with glob pattern exclusions |
+
+### Common Fields
+
+All artifacts use standardized `in` and `out` fields:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique artifact identifier (required) |
+| `in` | Input - source URL, path, or content depending on type |
+| `out` | Output - destination URL or path depending on type |
+| `depends` | ID of artifact to wait for, or `"job"` for post-job execution |
+
+### Download Artifact
+
+Download a file from a URL:
+
+```json
+{
+  "id": "model-weights",
+  "type": "download",
+  "in": "https://example.com/weights.bin",
+  "out": "models/weights.bin"
+}
+```
+
+- `in` - URL to download from (required)
+- `out` - Path to write to (required)
+
+### Write Artifact
+
+Write inline content to a file:
+
+```json
+{
+  "id": "config",
+  "type": "write",
+  "in": "{\"key\": \"value\"}",
+  "out": "config.json"
+}
+```
+
+- `in` - Content to write (required)
+- `out` - Path to write to (required)
+
+### Unarchive Artifact
+
+Extract an archive — tar (plain, gzip-, or zstd-compressed) or squashfs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To mount a squashfs image read-only *in place* instead of copying its files out, use the Mount artifact.)
+
+```json
+{
+  "id": "code",
+  "type": "unarchive",
+  "in": "code.tar.gz",
+  "out": "src"
+}
+```
+
+This extracts `code.tar.gz` into the `src/` directory.
+
+**Options:**
+- `in` - Archive file to extract (required)
+- `out` - Destination directory (required)
+- `subdir` - Extract only this subdirectory from the archive (optional)
+
+The `subdir` option is useful for extracting specific folders from GitHub archive downloads, which have a root folder like `repo-main/`:
+
+```json
+{
+  "artifacts": [
+    {
+      "id": "download-template",
+      "type": "download",
+      "in": "https://github.com/org/templates/archive/main.tar.gz",
+      "out": "templates.tar.gz"
+    },
+    {
+      "id": "extract-nextjs",
+      "type": "unarchive",
+      "in": "templates.tar.gz",
+      "out": "code",
+      "subdir": "nextjs",
+      "depends": "download-template"
+    }
+  ]
+}
+```
+
+This downloads the templates repo archive and extracts only the `nextjs/` subdirectory into `code/`. The archive root folder (`templates-main/`) is automatically detected and stripped.
+
+Often chained with a download:
+
+```json
+{
+  "artifacts": [
+    {
+      "id": "download-code",
+      "type": "download",
+      "in": "https://example.com/code.tar.gz",
+      "out": "code.tar.gz"
+    },
+    {
+      "id": "extract-code",
+      "type": "unarchive",
+      "in": "code.tar.gz",
+      "out": "src",
+      "depends": "download-code"
+    }
+  ]
+}
+```
+
+### Mount Artifact
+
+Mount a squashfs image read-only into the workspace, so the worker reads it directly without extraction (preserving the compressed, read-only image):
+
+```json
+{
+  "id": "dataset",
+  "type": "mount",
+  "in": "dataset.sqfs",
+  "out": "mnt/dataset"
+}
+```
+
+This mounts `dataset.sqfs` at `mnt/dataset/` in the workspace, visible to the worker for its whole run and unmounted afterwards.
+
+**Options:**
+- `in` - Squashfs image to mount (required)
+- `out` - Mount point directory in the workspace (required)
+
+> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the `squashfs` kernel module on nodes, and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
+
+### Upload Artifact
+
+Upload a file to a presigned URL:
+
+```json
+{
+  "id": "result",
+  "type": "upload",
+  "in": "output.tar.gz",
+  "out": "https://storage.example.com/presigned-upload-url",
+  "depends": "job"
+}
+```
+
+- `in` - Path to read from (required)
+- `out` - URL to upload to (required)
+
+### Read Artifact
+
+Include file contents in the callback event:
+
+```json
+{
+  "id": "metrics",
+  "type": "read",
+  "in": "metrics.json",
+  "depends": "job"
+}
+```
+
+- `in` - Path to read from (required)
+
+The file contents (parsed as JSON if valid, otherwise string) are included in the `orchestrator.job.artifact` event's `content` field.
+
+### Archive Artifact
+
+Create a tar or squashfs archive from a file or directory:
+
+```json
+{
+  "id": "archive",
+  "type": "archive",
+  "in": "output",
+  "out": "output.tar.gz",
+  "format": "tar",
+  "compression": "gzip",
+  "level": 5,
+  "depends": "job"
+}
+```
+
+- `in` - Source file or directory (required)
+- `out` - Destination archive path (required)
+- `format` - Container format, either `"tar"` or `"squashfs"` (required)
+- `compression` - Compression algorithm: `gzip` or `zstd`. Defaults to no compression for `tar`; `squashfs` is always compressed (defaults to `gzip`) (optional)
+- `level` - gzip compression level, `1`-`9`. Only valid when `compression` is `gzip` (optional)
+
+Create a squashfs archive with zstd compression:
+
+```json
+{
+  "id": "archive",
+  "type": "archive",
+  "in": "output",
+  "out": "output.sqfs",
+  "format": "squashfs",
+  "compression": "zstd",
+  "depends": "job"
+}
+```
+
+### List Artifact
+
+List files in a directory, optionally recursively, with glob pattern exclusions. Returns the list of file paths in the callback event.
+
+```json
+{
+  "id": "file-manifest",
+  "type": "list",
+  "in": "output",
+  "recursive": true,
+  "excludes": ["node_modules", ".git", "*.log"],
+  "depends": "job"
+}
+```
+
+**Options:**
+- `in` - Directory to list (required)
+- `recursive` - Recurse into subdirectories (default: `true`)
+- `excludes` - Glob patterns to exclude (matches file/directory names)
+
+The artifact event content will be an array of relative file paths:
+
+```json
+{
+  "type": "orchestrator.job.artifact",
+  "data": {
+    "artifactId": "file-manifest",
+    "artifactType": "list",
+    "status": "success",
+    "content": [
+      "src/main.go",
+      "src/utils/helper.go",
+      "package.json"
+    ]
+  }
+}
+```
+
+### Artifact Dependencies
+
+Use `depends` to chain artifacts. The dependent artifact waits for its dependency to complete.
+
+**Pre-job chaining** (download then extract):
+
+```json
+{
+  "artifacts": [
+    {
+      "id": "download",
+      "type": "download",
+      "in": "https://example.com/code.tar.gz",
+      "out": "code.tar.gz"
+    },
+    {
+      "id": "extract",
+      "type": "unarchive",
+      "in": "code.tar.gz",
+      "out": "code",
+      "depends": "download"
+    }
+  ]
+}
+```
+
+**Post-job chaining** (archive then upload):
+
+```json
+{
+  "artifacts": [
+    {
+      "id": "archive",
+      "type": "archive",
+      "in": "build",
+      "out": "build.tar.gz",
+      "format": "tar",
+      "compression": "gzip",
+      "depends": "job"
+    },
+    {
+      "id": "upload",
+      "type": "upload",
+      "in": "build.tar.gz",
+      "out": "https://storage.example.com/upload",
+      "depends": "archive"
+    }
+  ]
+}
+```
+
+## Callbacks
+
+Add a `callback` to receive lifecycle events — container started, log batches, per-artifact results, and the final exit — as signed CloudEvents:
+
+```json
+{
+  "callback": {
+    "url": "https://your-service.example.com/webhook",
+    "key": "your-hmac-secret",
+    "events": ["orchestrator.job.exit", "orchestrator.job.artifact"]
+  }
+}
+```
+
+Event schemas, the envelope format, and signature verification live in the [callbacks guide](callbacks.md).
+
+## Complete Example
+
+```json
+{
+  "id": "video-transcode-001",
+  "meta": {
+    "userId": "user-123",
+    "projectId": "proj-456"
+  },
+  "image": "ffmpeg:latest",
+  "command": "ffmpeg -i /workspace/input.mp4 -c:v libx264 /workspace/output.mp4",
+  "cpu": 4,
+  "memory": 4096,
+  "timeoutSeconds": 3600,
+  "artifacts": [
+    {
+      "id": "source-video",
+      "type": "download",
+      "in": "https://storage.example.com/videos/source.mp4",
+      "out": "input.mp4"
+    },
+    {
+      "id": "transcoded-video",
+      "type": "upload",
+      "in": "output.mp4",
+      "out": "https://storage.example.com/upload/output.mp4?signature=...",
+      "depends": "job"
+    }
+  ],
+  "callback": {
+    "url": "https://api.example.com/webhooks/jobs",
+    "key": "whsec_abc123",
+    "events": ["orchestrator.job.exit", "orchestrator.job.artifact"]
+  }
+}
+```
+
+## Error Responses
+
+All errors return JSON:
+
+```json
+{
+  "error": "Job not found"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Invalid request — malformed JSON, unknown field, or failed validation; the message names the offending field |
+| 401 | Missing or invalid API key |
+| 404 | Job not found |
+| 409 | Job with this ID already exists |
+| 415 | `Content-Type` is not `application/json` |
+| 500 | Internal error |

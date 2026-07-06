@@ -22,8 +22,8 @@ spec:
       serviceAccountName: {{ include "orchestrator.serviceAccountName" . }}
       containers:
         - name: jobs-service
-          image: {{ include "orchestrator.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "orchestrator.jobsImage" . | quote }}
+          imagePullPolicy: {{ .Values.jobs.image.pullPolicy }}
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}
@@ -40,8 +40,8 @@ spec:
               value: {{ include "orchestrator.jobNamespace" . | quote }}
             - name: KUBE_JOB_SERVICE_ACCOUNT
               value: {{ .Values.serviceAccount.jobSidecarName | quote }}
-            - name: SIDECAR_IMAGE
-              value: {{ include "orchestrator.sidecarImage" . | quote }}
+            - name: JOB_SIDECAR_IMAGE
+              value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: ARTIFACT_ENDPOINT
               value: {{ include "orchestrator.artifactEndpoint" . | quote }}
             - name: JOB_RETENTION

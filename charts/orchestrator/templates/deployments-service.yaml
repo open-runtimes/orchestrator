@@ -1,0 +1,264 @@
+{{- if .Values.deployments.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.deployments.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 8 }}
+      {{- with .Values.deployments.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "orchestrator.deploymentsName" . }}
+      containers:
+        - name: deployments-service
+          image: {{ include "orchestrator.deploymentsImage" . | quote }}
+          imagePullPolicy: {{ .Values.deployments.image.pullPolicy }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.service.apiPort }}
+            - name: data
+              containerPort: {{ .Values.deployments.dataPort }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          env:
+            - name: ORCHESTRATOR_BACKEND
+              value: kubernetes
+            - name: PORT
+              value: {{ .Values.service.apiPort | quote }}
+            - name: DATA_PORT
+              value: {{ .Values.deployments.dataPort | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.service.metricsPort | quote }}
+            - name: DEPLOYMENTS_DOMAIN
+              value: {{ .Values.deployments.domain | quote }}
+            - name: DEPLOYMENT_SIDECAR_IMAGE
+              value: {{ include "orchestrator.deploymentsSidecarImage" . | quote }}
+            - name: JOB_SIDECAR_IMAGE
+              value: {{ include "orchestrator.jobSidecarImage" . | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
+            - name: KUBE_ACTIVATOR_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: KUBE_GATEWAY_ENABLED
+              value: {{ .Values.deployments.gateway.enabled | quote }}
+            - name: KUBE_GATEWAY_NAME
+              value: {{ .Values.deployments.gateway.name | quote }}
+            - name: KUBE_GATEWAY_NAMESPACE
+              value: {{ default .Release.Namespace .Values.deployments.gateway.namespace | quote }}
+            - name: ACTIVATOR_SERVICE
+              value: "deployments-activator"
+            - name: ACTIVATOR_PORT
+              value: {{ .Values.deployments.activator.port | quote }}
+            - name: KUBE_CPU_OVERCOMMIT
+              value: {{ .Values.deployments.cpuOvercommit | quote }}
+            {{- if .Values.deployments.pools }}
+            - name: POOLS_JSON
+              value: {{ .Values.deployments.pools | toJson | quote }}
+            - name: POOL_SHIM_IMAGE
+              value: {{ include "orchestrator.poolShimImage" . | quote }}
+            - name: POOL_DOMAIN
+              value: {{ .Values.deployments.domain | quote }}
+            {{- end }}
+            {{- if .Values.deployments.leaderElection.enabled }}
+            - name: KUBE_LEADER_ELECTION
+              value: "true"
+            - name: KUBE_LEADER_LEASE_NAME
+              value: {{ default (printf "%s-leader" (include "orchestrator.deploymentsName" .)) .Values.deployments.leaderElection.leaseName | quote }}
+            - name: KUBE_LEADER_IDENTITY
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KUBE_LEADER_LEASE_DURATION
+              value: {{ printf "%ds" (int .Values.deployments.leaderElection.leaseDurationSeconds) | quote }}
+            - name: KUBE_LEADER_RENEW_DEADLINE
+              value: {{ printf "%ds" (int .Values.deployments.leaderElection.renewDeadlineSeconds) | quote }}
+            - name: KUBE_LEADER_RETRY_PERIOD
+              value: {{ printf "%ds" (int .Values.deployments.leaderElection.retryPeriodSeconds) | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.sidecarImagePullPolicy }}
+            - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.sidecarImagePullPolicy | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.workerImagePullPolicy }}
+            - name: KUBE_WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.workerImagePullPolicy | quote }}
+            {{- end }}
+            - name: SHUTDOWN_DRAIN_WAIT
+              value: "0s"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.deployments.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.service.apiPort }}
+      targetPort: api
+    - name: data
+      port: {{ .Values.deployments.dataPort }}
+      targetPort: data
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pools create/claim/discard warm pods and read exec output from their logs.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Secret material at rest (docs/operations.md): per-deployment spec
+  # Secrets (dep-{id}, carrying callback signing keys) and the pool-claim-key
+  # install key that claim tokens derive from.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "delete"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Replica-aware PDBs per revision (docs/operations.md).
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- if .Values.deployments.leaderElection.enabled }}
+  # Lease for leader election across replicas.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.deploymentsName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Sandbox tiers (docs/operations.md): the service validates a workload's
+# RuntimeClass exists before minting revisions / replenishing pools.
+# RuntimeClasses are cluster-scoped, so this is the service's one
+# cluster-scoped grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-cluster
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-cluster
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "orchestrator.deploymentsName" . }}-cluster
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.deployments.limitRange.enabled }}
+---
+# Default requests/limits for containers that declare none (resource-model.md):
+# no BestEffort creep, a memory ceiling, and deliberately NO default cpu limit
+# (CFS throttling). Explicit values on managed pods always win.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        memory: 512Mi
+{{- end }}
+{{- end }}

@@ -74,6 +74,10 @@ jobs:
         run: |
           go build -o /dev/null ./cmd/jobs-service
           go build -o /dev/null ./cmd/job-sidecar
+          go build -o /dev/null ./cmd/deployments-service
+          go build -o /dev/null ./cmd/deployments-sidecar
+          go build -o /dev/null ./cmd/deployments-activator
+          go build -o /dev/null ./cmd/pool-shim
 
   images:
     needs: [lint, helm, test, build]
@@ -128,6 +132,42 @@ jobs:
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
 
+      - name: Build and push deployments-service
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-service
+        run: |
+          ko build ./cmd/deployments-service \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push deployments-sidecar
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-sidecar
+        run: |
+          ko build ./cmd/deployments-sidecar \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push deployments-activator
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-activator
+        run: |
+          ko build ./cmd/deployments-activator \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push pool-shim
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/pool-shim
+        run: |
+          ko build ./cmd/pool-shim \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
   chart:
     needs: [lint, helm, test, build]
     # Only publish charts on tag pushes — avoids OCI registry churn on every main commit.
@@ -166,11 +206,16 @@ jobs:
 
       - uses: ko-build/setup-ko@v0.9
 
-      - name: Build sidecar image
-        run: KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
+      - name: Build sidecar images
+        run: |
+          KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
+          KO_DOCKER_REPO=ko.local/deployments-sidecar ko build --local --bare ./cmd/deployments-sidecar
+          KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
 
       - name: Pull test images
-        run: docker pull alpine:latest
+        run: |
+          docker pull alpine:latest
+          docker pull traefik/whoami:latest
 
       - name: Run integration tests
         run: go test -race -tags=integration -timeout=10m ./...
@@ -223,13 +268,20 @@ jobs:
         run: |
           KO_DOCKER_REPO=ko.local/jobs-service ko build --local --bare ./cmd/jobs-service
           KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
-          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest --name orchestrator-dev
+          KO_DOCKER_REPO=ko.local/deployments-sidecar ko build --local --bare ./cmd/deployments-sidecar
+          KO_DOCKER_REPO=ko.local/deployments-activator ko build --local --bare ./cmd/deployments-activator
+          KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
+          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-shim:latest --name orchestrator-dev
 
-      - name: Preload worker image
-        # Speeds up tests by avoiding kubelet pulling alpine from upstream during each run.
+      - name: Install Gateway API + Traefik
+        run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-gateway.sh
+
+      - name: Preload worker images
+        # Speeds up tests by avoiding kubelet pulling from upstream during each run.
         run: |
           docker pull alpine:3.20
-          kind load docker-image alpine:3.20 --name orchestrator-dev
+          docker pull registry.k8s.io/e2e-test-images/agnhost:2.47
+          kind load docker-image alpine:3.20 registry.k8s.io/e2e-test-images/agnhost:2.47 --name orchestrator-dev
 
       - name: Run K8s integration tests
-        run: go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/...
+        run: go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/... ./internal/deployment/kubernetes/...

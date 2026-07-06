@@ -3,16 +3,48 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/health"
-	"orchestrator/pkg/job"
 	"orchestrator/internal/observability"
+	"orchestrator/pkg/job"
 )
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
 const maxRequestBodySize = 1 << 20 // 1 MB
+
+// parseBody reads a size-capped request body through one of the strict Parse
+// functions (job.Parse, deployment.Parse, pool.Parse — the types whose custom
+// UnmarshalJSON hides field names from DisallowUnknownFields). ok=false means
+// the 400 is already written.
+func parseBody[T any](w http.ResponseWriter, r *http.Request, parse func([]byte) (*T, error)) (*T, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	body, err := io.ReadAll(r.Body)
+	if err == nil {
+		v, perr := parse(body)
+		if perr == nil {
+			return v, true
+		}
+		err = perr
+	}
+	writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+	return nil, false
+}
+
+// decodeStrict decodes a size-capped request body, rejecting unknown fields —
+// a typo'd field name must fail loudly, not be silently dropped. Only for
+// types without a custom UnmarshalJSON; those go through parseBody instead.
+func decodeStrict(w http.ResponseWriter, r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	return artifact.UnmarshalStrict(body, v)
+}
 
 // ArtifactEmitter receives artifact results from the sidecar and dispatches
 // the corresponding CloudEvents through the delivery pipeline.
@@ -40,16 +72,12 @@ func NewHandler(svc *job.Service, metrics *observability.Metrics, healthChecker 
 
 // CreateJob handles POST /v1/jobs
 func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
-	// Limit request body size to prevent memory exhaustion
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-
-	var req job.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+	req, ok := parseBody(w, r, job.Parse)
+	if !ok {
 		return
 	}
 
-	resp, err := h.svc.Create(r.Context(), &req)
+	resp, err := h.svc.Create(r.Context(), req)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -125,6 +153,16 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 
 // writeJSON writes a JSON response
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, data any) {
+	writeJSON(w, status, data)
+}
+
+// writeError writes an error response
+func (h *Handler) writeError(w http.ResponseWriter, status int, message string) {
+	writeError(w, status, message)
+}
+
+// writeJSON writes a JSON response. Shared by the jobs and deployments handlers.
+func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
@@ -132,20 +170,25 @@ func (h *Handler) writeJSON(w http.ResponseWriter, status int, data any) {
 	}
 }
 
-// writeError writes an error response
-func (h *Handler) writeError(w http.ResponseWriter, status int, message string) {
-	h.writeJSON(w, status, map[string]string{"error": message})
+// writeError writes an error response.
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }
 
-// handleError handles errors from service layer with appropriate HTTP status codes.
-func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
+// handleServiceError maps a service-layer error to its HTTP status.
+func handleServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	status := apperrors.HTTPStatus(err)
 	if status >= 500 {
 		slog.Error("Internal error", "error", err, "path", r.URL.Path)
 	} else {
 		slog.Warn("Client error", "error", err, "path", r.URL.Path, "status", status)
 	}
-	h.writeError(w, status, err.Error())
+	writeError(w, status, err.Error())
+}
+
+// handleError handles errors from service layer with appropriate HTTP status codes.
+func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
+	handleServiceError(w, r, err)
 }
 
 // ReportArtifact handles POST /internal/jobs/{jobId}/artifact.
@@ -158,6 +201,9 @@ func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Deliberately lenient (no unknown-field rejection): the sender is the
+	// job sidecar, which may be a release ahead of or behind this service
+	// during a rolling upgrade.
 	var report job.ArtifactReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid artifact report: "+err.Error())

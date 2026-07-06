@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/subtle"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/observability"
@@ -75,7 +76,7 @@ func ContentTypeMiddleware() func(http.Handler) http.Handler {
 			if r.Method == http.MethodPost || r.Method == http.MethodPut {
 				contentType := r.Header.Get("Content-Type")
 				if contentType != "" && contentType != "application/json" {
-					http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+					writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 					return
 				}
 			}
@@ -83,6 +84,49 @@ func ContentTypeMiddleware() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// JSONErrorMiddleware rewrites the mux's plain-text fallbacks (404 for
+// unknown routes, 405 for wrong methods) as {"error": ...} JSON so every
+// error the API emits has one shape. Handler responses pass through
+// untouched: writeError sets application/json before WriteHeader, so only
+// the stdlib's text/plain 404/405 match. The Allow header on 405s survives.
+func JSONErrorMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(&jsonErrorWriter{ResponseWriter: w}, r)
+		})
+	}
+}
+
+type jsonErrorWriter struct {
+	http.ResponseWriter
+	rewrote bool
+}
+
+func (w *jsonErrorWriter) WriteHeader(code int) {
+	if (code == http.StatusNotFound || code == http.StatusMethodNotAllowed) &&
+		strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+		w.rewrote = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Del("Content-Length")
+		w.ResponseWriter.WriteHeader(code)
+		msg := "not found"
+		if code == http.StatusMethodNotAllowed {
+			msg = "method not allowed"
+		}
+		_, _ = fmt.Fprintf(w.ResponseWriter, "{\"error\":%q}\n", msg)
+		return
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Write swallows the stdlib's plain-text body after a rewrite.
+func (w *jsonErrorWriter) Write(b []byte) (int, error) {
+	if w.rewrote {
+		return len(b), nil
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 // CORSMiddleware adds CORS headers

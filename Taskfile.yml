@@ -33,7 +33,7 @@ tasks:
     desc: Run jobs-service locally with hot reload (Docker backend)
     deps: [build-sidecar]
     env:
-      SIDECAR_IMAGE: ko.local/job-sidecar:latest
+      JOB_SIDECAR_IMAGE: ko.local/job-sidecar:latest
       SHUTDOWN_DRAIN_WAIT: "0s"
       EXTRA_HOSTS: "appwrite.test:host-gateway"
     cmds:
@@ -43,7 +43,7 @@ tasks:
     desc: Run jobs-service locally without reload (Docker backend)
     deps: [build-sidecar]
     env:
-      SIDECAR_IMAGE: ko.local/job-sidecar:latest
+      JOB_SIDECAR_IMAGE: ko.local/job-sidecar:latest
       EXTRA_HOSTS: "appwrite.test:host-gateway"
     cmds:
       - go run ./cmd/jobs-service
@@ -55,7 +55,55 @@ tasks:
     cmds:
       - task: build-service
       - task: build-sidecar
+      - task: build-deployments
+      - task: build-deployments-sidecar
+      - task: build-deployments-activator
+      - task: build-pool-shim
     silent: true
+
+  build-pool-shim:
+    desc: Build pool-shim image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/pool-shim {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/pool-shim
+    sources:
+      - cmd/pool-shim/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - go.mod
+
+  build-deployments-activator:
+    desc: Build deployments-activator image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/deployments-activator {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/deployments-activator
+    sources:
+      - cmd/deployments-activator/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - go.mod
+
+  build-deployments:
+    desc: Build deployments-service image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/deployments-service {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/deployments-service
+    sources:
+      - cmd/deployments-service/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - go.mod
+
+  build-deployments-sidecar:
+    desc: Build deployments-sidecar image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/deployments-sidecar {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/deployments-sidecar
+    sources:
+      - cmd/deployments-sidecar/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+      - go.mod
 
   build-service:
     desc: Build service image
@@ -95,8 +143,9 @@ tasks:
     desc: Run real-cluster K8s integration tests (requires kind + built images)
     deps: [build, kind:up]
     cmds:
-      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest --name {{.KIND_CLUSTER}}
-      - go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/...
+      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-shim:latest --name {{.KIND_CLUSTER}}
+      - bash hack/install-gateway.sh
+      - go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/... ./internal/deployment/kubernetes/...
 
   test-e2e:
     desc: Run e2e tests (full system)

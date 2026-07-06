@@ -1,0 +1,115 @@
+{{- if .Values.deployments.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.deployments.activator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "orchestrator.activatorSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.activatorSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-activator
+      containers:
+        - name: deployments-activator
+          image: {{ include "orchestrator.activatorImage" . | quote }}
+          imagePullPolicy: {{ .Values.deployments.activator.image.pullPolicy }}
+          ports:
+            - name: data
+              containerPort: {{ .Values.deployments.activator.port }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          env:
+            - name: ACTIVATOR_PORT
+              value: {{ .Values.deployments.activator.port | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.service.metricsPort | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
+            - name: SHUTDOWN_DRAIN_WAIT
+              value: "0s"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: data
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: data
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.deployments.activator.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deployments-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "orchestrator.activatorSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: data
+      port: {{ .Values.deployments.activator.port }}
+      targetPort: data
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "update", "patch"]
+  # Async requests read the deployment's callback config off its dep-{id}
+  # spec Secret (secret material never rests on ConfigMaps).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}-activator
+    namespace: {{ .Release.Namespace }}
+{{- end }}

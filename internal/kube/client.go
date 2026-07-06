@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	gatewayclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 // NewClient builds a Kubernetes client. When metrics is non-nil, all API
@@ -25,6 +26,20 @@ func NewClient(kubeconfig, kubeContext string, metrics *observability.Metrics) (
 	cs, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kube client: %w", err)
+	}
+	return cs, nil
+}
+
+// NewGatewayClient builds a Gateway API client (HTTPRoute reconciliation),
+// resolving its rest config exactly like NewClient.
+func NewGatewayClient(kubeconfig, kubeContext string) (*gatewayclient.Clientset, error) {
+	restCfg, err := buildRestConfig(kubeconfig, kubeContext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build kube config: %w", err)
+	}
+	cs, err := gatewayclient.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gateway client: %w", err)
 	}
 	return cs, nil
 }

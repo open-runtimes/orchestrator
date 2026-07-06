@@ -11,6 +11,7 @@ var (
 	ErrValidation = errors.New("validation error")
 	ErrNotFound   = errors.New("not found")
 	ErrConflict   = errors.New("conflict")
+	ErrExhausted  = errors.New("exhausted")
 	ErrInternal   = errors.New("internal error")
 )
 
@@ -56,6 +57,17 @@ func NotFound(resource, id string) error {
 func Conflict(resource, id, reason string) error {
 	return &Error{
 		Sentinel: ErrConflict,
+		Message:  reason,
+		Resource: resource,
+	}
+}
+
+// Exhausted creates a capacity-exhausted error for a resource: the request
+// was valid but no capacity is free to serve it right now (e.g. a warm pool
+// with every pod claimed). Maps to HTTP 429.
+func Exhausted(resource, reason string) error {
+	return &Error{
+		Sentinel: ErrExhausted,
 		Message:  reason,
 		Resource: resource,
 	}

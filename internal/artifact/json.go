@@ -1,6 +1,19 @@
 package artifact
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
+
+// UnmarshalStrict decodes JSON rejecting unknown fields — the API-edge
+// decode shared by every request type whose custom UnmarshalJSON (needed
+// for registry-typed artifacts) hides field names from a caller's
+// DisallowUnknownFields. Stored specs use the lenient codecs instead.
+func UnmarshalStrict(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
 
 // UnmarshalArtifact unmarshals a JSON artifact into the appropriate concrete type.
 func UnmarshalArtifact(data []byte) (Artifact, error) {

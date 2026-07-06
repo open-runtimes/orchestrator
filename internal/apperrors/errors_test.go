@@ -67,6 +67,26 @@ func TestConflict(t *testing.T) {
 	}
 }
 
+func TestExhausted(t *testing.T) {
+	t.Parallel()
+	err := Exhausted("pool", "pool std has no free warm pod")
+
+	if !errors.Is(err, ErrExhausted) {
+		t.Error("expected error to match ErrExhausted")
+	}
+	if err.Error() != "pool std has no free warm pod" {
+		t.Errorf("expected message 'pool std has no free warm pod', got %q", err.Error())
+	}
+
+	var appErr *Error
+	if !errors.As(err, &appErr) {
+		t.Fatal("expected error to be *Error")
+	}
+	if appErr.Resource != "pool" {
+		t.Errorf("expected resource 'pool', got %q", appErr.Resource)
+	}
+}
+
 func TestInternal(t *testing.T) {
 	t.Parallel()
 	cause := errors.New("docker daemon unavailable")
@@ -101,10 +121,12 @@ func TestHTTPStatus(t *testing.T) {
 		{"validation", Validation("id", "required"), http.StatusBadRequest},
 		{"not found", NotFound("job", "123"), http.StatusNotFound},
 		{"conflict", Conflict("job", "123", "exists"), http.StatusConflict},
+		{"exhausted", Exhausted("pool", "no free warm pod"), http.StatusTooManyRequests},
 		{"internal", Internal("op", errors.New("fail")), http.StatusInternalServerError},
 		{"sentinel validation", ErrValidation, http.StatusBadRequest},
 		{"sentinel not found", ErrNotFound, http.StatusNotFound},
 		{"sentinel conflict", ErrConflict, http.StatusConflict},
+		{"sentinel exhausted", ErrExhausted, http.StatusTooManyRequests},
 		{"sentinel internal", ErrInternal, http.StatusInternalServerError},
 		{"wrapped validation", fmt.Errorf("wrap: %w", Validation("f", "m")), http.StatusBadRequest},
 		{"unknown error", errors.New("unknown"), http.StatusInternalServerError},
