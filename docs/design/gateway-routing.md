@@ -53,9 +53,11 @@ activator never reimplements it.**
   of a per-revision activator Service so the target itself encodes the revision.)
 - **Async routing** — a second rule matching `Prefer: respond-async` mirrors the *same weighted
   backendRefs*, but every target resolves to the activator (each still tagged with its `X-Revision`).
-  The match is **exact** on the literal `respond-async` (exact header match is Core; `Prefer` is an
-  RFC 7240 list header, so combined forms like `respond-async, wait=100` are **not recognized** — a
-  documented API restriction, kept until a real need meets regex-match support).
+  The match is a **case-insensitive single-token regex** (`(?i)^respond-async$`) — RFC 7240 tokens
+  are case-insensitive, and a casing difference must not silently serve sync. Regex header match is
+  Extended, the same tier as the RequestHeaderModifier this design already requires. `Prefer` is an
+  RFC 7240 list header, so combined forms like `respond-async, wait=100` are still **not
+  recognized** — a documented API restriction.
   So async **respects the split** — the gateway picks the revision by weight; the activator reads
   `X-Revision` and forwards/buffers for *that* revision. So a 90/10 canary whose 10% revision is cold
   still sends ~10% to the activator-for-that-revision, never to the wrong one.

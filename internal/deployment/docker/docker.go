@@ -307,11 +307,15 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 }
 
 // SetTraffic is meaningful only across revisions, and Docker is
-// single-revision: routing 100% to the deployment itself is the no-op it
-// already does; anything else can't be honored.
+// single-revision: routing 100% to the deployment itself — or an empty
+// table (release to auto) — is the no-op it already does; anything else
+// can't be honored.
 func (o *Orchestrator) SetTraffic(ctx context.Context, id string, targets []deployment.Target) error {
 	if _, err := o.volumeFor(ctx, id); err != nil {
 		return err
+	}
+	if len(targets) == 0 {
+		return nil
 	}
 	if len(targets) == 1 && targets[0].RevisionName == id && targets[0].Percent == 100 {
 		return nil

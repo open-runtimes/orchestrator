@@ -17,7 +17,7 @@ open-runtimes execution model: a pool is a warm fleet of a runtime image.
   **pool-shim** binary, idle on a FIFO) + the
   [**deployments-sidecar**](deployments-sidecar.md), sharing an `emptyDir`. The sidecar is the pod's
   HTTP front, **listening from pod start** — so *activation is just an HTTP POST to the claimed pod's sidecar*, no out-of-band channel.
-- An **Activation** (`POST /v1/deployment-pools/{id}/activate`) ships **artifacts** + a command. The sidecar
+- An **Activation** (`POST /v1/deployment-pools/{id}/activations`) ships **artifacts** + a command. The sidecar
   materializes artifacts, signals the shim to `exec` the entrypoint, gates readiness, and the adapter
   exposes the pod at a **gateway URL** ([per-activation Service + `HTTPRoute`](gateway-routing.md)).
 - **Two modes:** **run-to-completion (exec)** — the command exits with an exit code + output;
@@ -41,7 +41,7 @@ Pools are config-defined (above), so the API is **read + activate** only — no 
 ```
 GET    /v1/deployment-pools                            # list configured pools + warm/claimed counts
 GET    /v1/deployment-pools/{id}                       # pool status
-POST   /v1/deployment-pools/{id}/activate              # claim + bind → { id, url, ... }
+POST   /v1/deployment-pools/{id}/activations              # claim + bind → { id, url, ... }
 GET    /v1/deployment-pools/{id}/activations           GET/DELETE /v1/deployment-pools/{id}/activations/{actId}
 ```
 

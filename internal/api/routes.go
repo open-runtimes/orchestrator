@@ -38,6 +38,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 	// Apply middleware chain (order matters: outermost first)
 	var h http.Handler = mux
+	h = JSONErrorMiddleware()(h)
 	h = ContentTypeMiddleware()(h)
 	h = CORSMiddleware()(h)
 	if cfg.Metrics != nil {

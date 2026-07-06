@@ -17,14 +17,21 @@ import (
 	"syscall"
 )
 
-func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "pool-shim"))
+// logFileName holds the shim's own logs, relative to the workspace. NOT
+// stdout/stderr: the container's output stream is the workload's activation
+// output — collected verbatim by the pool backends — and shim noise must not
+// pollute it.
+const logFileName = ".pool-shim.log"
 
+func main() {
 	var installTo string
 	flag.StringVar(&installTo, "install", "", "copy this binary to the given path and exit (the shim-install init container: the pool image is the user's runtime and has no shim)")
 	flag.Parse()
 
 	if installTo != "" {
+		// The install phase runs in its own init container — its stream is
+		// never activation output, so log normally.
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "pool-shim"))
 		if err := install(installTo); err != nil {
 			slog.Error("Shim install failed", "path", installTo, "error", err)
 			os.Exit(1)
@@ -33,10 +40,24 @@ func main() {
 		return
 	}
 
-	if err := run(); err != nil {
+	workspace := config.GetEnv("SHARED_VOLUME_PATH", "/workspace")
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logSink(workspace), nil)).With("service", "pool-shim"))
+
+	if err := run(workspace); err != nil {
 		slog.Error("Shim failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// logSink opens the workspace log file, falling back to discard — a shim
+// that cannot log must still activate, and must never write to the
+// workload's output stream.
+func logSink(workspace string) io.Writer {
+	f, err := os.OpenFile(filepath.Join(workspace, logFileName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return io.Discard
+	}
+	return f
 }
 
 // install copies the running binary to path (0755) so the workload container
@@ -66,8 +87,7 @@ func install(path string) error {
 	return dst.Close()
 }
 
-func run() error {
-	workspace := config.GetEnv("SHARED_VOLUME_PATH", "/workspace")
+func run(workspace string) error {
 	fifoPath := filepath.Join(workspace, proxy.ShimFIFOName)
 
 	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil && !os.IsExist(err) {

@@ -94,8 +94,9 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := deploymentCapacity{resolver: a.resolver, spec: spec}
 	hold := time.Duration(spec.ResponseStartTimeoutSeconds) * time.Second
 
-	// Exact-literal match by design; combined RFC 7240 forms are not recognized.
-	if r.Header.Get("Prefer") == "respond-async" {
+	// Single-token match by design (case-insensitive per RFC 7240); combined
+	// forms like "respond-async, wait=10" are not recognized.
+	if strings.EqualFold(r.Header.Get("Prefer"), "respond-async") {
 		a.broker.async(w, r, spec.ID, spec.Host, spec, hold, c)
 		return
 	}

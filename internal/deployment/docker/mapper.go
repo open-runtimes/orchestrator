@@ -149,7 +149,7 @@ type snapshot struct {
 // runs at most one replica: no containers means scaled to zero (idle),
 // otherwise desired is 1.
 func deriveStatus(id string, s snapshot, now time.Time) *deployment.StatusResponse {
-	status := &deployment.StatusResponse{ID: id, DesiredReplicas: 1}
+	status := &deployment.StatusResponse{ID: id, DesiredReplicas: 1, Mode: deployment.ModeAuto}
 
 	switch {
 	case !s.workerExists && !s.proxyExists:

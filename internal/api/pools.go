@@ -2,12 +2,12 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/pkg/cloudevent"
 	"orchestrator/pkg/pool"
+	"strings"
 	"time"
 )
 
@@ -23,7 +23,7 @@ func registerPoolRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler
 	h := &poolsHandler{svc: svc, queue: queue}
 	mux.Handle("GET /v1/deployment-pools", auth(http.HandlerFunc(h.list)))
 	mux.Handle("GET /v1/deployment-pools/{id}", auth(http.HandlerFunc(h.get)))
-	mux.Handle("POST /v1/deployment-pools/{id}/activate", auth(http.HandlerFunc(h.activate)))
+	mux.Handle("POST /v1/deployment-pools/{id}/activations", auth(http.HandlerFunc(h.activate)))
 	mux.Handle("GET /v1/deployment-pools/{id}/activations", auth(http.HandlerFunc(h.activations)))
 	mux.Handle("GET /v1/deployment-pools/{id}/activations/{actId}", auth(http.HandlerFunc(h.activation)))
 	mux.Handle("DELETE /v1/deployment-pools/{id}/activations/{actId}", auth(http.HandlerFunc(h.deactivate)))
@@ -47,30 +47,32 @@ func (h *poolsHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-// activate handles POST /v1/deployment-pools/{id}/activate. Sync by default:
-// the call blocks and returns the result inline (exec: exit code + output;
-// HTTP: the serving URL). `Prefer: respond-async` returns 202 immediately and
-// delivers the result as an orchestrator.pool.activation.result CloudEvent —
-// the callback is then required, since nothing is stored or pollable
-// in-flight.
+// activate handles POST /v1/deployment-pools/{id}/activations. Sync by
+// default: the call blocks and returns the result inline (exec: exit code +
+// output; HTTP: the serving URL). `Prefer: respond-async` returns 202
+// immediately and delivers the result as an
+// orchestrator.pool.activation.result CloudEvent — the callback is then
+// required, since nothing is stored or pollable in-flight.
 func (h *poolsHandler) activate(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-
-	var act pool.Activation
-	if err := json.NewDecoder(r.Body).Decode(&act); err != nil {
+	body, err := readBody(w, r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+	act, err := pool.Parse(body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
 	poolID := r.PathValue("id")
 
-	// Exact-literal match by design; combined RFC 7240 forms are not recognized.
-	if r.Header.Get("Prefer") != "respond-async" {
-		status, err := h.svc.Activate(r.Context(), poolID, &act)
+	if !preferRespondAsync(r) {
+		status, err := h.svc.Activate(r.Context(), poolID, act)
 		if err != nil {
 			handleServiceError(w, r, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, status)
+		writeJSON(w, http.StatusCreated, status)
 		return
 	}
 
@@ -78,8 +80,16 @@ func (h *poolsHandler) activate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "async activation requires a callback")
 		return
 	}
-	go h.activateAsync(poolID, &act)
+	go h.activateAsync(poolID, act)
 	writeJSON(w, http.StatusAccepted, map[string]string{"poolId": poolID, "status": pool.StateActivating})
+}
+
+// preferRespondAsync matches the Prefer header's respond-async token,
+// case-insensitively (RFC 7240 preference tokens are case-insensitive).
+// Combined forms ("respond-async, wait=10") are still not recognized — by
+// design, mirroring the gateway's single-token match.
+func preferRespondAsync(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Prefer"), "respond-async")
 }
 
 // activateAsync runs the activation detached and delivers the .result event.

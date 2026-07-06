@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	headerPrefer       = "Prefer"
-	preferRespondAsync = "respond-async"
+	headerPrefer = "Prefer"
+	// preferAsyncPattern matches the respond-async token case-insensitively;
+	// combined RFC 7240 forms stay unmatched by design.
+	preferAsyncPattern = "(?i)^respond-async$"
 	headerRevision     = "X-Revision"
 
 	// servicePort is the stable port every revision Service exposes.
@@ -31,6 +33,11 @@ func (o *Orchestrator) SetTraffic(ctx context.Context, id string, targets []depl
 	m, err := o.getMarker(ctx, id)
 	if err != nil {
 		return err
+	}
+	// Empty table = release back to auto: 100% on the latest revision, which
+	// the mode derivation below reads as auto — auto-cut resumes.
+	if len(targets) == 0 {
+		targets = []deployment.Target{{RevisionName: m.LatestRevision, Percent: 100}}
 	}
 	for _, t := range targets {
 		_, err := o.client.AppsV1().Deployments(o.namespace).Get(ctx, objectNameFor(t.RevisionName), metav1.GetOptions{})
@@ -261,9 +268,13 @@ func (o *Orchestrator) buildRouteRules(targets []deployment.Target) []gatewayv1.
 		{
 			Matches: []gatewayv1.HTTPRouteMatch{{
 				Headers: []gatewayv1.HTTPHeaderMatch{{
-					Type:  ptr.To(gatewayv1.HeaderMatchExact),
+					// RFC 7240 preference tokens are case-insensitive, and
+					// HeaderMatchExact is not — a casing difference must not
+					// silently serve sync. RegularExpression is Extended, like
+					// the RequestHeaderModifier this design already requires.
+					Type:  ptr.To(gatewayv1.HeaderMatchRegularExpression),
 					Name:  headerPrefer,
-					Value: preferRespondAsync,
+					Value: preferAsyncPattern,
 				}},
 			}},
 			BackendRefs: async,

@@ -23,7 +23,9 @@ Deployment (id)                          ← stable identity + HTTPRoute
   [orchestrator](orchestrator.md)).
 - **Default rollout — auto-cut to latest.** Minting a revision shifts 100% of traffic to it **once it
   reports ready** (latest-ready); the previous revision drains, then is eligible for GC.
-  `POST /traffic` overrides to pin or split weights (canary/blue-green) or roll back.
+  `POST /traffic` overrides to pin or split weights (canary/blue-green) or roll back — this enters
+  **manual mode** (surfaced as `mode` in status) and auto-cut pauses. Posting an empty target list,
+  or exactly `[{latest, 100}]`, releases back to **auto**.
 - **Retention.** The most recent `revisionHistoryLimit` (default 3) revisions plus any still
   receiving traffic are kept; older are `Retire`d — each retained revision is ~3 etcd objects, and the
   default directly sets the registered-deployments ceiling (see
@@ -38,7 +40,7 @@ POST   /v1/deployments                 # create-or-update spec → mints a Revis
 GET    /v1/deployments                 # list
 GET    /v1/deployments/{id}            # status: revisions, traffic, replicas, url
 GET    /v1/deployments/{id}/revisions  # revision history
-POST   /v1/deployments/{id}/traffic    # shift % across revisions — canary/blue-green/rollback (K8s)
+POST   /v1/deployments/{id}/traffic    # shift % across revisions — canary/blue-green/rollback (K8s); empty targets = release to auto
 DELETE /v1/deployments/{id}
 
 # deployment-pools (same binary) — pools are config-defined; API is read + activate (no create/delete) — see pools.md

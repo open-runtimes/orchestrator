@@ -197,6 +197,26 @@ func TestAsync_RequiresCallback(t *testing.T) {
 	}
 }
 
+// RFC 7240 preference tokens are case-insensitive: any casing of
+// respond-async must take the async path, never silently serve sync.
+func TestAsync_PreferValueCaseInsensitive(t *testing.T) {
+	spec := newTestSpec("app.example.test")
+	act, _ := testActivator(t, func(w http.ResponseWriter, r *http.Request) {}, spec)
+
+	for _, prefer := range []string{"Respond-Async", "RESPOND-ASYNC"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://app.example.test/", strings.NewReader("{}"))
+		req.Header.Set("Prefer", prefer)
+		rec := httptest.NewRecorder()
+		act.ServeHTTP(rec, req)
+
+		// 400 (async requires a callback) proves the async path was taken; a
+		// sync fallthrough would have proxied 200.
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("Prefer %q: status = %d, want 400 (the async path)", prefer, rec.Code)
+		}
+	}
+}
+
 func TestAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	spec := newTestSpec("app.example.test")
 	spec.Callback = &deployment.Callback{URL: "http://callbacks.test/hook", Key: "k"}

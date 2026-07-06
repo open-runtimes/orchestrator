@@ -94,10 +94,15 @@ func (o *Orchestrator) deriveStatus(ctx context.Context, m marker) (*deployment.
 	}
 	targets := o.currentTargets(ctx, m)
 
+	mode := m.TrafficMode
+	if mode == "" {
+		mode = deployment.ModeAuto
+	}
 	resp := deployment.StatusResponse{
 		ID:        m.ID,
 		Revisions: make([]string, 0, len(deps)),
 		Traffic:   targets,
+		Mode:      mode,
 	}
 	byRevision := make(map[string]*appsv1.Deployment, len(deps))
 	for i := range deps {

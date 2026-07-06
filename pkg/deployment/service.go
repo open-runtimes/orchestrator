@@ -152,10 +152,16 @@ func (s *Service) Scale(ctx context.Context, id string, replicas int) error {
 }
 
 // SetTraffic validates and applies a traffic table — canary, blue-green, or
-// rollback are all weight edits across existing revisions.
+// rollback are all weight edits across existing revisions. An empty table
+// releases traffic back to auto mode: 100% on the latest revision, auto-cut
+// resumed (the backends resolve "latest").
 func (s *Service) SetTraffic(ctx context.Context, id string, targets []Target) (*StatusResponse, error) {
 	if len(targets) == 0 {
-		return nil, apperrors.Validation("traffic", "at least one target is required")
+		if err := s.orchestrator.SetTraffic(ctx, id, nil); err != nil {
+			return nil, err
+		}
+		slog.Info("Traffic released to auto", "deploymentId", id)
+		return s.Get(ctx, id)
 	}
 	sum := 0
 	seen := make(map[string]bool, len(targets))

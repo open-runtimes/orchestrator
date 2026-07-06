@@ -111,6 +111,57 @@ func TestMiddleware_Recovery(t *testing.T) {
 	}
 }
 
+// Every error the API emits must be {"error": ...} JSON — including the
+// stdlib mux's plain-text 404/405 fallbacks and the 415 content-type reject.
+func TestMiddleware_JSONErrorShapes(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/things", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
+	})
+	handler := ContentTypeMiddleware()(JSONErrorMiddleware()(mux))
+
+	cases := []struct {
+		name, method, path, contentType string
+		wantCode                        int
+		wantAllow                       bool
+	}{
+		{"unknown route", http.MethodGet, "/nope", "", http.StatusNotFound, false},
+		{"wrong method", http.MethodDelete, "/v1/things", "", http.StatusMethodNotAllowed, true},
+		{"bad content type", http.MethodPost, "/v1/things", "text/plain", http.StatusUnsupportedMediaType, false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, bytes.NewBufferString("{}"))
+		if tc.contentType != "" {
+			req.Header.Set("Content-Type", tc.contentType)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != tc.wantCode {
+			t.Errorf("%s: status = %d, want %d", tc.name, w.Code, tc.wantCode)
+		}
+		if got := w.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("%s: Content-Type = %q, want application/json", tc.name, got)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["error"] == "" {
+			t.Errorf("%s: body %q is not an {\"error\": ...} object (%v)", tc.name, w.Body.String(), err)
+		}
+		if tc.wantAllow && w.Header().Get("Allow") == "" {
+			t.Errorf("%s: 405 lost its Allow header", tc.name)
+		}
+	}
+
+	// Handler-written success responses pass through untouched.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/things", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"ok"`)) {
+		t.Errorf("success passthrough broken: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestMiddleware_ContentType(t *testing.T) {
 	t.Parallel()
 	called := false

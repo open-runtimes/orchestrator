@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/apperrors"
@@ -13,6 +14,25 @@ import (
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
 const maxRequestBodySize = 1 << 20 // 1 MB
+
+// readBody drains a size-capped request body for the strict Parse functions
+// (job.Parse, deployment.Parse, pool.Parse).
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	return io.ReadAll(r.Body)
+}
+
+// decodeStrict decodes a size-capped request body, rejecting unknown fields —
+// a typo'd field name must fail loudly, not be silently dropped. Only for
+// types without a custom UnmarshalJSON; those get a strict Parse function in
+// their own package instead, since DisallowUnknownFields cannot see inside a
+// custom unmarshaler.
+func decodeStrict(w http.ResponseWriter, r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
+}
 
 // ArtifactEmitter receives artifact results from the sidecar and dispatches
 // the corresponding CloudEvents through the delivery pipeline.
@@ -40,16 +60,18 @@ func NewHandler(svc *job.Service, metrics *observability.Metrics, healthChecker 
 
 // CreateJob handles POST /v1/jobs
 func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
-	// Limit request body size to prevent memory exhaustion
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
-
-	var req job.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, err := readBody(w, r)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+	req, err := job.Parse(body)
+	if err != nil {
 		h.writeError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
 		return
 	}
 
-	resp, err := h.svc.Create(r.Context(), &req)
+	resp, err := h.svc.Create(r.Context(), req)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -173,6 +195,9 @@ func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Deliberately lenient (no unknown-field rejection): the sender is the
+	// job sidecar, which may be a release ahead of or behind this service
+	// during a rolling upgrade.
 	var report job.ArtifactReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid artifact report: "+err.Error())

@@ -5,6 +5,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/pkg/deployment"
 	"reflect"
+	"regexp"
 	"testing"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -38,17 +39,31 @@ func TestSetTraffic_WritesBothRules(t *testing.T) {
 	}
 }
 
-// assertAsyncRule checks the Prefer: respond-async rule: exact header match,
-// every weighted backendRef pointing at the activator, each tagged with its
-// revision.
+// assertAsyncRule checks the Prefer: respond-async rule: a case-insensitive
+// single-token header match, every weighted backendRef pointing at the
+// activator, each tagged with its revision.
 func assertAsyncRule(t *testing.T, rule gatewayv1.HTTPRouteRule, cfg Config, targets []deployment.Target) {
 	t.Helper()
 	if len(rule.Matches) != 1 || len(rule.Matches[0].Headers) != 1 {
 		t.Fatalf("async rule matches: got %+v", rule.Matches)
 	}
 	h := rule.Matches[0].Headers[0]
-	if h.Type == nil || *h.Type != gatewayv1.HeaderMatchExact || string(h.Name) != "Prefer" || h.Value != "respond-async" {
-		t.Errorf("async header match: want exact Prefer=respond-async, got %+v", h)
+	if h.Type == nil || *h.Type != gatewayv1.HeaderMatchRegularExpression || string(h.Name) != "Prefer" {
+		t.Errorf("async header match: want regex on Prefer, got %+v", h)
+	}
+	// The pattern must accept any casing of the token (RFC 7240 tokens are
+	// case-insensitive) and nothing else — combined forms fall through to the
+	// default rule by design.
+	re := regexp.MustCompile(h.Value)
+	for _, v := range []string{"respond-async", "Respond-Async", "RESPOND-ASYNC"} {
+		if !re.MatchString(v) {
+			t.Errorf("async pattern rejects %q", v)
+		}
+	}
+	for _, v := range []string{"respond-async, wait=10", "wait=10", ""} {
+		if re.MatchString(v) {
+			t.Errorf("async pattern accepts %q", v)
+		}
 	}
 	if len(rule.BackendRefs) != len(targets) {
 		t.Fatalf("async backendRefs: want %d, got %d", len(targets), len(rule.BackendRefs))
@@ -135,6 +150,30 @@ func TestSetTraffic_ModeTransitions(t *testing.T) {
 	}
 	if m := getMarkerData(t, o, "web"); m.TrafficMode != trafficModeAuto {
 		t.Errorf("reset to latest: want auto mode, got %s", m.TrafficMode)
+	}
+}
+
+// An empty target list is the explicit release: traffic returns to 100% on
+// the latest revision and auto-cut re-arms — the affordance for "I'm done
+// with my canary" that doesn't require knowing the latest revision's name.
+func TestSetTraffic_EmptyReleasesToAuto(t *testing.T) {
+	t.Parallel()
+	o, _ := newTestOrchestrator(t)
+	twoRevisions(t, o)
+
+	if err := o.SetTraffic(t.Context(), "web", canarySplit()); err != nil {
+		t.Fatalf("SetTraffic canary: %v", err)
+	}
+	if err := o.SetTraffic(t.Context(), "web", nil); err != nil {
+		t.Fatalf("SetTraffic release: %v", err)
+	}
+
+	if m := getMarkerData(t, o, "web"); m.TrafficMode != trafficModeAuto {
+		t.Errorf("release: want auto mode, got %s", m.TrafficMode)
+	}
+	targets := routeTargets(getRoute(t, o, "web"))
+	if len(targets) != 1 || targets[0].RevisionName != "web-00002" || targets[0].Percent != 100 {
+		t.Errorf("release: want 100%% on the latest revision, got %+v", targets)
 	}
 }
 

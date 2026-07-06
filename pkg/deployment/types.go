@@ -3,6 +3,7 @@
 package deployment
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/artifact"
@@ -96,6 +97,13 @@ type Target struct {
 	Percent      int    `json:"percent"`
 }
 
+// Traffic modes: auto follows the latest ready revision (auto-cut); manual
+// pins the operator's traffic table until released.
+const (
+	ModeAuto   = "auto"
+	ModeManual = "manual"
+)
+
 // StatusResponse is the API view of a deployment.
 type StatusResponse struct {
 	ID                string   `json:"id"`
@@ -103,6 +111,7 @@ type StatusResponse struct {
 	URL               string   `json:"url"`                 // gateway URL (K8s) / activator URL (Docker)
 	Revisions         []string `json:"revisions,omitempty"` // newest first; empty on Docker (single-revision)
 	Traffic           []Target `json:"traffic,omitempty"`
+	Mode              string   `json:"mode,omitempty"` // auto|manual — whether new revisions auto-cut
 	DesiredReplicas   int      `json:"desiredReplicas"`
 	AvailableReplicas int      `json:"availableReplicas"`
 	Error             string   `json:"error,omitempty"`
@@ -137,13 +146,34 @@ type requestJSON struct {
 	ProgressDeadlineSeconds     int `json:"progressDeadlineSeconds,omitempty"`
 }
 
+// Parse decodes an API request body, rejecting unknown fields — a typo'd
+// field name must fail loudly, not silently deploy defaults. Strictness
+// belongs at the API edge only: stored specs (Spec Secrets, volume labels)
+// keep the lenient UnmarshalJSON so version skew never strands them.
+func Parse(data []byte) (*Request, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var raw requestJSON
+	if err := dec.Decode(&raw); err != nil {
+		return nil, err
+	}
+	var r Request
+	if err := r.fromRaw(&raw); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // UnmarshalJSON decodes artifacts into their concrete types via the registry.
 func (r *Request) UnmarshalJSON(data []byte) error {
 	var raw requestJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	return r.fromRaw(&raw)
+}
 
+func (r *Request) fromRaw(raw *requestJSON) error {
 	r.ID = raw.ID
 	r.Meta = raw.Meta
 	r.Image = raw.Image
