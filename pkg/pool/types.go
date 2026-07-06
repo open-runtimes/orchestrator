@@ -28,8 +28,8 @@ type Pool struct {
 	Meta        map[string]string  `json:"meta,omitempty"`
 
 	// Burst controls what happens when an activation arrives and no warm pod
-	// is free: "reject" (default) → 429; "cold" → create a pod on demand and
-	// pay the cold start. Always logged either way.
+	// is free: "cold" (default) → create a pod on demand and pay the cold
+	// start; "reject" → 429. Always logged either way.
 	Burst string `json:"burst,omitempty"`
 }
 
@@ -66,7 +66,7 @@ func LoadPools(raw string) ([]Pool, error) {
 			p.Size = 1
 		}
 		if p.Burst == "" {
-			p.Burst = BurstReject
+			p.Burst = BurstCold
 		}
 		if p.Burst != BurstReject && p.Burst != BurstCold {
 			return nil, fmt.Errorf("pool %q: burst must be %q or %q", p.ID, BurstReject, BurstCold)

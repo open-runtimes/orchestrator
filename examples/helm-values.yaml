@@ -48,7 +48,7 @@ deployments:
       size: 4
       cpu: 1
       memory: 512
-      burst: reject # no free pod → 429; use "cold" to create on demand
+      burst: reject # no free pod → 429; default "cold" creates on demand
     - id: node
       image: node:22-slim
       size: 2

@@ -26,3 +26,23 @@ func TestLoadPools_Sandbox(t *testing.T) {
 		t.Errorf("invalid sandbox: want sandbox error, got %v", err)
 	}
 }
+
+// An unset burst policy defaults to cold: an activation at an empty pool
+// pays the cold start rather than failing with 429.
+func TestLoadPools_BurstDefaultsToCold(t *testing.T) {
+	t.Parallel()
+
+	pools, err := LoadPools(`[
+		{"id":"a","image":"node:20"},
+		{"id":"b","image":"node:20","burst":"reject"}
+	]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pools[0].Burst != BurstCold {
+		t.Errorf("default burst = %q, want cold", pools[0].Burst)
+	}
+	if pools[1].Burst != BurstReject {
+		t.Errorf("explicit burst = %q, want reject preserved", pools[1].Burst)
+	}
+}

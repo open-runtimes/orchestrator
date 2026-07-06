@@ -103,8 +103,8 @@ Delivery is at-most-once; nothing is stored for polling while the activation is 
 
 Each pool declares what happens when an activation arrives and no warm pod is free:
 
-- **`reject`** (default) — the activation fails fast with `429`. Right for latency-sensitive callers who would rather retry elsewhere than wait.
-- **`cold`** — the orchestrator creates a pod on demand and pays the cold start (bounded at ~2 minutes) before claiming it. Right when completing is worth more than completing fast.
+- **`cold`** (default) — the orchestrator creates a pod on demand and pays the cold start (bounded at ~2 minutes) before claiming it. Right when completing is worth more than completing fast.
+- **`reject`** — the activation fails fast with `429`. Right for latency-sensitive callers who would rather retry elsewhere than wait.
 
 Either way the pool replenishes itself back to `size` off the request path — a burst never permanently shrinks the pool.
 
