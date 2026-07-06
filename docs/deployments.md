@@ -43,7 +43,14 @@ Once `status` is `ready`, requests reach the workload through the gateway by hos
 curl -H "Host: web.localhost" http://<gateway>/
 ```
 
-Every deployment owns exactly one host. By default it's `{id}.{domain}` (the operator configures the domain); set `"host"` explicitly to use your own. A host already owned by another deployment is rejected with `409`.
+A deployment serves on one or more **hosts**. By default it gets `{id}.{domain}` (the operator configures the domain); set `"hosts"` explicitly to use your own — the first entry is the primary (it's what `url` reports), and every entry routes to the same revisions and traffic table:
+
+```json
+{"id": "web", "image": "ghcr.io/acme/web:v3", "port": 8080,
+ "hosts": ["acme.com", "www.acme.com"]}
+```
+
+Each host is owned by exactly one deployment — claiming a host another deployment already owns is rejected with `409`.
 
 ## The request spec
 
@@ -56,7 +63,7 @@ Every deployment owns exactly one host. By default it's `{id}.{domain}` (the ope
   "cpu": 1,                       // cores (limit); default 1
   "memory": 512,                  // MB (limit); default 512
   "environment": {"KEY": "value"},
-  "host": "web.example.com",      // default {id}.{domain}
+  "hosts": ["web.example.com"],   // hosts[0] is the primary; default [{id}.{domain}]
   "replicas": 2,                  // fixed count when not autoscaling; default 1
   "concurrency": 50,              // hard per-replica in-flight cap; 0 = unlimited
   "autoscaling": {                // see Autoscaling below

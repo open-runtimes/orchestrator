@@ -223,7 +223,10 @@ func TestRouteTargets_SurvivesAPIServerDefaulting(t *testing.T) {
 		{RevisionName: "web-00001", Percent: 10},
 	}
 	o := &Orchestrator{cfg: Config{GatewayName: "orchestrator", ActivatorService: "deployments-activator", ActivatorPort: 8081}}
-	route := o.buildHTTPRoute(marker{ID: "web", Host: "web.example.com"}, targets)
+	route := o.buildHTTPRoute(marker{ID: "web", Hosts: []string{"web.example.com", "www.example.com"}}, targets)
+	if len(route.Spec.Hostnames) != 2 || string(route.Spec.Hostnames[1]) != "www.example.com" {
+		t.Errorf("hostnames: want both hosts on the route, got %v", route.Spec.Hostnames)
+	}
 
 	// Simulate API-server defaulting: every rule gains a PathPrefix / match.
 	prefix := gatewayv1.PathMatchPathPrefix

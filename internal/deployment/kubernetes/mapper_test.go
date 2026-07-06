@@ -20,7 +20,7 @@ func testRequest() *deployment.Request {
 		CPU:                     0.5,
 		Memory:                  128,
 		Environment:             map[string]string{"FOO": "bar", "BAZ": "qux"},
-		Host:                    "web.example.com",
+		Hosts:                   []string{"web.example.com"},
 		Port:                    8080,
 		Replicas:                2,
 		Concurrency:             4,

@@ -145,7 +145,7 @@ func serverRequest(id string) *deployment.Request {
 		Command:                 "/agnhost netexec --http-port=8080",
 		CPU:                     0.1,
 		Memory:                  64,
-		Host:                    id + ".example.com",
+		Hosts:                   []string{id + ".example.com"},
 		Port:                    8080,
 		Replicas:                1,
 		TimeoutSeconds:          60,

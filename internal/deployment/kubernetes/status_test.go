@@ -189,7 +189,7 @@ func TestList_ManagedOnly(t *testing.T) {
 	a := testRequest()
 	b := testRequest()
 	b.ID = "api"
-	b.Host = "api.example.com"
+	b.Hosts = []string{"api.example.com"}
 	for _, req := range []*deployment.Request{a, b} {
 		mustApply(t, o, req)
 	}

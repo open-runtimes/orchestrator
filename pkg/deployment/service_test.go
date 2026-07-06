@@ -28,3 +28,36 @@ func TestValidate_Sandbox(t *testing.T) {
 		}
 	}
 }
+
+// Hosts: empty derives the {id}.{domain} primary; multiple hosts validate
+// individually and reject duplicates.
+func TestValidate_Hosts(t *testing.T) {
+	t.Parallel()
+	s := &Service{artifacts: artifact.DefaultRegistry(), domain: "example.com"}
+
+	req := &Request{ID: "app", Image: "nginx", Port: 8080}
+	s.applyDefaults(req)
+	if len(req.Hosts) != 1 || req.Hosts[0] != "app.example.com" {
+		t.Errorf("default hosts = %v, want [app.example.com]", req.Hosts)
+	}
+
+	req = &Request{ID: "app", Image: "nginx", Port: 8080, Hosts: []string{"www.acme.com", "Acme.COM"}}
+	s.applyDefaults(req)
+	if err := s.validate(req); err != nil {
+		t.Fatalf("two hosts: %v", err)
+	}
+	if req.Hosts[1] != "acme.com" {
+		t.Errorf("hosts not lowercased: %v", req.Hosts)
+	}
+
+	for name, hosts := range map[string][]string{
+		"duplicate": {"a.acme.com", "a.acme.com"},
+		"invalid":   {"not_a_host!"},
+	} {
+		req := &Request{ID: "app", Image: "nginx", Port: 8080, Hosts: hosts}
+		s.applyDefaults(req)
+		if err := s.validate(req); !errors.Is(err, apperrors.ErrValidation) {
+			t.Errorf("%s: want validation error, got %v", name, err)
+		}
+	}
+}

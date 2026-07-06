@@ -77,7 +77,7 @@
 | --- | --- | --- |
 | **Deployment** | A long-lived HTTP workload with an identity, a host, and a history of revisions | App, service, function |
 | **Revision** | An immutable snapshot of a Deployment's spec, named `{id}-{NNNNN}`, individually routable | Version, release |
-| **Host** | The hostname that routes external traffic to exactly one Deployment | Domain, URL |
+| **Host** | A hostname routing external traffic to exactly one Deployment; a Deployment may own several, the first being primary | Domain, URL, alias |
 | **Marker** | The per-Deployment record of lifecycle state: latest revision, last ready revision, traffic mode | State ConfigMap, metadata |
 | **Spec Secret** | The at-rest store of a Deployment's full spec, including secret material like signing keys | Spec annotation, marker spec |
 | **Deployment sidecar** | The reverse proxy in every Revision replica: readiness, drain, concurrency cap, stats | Sidecar (unqualified), proxy, queue-proxy |
@@ -154,7 +154,7 @@
 
 - A **Job** has exactly one **Worker** and one **Job sidecar**; it has zero or more **Artifacts**, ordered by the **Dependency** chain — **input artifacts** before the Worker, **output artifacts** after.
 - The **LifecycleWatcher** emits **Signals**; the **Controller** consumes them to drive state transitions in the **Store** and fire **Callbacks** via the **Dispatcher**.
-- A **Deployment** owns one **Host** and one or more **Revisions**; its **Marker** tracks lifecycle and its **Spec Secret** holds the spec.
+- A **Deployment** owns one or more **Hosts** (each Host belongs to exactly one Deployment) and one or more **Revisions**; its **Marker** tracks lifecycle and its **Spec Secret** holds the spec.
 - The **Traffic table** distributes a **Deployment**'s traffic across **traffic targets**, each naming exactly one **Revision**.
 - Every **Revision** replica pairs the workload with one **Deployment sidecar**; the **endpoint flip** decides whether the Revision's endpoints are its own pods (**warm**) or the **Activator** (**cold**).
 - The **Activator** owns 0→N (**raise**); the **Autoscaler** owns 1↔N and **scale to zero** — the two never overlap.

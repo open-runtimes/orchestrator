@@ -19,7 +19,7 @@ type Request struct {
 	Memory      int                 `json:"memory"` // limit (MB)
 	Environment map[string]string   `json:"environment,omitempty"`
 	Artifacts   []artifact.Artifact `json:"artifacts,omitempty"`   // materialized into the workspace before serving
-	Host        string              `json:"host,omitempty"`        // RFC-1123 hostname (≤253); else {id}.{domain}
+	Hosts       []string            `json:"hosts,omitempty"`       // RFC-1123 hostnames (≤253 each); hosts[0] is the primary; empty = [{id}.{domain}]
 	Port        int                 `json:"port"`                  // container port serving HTTP
 	Replicas    int                 `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
 	Concurrency int                 `json:"concurrency,omitempty"` // hard per-replica in-flight cap; 0 = unlimited
@@ -132,7 +132,7 @@ type requestJSON struct {
 	Memory      int               `json:"memory"`
 	Environment map[string]string `json:"environment,omitempty"`
 	Artifacts   json.RawMessage   `json:"artifacts,omitempty"`
-	Host        string            `json:"host,omitempty"`
+	Hosts       []string          `json:"hosts,omitempty"`
 	Port        int               `json:"port"`
 	Replicas    int               `json:"replicas,omitempty"`
 	Concurrency int               `json:"concurrency,omitempty"`
@@ -179,7 +179,7 @@ func (r *Request) fromRaw(raw *requestJSON) error {
 	r.CPU = raw.CPU
 	r.Memory = raw.Memory
 	r.Environment = raw.Environment
-	r.Host = raw.Host
+	r.Hosts = raw.Hosts
 	r.Port = raw.Port
 	r.Replicas = raw.Replicas
 	r.Concurrency = raw.Concurrency
@@ -212,7 +212,7 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		CPU:         r.CPU,
 		Memory:      r.Memory,
 		Environment: r.Environment,
-		Host:        r.Host,
+		Hosts:       r.Hosts,
 		Port:        r.Port,
 		Replicas:    r.Replicas,
 		Concurrency: r.Concurrency,

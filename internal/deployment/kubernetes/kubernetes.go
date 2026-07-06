@@ -164,7 +164,7 @@ func (o *Orchestrator) createFirstRevision(ctx context.Context, req *deployment.
 	rev := revisionName(req.ID, 1)
 	m := marker{
 		ID:             req.ID,
-		Host:           req.Host,
+		Hosts:          req.Hosts,
 		LatestRevision: rev,
 		TrafficMode:    trafficModeAuto,
 	}
@@ -192,11 +192,11 @@ func (o *Orchestrator) mintNextRevision(ctx context.Context, req *deployment.Req
 	}
 	if err := o.updateMarker(ctx, req.ID, func(m *marker) {
 		m.LatestRevision = rev
-		m.Host = req.Host
+		m.Hosts = req.Hosts
 	}); err != nil {
 		return err
 	}
-	m.Host = req.Host
+	m.Hosts = req.Hosts
 	return o.ensureRoute(ctx, m, fallbackTargets(m))
 }
 

@@ -74,7 +74,7 @@ func mustURL(t *testing.T, raw string) *url.URL {
 func brokerSpec() *deployment.Request {
 	return &deployment.Request{
 		ID:             "dep",
-		Host:           "dep.example.test",
+		Hosts:          []string{"dep.example.test"},
 		TimeoutSeconds: 5,
 		Callback:       &deployment.Callback{URL: "http://hooks.example.test/cb"},
 	}

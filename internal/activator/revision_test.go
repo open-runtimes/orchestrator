@@ -266,7 +266,7 @@ func TestRevisionAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	}))
 	spec := &deployment.Request{
 		ID:             "app",
-		Host:           "app.example.test",
+		Hosts:          []string{"app.example.test"},
 		Port:           8080,
 		TimeoutSeconds: 5,
 		Callback:       &deployment.Callback{URL: "http://callbacks.test/hook", Key: "k"},
@@ -320,7 +320,7 @@ func TestRevisionAsync_AcceptsAndDeliversCallback(t *testing.T) {
 func TestRevisionAsync_RequiresCallback(t *testing.T) {
 	// A forged async request to a revision whose deployment has no callback
 	// must be rejected, not silently dropped.
-	spec := &deployment.Request{ID: "app", Host: "app.example.test", Port: 8080}
+	spec := &deployment.Request{ID: "app", Hosts: []string{"app.example.test"}, Port: 8080}
 	act, _, _ := newTestRevisionActivator(t,
 		RevisionConfig{StartTimeout: time.Second},
 		revisionDeployment(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))

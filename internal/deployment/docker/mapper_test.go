@@ -214,7 +214,7 @@ func TestVolumeLabels_SpecRoundTrip(t *testing.T) {
 	req := &deployment.Request{
 		ID:          "d1",
 		Image:       "traefik/whoami:latest",
-		Host:        "d1.example.test",
+		Hosts:       []string{"d1.example.test"},
 		Port:        80,
 		Environment: map[string]string{"KEY": "value"},
 		Autoscaling: &deployment.Autoscaling{MinReplicas: 0},
@@ -225,7 +225,7 @@ func TestVolumeLabels_SpecRoundTrip(t *testing.T) {
 	}
 
 	labels := volumeLabels(req, string(spec))
-	if labels[labelManagedBy] != managedByValue || labels[labelID] != "d1" || labels[labelHost] != req.Host {
+	if labels[labelManagedBy] != managedByValue || labels[labelID] != "d1" || labels[labelHost] != req.Hosts[0] {
 		t.Errorf("volumeLabels() = %v, want managed-by/id/host set", labels)
 	}
 
@@ -233,7 +233,7 @@ func TestVolumeLabels_SpecRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseSpec: %v", err)
 	}
-	if got.ID != req.ID || got.Image != req.Image || got.Host != req.Host ||
+	if got.ID != req.ID || got.Image != req.Image || !slices.Equal(got.Hosts, req.Hosts) ||
 		got.Environment["KEY"] != "value" || got.Autoscaling == nil || got.Autoscaling.MinReplicas != 0 {
 		t.Errorf("parseSpec() = %+v, want round-tripped request", got)
 	}

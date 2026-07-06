@@ -96,11 +96,13 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := deploymentCapacity{resolver: a.resolver, spec: spec}
 	hold := time.Duration(spec.StartTimeoutSeconds) * time.Second
 
+	// Forward the host the client actually used — any of the deployment's
+	// hosts is a valid virtual host for the workload.
 	if proxy.PreferAsync(r) {
-		a.broker.async(w, r, spec.ID, spec.Host, spec, hold, c)
+		a.broker.async(w, r, spec.ID, host, spec, hold, c)
 		return
 	}
-	a.broker.sync(w, r, spec.ID, spec.Host, hold, c)
+	a.broker.sync(w, r, spec.ID, host, hold, c)
 }
 
 // deploymentCapacity adapts one resolved deployment to the broker's seam:
