@@ -38,4 +38,47 @@ roleRef:
   kind: Role
   name: {{ include "orchestrator.jobsName" . }}
   apiGroup: rbac.authorization.k8s.io
+{{- if .Values.jobs.tenants.enabled }}
+---
+# Tenant mode: jobs land in per-tenant namespaces the orchestrator creates on
+# demand, so its permissions must be cluster-scoped rather than namespaced.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "orchestrator.jobsName" . }}-tenants
+  labels:
+    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Provision tenant namespaces and the job pods' ServiceAccount on first use.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "orchestrator.jobsName" . }}-tenants
+  labels:
+    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "orchestrator.jobsName" . }}-tenants
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
 {{- end }}

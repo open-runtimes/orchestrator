@@ -157,6 +157,12 @@ deployments:
     limits:
       memory: 256Mi
 
+# Cluster-wide egress policy for all workload pods (jobs + deployments +
+# pools), across every tenant namespace. Requires Cilium; leave off on other
+# CNIs and supply your own. Blocks the cloud metadata endpoint, allows DNS.
+workloadNetworkPolicy:
+  enabled: false
+
 replicaCount: 1
 
 # HPA for the jobs service. Requires leaderElection.enabled.

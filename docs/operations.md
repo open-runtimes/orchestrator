@@ -158,6 +158,29 @@ The NetworkPolicy admits ingress only from the gateway, the activator, and the c
 
 **Secrets at rest.** Deployment specs — including callback signing keys — are stored in Secrets, not ConfigMaps or annotations. Pool claim tokens are HMAC-derived per pod from an install key that never leaves its Secret.
 
+## Tenant isolation
+
+Clients can place workloads in per-tenant namespaces via the `tenant` field (jobs today; deployments and pools follow). Enable it per plane:
+
+```yaml
+jobs:
+  enabled: true
+  tenants:
+    enabled: true   # grants the jobs service cluster-scoped job/pod access
+                    # + namespace/serviceaccount create (on-demand provisioning)
+```
+
+With it on, a job's `tenant` (an RFC-1123 label) resolves to namespace `{workload-namespace}-{tenant}`, which the service creates on first use with restricted Pod Security admission labels. Off (the default), a non-empty `tenant` is rejected with `400`, and the service keeps its namespaced Role.
+
+Tenant namespaces are deliberately cheap: **no per-namespace NetworkPolicy or ResourceQuota**. Network isolation instead comes from one cluster-wide policy spanning every workload namespace, and resource control from pod limits:
+
+```yaml
+# Requires Cilium; supply your own on other CNIs.
+workloadNetworkPolicy:
+  enabled: true    # CiliumClusterwideNetworkPolicy: DNS allowed,
+                   # cloud metadata endpoint blocked, all else permitted
+```
+
 ## Resource model
 
 - **CPU**: workloads get a CPU *request* of `cpu / cpuOvercommit` and **no CPU limit** — CPU is compressible, and limits cause needless throttling. Raising `cpuOvercommit` packs workloads denser at the cost of contention under load.

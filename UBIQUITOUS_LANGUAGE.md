@@ -134,7 +134,8 @@
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Workload namespace** | The hardened namespace (restricted PSA, default-deny, quota) where workload pods run | Jobs namespace, tenant ns |
+| **Workload namespace** | The hardened namespace (restricted PSA) where workload pods run | Jobs namespace |
+| **Tenant** | A client-selected isolation group; maps to a per-tenant workload namespace (`{base}-{tenant}`) created on demand | Namespace (in the API) |
 | **Release namespace** | The namespace holding the control plane: services, Activator, gateway wiring | System namespace |
 | **Sandbox** | A workload's isolation tier — runc, gvisor, or kata — mapped to a RuntimeClass | Runtime, isolation level |
 | **Overcommit** | The divisor deriving a workload's CPU request from its declared limit | Oversubscription ratio |

@@ -232,6 +232,9 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 
 // Run creates and starts a job with its sidecar.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
+	if req.Tenant != "" {
+		return apperrors.Validation("tenant", "tenant isolation requires the Kubernetes backend")
+	}
 	hasMounts := artifact.HasMount(req.Artifacts)
 
 	if err := o.ctrl.Reserve(req.ID); err != nil {

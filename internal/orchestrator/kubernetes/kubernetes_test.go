@@ -2,6 +2,8 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
+	"orchestrator/internal/apperrors"
 	"orchestrator/internal/testutil"
 	"orchestrator/pkg/job"
 	"strings"
@@ -46,6 +48,49 @@ func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator,
 }
 
 // --- Run / Stop ---
+
+func TestRun_TenantPlacesJobInTenantNamespace(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t, noopWatcher{})
+	defer o.Close()
+	o.cfg.TenantsEnabled = true
+
+	req := &job.Request{ID: "job-t", Image: "alpine:latest", Tenant: "acme"}
+	if err := o.Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The tenant namespace was created on demand, with the sidecar SA.
+	if _, err := cs.CoreV1().Namespaces().Get(context.Background(), "orchestrator-acme", metav1.GetOptions{}); err != nil {
+		t.Fatalf("tenant namespace not created: %v", err)
+	}
+	if _, err := cs.BatchV1().Jobs("orchestrator-acme").Get(context.Background(), "job-job-t", metav1.GetOptions{}); err != nil {
+		t.Fatalf("job not in tenant namespace: %v", err)
+	}
+	// And Status/Stop find it there without being told the tenant.
+	status, err := o.Status(context.Background(), "job-t")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.State != job.StateAccepted {
+		t.Errorf("state: got %s", status.State)
+	}
+	if err := o.Stop(context.Background(), "job-t"); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+}
+
+func TestRun_TenantRejectedWhenDisabled(t *testing.T) {
+	t.Parallel()
+	o, _ := newTestOrchestrator(t, noopWatcher{})
+	defer o.Close()
+	// TenantsEnabled defaults to false.
+
+	err := o.Run(context.Background(), &job.Request{ID: "job-x", Image: "alpine:latest", Tenant: "acme"})
+	if !errors.Is(err, apperrors.ErrValidation) {
+		t.Errorf("want validation error, got %v", err)
+	}
+}
 
 func TestRun_CreatesKubernetesJob(t *testing.T) {
 	t.Parallel()

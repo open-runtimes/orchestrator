@@ -20,6 +20,7 @@ type OrchestratorConfig struct {
 	MaintenanceInterval           time.Duration
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64 // grace period for post-sidecar to run post-artifacts
+	TenantsEnabled                bool  // client-selected tenant namespaces (needs cluster RBAC)
 	LeaderElection                LeaderElectionConfig
 }
 
@@ -43,6 +44,7 @@ func LoadConfigFromEnv() OrchestratorConfig {
 		SidecarImagePullPolicy:        config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		JobRetention:                  config.GetDurationEnv("JOB_RETENTION", 15*time.Minute),
 		MaintenanceInterval:           config.GetDurationEnv("MAINTENANCE_INTERVAL", 1*time.Minute),
+		TenantsEnabled:                config.GetEnv("JOB_TENANTS_ENABLED", "") == "true",
 		ArtifactEndpoint:              config.GetEnv("ARTIFACT_ENDPOINT", "http://jobs-service.orchestrator.svc.cluster.local:8080"),
 		TerminationGracePeriodSeconds: int64(config.GetIntEnv("KUBE_TERMINATION_GRACE_SECONDS", 600)),
 		LeaderElection: LeaderElectionConfig{

@@ -392,3 +392,30 @@ func TestUnmarshalArtifact(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_Tenant(t *testing.T) {
+	t.Parallel()
+	svc := &Service{artifacts: artifact.DefaultRegistry()}
+
+	tests := []struct {
+		name    string
+		tenant  string
+		wantErr bool
+	}{
+		{"empty (shared namespace)", "", false},
+		{"simple", "acme", false},
+		{"hyphenated", "acme-prod", false},
+		{"uppercase rejected", "Acme", true},
+		{"underscore rejected", "acme_prod", true},
+		{"leading hyphen rejected", "-acme", true},
+		{"too long", strings.Repeat("a", 41), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := svc.validate(&Request{ID: "j", Image: "alpine", Tenant: tt.tenant})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("tenant %q: err=%v, wantErr=%v", tt.tenant, err, tt.wantErr)
+			}
+		})
+	}
+}

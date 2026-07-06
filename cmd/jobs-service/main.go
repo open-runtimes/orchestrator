@@ -72,6 +72,7 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string,
 			MaintenanceInterval:           cfg.MaintenanceInterval,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: cfg.TerminationGracePeriodSeconds,
+			TenantsEnabled:                cfg.TenantsEnabled,
 			LeaderElection:                cfg.LeaderElection,
 			Metrics:                       metrics,
 		}), nil

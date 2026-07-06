@@ -61,10 +61,10 @@ func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitt
 // informer factory is built per call.
 func (w *k8sLifecycleWatcher) Start(ctx context.Context) {
 	labelSelector := LabelManagedBy + "=" + ManagedByValue
+	// Cluster-wide: managed job pods may run in per-tenant namespaces.
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		w.client,
 		30*time.Second,
-		informers.WithNamespace(w.namespace),
 		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
 			opts.LabelSelector = labelSelector
 		}),
@@ -164,7 +164,7 @@ func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, delet
 // and labels. Mirrors watchConfigFromJob; used when the watcher first observes
 // a Pod and needs to know where to dispatch callbacks for its job.
 func watchConfigFromPod(pod *corev1.Pod) *watchConfig {
-	cfg := &watchConfig{jobID: pod.Labels[LabelJobID]}
+	cfg := &watchConfig{jobID: pod.Labels[LabelJobID], namespace: pod.Namespace}
 	for i := range pod.Spec.Containers {
 		c := &pod.Spec.Containers[i]
 		if c.Name == ContainerWorker {
@@ -202,7 +202,7 @@ func newJobTracker(w *k8sLifecycleWatcher, cfg *watchConfig) *jobTracker {
 	return &jobTracker{
 		watcher: w,
 		cfg:     cfg,
-		logger:  slog.With("namespace", w.namespace, "jobId", cfg.jobID),
+		logger:  slog.With("namespace", cfg.namespace, "jobId", cfg.jobID),
 	}
 }
 
@@ -362,7 +362,7 @@ func (t *jobTracker) stopLogsLocked() {
 }
 
 func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
-	req := t.watcher.client.CoreV1().Pods(t.watcher.namespace).GetLogs(podName, &corev1.PodLogOptions{
+	req := t.watcher.client.CoreV1().Pods(t.cfg.namespace).GetLogs(podName, &corev1.PodLogOptions{
 		Container: ContainerWorker,
 		Follow:    true,
 	})

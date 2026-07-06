@@ -1,0 +1,34 @@
+{{- /*
+Cluster-wide network isolation for workload pods, spanning every tenant
+namespace at once — this replaces the per-namespace NetworkPolicy so tenant
+namespaces stay cheap to create. Requires Cilium; gate off on other CNIs.
+Selects managed workload pods by label regardless of namespace: DNS is
+allowed, the cloud metadata endpoint (169.254.169.254) is blocked (the
+highest-value single egress rule against SSRF credential theft), and all
+other egress is permitted.
+*/}}
+{{- if .Values.workloadNetworkPolicy.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: {{ include "orchestrator.name" . }}-workload-egress
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      managed-by: deployments-service
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 169.254.169.254/32
+{{- end }}

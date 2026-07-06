@@ -18,6 +18,7 @@ type Request struct {
 	Environment    map[string]string   `json:"environment"`
 	TimeoutSeconds int                 `json:"timeoutSeconds"`
 	Workspace      string              `json:"workspace,omitempty"` // Working directory and mount path (default: /workspace)
+	Tenant         string              `json:"tenant,omitempty"`    // isolation group → its own namespace; empty = the shared workload namespace
 	Artifacts      []artifact.Artifact `json:"artifacts,omitempty"`
 	Callback       *Callback           `json:"callback,omitempty"`
 }
@@ -33,6 +34,7 @@ type requestJSON struct {
 	Environment    map[string]string `json:"environment"`
 	TimeoutSeconds int               `json:"timeoutSeconds"`
 	Workspace      string            `json:"workspace,omitempty"`
+	Tenant         string            `json:"tenant,omitempty"`
 	Artifacts      json.RawMessage   `json:"artifacts,omitempty"`
 	Callback       *Callback         `json:"callback,omitempty"`
 }
@@ -72,6 +74,7 @@ func (r *Request) fromRaw(raw *requestJSON) error {
 	r.Environment = raw.Environment
 	r.TimeoutSeconds = raw.TimeoutSeconds
 	r.Workspace = raw.Workspace
+	r.Tenant = raw.Tenant
 	r.Callback = raw.Callback
 
 	if len(raw.Artifacts) > 0 && string(raw.Artifacts) != "null" {
@@ -97,6 +100,7 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		Environment:    r.Environment,
 		TimeoutSeconds: r.TimeoutSeconds,
 		Workspace:      r.Workspace,
+		Tenant:         r.Tenant,
 		Callback:       r.Callback,
 	}
 

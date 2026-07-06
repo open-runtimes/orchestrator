@@ -30,13 +30,14 @@ const (
 	VolumeWorkspace       = "workspace"
 )
 
-// watchConfig holds the per-job values a watcher needs to emit callbacks.
-// Namespace and K8s Job name are fixed / derivable (single namespace per
-// orchestrator; job name is jobNameFor(jobID)) so they're not carried here.
+// watchConfig holds the per-job values a watcher needs to emit callbacks and
+// stream logs. namespace is carried because jobs may live in per-tenant
+// namespaces, not just the orchestrator's base namespace.
 type watchConfig struct {
-	jobID string
-	image string
-	dest  *job.CallbackDest
+	jobID     string
+	namespace string
+	image     string
+	dest      *job.CallbackDest
 }
 
 func watchConfigFromRequest(req *job.Request) *watchConfig {

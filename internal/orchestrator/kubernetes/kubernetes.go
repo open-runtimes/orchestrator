@@ -55,6 +55,7 @@ type Config struct {
 	MaintenanceInterval           time.Duration
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64
+	TenantsEnabled                bool
 	LeaderElection                LeaderElectionConfig
 	// Metrics wires backend-specific recorders (leadership, status cache,
 	// tracker saturation, K8s API latency). Optional — when nil, recording
@@ -103,6 +104,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			JobRetention:                  retention,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: grace,
+			TenantsEnabled:                cfg.TenantsEnabled,
 			LeaderElection:                cfg.LeaderElection,
 		}
 
@@ -153,8 +155,17 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // The job's watcher will be spawned automatically by the leader's informer
 // when K8s creates the owning Pod.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
+	if req.Tenant != "" && !o.cfg.TenantsEnabled {
+		return apperrors.Validation("tenant", "tenant isolation is not enabled on this orchestrator")
+	}
+	ns := kube.TenantNamespace(o.namespace, req.Tenant)
+	if req.Tenant != "" {
+		if err := kube.EnsureTenantNamespace(ctx, o.client, ns, o.cfg.ServiceAccount, nil); err != nil {
+			return apperrors.Internal("kubernetes.ensureTenant", err)
+		}
+	}
 	jobSpec := buildJob(req, o.cfg, o.sidecarImage)
-	if _, err := o.client.BatchV1().Jobs(o.namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
+	if _, err := o.client.BatchV1().Jobs(ns).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return apperrors.Conflict("job", req.ID, "job already exists")
 		}
@@ -163,12 +174,38 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	return nil
 }
 
+// jobNamespace finds which namespace a job lives in. The common untenanted
+// case hits the base namespace directly; a miss falls back to a cluster-wide
+// lookup by job-id label (the job may be in any tenant namespace). Returns
+// NotFound when no managed job with that ID exists.
+func (o *Orchestrator) jobNamespace(ctx context.Context, jobID string) (string, error) {
+	if _, err := o.client.BatchV1().Jobs(o.namespace).Get(ctx, jobNameFor(jobID), metav1.GetOptions{}); err == nil {
+		return o.namespace, nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", apperrors.Internal("kubernetes.getJob", err)
+	}
+	list, err := o.client.BatchV1().Jobs(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		LabelSelector: LabelJobID + "=" + jobID,
+	})
+	if err != nil {
+		return "", apperrors.Internal("kubernetes.findJob", err)
+	}
+	if len(list.Items) == 0 {
+		return "", apperrors.NotFound("job", jobID)
+	}
+	return list.Items[0].Namespace, nil
+}
+
 // Stop deletes the K8s Job (cascades to its Pod). Idempotent at the K8s layer;
 // a second call against a non-existent Job returns our NotFound error. The
 // leader's watcher observes the Pod deletion and tears down its tracker.
 func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
+	ns, err := o.jobNamespace(ctx, jobID)
+	if err != nil {
+		return err
+	}
 	prop := metav1.DeletePropagationForeground
-	err := o.client.BatchV1().Jobs(o.namespace).Delete(ctx, jobNameFor(jobID), metav1.DeleteOptions{
+	err = o.client.BatchV1().Jobs(ns).Delete(ctx, jobNameFor(jobID), metav1.DeleteOptions{
 		PropagationPolicy: &prop,
 	})
 	if apierrors.IsNotFound(err) {
@@ -197,14 +234,18 @@ func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusRes
 		o.metrics.RecordStatusCacheMiss(ctx)
 	}
 
-	j, err := o.client.BatchV1().Jobs(o.namespace).Get(ctx, jobNameFor(jobID), metav1.GetOptions{})
+	ns, err := o.jobNamespace(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	j, err := o.client.BatchV1().Jobs(ns).Get(ctx, jobNameFor(jobID), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, apperrors.NotFound("job", jobID)
 	}
 	if err != nil {
 		return nil, apperrors.Internal("kubernetes.getJob", err)
 	}
-	status, err := deriveStatus(ctx, o.client, o.namespace, j)
+	status, err := deriveStatus(ctx, o.client, ns, j)
 	if err != nil {
 		return nil, apperrors.Internal("kubernetes.deriveStatus", err)
 	}
@@ -217,7 +258,8 @@ func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusRes
 // No cache: List is already a single paginated API call, and the response is
 // a moving target that's hard to cache correctly.
 func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
-	jobs, err := o.client.BatchV1().Jobs(o.namespace).List(ctx, metav1.ListOptions{
+	// Cluster-wide: managed jobs may be spread across tenant namespaces.
+	jobs, err := o.client.BatchV1().Jobs(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
 		LabelSelector: LabelManagedBy + "=" + ManagedByValue,
 	})
 	if err != nil {
@@ -225,7 +267,7 @@ func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
 	}
 	statuses := make([]job.StatusResponse, 0, len(jobs.Items))
 	for i := range jobs.Items {
-		status, err := deriveStatus(ctx, o.client, o.namespace, &jobs.Items[i])
+		status, err := deriveStatus(ctx, o.client, jobs.Items[i].Namespace, &jobs.Items[i])
 		if err != nil {
 			slog.Warn("Failed to derive status for job", "name", jobs.Items[i].Name, "error", err)
 			continue

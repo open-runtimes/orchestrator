@@ -29,6 +29,14 @@ const (
 // jobIDPattern allows alphanumeric, hyphens, and underscores
 var jobIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
+// tenantPattern is an RFC-1123 label: the tenant becomes part of a namespace
+// name ({base}-{tenant}), so it is more constrained than the job ID.
+var tenantPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// maxTenantLength bounds the tenant so {base}-{tenant} stays within the
+// 63-char namespace limit with room for the base prefix.
+const maxTenantLength = 40
+
 // Service manages job lifecycle using an orchestrator.
 //
 // The Service is stateless - all job state lives in the orchestrator.
@@ -134,6 +142,15 @@ func (s *Service) validate(req *Request) error {
 
 	if req.Image == "" {
 		return apperrors.Validation("image", "image is required")
+	}
+
+	if req.Tenant != "" {
+		if len(req.Tenant) > maxTenantLength {
+			return apperrors.Validation("tenant", fmt.Sprintf("tenant exceeds maximum length of %d", maxTenantLength))
+		}
+		if !tenantPattern.MatchString(req.Tenant) {
+			return apperrors.Validation("tenant", "tenant must be an RFC-1123 label (lowercase alphanumeric, interior hyphens)")
+		}
 	}
 
 	if req.TimeoutSeconds > maxTimeoutSecs {

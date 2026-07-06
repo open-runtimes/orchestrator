@@ -62,6 +62,16 @@ GET /v1/jobs/{jobId}
 
 Status values: `accepted`, `running`, `completed`, `failed`, `cancelled`
 
+### Tenant isolation
+
+A job's optional `tenant` field places it in its own Kubernetes namespace instead of the shared workload namespace — the client picks the isolation boundary per request:
+
+```json
+{"id": "build-42", "image": "acme/ci:latest", "command": "make", "tenant": "acme"}
+```
+
+The orchestrator creates the tenant namespace (`{base}-{tenant}`, hardened with restricted Pod Security admission) on first use. `tenant` is an RFC-1123 label (≤40 chars). Requires the Kubernetes backend with tenant support enabled by the operator (`jobs.tenants.enabled`); otherwise a non-empty tenant is rejected with `400`. Network isolation across tenant namespaces comes from a cluster-wide policy, not per-namespace rules — see the [operations guide](operations.md).
+
 ### List Jobs
 
 ```
