@@ -18,8 +18,10 @@ import (
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
+	volspec "orchestrator/pkg/volume"
 	"strconv"
 	"strings"
 	"time"
@@ -205,6 +207,9 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 	if o.cfg.ArtifactEndpoint != "" {
 		env = append(env, "ARTIFACT_ENDPOINT="+o.cfg.ArtifactEndpoint)
 	}
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, kv[0]+"="+kv[1])
+	}
 
 	resp, err := o.client.ContainerCreate(ctx,
 		&container.Config{
@@ -260,7 +265,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
 		&container.HostConfig{
-			Mounts: []mount.Mount{o.workspaceMount(req.ID)},
+			Mounts: append([]mount.Mount{o.workspaceMount(req.ID)}, volumeMounts(req.Volumes)...),
 			Resources: container.Resources{
 				NanoCPUs: int64(req.CPU * 1e9),
 				Memory:   int64(req.Memory) * 1024 * 1024,
@@ -498,6 +503,19 @@ func (o *Orchestrator) containersFor(ctx context.Context, id string) ([]containe
 // workspaceMount returns the shared workspace volume mount for a deployment.
 func (o *Orchestrator) workspaceMount(id string) mount.Mount {
 	return mount.Mount{Type: mount.TypeVolume, Source: volumeName(id), Target: workspacePath}
+}
+
+// volumeMounts attaches existing Docker named volumes to the worker container.
+func volumeMounts(vols []volspec.Volume) []mount.Mount {
+	mounts := make([]mount.Mount, 0, len(vols))
+	for _, v := range vols {
+		m := mount.Mount{Type: mount.TypeVolume, Source: v.Source, Target: v.Path, ReadOnly: v.ReadOnly}
+		if v.SubPath != "" {
+			m.VolumeOptions = &mount.VolumeOptions{Subpath: v.SubPath}
+		}
+		mounts = append(mounts, m)
+	}
+	return mounts
 }
 
 func (o *Orchestrator) networkingConfig() *network.NetworkingConfig {

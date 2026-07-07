@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestLoadPools_Volumes(t *testing.T) {
+	t.Parallel()
+
+	pools, err := LoadPools(`[{"id":"a","image":"node:20","port":3000,"volumes":[{"source":"cache-pvc","path":"/cache"}]}]`)
+	if err != nil {
+		t.Fatalf("valid volume rejected: %v", err)
+	}
+	if len(pools[0].Volumes) != 1 || pools[0].Volumes[0].Source != "cache-pvc" {
+		t.Errorf("volumes not parsed: %+v", pools[0].Volumes)
+	}
+
+	if _, err := LoadPools(`[{"id":"a","image":"node:20","port":3000,"volumes":[{"source":"x","path":"relative"}]}]`); err == nil {
+		t.Error("expected rejection of a relative volume path")
+	}
+}
+
 func TestLoadPools_Sandbox(t *testing.T) {
 	t.Parallel()
 

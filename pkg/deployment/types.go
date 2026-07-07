@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/artifact"
+	"orchestrator/pkg/volume"
 )
 
 // Request is the declarative deployment spec. POST is create-or-update.
@@ -19,6 +20,7 @@ type Request struct {
 	Memory      int                 `json:"memory"` // limit (MB)
 	Environment map[string]string   `json:"environment,omitempty"`
 	Artifacts   []artifact.Artifact `json:"artifacts,omitempty"`   // materialized into the workspace before serving
+	Volumes     []volume.Volume     `json:"volumes,omitempty"`     // existing Docker volumes / K8s PVCs mounted into the worker
 	Hosts       []string            `json:"hosts,omitempty"`       // RFC-1123 hostnames (≤253 each); hosts[0] is the primary; empty = [{id}.{domain}]
 	Port        int                 `json:"port"`                  // container port serving HTTP
 	Replicas    int                 `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
@@ -132,6 +134,7 @@ type requestJSON struct {
 	Memory      int               `json:"memory"`
 	Environment map[string]string `json:"environment,omitempty"`
 	Artifacts   json.RawMessage   `json:"artifacts,omitempty"`
+	Volumes     []volume.Volume   `json:"volumes,omitempty"`
 	Hosts       []string          `json:"hosts,omitempty"`
 	Port        int               `json:"port"`
 	Replicas    int               `json:"replicas,omitempty"`
@@ -179,6 +182,7 @@ func (r *Request) fromRaw(raw *requestJSON) error {
 	r.CPU = raw.CPU
 	r.Memory = raw.Memory
 	r.Environment = raw.Environment
+	r.Volumes = raw.Volumes
 	r.Hosts = raw.Hosts
 	r.Port = raw.Port
 	r.Replicas = raw.Replicas
@@ -212,6 +216,7 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		CPU:         r.CPU,
 		Memory:      r.Memory,
 		Environment: r.Environment,
+		Volumes:     r.Volumes,
 		Hosts:       r.Hosts,
 		Port:        r.Port,
 		Replicas:    r.Replicas,

@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/pkg/job"
+	vol "orchestrator/pkg/volume"
 	"os"
 	"strings"
 	"sync"
@@ -382,6 +384,19 @@ func workspaceMount(h dockerHandle, workspace string, propagation mount.Propagat
 	return mount.Mount{Type: mount.TypeVolume, Source: h.volumeName, Target: workspace}
 }
 
+// volumeMounts attaches existing Docker named volumes to the worker container.
+func volumeMounts(vols []vol.Volume) []mount.Mount {
+	mounts := make([]mount.Mount, 0, len(vols))
+	for _, v := range vols {
+		m := mount.Mount{Type: mount.TypeVolume, Source: v.Source, Target: v.Path, ReadOnly: v.ReadOnly}
+		if v.SubPath != "" {
+			m.VolumeOptions = &mount.VolumeOptions{Subpath: v.SubPath}
+		}
+		mounts = append(mounts, m)
+	}
+	return mounts
+}
+
 func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request, h dockerHandle) (string, error) {
 	env := make([]string, 0, len(req.Environment))
 	for k, v := range req.Environment {
@@ -425,7 +440,7 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 	}
 
 	hostConfig := &container.HostConfig{
-		Mounts: []mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)},
+		Mounts: append([]mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)}, volumeMounts(req.Volumes)...),
 		Resources: container.Resources{
 			NanoCPUs: int64(req.CPU * 1e9),
 			Memory:   int64(req.Memory) * 1024 * 1024,
@@ -458,6 +473,10 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 
 	if o.artifactEndpoint != "" {
 		env = append(env, "ARTIFACT_ENDPOINT="+o.artifactEndpoint)
+	}
+
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, kv[0]+"="+kv[1])
 	}
 
 	if req.Callback != nil && req.Callback.URL != "" {

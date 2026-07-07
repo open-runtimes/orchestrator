@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/lifecycle"
+	"orchestrator/pkg/volume"
 )
 
 // Request represents a request to create a new job
@@ -19,6 +20,7 @@ type Request struct {
 	TimeoutSeconds int                 `json:"timeoutSeconds"`
 	Workspace      string              `json:"workspace,omitempty"` // Working directory and mount path (default: /workspace)
 	Artifacts      []artifact.Artifact `json:"artifacts,omitempty"`
+	Volumes        []volume.Volume     `json:"volumes,omitempty"` // existing Docker volumes / K8s PVCs mounted into the worker
 	Callback       *Callback           `json:"callback,omitempty"`
 }
 
@@ -34,6 +36,7 @@ type requestJSON struct {
 	TimeoutSeconds int               `json:"timeoutSeconds"`
 	Workspace      string            `json:"workspace,omitempty"`
 	Artifacts      json.RawMessage   `json:"artifacts,omitempty"`
+	Volumes        []volume.Volume   `json:"volumes,omitempty"`
 	Callback       *Callback         `json:"callback,omitempty"`
 }
 
@@ -72,6 +75,7 @@ func (r *Request) fromRaw(raw *requestJSON) error {
 	r.Environment = raw.Environment
 	r.TimeoutSeconds = raw.TimeoutSeconds
 	r.Workspace = raw.Workspace
+	r.Volumes = raw.Volumes
 	r.Callback = raw.Callback
 
 	if len(raw.Artifacts) > 0 && string(raw.Artifacts) != "null" {
@@ -97,6 +101,7 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		Environment:    r.Environment,
 		TimeoutSeconds: r.TimeoutSeconds,
 		Workspace:      r.Workspace,
+		Volumes:        r.Volumes,
 		Callback:       r.Callback,
 	}
 

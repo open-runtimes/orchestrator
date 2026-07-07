@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
+	"orchestrator/pkg/volume"
 	"reflect"
 	"slices"
 	"strconv"
@@ -55,6 +56,44 @@ func TestBuildJob_NoMount_Unprivileged(t *testing.T) {
 	}
 	if post.VolumeMounts[0].MountPropagation != nil || spec.Containers[0].VolumeMounts[0].MountPropagation != nil {
 		t.Error("non-mount job should not set mount propagation")
+	}
+}
+
+func TestBuildJob_PersistentVolume(t *testing.T) {
+	t.Parallel()
+	req := &job.Request{
+		ID: "job-vol", Image: "alpine:3.20", TimeoutSeconds: 60, Workspace: "/workspace",
+		Volumes: []volume.Volume{{Source: "data-pvc", Path: "/data", ReadOnly: true}},
+	}
+
+	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
+	spec := j.Spec.Template.Spec
+
+	// Pod carries the PVC volume alongside the workspace emptyDir.
+	var claim string
+	for _, v := range spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			claim = v.PersistentVolumeClaim.ClaimName
+		}
+	}
+	if claim != "data-pvc" {
+		t.Errorf("pod should reference PVC data-pvc, got %q", claim)
+	}
+
+	// Worker gets the mount; the two sidecars do not (they operate on the workspace).
+	worker := spec.Containers[0]
+	if !slices.ContainsFunc(worker.VolumeMounts, func(m corev1.VolumeMount) bool { return m.MountPath == "/data" && m.ReadOnly }) {
+		t.Errorf("worker should mount /data read-only, got %+v", worker.VolumeMounts)
+	}
+	for _, c := range spec.InitContainers {
+		if slices.ContainsFunc(c.VolumeMounts, func(m corev1.VolumeMount) bool { return m.MountPath == "/data" }) {
+			t.Errorf("sidecar %q should not mount the persistent volume", c.Name)
+		}
+	}
+
+	// A persistent volume must NOT trigger the privileged squashfs-mount path.
+	if post := spec.InitContainers[1]; post.SecurityContext != nil {
+		t.Error("persistent volume should not make the post sidecar privileged")
 	}
 }
 

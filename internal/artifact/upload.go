@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/config"
 	"orchestrator/pkg/backoff"
 	"os"
 	"path/filepath"
@@ -27,11 +28,16 @@ type Upload struct {
 	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 	Retries        int               `json:"retries,omitempty"`        // Max retry attempts (default 3)
 	Headers        map[string]string `json:"headers,omitempty"`
+
+	creds config.S3Credentials // injected by the runner for s3:// URLs
 }
 
 func (a *Upload) ArtifactID() string   { return a.ID }
 func (a *Upload) ArtifactType() string { return "upload" }
 func (a *Upload) DependsOn() string    { return a.Depends }
+
+// SetS3Credentials satisfies S3Configurable.
+func (a *Upload) SetS3Credentials(c config.S3Credentials) { a.creds = c }
 
 // Apply uploads a file to a URL with retry.
 func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
@@ -95,12 +101,11 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 	}
 	defer file.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.Out, file)
+	req, err := buildRequest(ctx, http.MethodPut, a.Out, file, size, a.creds)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.ContentLength = size
 	applyHeaders(req, a.Headers)
 	req.Header.Set("Content-Type", "application/octet-stream")
 

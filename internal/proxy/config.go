@@ -62,6 +62,10 @@ type Config struct {
 	ClaimToken string // bearer token required to claim; empty = direct mode
 	TargetHost string // host the claimed workload serves on, joined with the claim's Port
 	Workspace  string // shared volume: artifact root + shim FIFO directory
+
+	// S3 credentials for signing s3:// download artifacts materialized into the
+	// workspace. Forwarded by the deployments/pools orchestrator.
+	S3 config.S3Credentials
 }
 
 // LoadConfigFromEnv loads proxy configuration from the environment.
@@ -85,5 +89,6 @@ func LoadConfigFromEnv() Config {
 		ClaimToken: config.GetEnv(EnvClaimToken, ""),
 		TargetHost: config.GetEnv(EnvTargetHost, "127.0.0.1"),
 		Workspace:  config.GetEnv("SHARED_VOLUME_PATH", "/workspace"), // same contract as the shim and job sidecar
+		S3:         config.LoadS3Credentials(),
 	}
 }

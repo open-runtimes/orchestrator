@@ -86,6 +86,7 @@ func run(mode string) error {
 
 	runner := sidecar.NewRunner(cfg.JobID, cfg.SharedVolumePath, cfg.TimeoutSeconds, reg,
 		sidecar.WithArtifactListener(reporter),
+		sidecar.WithS3Credentials(cfg.S3),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

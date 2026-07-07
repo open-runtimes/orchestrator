@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/config"
 	"os"
 	"path/filepath"
 	"time"
@@ -21,11 +22,16 @@ type Download struct {
 	Depends        string            `json:"depends,omitempty"`
 	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 	Headers        map[string]string `json:"headers,omitempty"`
+
+	creds config.S3Credentials // injected by the runner for s3:// URLs
 }
 
 func (a *Download) ArtifactID() string   { return a.ID }
 func (a *Download) ArtifactType() string { return "download" }
 func (a *Download) DependsOn() string    { return a.Depends }
+
+// SetS3Credentials satisfies S3Configurable.
+func (a *Download) SetS3Credentials(c config.S3Credentials) { a.creds = c }
 
 // Apply downloads a file from a URL.
 func (a *Download) Apply(ctx context.Context, basePath string) *Result {
@@ -35,7 +41,7 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.In, http.NoBody)
+	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.creds)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create request: %w", err)}
 	}

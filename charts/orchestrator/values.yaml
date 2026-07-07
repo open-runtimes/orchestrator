@@ -25,6 +25,18 @@ jobs:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
     tag: latest
+  # Credentials for s3:// download/upload artifacts, scoped to the jobs service.
+  # When enabled, the jobs-service forwards these into every job sidecar.
+  s3:
+    enabled: false
+    endpoint: ""          # empty = AWS (region-derived host); set for MinIO/custom
+    region: us-east-1
+    forcePathStyle: false  # true for MinIO/path-style endpoints
+    accessKeyId: ""
+    secretAccessKey: ""
+    # Reference an existing Secret with keys S3_ACCESS_KEY_ID and
+    # S3_SECRET_ACCESS_KEY instead of the inline values above.
+    existingSecret: ""
 
 # Serving-plane API (deployments + deployment-pools). Disabled by default —
 deployments:
@@ -43,6 +55,16 @@ deployments:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/deployments-sidecar
     tag: latest
+  # Credentials for s3:// download artifacts, scoped to the deployments/pools
+  # service. Forwarded into the artifact-pre init container and warm-pool pods.
+  s3:
+    enabled: false
+    endpoint: ""
+    region: us-east-1
+    forcePathStyle: false
+    accessKeyId: ""
+    secretAccessKey: ""
+    existingSecret: ""
   # Data-plane port the in-process activator listens on (Host-based routing).
   dataPort: 8081
   # Base domain for auto-assigned hosts: {id}.{domain}.
@@ -107,7 +129,8 @@ deployments:
     enabled: false
   # Warm pools (docs/pools.md): config-declared fleets an activation
   # late-binds onto. Each entry is a pkg/pool.Pool: {id, image, size, cpu,
-  # memory, port (required), burst (cold|reject; default cold), environment}.
+  # memory, port (required), burst (cold|reject; default cold), environment,
+  # volumes: [{source (PVC name), path, subPath, readonly}] mounted into every pod}.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
   pools: []
   # Image for the pool-shim (warm-pod entrypoint; installed into workload

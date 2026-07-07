@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/pkg/emitter"
 	"orchestrator/pkg/job"
 	"os"
@@ -48,6 +49,13 @@ func WithMounter(m Mounter) Option {
 	return func(r *Runner) { r.mounter = m }
 }
 
+// WithS3Credentials sets the credentials used to sign s3:// download/upload
+// artifacts. Configured per service (jobs vs deployments) and forwarded by the
+// orchestrator into this sidecar's environment.
+func WithS3Credentials(creds config.S3Credentials) Option {
+	return func(r *Runner) { r.s3 = creds }
+}
+
 // Runner orchestrates the sidecar flow.
 // The sidecar handles artifact processing (downloads, uploads, archives, etc.)
 // and reports results to the orchestrator, which dispatches the corresponding events.
@@ -62,6 +70,7 @@ type Runner struct {
 	mounter          Mounter
 	mounted          []string // mount targets to unmount on teardown
 	emitter          emitter.Emitter[job.ArtifactReport]
+	s3               config.S3Credentials
 }
 
 // NewRunner creates a new sidecar runner. Production callers pass WithArtifactListener.
@@ -298,8 +307,18 @@ func (r *Runner) unmountAll() {
 
 // processArtifacts processes artifacts in dependency order.
 // For post-job artifacts, it waits for files to appear before processing.
+// s3Configurable is implemented by artifacts that transfer over s3:// and need
+// SigV4 credentials. Download and Upload satisfy it; artifacts that never touch
+// S3 do not, so the runner injects credentials only where they are used.
+type s3Configurable interface {
+	SetS3Credentials(config.S3Credentials)
+}
+
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
+		if c, ok := a.(s3Configurable); ok {
+			c.SetS3Credentials(r.s3)
+		}
 		if waitForFiles {
 			if srcPath := r.registry.SourcePath(a); srcPath != "" {
 				fullPath := filepath.Join(r.sharedVolumePath, srcPath)

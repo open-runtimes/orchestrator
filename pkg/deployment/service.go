@@ -27,6 +27,7 @@ const (
 	maxMetaKeyLen   = 64
 	maxMetaValueLen = 256
 	maxArtifacts    = 64
+	maxVolumes      = 16
 	maxReplicas     = 32
 )
 
@@ -351,6 +352,15 @@ func (s *Service) validate(req *Request) error {
 	}
 	for i, a := range req.Artifacts {
 		if err := s.artifacts.Validate(i, a); err != nil {
+			return err
+		}
+	}
+
+	if len(req.Volumes) > maxVolumes {
+		return apperrors.Validation("volumes", fmt.Sprintf("volumes exceed maximum of %d", maxVolumes))
+	}
+	for i, v := range req.Volumes {
+		if err := v.Validate(fmt.Sprintf("volumes[%d]", i)); err != nil {
 			return err
 		}
 	}
