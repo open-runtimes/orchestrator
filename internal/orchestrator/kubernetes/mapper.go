@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	"orchestrator/internal/kube"
 	"orchestrator/pkg/job"
 	"strconv"
 	"strings"
@@ -135,6 +136,11 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 	postMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
 	workerMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
 
+	// Persistent volumes attach to the worker only — the sidecars operate on the
+	// workspace, not the user's storage.
+	pvVolumes, pvMounts := kube.PersistentVolumes(req.Volumes)
+	workerMounts = append(workerMounts, pvMounts...)
+
 	var postSecurityContext *corev1.SecurityContext
 	var postStartupProbe *corev1.Probe
 	if hasMounts {
@@ -174,12 +180,12 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		ServiceAccountName:            cfg.ServiceAccount,
 		TerminationGracePeriodSeconds: &grace,
-		Volumes: []corev1.Volume{
+		Volumes: append([]corev1.Volume{
 			{
 				Name:         VolumeWorkspace,
 				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 			},
-		},
+		}, pvVolumes...),
 		InitContainers: []corev1.Container{
 			{
 				Name:            ContainerArtifactPre,

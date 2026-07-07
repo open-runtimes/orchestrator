@@ -90,6 +90,7 @@ func randHex(n int) (string, error) {
 // the kubelet SIGTERMs the sidecar — the pod is discarded, never reused.
 func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 	autoMount := false
+	podVolumes, _ := kube.PersistentVolumes(p.Volumes)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
@@ -98,10 +99,10 @@ func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyNever,
 			AutomountServiceAccountToken: &autoMount,
-			Volumes: []corev1.Volume{
+			Volumes: append([]corev1.Volume{
 				{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			},
+			}, podVolumes...),
 			InitContainers: []corev1.Container{shimInstallContainer(cfg), proxyContainer(cfg, token)},
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
@@ -191,6 +192,8 @@ func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
 	for _, k := range slices.Sorted(maps.Keys(p.Environment)) {
 		env = append(env, corev1.EnvVar{Name: k, Value: p.Environment[k]})
 	}
+
+	_, workerVolumeMounts := kube.PersistentVolumes(p.Volumes)
 	return corev1.Container{
 		Name:            ContainerWorkload,
 		Image:           p.Image,
@@ -198,10 +201,10 @@ func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
 		Command:         []string{shimPath},
 		Env:             env,
 		WorkingDir:      workspacePath,
-		VolumeMounts: []corev1.VolumeMount{
+		VolumeMounts: append([]corev1.VolumeMount{
 			{Name: VolumeWorkspace, MountPath: workspacePath},
 			{Name: VolumeTmp, MountPath: "/tmp"},
-		},
+		}, workerVolumeMounts...),
 		Resources:       workloadResources(p),
 		SecurityContext: hardenedSecurityContext(cfg),
 	}

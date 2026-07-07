@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/deployment"
+	"orchestrator/pkg/volume"
 )
 
 // Pool is the service-config schema (loaded at startup from POOLS_JSON, which
@@ -26,6 +27,7 @@ type Pool struct {
 	Probes      *deployment.Probes `json:"probes,omitempty"`
 	Environment map[string]string  `json:"environment,omitempty"`
 	Meta        map[string]string  `json:"meta,omitempty"`
+	Volumes     []volume.Volume    `json:"volumes,omitempty"` // existing K8s PVCs mounted into every warm pod in the fleet
 
 	// Burst controls what happens when an activation arrives and no warm pod
 	// is free: "cold" (default) → create a pod on demand and pay the cold
@@ -73,6 +75,11 @@ func LoadPools(raw string) ([]Pool, error) {
 		if !deployment.ValidSandbox(p.Sandbox) {
 			return nil, fmt.Errorf("pool %q: sandbox must be one of %q, %q, %q",
 				p.ID, deployment.SandboxRunc, deployment.SandboxGvisor, deployment.SandboxKata)
+		}
+		for j, v := range p.Volumes {
+			if err := v.Validate(fmt.Sprintf("pool %q volumes[%d]", p.ID, j)); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return pools, nil

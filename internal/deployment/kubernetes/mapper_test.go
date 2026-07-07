@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/deployment"
+	"orchestrator/pkg/volume"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,17 +16,17 @@ import (
 
 func testRequest() *deployment.Request {
 	return &deployment.Request{
-		ID:                      "web",
-		Image:                   "nginx:1.27",
-		Command:                 "nginx -g 'daemon off;'",
-		CPU:                     0.5,
-		Memory:                  128,
-		Environment:             map[string]string{"FOO": "bar", "BAZ": "qux"},
-		Hosts:                   []string{"web.example.com"},
-		Port:                    8080,
-		Replicas:                2,
-		Concurrency:             4,
-		TimeoutSeconds:          300,
+		ID:                  "web",
+		Image:               "nginx:1.27",
+		Command:             "nginx -g 'daemon off;'",
+		CPU:                 0.5,
+		Memory:              128,
+		Environment:         map[string]string{"FOO": "bar", "BAZ": "qux"},
+		Hosts:               []string{"web.example.com"},
+		Port:                8080,
+		Replicas:            2,
+		Concurrency:         4,
+		TimeoutSeconds:      300,
 		ReadyTimeoutSeconds: 600,
 	}
 }
@@ -365,6 +367,28 @@ func TestBuildDeployment_NoProbes(t *testing.T) {
 	w := buildDeployment(testRequest(), Config{}, "web-00001").Spec.Template.Spec.Containers[0]
 	if w.LivenessProbe != nil || w.StartupProbe != nil {
 		t.Errorf("want no kubelet probes, got liveness=%+v startup=%+v", w.LivenessProbe, w.StartupProbe)
+	}
+}
+
+func TestBuildDeployment_PersistentVolume(t *testing.T) {
+	t.Parallel()
+	req := testRequest()
+	req.Volumes = []volume.Volume{{Source: "state-pvc", Path: "/state"}}
+
+	spec := buildDeployment(req, Config{}, "web-00001").Spec.Template.Spec
+
+	var claim string
+	for _, v := range spec.Volumes {
+		if v.PersistentVolumeClaim != nil {
+			claim = v.PersistentVolumeClaim.ClaimName
+		}
+	}
+	if claim != "state-pvc" {
+		t.Errorf("pod should reference PVC state-pvc, got %q", claim)
+	}
+	w := spec.Containers[0]
+	if !slices.ContainsFunc(w.VolumeMounts, func(m corev1.VolumeMount) bool { return m.MountPath == "/state" }) {
+		t.Errorf("worker should mount /state, got %+v", w.VolumeMounts)
 	}
 }
 
