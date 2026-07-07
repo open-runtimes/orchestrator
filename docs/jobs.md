@@ -110,6 +110,7 @@ Artifacts handle file operations before and after job execution. An artifact run
 | `read` | Include file contents in callback event |
 | `archive` | Create tar or squashfs archive |
 | `list` | List files with glob pattern exclusions |
+| `stat` | Include a file's size (bytes) in callback event |
 
 ### Common Fields
 

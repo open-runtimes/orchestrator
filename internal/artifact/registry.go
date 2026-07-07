@@ -141,6 +141,7 @@ func DefaultRegistry() *Registry {
 			UnarchiveDef,
 			MountDef,
 			ListDef,
+			StatDef,
 		)
 	})
 	return defaultReg
