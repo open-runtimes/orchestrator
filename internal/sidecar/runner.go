@@ -307,9 +307,16 @@ func (r *Runner) unmountAll() {
 
 // processArtifacts processes artifacts in dependency order.
 // For post-job artifacts, it waits for files to appear before processing.
+// s3Configurable is implemented by artifacts that transfer over s3:// and need
+// SigV4 credentials. Download and Upload satisfy it; artifacts that never touch
+// S3 do not, so the runner injects credentials only where they are used.
+type s3Configurable interface {
+	SetS3Credentials(config.S3Credentials)
+}
+
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
-		if c, ok := a.(artifact.S3Configurable); ok {
+		if c, ok := a.(s3Configurable); ok {
 			c.SetS3Credentials(r.s3)
 		}
 		if waitForFiles {
