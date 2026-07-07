@@ -62,6 +62,24 @@ func TestNewSignedS3Request_PathStyleEndpoint(t *testing.T) {
 	}
 }
 
+func TestNewSignedS3Request_EndpointPathPrefix(t *testing.T) {
+	fixedClock(t)
+	creds := testCreds
+	creds.Endpoint = "http://gw:9000/s3"
+	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://mybucket/obj", nil, 0, creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The endpoint's /s3 prefix must survive into the target URL...
+	if got, want := req.URL.String(), "http://gw:9000/s3/mybucket/obj"; got != want {
+		t.Errorf("URL = %q, want %q", got, want)
+	}
+	// ...and into the signed canonical URI (else the gateway rejects the signature).
+	if got := req.URL.EscapedPath(); got != "/s3/mybucket/obj" {
+		t.Errorf("path = %q, want /s3/mybucket/obj", got)
+	}
+}
+
 func TestNewSignedS3Request_Deterministic(t *testing.T) {
 	fixedClock(t)
 	a, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, testCreds)

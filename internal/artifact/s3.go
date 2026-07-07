@@ -48,20 +48,21 @@ func newSignedS3Request(ctx context.Context, method, rawURL string, body io.Read
 		return nil, fmt.Errorf("s3 URL must be s3://bucket/key, got %q", rawURL)
 	}
 
-	scheme, host, err := s3EndpointHost(creds, bucket)
+	scheme, host, basePath, err := s3EndpointHost(creds, bucket)
 	if err != nil {
 		return nil, err
 	}
 
 	// Path-style puts the bucket in the path; virtual-hosted puts it in the host.
-	var canonicalURI, targetURL string
+	// A configured endpoint may carry a base path (e.g. http://gw:9000/s3) that
+	// prefixes — and must be signed as part of — the request URI.
+	var canonicalURI string
 	if creds.Endpoint != "" || creds.ForcePathStyle {
-		canonicalURI = "/" + uriEncodePath(bucket) + "/" + uriEncodePath(key)
-		targetURL = scheme + "://" + host + canonicalURI
+		canonicalURI = basePath + "/" + uriEncodePath(bucket) + "/" + uriEncodePath(key)
 	} else {
-		canonicalURI = "/" + uriEncodePath(key)
-		targetURL = scheme + "://" + host + canonicalURI
+		canonicalURI = basePath + "/" + uriEncodePath(key)
 	}
+	targetURL := scheme + "://" + host + canonicalURI
 
 	payloadHash, err := s3PayloadHash(body)
 	if err != nil {
@@ -110,10 +111,12 @@ func newSignedS3Request(ctx context.Context, method, rawURL string, body io.Read
 	return req, nil
 }
 
-// s3EndpointHost resolves the scheme and host to connect to. With a configured
-// endpoint (MinIO/custom), that endpoint is used; otherwise the AWS regional
-// host is derived, virtual-hosted unless path style is forced.
-func s3EndpointHost(creds config.S3Credentials, bucket string) (scheme, host string, err error) {
+// s3EndpointHost resolves the scheme, host, and base path to connect to. With a
+// configured endpoint (MinIO/custom), that endpoint is used, including any path
+// prefix it carries (e.g. http://gw:9000/s3 → basePath "/s3"); otherwise the AWS
+// regional host is derived, virtual-hosted unless path style is forced. basePath
+// is "" for AWS and endpoints with no path, and never has a trailing slash.
+func s3EndpointHost(creds config.S3Credentials, bucket string) (scheme, host, basePath string, err error) {
 	if creds.Endpoint != "" {
 		ep := creds.Endpoint
 		if !strings.Contains(ep, "://") {
@@ -121,14 +124,16 @@ func s3EndpointHost(creds config.S3Credentials, bucket string) (scheme, host str
 		}
 		u, err := url.Parse(ep)
 		if err != nil {
-			return "", "", fmt.Errorf("invalid S3 endpoint %q: %w", creds.Endpoint, err)
+			return "", "", "", fmt.Errorf("invalid S3 endpoint %q: %w", creds.Endpoint, err)
 		}
-		return u.Scheme, u.Host, nil
+		// Encode the operator-supplied prefix (slashes preserved) so it signs and
+		// sends verbatim; strip the trailing slash so we don't double up on "/".
+		return u.Scheme, u.Host, uriEncodePath(strings.TrimSuffix(u.Path, "/")), nil
 	}
 	if creds.ForcePathStyle {
-		return "https", "s3." + creds.Region + ".amazonaws.com", nil
+		return "https", "s3." + creds.Region + ".amazonaws.com", "", nil
 	}
-	return "https", bucket + ".s3." + creds.Region + ".amazonaws.com", nil
+	return "https", bucket + ".s3." + creds.Region + ".amazonaws.com", "", nil
 }
 
 func s3SigningKey(secret, dateStamp, region string) []byte {
@@ -169,13 +174,13 @@ func s3PayloadHash(body io.ReadSeeker) (string, error) {
 // unreserved set and slashes between segments.
 func uriEncodePath(p string) string {
 	var b strings.Builder
-	for _, r := range []byte(p) {
+	for _, c := range []byte(p) {
 		switch {
-		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9',
-			r == '-', r == '.', r == '_', r == '~', r == '/':
-			b.WriteByte(r)
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '-', c == '.', c == '_', c == '~', c == '/':
+			b.WriteByte(c)
 		default:
-			fmt.Fprintf(&b, "%%%02X", r)
+			fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
 	return b.String()
