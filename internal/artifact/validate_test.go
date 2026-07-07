@@ -346,6 +346,44 @@ func TestValidate_List(t *testing.T) {
 	}
 }
 
+func TestValidate_Stat(t *testing.T) {
+	tests := []struct {
+		name    string
+		art     *Stat
+		wantErr bool
+	}{
+		{
+			name:    "valid",
+			art:     &Stat{ID: "s1", In: "result.bin"},
+			wantErr: false,
+		},
+		{
+			name:    "missing in (path)",
+			art:     &Stat{ID: "s1"},
+			wantErr: true,
+		},
+		{
+			name:    "path traversal",
+			art:     &Stat{ID: "s1", In: "../escape"},
+			wantErr: true,
+		},
+		{
+			name:    "absolute path",
+			art:     &Stat{ID: "s1", In: "/etc/passwd"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Validate(0, tt.art)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidatePath(t *testing.T) {
 	tests := []struct {
 		path    string

@@ -165,6 +165,21 @@ var (
 		SourcePath: TypedSourcePath(func(a *Mount) string { return a.In }),
 	}
 
+	StatDef = TypeDef{
+		Type: "stat",
+		New:  func() Artifact { return &Stat{} },
+		Validate: TypedValidator(func(field string, a *Stat) error {
+			if a.In == "" {
+				return apperrors.Validation(field+".in", "in (path) is required")
+			}
+			if err := validatePath(a.In); err != nil {
+				return apperrors.Validation(field+".in", "invalid in (path): "+err.Error())
+			}
+			return nil
+		}),
+		SourcePath: TypedSourcePath(func(a *Stat) string { return a.In }),
+	}
+
 	ListDef = TypeDef{
 		Type: "list",
 		New:  func() Artifact { return &List{} },
