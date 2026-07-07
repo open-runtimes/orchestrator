@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/pkg/job"
 	"os"
 	"strings"
@@ -458,6 +459,10 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 
 	if o.artifactEndpoint != "" {
 		env = append(env, "ARTIFACT_ENDPOINT="+o.artifactEndpoint)
+	}
+
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, kv[0]+"="+kv[1])
 	}
 
 	if req.Callback != nil && req.Callback.URL != "" {

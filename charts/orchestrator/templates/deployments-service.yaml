@@ -123,6 +123,7 @@ spec:
             {{- end }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
+            {{- include "orchestrator.s3Env" (dict "s3" .Values.deployments.s3 "secretName" (include "orchestrator.deploymentsS3SecretName" .)) | nindent 12 }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

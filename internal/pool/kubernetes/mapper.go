@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"maps"
 	"math"
+	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
@@ -135,15 +136,21 @@ func shimInstallContainer(cfg Config) corev1.Container {
 // probe gates the pod's Ready condition — warm-ready while unclaimed.
 func proxyContainer(cfg Config, token string) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
+	env := []corev1.EnvVar{
+		{Name: proxy.EnvClaimToken, Value: token},
+		{Name: envSharedVolume, Value: workspacePath},
+		{Name: proxy.EnvTargetHost, Value: "127.0.0.1"},
+	}
+	// The proxy materializes s3:// artifacts in-process on claim, so it needs
+	// the deployments/pools service's S3 credentials.
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
+	}
 	return corev1.Container{
 		Name:            ContainerProxy,
 		Image:           cfg.SidecarImage,
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
-		Env: []corev1.EnvVar{
-			{Name: proxy.EnvClaimToken, Value: token},
-			{Name: envSharedVolume, Value: workspacePath},
-			{Name: proxy.EnvTargetHost, Value: "127.0.0.1"},
-		},
+		Env:             env,
 		Ports: []corev1.ContainerPort{
 			{Name: portNameProxy, ContainerPort: proxy.DefaultProxyPort},
 			{Name: portNameAdmin, ContainerPort: proxy.DefaultAdminPort},

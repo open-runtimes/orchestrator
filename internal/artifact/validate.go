@@ -23,11 +23,14 @@ func validateURL(rawURL string) error {
 		return errors.New("malformed URL")
 	}
 	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("URL scheme must be http or https, got %q", parsed.Scheme)
+	if scheme != "http" && scheme != "https" && scheme != s3Scheme {
+		return fmt.Errorf("URL scheme must be http, https, or s3, got %q", parsed.Scheme)
 	}
 	if parsed.Host == "" {
 		return errors.New("URL must have a host")
+	}
+	if scheme == s3Scheme && strings.TrimPrefix(parsed.Path, "/") == "" {
+		return errors.New("s3 URL must have a key: s3://bucket/key")
 	}
 	return nil
 }

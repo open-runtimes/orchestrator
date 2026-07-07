@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/pkg/job"
 	"strconv"
 	"strings"
@@ -298,6 +299,9 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 	}
 	if artifactEndpoint != "" {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACT_ENDPOINT", Value: artifactEndpoint})
+	}
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
 	}
 	if req.Callback != nil && req.Callback.URL != "" {
 		env = append(env, corev1.EnvVar{Name: "CALLBACK_URL", Value: req.Callback.URL})

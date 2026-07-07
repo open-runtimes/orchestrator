@@ -1,6 +1,9 @@
 package artifact
 
-import "context"
+import (
+	"context"
+	"orchestrator/internal/config"
+)
 
 // JobDependency is the special dependency value indicating an artifact runs after the job.
 const JobDependency = "job"
@@ -13,6 +16,13 @@ type Artifact interface {
 	ArtifactType() string
 	DependsOn() string
 	Apply(ctx context.Context, basePath string) *Result
+}
+
+// S3Configurable is implemented by artifacts that transfer over s3:// and need
+// SigV4 credentials. The runner injects the service's credentials before Apply;
+// artifacts that never touch S3 do not implement it.
+type S3Configurable interface {
+	SetS3Credentials(config.S3Credentials)
 }
 
 // Result represents the outcome of applying an artifact.

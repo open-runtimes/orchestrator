@@ -144,6 +144,47 @@ app.kubernetes.io/component: deployments
 {{- end -}}
 {{- end -}}
 
+{{/*
+S3 credential env for a service. Call with a dict: {s3: <s3 values>, secretName: <secret>}.
+Renders nothing when s3.enabled is false. Endpoint/region/path-style are plain
+values; the keys come from a Secret (secretKeyRef) so they never rest in the
+pod manifest.
+*/}}
+{{- define "orchestrator.s3Env" -}}
+{{- $s3 := .s3 -}}
+{{- if $s3.enabled -}}
+{{- if $s3.endpoint }}
+- name: S3_ENDPOINT
+  value: {{ $s3.endpoint | quote }}
+{{- end }}
+- name: S3_REGION
+  value: {{ $s3.region | quote }}
+{{- if $s3.forcePathStyle }}
+- name: S3_FORCE_PATH_STYLE
+  value: "true"
+{{- end }}
+- name: S3_ACCESS_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ .secretName }}
+      key: S3_ACCESS_KEY_ID
+- name: S3_SECRET_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .secretName }}
+      key: S3_SECRET_ACCESS_KEY
+{{- end -}}
+{{- end -}}
+
+{{/* Resolve the S3 secret name for a service: an existing secret, or the chart-created one. */}}
+{{- define "orchestrator.jobsS3SecretName" -}}
+{{- default (printf "%s-s3" (include "orchestrator.jobsName" .)) .Values.jobs.s3.existingSecret -}}
+{{- end -}}
+
+{{- define "orchestrator.deploymentsS3SecretName" -}}
+{{- default (printf "%s-s3" (include "orchestrator.deploymentsName" .)) .Values.deployments.s3.existingSecret -}}
+{{- end -}}
+
 {{- define "orchestrator.leaseName" -}}
 {{- if .Values.leaderElection.leaseName -}}
 {{- .Values.leaderElection.leaseName -}}

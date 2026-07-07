@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"strconv"
@@ -204,6 +205,9 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 	}
 	if o.cfg.ArtifactEndpoint != "" {
 		env = append(env, "ARTIFACT_ENDPOINT="+o.cfg.ArtifactEndpoint)
+	}
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, kv[0]+"="+kv[1])
 	}
 
 	resp, err := o.client.ContainerCreate(ctx,

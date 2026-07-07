@@ -5,6 +5,7 @@ import (
 	"math"
 	"net"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
@@ -170,6 +171,9 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	// needs to unmarshal them back into concrete types.
 	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACTS_JSON", Value: string(artifactsJSON)})
+	}
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
 	}
 	return corev1.Container{
 		Name:            ContainerArtifactPre,
