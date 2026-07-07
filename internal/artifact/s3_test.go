@@ -80,6 +80,24 @@ func TestNewSignedS3Request_EndpointPathPrefix(t *testing.T) {
 	}
 }
 
+func TestNewSignedS3Request_SessionToken(t *testing.T) {
+	fixedClock(t)
+	creds := testCreds
+	creds.SessionToken = "FQoGZ-session-token"
+	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("X-Amz-Security-Token"); got != "FQoGZ-session-token" {
+		t.Errorf("X-Amz-Security-Token = %q, want the session token", got)
+	}
+	// The token header must be part of SignedHeaders (sorted after x-amz-date)
+	// or AWS rejects the signature with 403.
+	if got := req.Header.Get("Authorization"); !strings.Contains(got, "SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token") {
+		t.Errorf("session token not in SignedHeaders: %q", got)
+	}
+}
+
 func TestNewSignedS3Request_Deterministic(t *testing.T) {
 	fixedClock(t)
 	a, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, testCreds)

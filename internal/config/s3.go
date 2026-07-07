@@ -9,6 +9,8 @@ const (
 	EnvS3AccessKeyID     = "S3_ACCESS_KEY_ID"          //
 	EnvS3SecretAccessKey = "S3_SECRET_ACCESS_KEY"      // plain value (forwarded to sidecar)
 	EnvS3SecretFile      = "S3_SECRET_ACCESS_KEY_FILE" // file path (preferred at rest)
+	EnvS3SessionToken    = "S3_SESSION_TOKEN"          // STS/temporary-credential session token
+	EnvS3SessionFile     = "S3_SESSION_TOKEN_FILE"     // file path (for rotated STS creds)
 	EnvS3ForcePathStyle  = "S3_FORCE_PATH_STYLE"       // "true" for MinIO/path-style
 )
 
@@ -22,6 +24,7 @@ type S3Credentials struct {
 	Region          string
 	AccessKeyID     string
 	SecretAccessKey string
+	SessionToken    string // set for STS/temporary credentials; signed as X-Amz-Security-Token
 	ForcePathStyle  bool
 }
 
@@ -32,11 +35,16 @@ func LoadS3Credentials() S3Credentials {
 	if secret == "" {
 		secret = GetEnv(EnvS3SecretAccessKey, "")
 	}
+	session := GetSecretFile(GetEnv(EnvS3SessionFile, ""))
+	if session == "" {
+		session = GetEnv(EnvS3SessionToken, "")
+	}
 	return S3Credentials{
 		Endpoint:        GetEnv(EnvS3Endpoint, ""),
 		Region:          GetEnv(EnvS3Region, defaultS3Region),
 		AccessKeyID:     GetEnv(EnvS3AccessKeyID, ""),
 		SecretAccessKey: secret,
+		SessionToken:    session,
 		ForcePathStyle:  GetEnv(EnvS3ForcePathStyle, "") == "true",
 	}
 }
@@ -58,6 +66,9 @@ func (c S3Credentials) ToEnv() [][2]string {
 		{EnvS3AccessKeyID, c.AccessKeyID},
 		{EnvS3SecretAccessKey, c.SecretAccessKey},
 		{EnvS3Region, c.Region},
+	}
+	if c.SessionToken != "" {
+		env = append(env, [2]string{EnvS3SessionToken, c.SessionToken})
 	}
 	if c.Endpoint != "" {
 		env = append(env, [2]string{EnvS3Endpoint, c.Endpoint})

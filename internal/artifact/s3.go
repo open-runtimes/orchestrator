@@ -90,11 +90,18 @@ func newSignedS3Request(ctx context.Context, method, rawURL string, body io.Read
 	req.Header.Set("X-Amz-Date", amzDate)
 	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 
-	// Canonical request: signed headers are host + the two x-amz headers, sorted.
+	// Canonical request: signed headers are host + the x-amz headers, in sorted
+	// order. A session token (STS/temporary credentials) adds x-amz-security-token,
+	// which sorts after x-amz-date and must be signed too or AWS returns 403.
 	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
 	canonicalHeaders := "host:" + host + "\n" +
 		"x-amz-content-sha256:" + payloadHash + "\n" +
 		"x-amz-date:" + amzDate + "\n"
+	if creds.SessionToken != "" {
+		req.Header.Set("X-Amz-Security-Token", creds.SessionToken)
+		signedHeaders += ";x-amz-security-token"
+		canonicalHeaders += "x-amz-security-token:" + creds.SessionToken + "\n"
+	}
 	canonicalRequest := method + "\n" + canonicalURI + "\n" + "" + "\n" +
 		canonicalHeaders + "\n" + signedHeaders + "\n" + payloadHash
 

@@ -51,6 +51,27 @@ func TestLoadS3Credentials_SecretFromFile(t *testing.T) {
 	}
 }
 
+func TestLoadS3Credentials_SessionToken(t *testing.T) {
+	t.Setenv(EnvS3AccessKeyID, "AKID")
+	t.Setenv(EnvS3SecretAccessKey, "SECRET")
+	t.Setenv(EnvS3SessionToken, "SESSION")
+
+	c := LoadS3Credentials()
+	if c.SessionToken != "SESSION" {
+		t.Errorf("SessionToken = %q, want SESSION", c.SessionToken)
+	}
+	// Forwarded to the sidecar so STS creds keep working there.
+	var forwarded string
+	for _, kv := range c.ToEnv() {
+		if kv[0] == EnvS3SessionToken {
+			forwarded = kv[1]
+		}
+	}
+	if forwarded != "SESSION" {
+		t.Errorf("ToEnv did not forward the session token, got %q", forwarded)
+	}
+}
+
 func TestS3Credentials_ToEnv(t *testing.T) {
 	c := S3Credentials{AccessKeyID: "AKID", SecretAccessKey: "SECRET", Region: "us-east-1"}
 	env := c.ToEnv()
