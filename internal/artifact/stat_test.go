@@ -22,7 +22,9 @@ func TestStat_Interface(t *testing.T) {
 func TestStat_Apply(t *testing.T) {
 	tmpDir := t.TempDir()
 	content := []byte("hello world")
-	os.WriteFile(filepath.Join(tmpDir, "result.bin"), content, 0o644)
+	if err := os.WriteFile(filepath.Join(tmpDir, "result.bin"), content, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
 
 	a := &Stat{ID: "test-stat", In: "result.bin"}
 
