@@ -125,6 +125,17 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 			return &Result{Status: "failed", Error: fmt.Errorf("failed to read tar header: %w", err)}
 		}
 
+		// GitHub git-archive tarballs open with a pax global header (typeflag 'g')
+		// carrying the commit SHA. Go's tar reader surfaces it as a real entry —
+		// unlike Python, which consumes it transparently — and its synthetic
+		// "pax_global_header" name would otherwise be mistaken for the archive
+		// root, so a subdir match against "pax_global_header/<subdir>" skips every
+		// real file. Skip global/extended headers; Go already applies their
+		// metadata to the following entry.
+		if header.Typeflag == tar.TypeXGlobalHeader || header.Typeflag == tar.TypeXHeader {
+			continue
+		}
+
 		cleanName := filepath.Clean(header.Name)
 		if strings.HasPrefix(cleanName, "..") {
 			return &Result{Status: "failed", Error: fmt.Errorf("invalid path in archive: %s", header.Name)}

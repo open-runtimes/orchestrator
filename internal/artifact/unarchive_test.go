@@ -3,6 +3,7 @@ package artifact
 import (
 	"archive/tar"
 	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,6 +84,63 @@ func TestUnarchive_Apply_Subdir(t *testing.T) {
 		t.Errorf("Expected 'node code', got %q", string(content))
 	}
 
+	if _, err := os.Stat(filepath.Join(extractedDir, "main.py")); !os.IsNotExist(err) {
+		t.Error("main.py should not exist in extracted directory")
+	}
+}
+
+// TestUnarchive_Apply_Subdir_PaxGlobalHeader reproduces a GitHub git-archive
+// tarball: a leading pax global header (typeflag 'g', carrying the commit SHA)
+// followed by a rooted tree. The global header must not be mistaken for the
+// archive root, or the subdir match skips every real file and nothing extracts.
+func TestUnarchive_Apply_Subdir_PaxGlobalHeader(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	file, err := os.Create(archiveIn)
+	if err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+	gzWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzWriter)
+
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name:       "pax_global_header",
+		Typeflag:   tar.TypeXGlobalHeader,
+		PAXRecords: map[string]string{"comment": "0123456789abcdef0123456789abcdef01234567"},
+	}); err != nil {
+		t.Fatalf("Failed to write global header: %v", err)
+	}
+	for name, content := range map[string]string{
+		"templates-main/node/starter/index.js": "node code",
+		"templates-main/python/main.py":        "python code",
+	} {
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
+			t.Fatalf("Failed to write tar header: %v", err)
+		}
+		if _, err := tarWriter.Write([]byte(content)); err != nil {
+			t.Fatalf("Failed to write tar content: %v", err)
+		}
+	}
+	for _, c := range []io.Closer{tarWriter, gzWriter, file} {
+		if err := c.Close(); err != nil {
+			t.Fatalf("Failed to close writer: %v", err)
+		}
+	}
+
+	a := &Unarchive{ID: "ua", In: "test.tar.gz", Out: "extracted", Subdir: "node/starter"}
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	extractedDir := filepath.Join(tmpDir, "extracted")
+	content, err := os.ReadFile(filepath.Join(extractedDir, "index.js"))
+	if err != nil {
+		t.Fatalf("Failed to read index.js: %v", err)
+	}
+	if string(content) != "node code" {
+		t.Errorf("Expected 'node code', got %q", string(content))
+	}
 	if _, err := os.Stat(filepath.Join(extractedDir, "main.py")); !os.IsNotExist(err) {
 		t.Error("main.py should not exist in extracted directory")
 	}
