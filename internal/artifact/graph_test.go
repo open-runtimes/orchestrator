@@ -193,6 +193,26 @@ func TestRunInOrder(t *testing.T) {
 		}
 	})
 
+	t.Run("out-of-scope dependency is treated as satisfied", func(t *testing.T) {
+		// "src" is not in this slice — e.g. a mount that was split out or an
+		// artifact processed in an earlier phase. The dependent must still run
+		// (and emit) rather than being silently skipped.
+		artifacts := []Artifact{
+			&stub{id: "a", depends: "src"},
+		}
+		var called []string
+		err := RunInOrder(t.Context(), artifacts, func(_ context.Context, a Artifact) error {
+			called = append(called, a.ArtifactID())
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(called) != 1 || called[0] != "a" {
+			t.Errorf("expected [a], got %v", called)
+		}
+	})
+
 	t.Run("skips artifacts in a cycle without hanging", func(t *testing.T) {
 		artifacts := []Artifact{
 			&stub{id: "a", depends: "b"},

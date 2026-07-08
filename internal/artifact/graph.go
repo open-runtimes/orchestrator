@@ -45,11 +45,18 @@ func Partition(artifacts []Artifact) (preJob, postJob []Artifact) {
 type ApplyFunc func(ctx context.Context, a Artifact) error
 
 // RunInOrder executes artifacts in dependency order, calling fn for each one
-// whose dependencies have been satisfied. The JobDependency sentinel is treated
-// as always-satisfied. Artifacts with unresolvable dependencies (e.g. cycles or
-// missing deps) are skipped with a warning log.
+// whose dependencies have been satisfied. Only dependencies within this slice
+// are waited on; a dependency handled in an earlier phase (a mount, a prior
+// phase's artifact) or a sentinel such as JobDependency is already satisfied by
+// the time we run. Artifacts left in a dependency cycle are skipped with a
+// warning log.
 // Returns the last non-nil error from fn, or nil.
 func RunInOrder(ctx context.Context, artifacts []Artifact, fn ApplyFunc) error {
+	inScope := make(map[string]bool, len(artifacts))
+	for _, a := range artifacts {
+		inScope[a.ArtifactID()] = true
+	}
+
 	completed := make(map[string]bool)
 	var lastErr error
 
@@ -60,11 +67,7 @@ func RunInOrder(ctx context.Context, artifacts []Artifact, fn ApplyFunc) error {
 			if completed[id] {
 				continue
 			}
-			dep := a.DependsOn()
-			if dep == JobDependency {
-				dep = ""
-			}
-			if dep != "" && !completed[dep] {
+			if dep := a.DependsOn(); inScope[dep] && !completed[dep] {
 				continue
 			}
 			if err := fn(ctx, a); err != nil {
