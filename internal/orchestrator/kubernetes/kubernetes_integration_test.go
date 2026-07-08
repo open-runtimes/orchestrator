@@ -235,6 +235,53 @@ func TestIntegration_SquashfsMount(t *testing.T) {
 	}
 }
 
+// TestIntegration_SquashfsWritableMount mounts a squashfs image with a
+// tmpfs-backed overlay (writable: true) and has the worker write a new file
+// into the mount and read it back. A read-only mount would fail the write, so
+// reaching Completed proves the overlay is writable atop the read-only image.
+// Requires the squashfs and overlay kernel modules on nodes.
+func TestIntegration_SquashfsWritableMount(t *testing.T) {
+	o, emitter, teardown := setup(t)
+	defer teardown()
+
+	d := wireDispatcher(t, emitter)
+	defer d.Close(context.Background())
+
+	jobID := fmt.Sprintf("mount-rw-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:    jobID,
+		Image: "alpine:3.20",
+		// Writes into the overlay and reads it back, and confirms the original
+		// lower-layer file is still visible — only a writable overlay passes.
+		Command:        `sleep 1 && echo scratch > /workspace/mnt/new.txt && grep -q scratch /workspace/mnt/new.txt && grep -q "mounted content" /workspace/mnt/hello.txt`,
+		CPU:            0.1,
+		Memory:         64,
+		TimeoutSeconds: 120,
+		Workspace:      "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "w", In: "mounted content", Out: "hello.txt"},
+			&artifact.Archive{ID: "a", In: "hello.txt", Out: "data.sqfs", Format: "squashfs", Depends: "w"},
+			&artifact.Mount{ID: "m", In: "data.sqfs", Out: "mnt", Writable: true, Size: 64, Depends: "a"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), jobID)
+		return err == nil && (s.State == job.StateCompleted || s.State == job.StateFailed)
+	}, testutil.WithTimeout(150*time.Second), testutil.WithInterval(time.Second))
+
+	status, err := o.Status(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("final Status: %v", err)
+	}
+	if status.State != job.StateCompleted {
+		t.Errorf("final state: want completed (writable overlay succeeded), got %s (exit=%v)", status.State, status.ExitCode)
+	}
+}
+
 // --- failure path ---
 
 // TestIntegration_NonZeroExit runs a job whose worker exits with a non-zero

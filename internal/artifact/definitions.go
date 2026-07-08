@@ -160,6 +160,12 @@ var (
 			if err := validatePath(a.Out); err != nil {
 				return apperrors.Validation(field+".out", "invalid out (path): "+err.Error())
 			}
+			if a.Size < 0 {
+				return apperrors.Validation(field+".size", "size must not be negative")
+			}
+			if a.Size > 0 && !a.Writable {
+				return apperrors.Validation(field+".size", "size only applies to writable mounts")
+			}
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Mount) string { return a.In }),

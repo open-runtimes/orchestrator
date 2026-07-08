@@ -280,7 +280,7 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 			err = os.MkdirAll(target, 0o755)
 		}
 		if err == nil {
-			err = r.mounter.Mount(image, target)
+			err = r.mounter.Mount(image, target, MountOpts{Writable: m.Writable, SizeMiB: m.Size})
 		}
 		if err != nil {
 			r.emitArtifact(a, "failed", nil, err)

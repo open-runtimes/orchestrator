@@ -11,10 +11,19 @@ import (
 // it so the worker only starts once its mounts are present.
 const MountReadyFile = ".mounts-ready"
 
-// Mounter mounts a squashfs image read-only at a target directory and unmounts
-// it. Implementations are platform-specific (kernel loop mount on Linux).
+// MountOpts configures a mount. The zero value is a plain read-only squashfs
+// mount; Writable layers a tmpfs-backed overlay on top, and SizeMiB caps that
+// tmpfs (0 = kernel default).
+type MountOpts struct {
+	Writable bool
+	SizeMiB  int
+}
+
+// Mounter mounts a squashfs image at a target directory and unmounts it. With
+// opts.Writable the image becomes the read-only lower layer of a tmpfs-backed
+// overlay. Implementations are platform-specific (kernel loop mount on Linux).
 type Mounter interface {
-	Mount(image, target string) error
+	Mount(image, target string, opts MountOpts) error
 	Unmount(target string) error
 }
 

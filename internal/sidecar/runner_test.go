@@ -318,7 +318,7 @@ type fakeMounter struct {
 	unmounted []string
 }
 
-func (f *fakeMounter) Mount(image, target string) error {
+func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.mounted = append(f.mounted, target)

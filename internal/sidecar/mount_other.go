@@ -11,7 +11,7 @@ type unsupportedMounter struct{}
 //nolint:iface // platform builds return different concrete Mounter types
 func defaultMounter() Mounter { return unsupportedMounter{} }
 
-func (unsupportedMounter) Mount(image, target string) error {
+func (unsupportedMounter) Mount(image, target string, opts MountOpts) error {
 	return errors.New("squashfs mounting is only supported on linux")
 }
 

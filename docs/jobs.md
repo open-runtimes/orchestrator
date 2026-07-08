@@ -237,11 +237,26 @@ Mount a squashfs image read-only into the workspace, so the worker reads it dire
 
 This mounts `dataset.sqfs` at `mnt/dataset/` in the workspace, visible to the worker for its whole run and unmounted afterwards.
 
+Set `writable: true` to give the worker a writable copy-on-write view: the read-only squashfs becomes the lower layer of an overlay whose upper layer lives on a tmpfs (the classic squashfs + tmpfs live-system pattern). The image is never modified; writes land in RAM (counted against the pod's memory limit) and are discarded when the job ends. Use `size` to cap that tmpfs in MiB — an overrun then fails with a disk-full error instead of OOM-killing the pod.
+
+```json
+{
+  "id": "dataset",
+  "type": "mount",
+  "in": "dataset.sqfs",
+  "out": "mnt/dataset",
+  "writable": true,
+  "size": 512
+}
+```
+
 **Options:**
 - `in` - Squashfs image to mount (required)
 - `out` - Mount point directory in the workspace (required)
+- `writable` - Overlay a tmpfs-backed writable layer on the image (optional, default read-only)
+- `size` - Cap the writable overlay's tmpfs in MiB (optional, writable only; 0/omitted = kernel default of half of RAM)
 
-> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the `squashfs` kernel module on nodes, and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
+> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the `squashfs` kernel module on nodes (plus `overlay` for writable mounts), and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
 
 ### Upload Artifact
 
