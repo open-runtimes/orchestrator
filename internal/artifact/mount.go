@@ -2,8 +2,11 @@ package artifact
 
 import "context"
 
-// Mount mounts a squashfs image read-only into the workspace so the worker can
-// read it without extraction.
+// Mount mounts a squashfs image into the workspace so the worker can read it
+// without extraction. By default the mount is read-only; set Writable to layer
+// a tmpfs-backed overlay on top, giving the worker a copy-on-write view whose
+// writes are discarded when the job ends. Size caps that tmpfs (in MiB); 0
+// leaves it at the kernel default (half of RAM), bounded by the pod's memory.
 //
 // Unlike other artifacts, a mount is not applied-and-done: the mount must exist
 // before the worker starts and persist for its whole lifetime, then be torn
@@ -11,10 +14,12 @@ import "context"
 // Mount artifacts and drives the host Mounter directly — so Apply here is a
 // no-op and is never invoked through the normal artifact flow.
 type Mount struct {
-	ID      string `json:"id"`
-	In      string `json:"in"`  // Source squashfs image path (in the workspace)
-	Out     string `json:"out"` // Mount point directory (in the workspace)
-	Depends string `json:"depends,omitempty"`
+	ID       string `json:"id"`
+	In       string `json:"in"`  // Source squashfs image path (in the workspace)
+	Out      string `json:"out"` // Mount point directory (in the workspace)
+	Writable bool   `json:"writable,omitempty"`
+	Size     int    `json:"size,omitempty"` // Overlay tmpfs cap in MiB (writable only; 0 = default)
+	Depends  string `json:"depends,omitempty"`
 }
 
 func (a *Mount) ArtifactID() string   { return a.ID }
