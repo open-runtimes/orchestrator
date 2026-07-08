@@ -82,21 +82,32 @@ func mountSquashfs(image, target string) error {
 // tmpfs for the writable upper/work layers, then stacks an overlay at target.
 // overlayfs requires upper and work on the same filesystem; tmpfs satisfies that
 // and supports the trusted.overlay.* xattrs overlayfs needs. sizeMiB caps the
-// tmpfs (0 = kernel default). On any failure it unwinds the layers it has
-// already established.
-func mountOverlay(image, target string, sizeMiB int) error {
+// tmpfs (0 = kernel default). On any failure it unwinds every mount and
+// directory it created, leaving the workspace as it found it.
+func mountOverlay(image, target string, sizeMiB int) (err error) {
 	lower := overlayLower(target)
 	scratch := overlayScratch(target)
 	upper := filepath.Join(scratch, "upper")
 	work := filepath.Join(scratch, "work")
 
+	// Unwind everything if we bail before the overlay is up; unmounting or
+	// removing what was never created is harmless.
+	defer func() {
+		if err != nil {
+			_ = unix.Unmount(scratch, 0)
+			_ = unix.Unmount(lower, 0)
+			_ = os.RemoveAll(scratch)
+			_ = os.Remove(lower)
+		}
+	}()
+
 	for _, d := range []string{lower, scratch} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err = os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
 
-	if err := mountSquashfs(image, lower); err != nil {
+	if err = mountSquashfs(image, lower); err != nil {
 		return err
 	}
 
@@ -106,22 +117,17 @@ func mountOverlay(image, target string, sizeMiB int) error {
 	if sizeMiB > 0 {
 		tmpfsOpts = fmt.Sprintf("size=%dm", sizeMiB)
 	}
-	if err := unix.Mount("tmpfs", scratch, "tmpfs", unix.MS_NODEV, tmpfsOpts); err != nil {
-		_ = unix.Unmount(lower, 0)
+	if err = unix.Mount("tmpfs", scratch, "tmpfs", unix.MS_NODEV, tmpfsOpts); err != nil {
 		return fmt.Errorf("mount tmpfs on %s: %w", scratch, err)
 	}
 	for _, d := range []string{upper, work} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			_ = unix.Unmount(scratch, 0)
-			_ = unix.Unmount(lower, 0)
+		if err = os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
 
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
-	if err := unix.Mount("overlay", target, "overlay", 0, opts); err != nil {
-		_ = unix.Unmount(scratch, 0)
-		_ = unix.Unmount(lower, 0)
+	if err = unix.Mount("overlay", target, "overlay", 0, opts); err != nil {
 		return fmt.Errorf("mount overlay on %s: %w", target, err)
 	}
 	return nil
