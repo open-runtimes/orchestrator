@@ -4,10 +4,28 @@ import (
 	"orchestrator/pkg/job"
 	vol "orchestrator/pkg/volume"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/docker/docker/api/types/mount"
 )
+
+func TestClampCPU(t *testing.T) {
+	t.Parallel()
+	cores := float64(runtime.NumCPU())
+
+	// A request within the host's core count passes through unchanged.
+	if got := clampCPU(0.5); got != 0.5 {
+		t.Errorf("clampCPU(0.5) = %v, want 0.5", got)
+	}
+	if got := clampCPU(cores); got != cores {
+		t.Errorf("clampCPU(%v) = %v, want %v", cores, got, cores)
+	}
+	// A request above the host's cores is clamped down so Docker won't reject it.
+	if got := clampCPU(cores + 4); got != cores {
+		t.Errorf("clampCPU(%v) = %v, want %v", cores+4, got, cores)
+	}
+}
 
 func TestVolumeMounts(t *testing.T) {
 	t.Parallel()

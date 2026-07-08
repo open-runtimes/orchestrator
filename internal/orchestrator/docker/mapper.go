@@ -4,10 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"orchestrator/pkg/job"
+	"runtime"
 	"strings"
 
 	"github.com/docker/docker/client"
 )
+
+// clampCPU limits a CPU request to the host's core count. Docker rejects a
+// NanoCPUs value above the number of cores on the daemon, so a request larger
+// than the build host (e.g. 8 CPUs on a 4-core host) would otherwise fail
+// container creation outright.
+func clampCPU(cpu float64) float64 {
+	if maxCPU := float64(runtime.NumCPU()); cpu > maxCPU {
+		return maxCPU
+	}
+	return cpu
+}
 
 // watchConfig holds everything needed to watch a job's lifecycle.
 // Built from either a job.Request (normal path) or containerState (resume path).
