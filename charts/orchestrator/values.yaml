@@ -37,6 +37,13 @@ jobs:
     # Reference an existing Secret with keys S3_ACCESS_KEY_ID and
     # S3_SECRET_ACCESS_KEY instead of the inline values above.
     existingSecret: ""
+  # Bearer-token auth for the jobs API (internal/api.AuthMiddleware). Empty
+  # existingSecret leaves the API unauthenticated. The referenced Secret must
+  # exist in the release namespace; its value is mounted read-only and passed
+  # via API_KEY_FILE.
+  auth:
+    existingSecret: ""
+    secretKey: api-key
 
 # Serving-plane API (deployments + deployment-pools). Disabled by default —
 deployments:
@@ -109,6 +116,10 @@ deployments:
     name: orchestrator
     # Empty = release namespace.
     namespace: ""
+  # Bearer-token auth for the deployments API, same mechanism as jobs.auth.
+  auth:
+    existingSecret: ""
+    secretKey: api-key
   # Divisor deriving a workload's CPU request from its declared limit:
   # request = cpu / cpuOvercommit (docs/operations.md). CPU is
   # compressible, so raising this packs deployments denser. Values <= 0 mean 1.
