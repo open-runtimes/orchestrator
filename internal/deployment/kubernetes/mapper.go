@@ -135,6 +135,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 		ServiceAccountName:           cfg.ServiceAccount,
 		AutomountServiceAccountToken: &autoMount,
 		Tolerations:                  cfg.Tolerations,
+		NodeSelector:                 cfg.NodeSelector,
 		Volumes: append([]corev1.Volume{
 			{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},

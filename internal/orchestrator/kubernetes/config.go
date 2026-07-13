@@ -28,6 +28,8 @@ type OrchestratorConfig struct {
 	Overcommit kube.Overcommit
 	// Tolerations are stamped on every job pod (internal/kube).
 	Tolerations []corev1.Toleration
+	// NodeSelector pins every job pod to a node pool (internal/kube).
+	NodeSelector map[string]string
 }
 
 // LeaderElectionConfig coordinates replicas so exactly one runs the lifecycle
@@ -41,6 +43,10 @@ func LoadConfigFromEnv() (OrchestratorConfig, error) {
 		pullSecrets = strings.Split(secrets, ",")
 	}
 	tolerations, err := kube.TolerationsFromEnv()
+	if err != nil {
+		return OrchestratorConfig{}, err
+	}
+	nodeSelector, err := kube.NodeSelectorFromEnv()
 	if err != nil {
 		return OrchestratorConfig{}, err
 	}
@@ -58,6 +64,7 @@ func LoadConfigFromEnv() (OrchestratorConfig, error) {
 		TerminationGracePeriodSeconds: int64(config.GetIntEnv("KUBE_TERMINATION_GRACE_SECONDS", 600)),
 		Overcommit:                    kube.OvercommitFromEnv(),
 		Tolerations:                   tolerations,
+		NodeSelector:                  nodeSelector,
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", "jobs-service-leader"),

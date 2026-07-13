@@ -178,6 +178,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		ServiceAccountName:            cfg.ServiceAccount,
 		Tolerations:                   cfg.Tolerations,
+		NodeSelector:                  cfg.NodeSelector,
 		TerminationGracePeriodSeconds: &grace,
 		Volumes: append([]corev1.Volume{
 			{

@@ -29,6 +29,22 @@ func TolerationsFromEnv() ([]corev1.Toleration, error) {
 	return tolerations, nil
 }
 
+// NodeSelectorFromEnv reads KUBE_WORKLOAD_NODE_SELECTOR, a JSON object in the
+// pod spec's nodeSelector schema, stamped on every workload pod to pin it to a
+// dedicated node pool (e.g. {"workload":"edge-builds"}). Pair it with
+// KUBE_WORKLOAD_TOLERATIONS when that pool is tainted. Empty means none;
+// malformed JSON is an error — a typo must not silently strand pods on the
+// wrong nodes.
+func NodeSelectorFromEnv() (map[string]string, error) {
+	var selector map[string]string
+	if raw := config.GetEnv("KUBE_WORKLOAD_NODE_SELECTOR", ""); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &selector); err != nil {
+			return nil, fmt.Errorf("parse KUBE_WORKLOAD_NODE_SELECTOR: %w", err)
+		}
+	}
+	return selector, nil
+}
+
 // Overcommit derives a workload's scheduler requests from its declared limits
 // (docs/operations.md "Resource model"). The client declares one ceiling per
 // resource; the platform derives the request as limit / divisor:

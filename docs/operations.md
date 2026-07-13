@@ -152,6 +152,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `jobs.{cpu,memory}Overcommit` | `1` | Same, independently for job pods |
 | `deployments.workloadTolerations` | `[]` | Tolerations on workload pods (deployment replicas + warm pools) |
 | `jobs.workloadTolerations` | `[]` | Tolerations on job pods |
+| `deployments.workloadNodeSelector` | `{}` | Node selector pinning workload pods to a node pool |
+| `jobs.workloadNodeSelector` | `{}` | Same, independently for job pods |
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Buffering-edge replicas |
@@ -196,6 +198,7 @@ The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the pl
 - **CPU**: request = `cpu / cpuOvercommit` and **no CPU limit** — CPU is compressible, and limits cause needless throttling. Raising `cpuOvercommit` packs workloads denser at the cost of contention under load.
 - **Memory**: limit as declared, request = `memory / memoryOvercommit`. Memory is incompressible — overcommitting it trades OOM kills for density, so raise it only with headroom to spare.
 - **Tolerations**: to run workloads on tainted node pools (e.g. `workload=edge-builds:NoSchedule`), set `deployments.workloadTolerations` / `jobs.workloadTolerations` — a list in the standard pod-spec tolerations schema, stamped on every workload/job pod of that plane.
+- **Node selector**: tolerations only *allow* the tainted pool; to *pin* pods to it, also set `deployments.workloadNodeSelector` / `jobs.workloadNodeSelector` (e.g. `{workload: edge-builds}`) — a standard pod-spec nodeSelector stamped on every workload/job pod of that plane.
 - Replicas spread across nodes via topology spread constraints, and durably multi-replica deployments get a PodDisruptionBudget automatically.
 - `limitRange.enabled` adds defaults for containers that declare nothing, preventing BestEffort pods.
 
