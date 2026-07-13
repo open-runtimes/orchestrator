@@ -17,14 +17,14 @@ jobs:
     # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/jobs-service
-    tag: latest
+    tag: "" # defaults to the chart's appVersion
     pullPolicy: IfNotPresent
   # Image used by job pods (worker workspace init + native sidecar), and by
   # deployment pods' artifact-pre init container. Passed via JOB_SIDECAR_IMAGE.
   sidecarImage:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
-    tag: latest
+    tag: "" # defaults to the chart's appVersion
   # Credentials for s3:// download/upload artifacts, scoped to the jobs service.
   # When enabled, the jobs-service forwards these into every job sidecar.
   s3:
@@ -55,13 +55,13 @@ deployments:
   image:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/deployments-service
-    tag: latest
+    tag: "" # defaults to the chart's appVersion
     pullPolicy: IfNotPresent
   # Image for the deployments-sidecar (reverse proxy) in every workload pod.
   sidecarImage:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/deployments-sidecar
-    tag: latest
+    tag: "" # defaults to the chart's appVersion
   # Credentials for s3:// download artifacts, scoped to the deployments/pools
   # service. Forwarded into the artifact-pre init container and warm-pool pods.
   s3:
@@ -149,7 +149,7 @@ deployments:
   shimImage:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/pool-shim
-    tag: latest
+    tag: "" # defaults to the chart's appVersion
   # The buffering edge for cold/async traffic (deployments-activator).
   activator:
     # The buffering edge for cold-start and async traffic. Opt-in like every
@@ -166,7 +166,7 @@ deployments:
     image:
       ref: ""
       repository: ghcr.io/open-runtimes/orchestrator/deployments-activator
-      tag: latest
+      tag: "" # defaults to the chart's appVersion
       pullPolicy: IfNotPresent
     port: 8081
     # No CPU limit by design (same rule as workloads — CFS throttling hurts
