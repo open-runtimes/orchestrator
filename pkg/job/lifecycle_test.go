@@ -93,6 +93,18 @@ func TestEmitCallback_Completed_EmitsCompleteEvent(t *testing.T) {
 	}
 }
 
+func TestEmitCallback_Completed_NilDest_NoEmit(t *testing.T) {
+	em := NewCallbackEmitter()
+	var captured []*CallbackEnvelope
+	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
+
+	EmitCallback(em, "job-1", "alpine", nil, Completed{})
+
+	if len(captured) != 0 {
+		t.Errorf("want no event with nil dest, got %v", captured)
+	}
+}
+
 func TestEmitCallback_Completed_FilteredOut_NoEmit(t *testing.T) {
 	em := NewCallbackEmitter()
 	var captured []*CallbackEnvelope

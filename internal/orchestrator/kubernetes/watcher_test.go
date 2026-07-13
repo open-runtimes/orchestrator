@@ -55,6 +55,27 @@ func TestJobTracker_PodDeletedMidJob(t *testing.T) {
 	capture.assertHasType(t, job.CallbackTypeExit)
 }
 
+func TestJobTracker_PodDeletedAfterWorkerExit_EmitsComplete(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	tr := newJobTracker(w, &watchConfig{
+		jobID: "force-deleted-job",
+		image: "alpine:latest",
+		dest:  &job.CallbackDest{URL: "https://cb.example"},
+	})
+
+	tr.handleUpdate(t.Context(), podWithWorkerRunning())
+	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0, corev1.PodRunning))
+	capture.assertHasType(t, job.CallbackTypeExit)
+
+	// Pod force-deleted before a terminal phase is observed: complete must
+	// still fire so consumers waiting on it aren't left hanging.
+	capture.reset()
+	tr.handleDelete()
+	capture.assertHasType(t, job.CallbackTypeComplete)
+}
+
 func TestJobTracker_AlreadyTerminatedSkipsEmission(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)

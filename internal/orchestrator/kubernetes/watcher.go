@@ -227,6 +227,11 @@ func (t *jobTracker) handleDelete() {
 	}
 	if !t.state.isExited {
 		t.emit(job.Failed{Reason: "pod deleted"})
+	} else {
+		// Exit already fired; the pod vanished (e.g. force-delete) before a
+		// terminal phase was observed. Emit the completion so consumers
+		// waiting on it aren't left hanging — nothing more will run.
+		t.emit(job.Completed{})
 	}
 	t.closeLocked()
 }
