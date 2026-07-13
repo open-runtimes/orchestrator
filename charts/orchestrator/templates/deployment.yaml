@@ -87,6 +87,14 @@ spec:
               value: {{ .Values.orchestrator.maintenanceInterval | quote }}
             - name: KUBE_TERMINATION_GRACE_SECONDS
               value: {{ .Values.orchestrator.terminationGracePeriodSeconds | quote }}
+            - name: KUBE_CPU_OVERCOMMIT
+              value: {{ .Values.jobs.cpuOvercommit | quote }}
+            - name: KUBE_MEMORY_OVERCOMMIT
+              value: {{ .Values.jobs.memoryOvercommit | quote }}
+            {{- with .Values.jobs.workloadTolerations }}
+            - name: KUBE_WORKLOAD_TOLERATIONS
+              value: {{ toJson . | quote }}
+            {{- end }}
             {{- if .Values.orchestrator.workerImagePullPolicy }}
             - name: KUBE_WORKER_IMAGE_PULL_POLICY
               value: {{ .Values.orchestrator.workerImagePullPolicy | quote }}

@@ -6,6 +6,8 @@ import (
 	"orchestrator/internal/observability"
 	"strconv"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -29,8 +31,12 @@ type Config struct {
 	ServiceAccount         string  // pod ServiceAccount; empty uses the namespace default
 	SidecarImagePullPolicy string  // applied to artifact-pre + proxy; empty = kubelet default
 	WorkerImagePullPolicy  string  // applied to the worker (user) container; empty = kubelet default
-	RunAsUser              int64   // UID/GID for every container; default 65532
-	CPUOvercommit          float64 // divisor deriving the worker's cpu request from its declared limit; ≤0 means 1 (no overcommit)
+	RunAsUser              int64  // UID/GID for every container; default 65532
+
+	// Overcommit derives worker requests from declared limits (internal/kube).
+	Overcommit kube.Overcommit
+	// Tolerations are stamped on every workload pod (internal/kube).
+	Tolerations []corev1.Toleration
 
 	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
 	// RuntimeClass stamped on workload pods (KUBE_SANDBOX_RUNTIME_CLASSES,
@@ -64,6 +70,10 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	tolerations, err := kube.TolerationsFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		JobSidecarImage:        config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
@@ -73,7 +83,8 @@ func LoadConfigFromEnv() (Config, error) {
 		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
-		CPUOvercommit:          floatEnv("KUBE_CPU_OVERCOMMIT", 1),
+		Overcommit:             kube.OvercommitFromEnv(),
+		Tolerations:            tolerations,
 		SandboxRuntimeClasses:  sandboxClasses,
 
 		GatewayEnabled:       boolEnv("KUBE_GATEWAY_ENABLED", true),
@@ -105,15 +116,6 @@ func boolEnv(key string, defaultValue bool) bool {
 	return defaultValue
 }
 
-// floatEnv parses a float environment variable, falling back to the default
-// on absence or a malformed value.
-func floatEnv(key string, defaultValue float64) float64 {
-	if v, err := strconv.ParseFloat(config.GetEnv(key, ""), 64); err == nil {
-		return v
-	}
-	return defaultValue
-}
-
 func (c *Config) applyDefaults() {
 	if c.Namespace == "" {
 		c.Namespace = defaultNamespace
@@ -138,9 +140,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RevisionHistoryLimit <= 0 {
 		c.RevisionHistoryLimit = defaultRevisionHistoryLimit
-	}
-	if c.CPUOvercommit <= 0 {
-		c.CPUOvercommit = 1
 	}
 	if c.SandboxRuntimeClasses == nil {
 		c.SandboxRuntimeClasses, _ = kube.ParseSandboxRuntimeClasses("")

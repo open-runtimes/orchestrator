@@ -148,7 +148,10 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.dataPort` | `8081` | Docker-backend data plane / activator data port |
 | `deployments.pools` | `[]` | Warm pool declarations (above) |
 | `deployments.workloadNamespace.*` | disabled | Hardened namespace for workload pods (below) |
-| `deployments.cpuOvercommit` | `1` | CPU request = limit / overcommit (below) |
+| `deployments.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for workloads (below) |
+| `jobs.{cpu,memory}Overcommit` | `1` | Same, independently for job pods |
+| `deployments.workloadTolerations` | `[]` | Tolerations on workload pods (deployment replicas + warm pools) |
+| `jobs.workloadTolerations` | `[]` | Tolerations on job pods |
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Buffering-edge replicas |
@@ -188,8 +191,11 @@ The NetworkPolicy admits ingress only from the gateway, the activator, and the c
 
 ## Resource model
 
-- **CPU**: workloads get a CPU *request* of `cpu / cpuOvercommit` and **no CPU limit** — CPU is compressible, and limits cause needless throttling. Raising `cpuOvercommit` packs workloads denser at the cost of contention under load.
-- **Memory**: request = limit (incompressible; overcommitting memory trades OOM kills for density).
+The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the platform derives the scheduler request as `limit / overcommit`. The divisors are per-plane operator config — `deployments.{cpu,memory}Overcommit` covers deployment replicas and warm-pool pods, `jobs.{cpu,memory}Overcommit` covers job pods — and default to 1 (request = limit).
+
+- **CPU**: request = `cpu / cpuOvercommit` and **no CPU limit** — CPU is compressible, and limits cause needless throttling. Raising `cpuOvercommit` packs workloads denser at the cost of contention under load.
+- **Memory**: limit as declared, request = `memory / memoryOvercommit`. Memory is incompressible — overcommitting it trades OOM kills for density, so raise it only with headroom to spare.
+- **Tolerations**: to run workloads on tainted node pools (e.g. `workload=edge-builds:NoSchedule`), set `deployments.workloadTolerations` / `jobs.workloadTolerations` — a list in the standard pod-spec tolerations schema, stamped on every workload/job pod of that plane.
 - Replicas spread across nodes via topology spread constraints, and durably multi-replica deployments get a PodDisruptionBudget automatically.
 - `limitRange.enabled` adds defaults for containers that declare nothing, preventing BestEffort pods.
 

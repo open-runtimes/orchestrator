@@ -5,6 +5,8 @@ import (
 	"orchestrator/internal/kube"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // OrchestratorConfig holds configuration for the Kubernetes orchestrator.
@@ -21,6 +23,11 @@ type OrchestratorConfig struct {
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64 // grace period for post-sidecar to run post-artifacts
 	LeaderElection                LeaderElectionConfig
+
+	// Overcommit derives worker requests from declared limits (internal/kube).
+	Overcommit kube.Overcommit
+	// Tolerations are stamped on every job pod (internal/kube).
+	Tolerations []corev1.Toleration
 }
 
 // LeaderElectionConfig coordinates replicas so exactly one runs the lifecycle
@@ -28,10 +35,14 @@ type OrchestratorConfig struct {
 type LeaderElectionConfig = kube.LeaderElectionConfig
 
 // LoadConfigFromEnv loads orchestrator configuration from environment variables.
-func LoadConfigFromEnv() OrchestratorConfig {
+func LoadConfigFromEnv() (OrchestratorConfig, error) {
 	var pullSecrets []string
 	if secrets := config.GetEnv("KUBE_IMAGE_PULL_SECRETS", ""); secrets != "" {
 		pullSecrets = strings.Split(secrets, ",")
+	}
+	tolerations, err := kube.TolerationsFromEnv()
+	if err != nil {
+		return OrchestratorConfig{}, err
 	}
 	return OrchestratorConfig{
 		Kubeconfig:                    config.GetEnv("KUBECONFIG", ""),
@@ -45,6 +56,8 @@ func LoadConfigFromEnv() OrchestratorConfig {
 		MaintenanceInterval:           config.GetDurationEnv("MAINTENANCE_INTERVAL", 1*time.Minute),
 		ArtifactEndpoint:              config.GetEnv("ARTIFACT_ENDPOINT", "http://jobs-service.orchestrator.svc.cluster.local:8080"),
 		TerminationGracePeriodSeconds: int64(config.GetIntEnv("KUBE_TERMINATION_GRACE_SECONDS", 600)),
+		Overcommit:                    kube.OvercommitFromEnv(),
+		Tolerations:                   tolerations,
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", "jobs-service-leader"),
@@ -53,5 +66,5 @@ func LoadConfigFromEnv() OrchestratorConfig {
 			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),
 			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
 		},
-	}
+	}, nil
 }

@@ -25,6 +25,16 @@ func GetIntEnv(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// GetFloatEnv returns a float environment variable or a default.
+func GetFloatEnv(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatVal
+		}
+	}
+	return defaultValue
+}
+
 // GetDurationEnv returns a duration environment variable or a default.
 func GetDurationEnv(key string, defaultValue time.Duration) time.Duration {
 	if value := os.Getenv(key); value != "" {
