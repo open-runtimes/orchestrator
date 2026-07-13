@@ -116,6 +116,14 @@ app.kubernetes.io/component: deployments
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.jobSidecarServiceAccountName" -}}
+{{- if .Values.serviceAccount.jobSidecarName -}}
+{{- .Values.serviceAccount.jobSidecarName -}}
+{{- else -}}
+{{- printf "%s-job-sidecar" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.jobsImage" -}}
 {{- if .Values.jobs.image.ref -}}
 {{- .Values.jobs.image.ref -}}
