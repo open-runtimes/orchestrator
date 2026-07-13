@@ -86,6 +86,9 @@ jobs:
   #   workloadNodeSelector:
   #     workload: edge-builds
   workloadNodeSelector: {}
+  # Max time buffered job log lines wait before a callback flush (they also
+  # flush at 32 lines) — keeps low-volume build logs streaming in near real time.
+  logFlushInterval: 1s
   httpRoute:
     # Render a Gateway API `HTTPRoute` for the jobs API. Use this instead of
     # an Ingress when running on a Gateway API-compatible controller/mesh.

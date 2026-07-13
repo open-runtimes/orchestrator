@@ -37,18 +37,23 @@ type LifecycleWatcher interface {
 // drive the per-job state machine and emit callbacks directly via the shared
 // emitter.
 type k8sLifecycleWatcher struct {
-	client    kubernetes.Interface
-	namespace string
-	emitter   *job.CallbackEmitter
-	metrics   *observability.Metrics // may be nil in tests
+	client       kubernetes.Interface
+	namespace    string
+	emitter      *job.CallbackEmitter
+	metrics      *observability.Metrics // may be nil in tests
+	logFlushWait time.Duration          // max time buffered log lines wait before a flush
 
 	mu       sync.Mutex
 	trackers map[string]*jobTracker
 }
 
-func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter, metrics *observability.Metrics) *k8sLifecycleWatcher {
+func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter, metrics *observability.Metrics, logFlushWait time.Duration) *k8sLifecycleWatcher {
+	if logFlushWait <= 0 {
+		logFlushWait = time.Second
+	}
 	return &k8sLifecycleWatcher{
-		client:    client,
+		client:       client,
+		logFlushWait: logFlushWait,
 		namespace: namespace,
 		emitter:   emitter,
 		metrics:   metrics,
@@ -391,28 +396,63 @@ func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 	}
 	defer stream.Close()
 
-	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	lines := make(chan string, logBatchMax)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(stream)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimRight(scanner.Text(), "\r")
+			if line == "" {
+				continue
+			}
+			select {
+			case lines <- line:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
+			t.logger.Debug("Log stream ended", "error", err)
+		}
+	}()
+
+	batchLines(lines, t.watcher.logFlushWait, logBatchMax, func(batch []string) {
+		t.emit(job.LogLine{Stream: "stdout", Lines: batch})
+	})
+}
+
+const logBatchMax = 32
+
+// batchLines groups lines into emit calls, flushing at maxBatch lines or
+// after flushWait with a non-empty batch — whichever comes first — so
+// low-volume streams (a typical build) still deliver in near real time
+// instead of arriving all at once when the stream ends.
+func batchLines(lines <-chan string, flushWait time.Duration, maxBatch int, emit func([]string)) {
+	ticker := time.NewTicker(flushWait)
+	defer ticker.Stop()
+
 	var batch []string
 	flush := func() {
 		if len(batch) == 0 {
 			return
 		}
-		t.emit(job.LogLine{Stream: "stdout", Lines: batch})
+		emit(batch)
 		batch = nil
 	}
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
-			continue
-		}
-		batch = append(batch, line)
-		if len(batch) >= 32 {
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, line)
+			if len(batch) >= maxBatch {
+				flush()
+			}
+		case <-ticker.C:
 			flush()
 		}
-	}
-	flush()
-	if err := scanner.Err(); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
-		t.logger.Debug("Log stream ended", "error", err)
 	}
 }

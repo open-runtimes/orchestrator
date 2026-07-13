@@ -170,7 +170,7 @@ func newTrackerFixture(t *testing.T) (*eventCapture, *k8sLifecycleWatcher) {
 	capture := &eventCapture{}
 	emitter := job.NewCallbackEmitter()
 	capture.register(emitter)
-	w := newK8sLifecycleWatcher(fake.NewClientset(), "test", emitter, nil)
+	w := newK8sLifecycleWatcher(fake.NewClientset(), "test", emitter, nil, 0)
 	return capture, w
 }
 
