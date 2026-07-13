@@ -44,6 +44,39 @@ jobs:
   auth:
     existingSecret: ""
     secretKey: api-key
+  # Optional Gateway API `Gateway` + `HTTPRoute` exposing the jobs API
+  # publicly. Unrelated to `deployments.gateway` below, which instead points
+  # the deployments-service's own in-process reconciler at an
+  # already-existing Gateway — the jobs API has no such reconciler, so the
+  # chart renders both resources directly, matching the shape of a
+  # hand-rolled Gateway/HTTPRoute pair.
+  gateway:
+    # Render a Gateway API `Gateway` resource that the HTTPRoute below
+    # attaches to. Leave disabled when the Gateway is managed elsewhere and
+    # `httpRoute.parentRefs` points at that external Gateway by name.
+    enabled: false
+    # `gatewayClassName` the controller selects on. Required when enabled.
+    gatewayClassName: ""
+    # Listener entries passed verbatim into `spec.listeners`. Required when
+    # enabled. Example:
+    #   listeners:
+    #     - name: web
+    #       port: 8000
+    #       protocol: HTTP
+    #       allowedRoutes:
+    #         namespaces:
+    #           from: Same
+    listeners: []
+  httpRoute:
+    # Render a Gateway API `HTTPRoute` for the jobs API. Use this instead of
+    # an Ingress when running on a Gateway API-compatible controller/mesh.
+    enabled: false
+    # Gateway parents this route should attach to. Each entry follows the
+    # Gateway API `parentRefs` schema (`{ name, namespace?, sectionName? }`).
+    # Defaults to the Gateway above when it's enabled and this is empty.
+    parentRefs: []
+    # Hostnames the route matches against.
+    hostnames: []
 
 # Serving-plane API (deployments + deployment-pools). Disabled by default —
 deployments:

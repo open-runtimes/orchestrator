@@ -14,6 +14,24 @@
 jobs:
   enabled: true
 
+  # Publicly expose the jobs API via Gateway API. You own the Gateway
+  # (listener config, TLS, load balancer) as with deployments.gateway below —
+  # omit jobs.gateway and set jobs.httpRoute.parentRefs instead to attach to
+  # one you already manage.
+  gateway:
+    enabled: true
+    gatewayClassName: traefik
+    listeners:
+      - name: web
+        port: 8000
+        protocol: HTTP
+        allowedRoutes:
+          namespaces: { from: Same }
+  httpRoute:
+    enabled: true
+    hostnames:
+      - jobs.example.com
+
 # ── Serving plane ────────────────────────────────────────────────────────────
 deployments:
   enabled: true

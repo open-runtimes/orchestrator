@@ -5,6 +5,7 @@ How to deploy and configure the orchestrator. Consumers of the API want the [job
 - [What gets deployed](#what-gets-deployed)
 - [Prerequisites](#prerequisites)
 - [Installing](#installing)
+- [Exposing the jobs API](#exposing-the-jobs-api)
 - [Enabling deployments](#enabling-deployments)
 - [Pools](#pools)
 - [Configuration reference](#configuration-reference)
@@ -50,6 +51,31 @@ curl localhost:8080/readyz
 ```
 
 To require authentication, mount a secret and point `API_KEY_FILE` at it (via `extraEnv` + a volume, or your secrets operator). Requests then need `Authorization: Bearer <key>`. **With no key configured, the API is open** — the services log a warning at startup.
+
+## Exposing the jobs API
+
+The jobs `Service` is ClusterIP-only by default — the chart renders no Ingress or Gateway API resources unless asked. To expose it via Gateway API:
+
+```yaml
+# values.yaml
+jobs:
+  enabled: true
+  gateway:
+    enabled: true
+    gatewayClassName: traefik
+    listeners:
+      - name: web
+        port: 8000
+        protocol: HTTP
+        allowedRoutes:
+          namespaces: { from: Same }
+  httpRoute:
+    enabled: true
+    hostnames:
+      - jobs.example.com
+```
+
+Unlike `deployments.gateway` (a pointer the deployments-service's own reconciler uses against a Gateway you already own), the jobs API has no reconciler — the chart renders both the `Gateway` and `HTTPRoute` directly. Leave `jobs.gateway.enabled: false` and set `jobs.httpRoute.parentRefs` instead if you'd rather attach to a Gateway you manage elsewhere (e.g. one shared across several releases).
 
 ## Enabling deployments
 
@@ -114,6 +140,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | Value | Default | Effect |
 | --- | --- | --- |
 | `jobs.image`, `jobs.sidecarImage` | GHCR latest | Jobs service and per-job sidecar images |
+| `jobs.gateway.{enabled,gatewayClassName,listeners}` | disabled | Renders a `Gateway` for the jobs API (above) |
+| `jobs.httpRoute.{enabled,parentRefs,hostnames}` | disabled | Renders an `HTTPRoute` for the jobs API (above) |
 | `deployments.enabled` | `false` | Install the deployments service + activator |
 | `deployments.domain` | `localhost` | Base domain for auto-assigned hosts |
 | `deployments.gateway.{enabled,name,namespace}` | `true`, `orchestrator`, release ns | The Gateway that HTTPRoutes attach to |
