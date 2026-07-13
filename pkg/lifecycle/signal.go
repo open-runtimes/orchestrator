@@ -30,13 +30,18 @@ type Failed struct {
 	Reason string
 }
 
+// Completed is emitted when all work for the workload has finished, including
+// post-exit processing (e.g. post-job artifacts). Always follows Exited.
+type Completed struct{}
+
 // LogLine is emitted for each batch of stdout/stderr lines from the workload.
 type LogLine struct {
 	Stream string // "stdout" or "stderr"
 	Lines  []string
 }
 
-func (Started) signal() {}
-func (Exited) signal()  {}
-func (Failed) signal()  {}
-func (LogLine) signal() {}
+func (Started) signal()   {}
+func (Exited) signal()    {}
+func (Failed) signal()    {}
+func (Completed) signal() {}
+func (LogLine) signal()   {}

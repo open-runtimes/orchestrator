@@ -81,6 +81,30 @@ func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
 	}
 }
 
+func TestEmitCallback_Completed_EmitsCompleteEvent(t *testing.T) {
+	em := NewCallbackEmitter()
+	var captured []*CallbackEnvelope
+	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
+
+	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Completed{})
+
+	if len(captured) != 1 || captured[0].Payload.Type != CallbackTypeComplete {
+		t.Errorf("want complete event, got %v", captured)
+	}
+}
+
+func TestEmitCallback_Completed_FilteredOut_NoEmit(t *testing.T) {
+	em := NewCallbackEmitter()
+	var captured []*CallbackEnvelope
+	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
+
+	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Events: []string{CallbackTypeExit}}, Completed{})
+
+	if len(captured) != 0 {
+		t.Errorf("want no event when filtered out, got %v", captured)
+	}
+}
+
 func TestEmitCallback_LogLine_EmitsLogEvent(t *testing.T) {
 	em := NewCallbackEmitter()
 	var captured []*CallbackEnvelope

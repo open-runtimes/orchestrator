@@ -34,6 +34,16 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 		emitExitCallback(em, jobID, image, dest, ev.ExitCode, ev.Duration.Seconds())
 	case Failed:
 		emitExitCallback(em, jobID, image, dest, -1, 0)
+	case Completed:
+		if dest == nil || !MatchesCallbackFilter(CallbackTypeComplete, dest.Events) {
+			return
+		}
+		builder := NewEventBuilder(jobID, "orchestrator/service", dest.Meta)
+		em.Emit(&CallbackEnvelope{
+			Payload:     builder.BuildCompleteEvent(),
+			CallbackURL: dest.URL,
+			SigningKey:  dest.Key,
+		})
 	case LogLine:
 		if dest == nil || !MatchesCallbackFilter(CallbackTypeLog, dest.Events) {
 			return

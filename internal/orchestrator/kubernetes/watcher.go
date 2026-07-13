@@ -20,7 +20,7 @@ import (
 )
 
 // LifecycleWatcher observes managed-job Pods cluster-wide and emits callbacks
-// for Started / Exited / Failed / LogLine signals. It is self-contained: the
+// for Started / Exited / Failed / Completed / LogLine signals. It is self-contained: the
 // orchestrator's only interaction is Start(ctx) — tracker lifecycle, callback
 // emission, and log streaming are all handled internally.
 //
@@ -296,7 +296,7 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 	if !t.state.isStarted && worker.State.Terminated != nil {
 		t.state.isStarted = true
 		t.state.isExited = true
-		return true
+		return isPodTerminal(pod)
 	}
 
 	if t.state.isStarted && !t.state.isExited && worker.State.Terminated != nil {
@@ -310,7 +310,8 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		time.Sleep(500 * time.Millisecond) // allow log flush
 		t.stopLogsLocked()
 		t.emit(job.Exited{ExitCode: exitCode, Duration: duration})
-		return true
+		// Not terminal yet: the native sidecar is still processing post-job
+		// artifacts. The pod phase turning terminal marks completion below.
 	}
 
 	// Pod failed after the worker started (node loss, preemption, OOM-at-pod-
@@ -329,7 +330,19 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		return true
 	}
 
+	if t.state.isExited && isPodTerminal(pod) {
+		t.logger.Info("Pod terminated, job complete")
+		t.emit(job.Completed{})
+		return true
+	}
+
 	return false
+}
+
+// isPodTerminal reports whether every container in the pod has stopped —
+// including the native sidecar, i.e. post-job artifacts are done.
+func isPodTerminal(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 }
 
 func (t *jobTracker) startLogsLocked(ctx context.Context, podName string) {

@@ -58,8 +58,9 @@ X-Signature-256: sha256=ab12...
 | `orchestrator.job.log` | Batch of stdout/stderr lines | `{"jobId", "lines": [...], "stream": "stdout\|stderr", "meta"}` |
 | `orchestrator.job.artifact` | One artifact finished | `{"jobId", "artifactId", "artifactType", "status": "success\|failed", "content", "error", "meta"}` |
 | `orchestrator.job.exit` | Worker exited | `{"jobId", "exitCode", "image", "durationSeconds", "error", "meta"}` |
+| `orchestrator.job.complete` | Post-job artifacts finished | `{"jobId", "meta"}` |
 
-`content` on artifact events carries the payload of `read` and `list` artifacts. `exitCode` is `-1` when the job failed before the worker could run (image pull failure, sidecar crash), with the reason in `error`. `meta` echoes the job's `meta` map for correlation.
+`content` on artifact events carries the payload of `read` and `list` artifacts. `exitCode` is `-1` when the job failed before the worker could run (image pull failure, sidecar crash), with the reason in `error`. `meta` echoes the job's `meta` map for correlation. `exit` fires as soon as the worker's command exits; `complete` fires after post-job artifacts (uploads, reads) have been processed — wait for it before fetching artifacts. Jobs that fail before the worker runs emit `exit` (with `exitCode: -1`) but no `complete`.
 
 ### Deployments
 
