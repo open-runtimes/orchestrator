@@ -1,0 +1,31 @@
+{{- if .Values.jobs.httpRoute.enabled -}}
+{{- $jobsName := include "orchestrator.jobsName" . -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $jobsName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
+spec:
+  parentRefs:
+    {{- if .Values.jobs.httpRoute.parentRefs }}
+    {{- toYaml .Values.jobs.httpRoute.parentRefs | nindent 4 }}
+    {{- else if .Values.jobs.gateway.enabled }}
+    - name: {{ $jobsName }}
+    {{- else }}
+    {{- fail "jobs.httpRoute.parentRefs is required when jobs.gateway.enabled is false" }}
+    {{- end }}
+  {{- with .Values.jobs.httpRoute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ $jobsName }}
+          port: {{ .Values.service.apiPort }}
+{{- end }}
