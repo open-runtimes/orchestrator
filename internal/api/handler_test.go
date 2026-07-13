@@ -422,3 +422,43 @@ func TestHandler_ReportArtifact_MissingJobID(t *testing.T) {
 		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
 	}
 }
+
+func TestArtifactAuthMiddleware(t *testing.T) {
+	t.Parallel()
+
+	newMux := func(apiKey string) *http.ServeMux {
+		mux := http.NewServeMux()
+		mw := ArtifactAuthMiddleware(apiKey)
+		mux.Handle("POST /internal/jobs/{jobId}/artifact", mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		})))
+		return mux
+	}
+
+	tests := []struct {
+		name   string
+		apiKey string
+		header string
+		want   int
+	}{
+		{"no auth header", "api-key", "", http.StatusUnauthorized},
+		{"malformed header", "api-key", "Basic abc", http.StatusUnauthorized},
+		{"wrong token", "api-key", "Bearer nope", http.StatusUnauthorized},
+		{"token for another job", "api-key", "Bearer " + job.ArtifactToken("api-key", "other-job"), http.StatusUnauthorized},
+		{"valid token", "api-key", "Bearer " + job.ArtifactToken("api-key", "job-123"), http.StatusAccepted},
+		{"auth disabled", "", "", http.StatusAccepted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewBufferString("{}"))
+			if tt.header != "" {
+				req.Header.Set("Authorization", tt.header)
+			}
+			w := httptest.NewRecorder()
+			newMux(tt.apiKey).ServeHTTP(w, req)
+			if w.Code != tt.want {
+				t.Errorf("Expected status %d, got %d", tt.want, w.Code)
+			}
+		})
+	}
+}

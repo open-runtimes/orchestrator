@@ -37,10 +37,11 @@ jobs:
     # Reference an existing Secret with keys S3_ACCESS_KEY_ID and
     # S3_SECRET_ACCESS_KEY instead of the inline values above.
     existingSecret: ""
-  # Bearer-token auth for the jobs API (internal/api.AuthMiddleware). Empty
-  # existingSecret leaves the API unauthenticated. The referenced Secret must
-  # exist in the release namespace; its value is mounted read-only and passed
-  # via API_KEY_FILE.
+  # Bearer-token auth for the jobs API (internal/api.AuthMiddleware). The key
+  # also derives the per-job tokens sidecars use to post artifact results to
+  # the internal endpoint. Empty existingSecret leaves both unauthenticated.
+  # The referenced Secret must exist in the release namespace; its value is
+  # mounted read-only and passed via API_KEY_FILE.
   auth:
     existingSecret: ""
     secretKey: api-key

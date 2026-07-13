@@ -77,6 +77,7 @@ func run(mode string) error {
 	reporter := sidecar.NewHTTPSink(
 		cfg.JobID,
 		cfg.ArtifactEndpoint,
+		cfg.ArtifactToken,
 		cfg.ArtifactTimeout,
 		cfg.CallbackURL,
 		cfg.CallbackKey,

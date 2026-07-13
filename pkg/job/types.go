@@ -22,6 +22,11 @@ type Request struct {
 	Artifacts      []artifact.Artifact `json:"artifacts,omitempty"`
 	Volumes        []volume.Volume     `json:"volumes,omitempty"` // existing Docker volumes / K8s PVCs mounted into the worker
 	Callback       *Callback           `json:"callback,omitempty"`
+
+	// ArtifactToken authenticates the sidecar's posts to the internal artifact
+	// endpoint. Set by the Service, never by API clients — it is deliberately
+	// absent from requestJSON so it can't round-trip through the API.
+	ArtifactToken string
 }
 
 // requestJSON mirrors Request but with json.RawMessage for artifacts.

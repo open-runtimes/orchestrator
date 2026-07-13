@@ -41,14 +41,16 @@ type Service struct {
 	orchestrator Orchestrator
 	metrics      *observability.Metrics
 	artifacts    *artifact.Registry
+	artifactKey  string // HMAC key for per-job artifact tokens; empty disables issuance
 }
 
 // NewService creates a new job service.
-func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artifacts *artifact.Registry) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artifacts *artifact.Registry, artifactKey string) *Service {
 	return &Service{
 		orchestrator: orchestrator,
 		metrics:      metrics,
 		artifacts:    artifacts,
+		artifactKey:  artifactKey,
 	}
 }
 
@@ -58,6 +60,9 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Response, error) {
 	applyDefaults(req)
 	if err := s.validate(req); err != nil {
 		return nil, err
+	}
+	if s.artifactKey != "" {
+		req.ArtifactToken = ArtifactToken(s.artifactKey, req.ID)
 	}
 
 	logger := slog.With("jobId", req.ID, "image", req.Image)

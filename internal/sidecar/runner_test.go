@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/job"
 	"os"
@@ -421,5 +423,22 @@ func createTestArchiveFile(t *testing.T, archivePath string, files map[string]st
 		if _, err := tarWriter.Write([]byte(content)); err != nil {
 			t.Fatalf("Failed to write tar content: %v", err)
 		}
+	}
+}
+
+func TestNewHTTPSink_SendsBearerToken(t *testing.T) {
+	t.Parallel()
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	sink := NewHTTPSink("job-1", srv.URL, "tok-1", time.Second, "", "", nil, nil)
+	sink(job.ArtifactReport{ID: "a1", Status: "success"})
+
+	if gotAuth != "Bearer tok-1" {
+		t.Errorf("Authorization: want %q, got %q", "Bearer tok-1", gotAuth)
 	}
 }

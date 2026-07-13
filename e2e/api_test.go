@@ -178,7 +178,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		t.Fatalf("Failed to create Docker orchestrator: %v", err)
 	}
 
-	svc := job.NewService(orchestrator, nil, artifact.DefaultRegistry())
+	svc := job.NewService(orchestrator, nil, artifact.DefaultRegistry(), "")
 	healthChecker := health.NewChecker(orchestrator)
 
 	routerCfg := api.RouterConfig{
