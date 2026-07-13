@@ -98,6 +98,7 @@ func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 			RestartPolicy:                corev1.RestartPolicyNever,
 			AutomountServiceAccountToken: &autoMount,
 			Tolerations:                  cfg.Tolerations,
+			NodeSelector:                 cfg.NodeSelector,
 			Volumes: append([]corev1.Volume{
 				{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},

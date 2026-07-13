@@ -183,6 +183,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 		ServiceAccountName:            cfg.ServiceAccount,
 		AutomountServiceAccountToken:  &automount,
 		Tolerations:                   cfg.Tolerations,
+		NodeSelector:                  cfg.NodeSelector,
 		TerminationGracePeriodSeconds: &grace,
 		Volumes: append([]corev1.Volume{
 			{

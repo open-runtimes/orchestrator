@@ -28,15 +28,17 @@ type Config struct {
 	Kubeconfig             string
 	Context                string // kubeconfig context to pin; empty uses current-context
 	Namespace              string
-	ServiceAccount         string  // pod ServiceAccount; empty uses the namespace default
-	SidecarImagePullPolicy string  // applied to artifact-pre + proxy; empty = kubelet default
-	WorkerImagePullPolicy  string  // applied to the worker (user) container; empty = kubelet default
+	ServiceAccount         string // pod ServiceAccount; empty uses the namespace default
+	SidecarImagePullPolicy string // applied to artifact-pre + proxy; empty = kubelet default
+	WorkerImagePullPolicy  string // applied to the worker (user) container; empty = kubelet default
 	RunAsUser              int64  // UID/GID for every container; default 65532
 
 	// Overcommit derives worker requests from declared limits (internal/kube).
 	Overcommit kube.Overcommit
 	// Tolerations are stamped on every workload pod (internal/kube).
 	Tolerations []corev1.Toleration
+	// NodeSelector pins every workload pod to a node pool (internal/kube).
+	NodeSelector map[string]string
 
 	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
 	// RuntimeClass stamped on workload pods (KUBE_SANDBOX_RUNTIME_CLASSES,
@@ -74,6 +76,10 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	nodeSelector, err := kube.NodeSelectorFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		JobSidecarImage:        config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
@@ -85,6 +91,7 @@ func LoadConfigFromEnv() (Config, error) {
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
+		NodeSelector:           nodeSelector,
 		SandboxRuntimeClasses:  sandboxClasses,
 
 		GatewayEnabled:       boolEnv("KUBE_GATEWAY_ENABLED", true),

@@ -18,7 +18,7 @@ const (
 	defaultPoolDomain      = "localhost"
 	defaultLeaderLeaseName = "deployments-service-pools-leader"
 
-	defaultOrphanTTL           = 60 * time.Second
+	defaultOrphanTTL = 60 * time.Second
 )
 
 // Config holds configuration for the Kubernetes pool orchestrator.
@@ -38,6 +38,8 @@ type Config struct {
 	Overcommit kube.Overcommit
 	// Tolerations are stamped on every warm pod (internal/kube).
 	Tolerations []corev1.Toleration
+	// NodeSelector pins every warm pod to a node pool (internal/kube).
+	NodeSelector map[string]string
 
 	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
 	// RuntimeClass stamped on warm pods (KUBE_SANDBOX_RUNTIME_CLASSES,
@@ -49,8 +51,8 @@ type Config struct {
 	GatewayName      string // parentRef Gateway name
 	GatewayNamespace string // parentRef Gateway namespace; default = Namespace
 
-	PoolDomain          string        // default hostname suffix for HTTP activations: {id}.{PoolDomain}
-	OrphanTTL           time.Duration // discard claimed-but-unlabeled pods (crashed mid-claim) after this
+	PoolDomain string        // default hostname suffix for HTTP activations: {id}.{PoolDomain}
+	OrphanTTL  time.Duration // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 
 	// LeaderElection gates the control loop (replenishment + GC) to one
 	// replica; disabled = single-replica mode.
@@ -74,6 +76,10 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	nodeSelector, err := kube.NodeSelectorFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
 		Context:                config.GetEnv("KUBE_CONTEXT", ""),
@@ -83,14 +89,15 @@ func LoadConfigFromEnv() (Config, error) {
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
+		NodeSelector:           nodeSelector,
 		SandboxRuntimeClasses:  sandboxClasses,
 
 		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:      config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
 		GatewayNamespace: config.GetEnv("KUBE_GATEWAY_NAMESPACE", ""),
 
-		PoolDomain:          config.GetEnv("POOL_DOMAIN", defaultPoolDomain),
-		OrphanTTL:           config.GetDurationEnv("POOL_ORPHAN_TTL", defaultOrphanTTL),
+		PoolDomain: config.GetEnv("POOL_DOMAIN", defaultPoolDomain),
+		OrphanTTL:  config.GetDurationEnv("POOL_ORPHAN_TTL", defaultOrphanTTL),
 
 		LeaderElection: kube.LeaderElectionConfig{
 			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",

@@ -96,6 +96,25 @@ func TestTolerationsFromEnv(t *testing.T) {
 	}
 }
 
+func TestNodeSelectorFromEnv(t *testing.T) {
+	t.Setenv("KUBE_WORKLOAD_NODE_SELECTOR", `{"workload":"edge-builds"}`)
+	sel, err := NodeSelectorFromEnv()
+	if err != nil || sel["workload"] != "edge-builds" {
+		t.Fatalf("want {workload: edge-builds}, got %v (err %v)", sel, err)
+	}
+
+	t.Setenv("KUBE_WORKLOAD_NODE_SELECTOR", "")
+	if sel, err := NodeSelectorFromEnv(); err != nil || sel != nil {
+		t.Errorf("empty env: want nil, got %v (err %v)", sel, err)
+	}
+
+	// Malformed JSON must fail loudly, not silently strand pods.
+	t.Setenv("KUBE_WORKLOAD_NODE_SELECTOR", "{not json")
+	if _, err := NodeSelectorFromEnv(); err == nil {
+		t.Error("malformed JSON: want error")
+	}
+}
+
 func TestOvercommitFromEnv(t *testing.T) {
 	t.Setenv("KUBE_CPU_OVERCOMMIT", "4")
 	t.Setenv("KUBE_MEMORY_OVERCOMMIT", "1.5")

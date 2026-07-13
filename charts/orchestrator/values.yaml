@@ -80,6 +80,12 @@ jobs:
   #       value: edge-builds
   #       effect: NoSchedule
   workloadTolerations: []
+  # Node selector stamped on every job pod, pinning jobs to a dedicated node
+  # pool (standard pod-spec schema). Pair with workloadTolerations when the
+  # pool is tainted, e.g.:
+  #   workloadNodeSelector:
+  #     workload: edge-builds
+  workloadNodeSelector: {}
   httpRoute:
     # Render a Gateway API `HTTPRoute` for the jobs API. Use this instead of
     # an Ingress when running on a Gateway API-compatible controller/mesh.
@@ -177,6 +183,11 @@ deployments:
   # warm-pool pods (standard pod-spec schema), for tainted node pools.
   # Independent from jobs.workloadTolerations.
   workloadTolerations: []
+  # Node selector stamped on every workload pod — deployment replicas and
+  # warm-pool pods — pinning them to a dedicated node pool. Pair with
+  # workloadTolerations when the pool is tainted. Independent from
+  # jobs.workloadNodeSelector.
+  workloadNodeSelector: {}
   # Leader election gates the background reconcilers (rollout auto-cut, cold
   # endpoint flip, autoscaler) to one replica. Required when replicaCount > 1.
   leaderElection:
