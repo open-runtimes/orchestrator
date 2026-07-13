@@ -86,7 +86,7 @@ spec:
             - name: MAINTENANCE_INTERVAL
               value: {{ .Values.orchestrator.maintenanceInterval | quote }}
             - name: KUBE_LOG_FLUSH_INTERVAL
-              value: {{ .Values.orchestrator.logFlushInterval | quote }}
+              value: {{ .Values.jobs.logFlushInterval | quote }}
             - name: KUBE_TERMINATION_GRACE_SECONDS
               value: {{ .Values.orchestrator.terminationGracePeriodSeconds | quote }}
             - name: KUBE_CPU_OVERCOMMIT
