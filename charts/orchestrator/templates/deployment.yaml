@@ -42,6 +42,11 @@ spec:
         # write (the services themselves write nothing).
         - name: tmp
           emptyDir: {}
+        {{- if .Values.jobs.auth.existingSecret }}
+        - name: auth
+          secret:
+            secretName: {{ .Values.jobs.auth.existingSecret }}
+        {{- end }}
       containers:
         - name: jobs-service
           image: {{ include "orchestrator.jobsImage" . | quote }}
@@ -51,6 +56,11 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.jobs.auth.existingSecret }}
+            - name: auth
+              mountPath: /var/run/secrets/orchestrator
+              readOnly: true
+            {{- end }}
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}
@@ -104,6 +114,10 @@ spec:
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
             {{- include "orchestrator.s3Env" (dict "s3" .Values.jobs.s3 "secretName" (include "orchestrator.jobsS3SecretName" .)) | nindent 12 }}
+            {{- if .Values.jobs.auth.existingSecret }}
+            - name: API_KEY_FILE
+              value: /var/run/secrets/orchestrator/{{ .Values.jobs.auth.secretKey }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
