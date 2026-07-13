@@ -219,7 +219,8 @@ serviceAccount:
   # ServiceAccount used by every job pod. Intentionally has no RoleBindings; the sidecar
   # does not call the K8s API (it catches SIGTERM from kubelet).
   jobSidecarCreate: true
-  jobSidecarName: job-sidecar
+  # Empty defaults to "<release>-job-sidecar" so releases sharing a namespace don't collide.
+  jobSidecarName: ""
 
 rbac:
   create: true

@@ -76,7 +76,7 @@ spec:
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.jobNamespace" . | quote }}
             - name: KUBE_JOB_SERVICE_ACCOUNT
-              value: {{ .Values.serviceAccount.jobSidecarName | quote }}
+              value: {{ include "orchestrator.jobSidecarServiceAccountName" . | quote }}
             - name: JOB_SIDECAR_IMAGE
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: ARTIFACT_ENDPOINT
