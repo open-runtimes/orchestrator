@@ -20,6 +20,7 @@ type OrchestratorConfig struct {
 	SidecarImagePullPolicy        string // applied to artifact-pre + artifact-post; empty = kubelet default
 	JobRetention                  time.Duration
 	MaintenanceInterval           time.Duration
+	LogFlushInterval              time.Duration // max time buffered job log lines wait before a callback flush
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64 // grace period for post-sidecar to run post-artifacts
 	LeaderElection                LeaderElectionConfig
@@ -60,6 +61,7 @@ func LoadConfigFromEnv() (OrchestratorConfig, error) {
 		SidecarImagePullPolicy:        config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		JobRetention:                  config.GetDurationEnv("JOB_RETENTION", 15*time.Minute),
 		MaintenanceInterval:           config.GetDurationEnv("MAINTENANCE_INTERVAL", 1*time.Minute),
+		LogFlushInterval:              config.GetDurationEnv("KUBE_LOG_FLUSH_INTERVAL", 1*time.Second),
 		ArtifactEndpoint:              config.GetEnv("ARTIFACT_ENDPOINT", "http://jobs-service.orchestrator.svc.cluster.local:8080"),
 		TerminationGracePeriodSeconds: int64(config.GetIntEnv("KUBE_TERMINATION_GRACE_SECONDS", 600)),
 		Overcommit:                    kube.OvercommitFromEnv(),

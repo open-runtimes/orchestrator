@@ -331,7 +331,7 @@ func TestWatcher_ResumesExistingPodOnStart(t *testing.T) {
 		}
 	})
 
-	w := newK8sLifecycleWatcher(cs, "orchestrator", emitter, nil)
+	w := newK8sLifecycleWatcher(cs, "orchestrator", emitter, nil, 0)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go w.Start(ctx)

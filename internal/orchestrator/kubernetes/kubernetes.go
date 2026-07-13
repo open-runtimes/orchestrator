@@ -54,6 +54,7 @@ type Config struct {
 	SidecarImagePullPolicy        string
 	RetentionPeriod               time.Duration
 	MaintenanceInterval           time.Duration
+	LogFlushInterval              time.Duration // max time buffered job log lines wait before a callback flush
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64
 	LeaderElection                LeaderElectionConfig
@@ -119,7 +120,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			sidecarImage: cfg.SidecarImage,
 			cfg:          ocfg,
 			emitter:      emitter,
-			watcher:      newK8sLifecycleWatcher(cs, ns, emitter, cfg.Metrics),
+			watcher:      newK8sLifecycleWatcher(cs, ns, emitter, cfg.Metrics, cfg.LogFlushInterval),
 			statusCache:  newStatusCache(),
 			metrics:      cfg.Metrics,
 		}, nil
