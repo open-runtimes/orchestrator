@@ -58,7 +58,10 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string,
 			Network:             cfg.Network,
 		}), nil
 	case "kubernetes":
-		cfg := kubernetes.LoadConfigFromEnv()
+		cfg, err := kubernetes.LoadConfigFromEnv()
+		if err != nil {
+			return nil, err
+		}
 		return kubernetes.NewOrchestrator(ctx, kubernetes.Config{
 			SidecarImage:                  sidecarImage,
 			Kubeconfig:                    cfg.Kubeconfig,
@@ -73,6 +76,8 @@ func buildOrchestratorFactory(ctx context.Context, backend, sidecarImage string,
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: cfg.TerminationGracePeriodSeconds,
 			LeaderElection:                cfg.LeaderElection,
+			Overcommit:                    cfg.Overcommit,
+			Tolerations:                   cfg.Tolerations,
 			Metrics:                       metrics,
 		}), nil
 	default:

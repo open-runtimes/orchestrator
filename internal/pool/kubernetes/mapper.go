@@ -4,13 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"maps"
-	"math"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
 	"slices"
-	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -99,6 +97,7 @@ func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyNever,
 			AutomountServiceAccountToken: &autoMount,
+			Tolerations:                  cfg.Tolerations,
 			Volumes: append([]corev1.Volume{
 				{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -205,28 +204,9 @@ func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
 			{Name: VolumeWorkspace, MountPath: workspacePath},
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
-		Resources:       workloadResources(p),
+		Resources:       cfg.Overcommit.WorkerResources(p.CPU, p.Memory),
 		SecurityContext: hardenedSecurityContext(cfg),
 	}
-}
-
-// workloadResources derives the workload's resources from the pool spec:
-// memory request = limit (incompressible; overcommit risks node OOM), cpu
-// request only with NO cpu limit (CFS-quota throttling at a limit is a
-// tail-latency killer; requests handle fairness, bursting rides idle
-// headroom). Zero fields stay unset.
-func workloadResources(p *pool.Pool) corev1.ResourceRequirements {
-	requests := corev1.ResourceList{}
-	limits := corev1.ResourceList{}
-	if p.CPU > 0 {
-		requests[corev1.ResourceCPU] = *resource.NewMilliQuantity(max(int64(math.Ceil(p.CPU*1000)), 1), resource.DecimalSI)
-	}
-	if p.Memory > 0 {
-		mem := resource.MustParse(strconv.Itoa(p.Memory) + "Mi")
-		requests[corev1.ResourceMemory] = mem
-		limits[corev1.ResourceMemory] = mem
-	}
-	return corev1.ResourceRequirements{Limits: limits, Requests: requests}
 }
 
 // hardenedSecurityContext is the workload hardening floor

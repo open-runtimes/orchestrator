@@ -191,36 +191,12 @@ func TestBuildDeployment_Worker(t *testing.T) {
 	}
 }
 
-func TestWorkerResources_CPUOvercommit(t *testing.T) {
+func TestBuildDeployment_Tolerations(t *testing.T) {
 	t.Parallel()
-	for name, tc := range map[string]struct {
-		cpu        float64
-		overcommit float64
-		wantMilli  int64
-	}{
-		"no overcommit":         {cpu: 0.5, overcommit: 1, wantMilli: 500},
-		"overcommit 4":          {cpu: 0.5, overcommit: 4, wantMilli: 125},
-		"zero means 1":          {cpu: 0.5, overcommit: 0, wantMilli: 500},
-		"negative means 1":      {cpu: 2, overcommit: -3, wantMilli: 2000},
-		"rounds up":             {cpu: 1, overcommit: 3, wantMilli: 334},
-		"floored at 1m":         {cpu: 0.001, overcommit: 8, wantMilli: 1},
-		"multi-core overcommit": {cpu: 8, overcommit: 4, wantMilli: 2000},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			req := testRequest()
-			req.CPU = tc.cpu
-			r := workerResources(req, Config{CPUOvercommit: tc.overcommit})
-			if got := r.Requests.Cpu().MilliValue(); got != tc.wantMilli {
-				t.Errorf("cpu request: want %dm, got %dm", tc.wantMilli, got)
-			}
-			if _, ok := r.Limits[corev1.ResourceCPU]; ok {
-				t.Errorf("cpu limit: want none, got %s", r.Limits.Cpu())
-			}
-			if !r.Requests.Memory().Equal(*r.Limits.Memory()) || r.Limits.Memory().Value() != 128*1024*1024 {
-				t.Errorf("memory: want request == limit == 128Mi, got %+v", r)
-			}
-		})
+	cfg := Config{Tolerations: []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}}
+	got := buildDeployment(testRequest(), cfg, "web-00001").Spec.Template.Spec.Tolerations
+	if len(got) != 1 || got[0].Key != "workload" {
+		t.Errorf("tolerations: want workload=edge-builds:NoSchedule, got %+v", got)
 	}
 }
 

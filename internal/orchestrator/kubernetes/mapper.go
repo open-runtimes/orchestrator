@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"encoding/json"
-	"fmt"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
@@ -12,7 +11,6 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -179,6 +177,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 	podSpec := corev1.PodSpec{
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		ServiceAccountName:            cfg.ServiceAccount,
+		Tolerations:                   cfg.Tolerations,
 		TerminationGracePeriodSeconds: &grace,
 		Volumes: append([]corev1.Volume{
 			{
@@ -216,7 +215,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 				Env:             workerEnv(req),
 				WorkingDir:      workspace,
 				VolumeMounts:    workerMounts,
-				Resources:       workerResources(req),
+				Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
 			},
 		},
 	}
@@ -272,24 +271,6 @@ func workerEnv(req *job.Request) []corev1.EnvVar {
 		out = append(out, corev1.EnvVar{Name: k, Value: v})
 	}
 	return out
-}
-
-func workerResources(req *job.Request) corev1.ResourceRequirements {
-	res := corev1.ResourceRequirements{
-		Limits:   corev1.ResourceList{},
-		Requests: corev1.ResourceList{},
-	}
-	if req.CPU > 0 {
-		cpu := resource.MustParse(fmt.Sprintf("%.3f", req.CPU))
-		res.Limits[corev1.ResourceCPU] = cpu
-		res.Requests[corev1.ResourceCPU] = cpu
-	}
-	if req.Memory > 0 {
-		mem := resource.MustParse(fmt.Sprintf("%dMi", req.Memory))
-		res.Limits[corev1.ResourceMemory] = mem
-		res.Requests[corev1.ResourceMemory] = mem
-	}
-	return res
 }
 
 func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.EnvVar {

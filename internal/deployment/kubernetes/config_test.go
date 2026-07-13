@@ -5,17 +5,6 @@ import (
 	"time"
 )
 
-func TestApplyDefaults_CPUOvercommit(t *testing.T) {
-	t.Parallel()
-	for in, want := range map[float64]float64{0: 1, -2: 1, 1: 1, 4: 4} {
-		c := Config{CPUOvercommit: in}
-		c.applyDefaults()
-		if c.CPUOvercommit != want {
-			t.Errorf("CPUOvercommit(%v): want %v, got %v", in, want, c.CPUOvercommit)
-		}
-	}
-}
-
 func TestApplyDefaults_LeaderElection(t *testing.T) {
 	t.Parallel()
 
@@ -48,6 +37,7 @@ func TestLoadConfigFromEnv_LeaderElection(t *testing.T) {
 	t.Setenv("KUBE_LEADER_IDENTITY", "pod-0")
 	t.Setenv("KUBE_LEADER_LEASE_DURATION", "30s")
 	t.Setenv("KUBE_CPU_OVERCOMMIT", "4")
+	t.Setenv("KUBE_MEMORY_OVERCOMMIT", "1.5")
 
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
@@ -60,7 +50,7 @@ func TestLoadConfigFromEnv_LeaderElection(t *testing.T) {
 	if le.RenewDeadline != 10*time.Second || le.RetryPeriod != 2*time.Second {
 		t.Errorf("timing defaults: got %v/%v", le.RenewDeadline, le.RetryPeriod)
 	}
-	if cfg.CPUOvercommit != 4 {
-		t.Errorf("CPUOvercommit: want 4, got %v", cfg.CPUOvercommit)
+	if cfg.Overcommit.CPU != 4 || cfg.Overcommit.Memory != 1.5 {
+		t.Errorf("Overcommit: want {4 1.5}, got %+v", cfg.Overcommit)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -56,6 +57,10 @@ type Config struct {
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64
 	LeaderElection                LeaderElectionConfig
+	// Overcommit derives worker requests from declared limits; Tolerations
+	// are stamped on every job pod (both internal/kube).
+	Overcommit  kube.Overcommit
+	Tolerations []corev1.Toleration
 	// Metrics wires backend-specific recorders (leadership, status cache,
 	// tracker saturation, K8s API latency). Optional — when nil, recording
 	// is skipped.
@@ -104,6 +109,8 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			ArtifactEndpoint:              cfg.ArtifactEndpoint,
 			TerminationGracePeriodSeconds: grace,
 			LeaderElection:                cfg.LeaderElection,
+			Overcommit:                    cfg.Overcommit,
+			Tolerations:                   cfg.Tolerations,
 		}
 
 		return &Orchestrator{

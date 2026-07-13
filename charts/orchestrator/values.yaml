@@ -67,6 +67,18 @@ jobs:
     #         namespaces:
     #           from: Same
     listeners: []
+  # Divisors deriving a job's requests from its declared cpu/memory limits:
+  # request = limit / overcommit (docs/operations.md "Resource model").
+  # Independent from deployments.{cpu,memory}Overcommit. Values <= 0 mean 1.
+  cpuOvercommit: 1
+  memoryOvercommit: 1
+  # Tolerations stamped on every job pod (standard pod-spec schema), for
+  # tainted node pools, e.g.:
+  #   workloadTolerations:
+  #     - key: workload
+  #       value: edge-builds
+  #       effect: NoSchedule
+  workloadTolerations: []
   httpRoute:
     # Render a Gateway API `HTTPRoute` for the jobs API. Use this instead of
     # an Ingress when running on a Gateway API-compatible controller/mesh.
@@ -153,10 +165,17 @@ deployments:
   auth:
     existingSecret: ""
     secretKey: api-key
-  # Divisor deriving a workload's CPU request from its declared limit:
-  # request = cpu / cpuOvercommit (docs/operations.md). CPU is
-  # compressible, so raising this packs deployments denser. Values <= 0 mean 1.
+  # Divisors deriving a workload's requests from its declared limits:
+  # request = limit / overcommit (docs/operations.md "Resource model"). CPU is
+  # compressible, so raising cpuOvercommit packs workloads denser; memory is
+  # not — raising memoryOvercommit trades OOM risk for density. Applies to
+  # deployment replicas and warm-pool pods. Values <= 0 mean 1.
   cpuOvercommit: 1
+  memoryOvercommit: 1
+  # Tolerations stamped on every workload pod — deployment replicas and
+  # warm-pool pods (standard pod-spec schema), for tainted node pools.
+  # Independent from jobs.workloadTolerations.
+  workloadTolerations: []
   # Leader election gates the background reconcilers (rollout auto-cut, cold
   # endpoint flip, autoscaler) to one replica. Required when replicaCount > 1.
   leaderElection:

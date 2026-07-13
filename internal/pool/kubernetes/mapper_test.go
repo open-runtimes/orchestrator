@@ -106,6 +106,16 @@ func TestBuildWarmPod_Shape(t *testing.T) {
 	}
 }
 
+func TestBuildWarmPod_Tolerations(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.Tolerations = []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}
+	got := buildWarmPod(mapperPool(), cfg, "pool-std-x", "tok").Spec.Tolerations
+	if len(got) != 1 || got[0].Key != "workload" {
+		t.Errorf("tolerations: want workload=edge-builds:NoSchedule, got %+v", got)
+	}
+}
+
 func TestBuildWarmPod_Resources(t *testing.T) {
 	t.Parallel()
 	warm := buildWarmPod(mapperPool(), testConfig(), "pool-std-x", "tok")

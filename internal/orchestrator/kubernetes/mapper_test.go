@@ -386,6 +386,16 @@ func TestBuildJob_EmptyWorkspaceDefaults(t *testing.T) {
 	}
 }
 
+func TestBuildJob_Tolerations(t *testing.T) {
+	t.Parallel()
+	req := &job.Request{ID: "job-6", Image: "alpine:latest"}
+	cfg := OrchestratorConfig{Tolerations: []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}}
+	got := buildJob(req, cfg, "sidecar:latest").Spec.Template.Spec.Tolerations
+	if len(got) != 1 || got[0].Key != "workload" {
+		t.Errorf("tolerations: want workload=edge-builds:NoSchedule, got %+v", got)
+	}
+}
+
 // Ensure buildJob does not panic on zero resources — Requests/Limits just stay empty.
 func TestBuildJob_NoResources(t *testing.T) {
 	t.Parallel()

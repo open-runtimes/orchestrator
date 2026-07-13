@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"maps"
-	"math"
 	"net"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
@@ -135,6 +134,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 	spec := corev1.PodSpec{
 		ServiceAccountName:           cfg.ServiceAccount,
 		AutomountServiceAccountToken: &autoMount,
+		Tolerations:                  cfg.Tolerations,
 		Volumes: append([]corev1.Volume{
 			{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -291,45 +291,11 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 			{Name: VolumeWorkspace, MountPath: workspacePath},
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
-		Resources:       workerResources(req, cfg),
+		Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
 		LivenessProbe:   kubeletProbe(probes.Liveness, req.Port),
 		StartupProbe:    kubeletProbe(probes.Startup, req.Port),
 		SecurityContext: hardenedSecurityContext(cfg),
 	}
-}
-
-// workerResources derives the worker's resources from the spec per
-// resource-model.md — the user declares the limit, the platform derives the
-// request:
-//
-//   - Memory: request = limit (incompressible; overcommit risks node OOM).
-//   - CPU: request = limit / CPUOvercommit, and NO cpu limit — CFS-quota
-//     throttling at a limit is a tail-latency killer; cpu requests (shares)
-//     handle fairness, bursting rides idle headroom.
-//
-// Result: Burstable, memory-protected. Zero fields stay unset (a bare spec
-// keeps no resources at all, existing behavior).
-func workerResources(req *deployment.Request, cfg Config) corev1.ResourceRequirements {
-	requests := corev1.ResourceList{}
-	limits := corev1.ResourceList{}
-	if req.CPU > 0 {
-		requests[corev1.ResourceCPU] = *resource.NewMilliQuantity(cpuRequestMilli(req.CPU, cfg.CPUOvercommit), resource.DecimalSI)
-	}
-	if req.Memory > 0 {
-		mem := resource.MustParse(strconv.Itoa(req.Memory) + "Mi")
-		requests[corev1.ResourceMemory] = mem
-		limits[corev1.ResourceMemory] = mem
-	}
-	return corev1.ResourceRequirements{Limits: limits, Requests: requests}
-}
-
-// cpuRequestMilli converts a cpu limit (cores) into the request in milliCPU:
-// limit / overcommit, rounded up, floored at 1m. Overcommit ≤ 0 means 1.
-func cpuRequestMilli(cores, overcommit float64) int64 {
-	if overcommit <= 0 {
-		overcommit = 1
-	}
-	return max(int64(math.Ceil(cores*1000/overcommit)), 1)
 }
 
 // buildPDB returns the revision's PodDisruptionBudget, or nil when the

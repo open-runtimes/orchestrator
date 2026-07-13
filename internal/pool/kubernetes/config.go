@@ -7,6 +7,8 @@ import (
 	"orchestrator/pkg/pool"
 	"strconv"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -31,6 +33,11 @@ type Config struct {
 	SidecarImagePullPolicy string // applied to shim-install + proxy; empty = kubelet default
 	WorkerImagePullPolicy  string // applied to the workload (pool image) container; empty = kubelet default
 	RunAsUser              int64  // UID/GID for every container; default 65532
+
+	// Overcommit derives warm-pod requests from declared limits (internal/kube).
+	Overcommit kube.Overcommit
+	// Tolerations are stamped on every warm pod (internal/kube).
+	Tolerations []corev1.Toleration
 
 	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
 	// RuntimeClass stamped on warm pods (KUBE_SANDBOX_RUNTIME_CLASSES,
@@ -63,6 +70,10 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	tolerations, err := kube.TolerationsFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
 		Context:                config.GetEnv("KUBE_CONTEXT", ""),
@@ -70,6 +81,8 @@ func LoadConfigFromEnv() (Config, error) {
 		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
+		Overcommit:             kube.OvercommitFromEnv(),
+		Tolerations:            tolerations,
 		SandboxRuntimeClasses:  sandboxClasses,
 
 		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
