@@ -45,7 +45,7 @@
 {{- if .Values.deployments.image.ref -}}
 {{- .Values.deployments.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.image.repository .Values.deployments.image.tag -}}
+{{- printf "%s:%s" .Values.deployments.image.repository (default .Chart.AppVersion .Values.deployments.image.tag) -}}
 {{- end -}}
 {{- end -}}
 
@@ -53,7 +53,7 @@
 {{- if .Values.deployments.sidecarImage.ref -}}
 {{- .Values.deployments.sidecarImage.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.sidecarImage.repository .Values.deployments.sidecarImage.tag -}}
+{{- printf "%s:%s" .Values.deployments.sidecarImage.repository (default .Chart.AppVersion .Values.deployments.sidecarImage.tag) -}}
 {{- end -}}
 {{- end -}}
 
@@ -74,7 +74,7 @@
 {{- if .Values.deployments.shimImage.ref -}}
 {{- .Values.deployments.shimImage.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.shimImage.repository .Values.deployments.shimImage.tag -}}
+{{- printf "%s:%s" .Values.deployments.shimImage.repository (default .Chart.AppVersion .Values.deployments.shimImage.tag) -}}
 {{- end -}}
 {{- end -}}
 
@@ -82,7 +82,7 @@
 {{- if .Values.deployments.activator.image.ref -}}
 {{- .Values.deployments.activator.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.activator.image.repository .Values.deployments.activator.image.tag -}}
+{{- printf "%s:%s" .Values.deployments.activator.image.repository (default .Chart.AppVersion .Values.deployments.activator.image.tag) -}}
 {{- end -}}
 {{- end -}}
 
@@ -120,7 +120,7 @@ app.kubernetes.io/component: deployments
 {{- if .Values.jobs.image.ref -}}
 {{- .Values.jobs.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.jobs.image.repository .Values.jobs.image.tag -}}
+{{- printf "%s:%s" .Values.jobs.image.repository (default .Chart.AppVersion .Values.jobs.image.tag) -}}
 {{- end -}}
 {{- end -}}
 
@@ -128,7 +128,7 @@ app.kubernetes.io/component: deployments
 {{- if .Values.jobs.sidecarImage.ref -}}
 {{- .Values.jobs.sidecarImage.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.jobs.sidecarImage.repository .Values.jobs.sidecarImage.tag -}}
+{{- printf "%s:%s" .Values.jobs.sidecarImage.repository (default .Chart.AppVersion .Values.jobs.sidecarImage.tag) -}}
 {{- end -}}
 {{- end -}}
 
