@@ -174,9 +174,14 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 	sidecarPull := corev1.PullPolicy(cfg.SidecarImagePullPolicy)
 	workerPull := corev1.PullPolicy(cfg.WorkerImagePullPolicy)
 
+	// Neither the sidecar nor the worker needs the K8s API; without a mounted
+	// SA token the worker also can't read the pod's annotations (callback key).
+	automount := false
+
 	podSpec := corev1.PodSpec{
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		ServiceAccountName:            cfg.ServiceAccount,
+		AutomountServiceAccountToken:  &automount,
 		Tolerations:                   cfg.Tolerations,
 		TerminationGracePeriodSeconds: &grace,
 		Volumes: append([]corev1.Volume{
@@ -286,6 +291,9 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 	}
 	if artifactEndpoint != "" {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACT_ENDPOINT", Value: artifactEndpoint})
+	}
+	if req.ArtifactToken != "" {
+		env = append(env, corev1.EnvVar{Name: "ARTIFACT_TOKEN", Value: req.ArtifactToken})
 	}
 	for _, kv := range config.LoadS3Credentials().ToEnv() {
 		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})

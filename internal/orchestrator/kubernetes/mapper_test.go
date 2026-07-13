@@ -197,6 +197,7 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 		TimeoutSeconds: 60,
 		Workspace:      "/workspace",
 		Environment:    map[string]string{"FOO": "bar"},
+		ArtifactToken:  "tok-1",
 	}
 	cfg := OrchestratorConfig{
 		Namespace:                     "orchestrator",
@@ -305,6 +306,24 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 	}
 	if !envHas(post.Env, "JOB_ID", "job-1") {
 		t.Errorf("post.Env missing JOB_ID: %v", post.Env)
+	}
+
+	// The artifact token authenticates the sidecar containers only — it must
+	// never reach the worker, and no SA token may be mounted for the worker
+	// to read pod annotations with.
+	if !envHas(pre.Env, "ARTIFACT_TOKEN", "tok-1") {
+		t.Errorf("pre.Env missing ARTIFACT_TOKEN: %v", pre.Env)
+	}
+	if !envHas(post.Env, "ARTIFACT_TOKEN", "tok-1") {
+		t.Errorf("post.Env missing ARTIFACT_TOKEN: %v", post.Env)
+	}
+	for _, e := range worker.Env {
+		if e.Name == "ARTIFACT_TOKEN" {
+			t.Errorf("worker.Env must not contain ARTIFACT_TOKEN: %v", worker.Env)
+		}
+	}
+	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
+		t.Errorf("AutomountServiceAccountToken: want false, got %v", spec.AutomountServiceAccountToken)
 	}
 
 	// Worker env carries the user-supplied environment.

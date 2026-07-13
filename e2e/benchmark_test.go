@@ -426,7 +426,7 @@ func createBenchServer(tb testing.TB) (string, func()) {
 		tb.Fatalf("Failed to create orchestrator: %v", err)
 	}
 
-	svc := job.NewService(orchestrator, metrics, artifact.DefaultRegistry())
+	svc := job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), "")
 	healthChecker := health.NewChecker(orchestrator)
 
 	routerCfg := api.RouterConfig{

@@ -26,8 +26,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	mux.HandleFunc("GET /livez", handler.Livez)
 	mux.HandleFunc("GET /readyz", handler.Readyz)
 
-	// Internal endpoints - no auth (network-isolated)
-	mux.HandleFunc("POST /internal/jobs/{jobId}/artifact", handler.ReportArtifact)
+	// Internal endpoints - per-job token auth (the workload container shares
+	// the network path with the sidecar, so network isolation is not enough)
+	artifactAuth := ArtifactAuthMiddleware(cfg.APIKey)
+	mux.Handle("POST /internal/jobs/{jobId}/artifact", artifactAuth(http.HandlerFunc(handler.ReportArtifact)))
 
 	// Job endpoints - auth required
 	authMiddleware := AuthMiddleware(cfg.APIKey)

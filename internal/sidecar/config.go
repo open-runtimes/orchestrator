@@ -9,6 +9,7 @@ import (
 type Config struct {
 	JobID            string
 	ArtifactEndpoint string        // Base URL of the orchestrator (e.g., http://host.docker.internal:8080)
+	ArtifactToken    string        // Per-job bearer token for artifact reporting
 	ArtifactTimeout  time.Duration // Per-request timeout for artifact reporting
 	TimeoutSeconds   int
 	SharedVolumePath string
@@ -24,6 +25,7 @@ func LoadConfigFromEnv() *Config {
 	return &Config{
 		JobID:            config.GetEnv("JOB_ID", ""),
 		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", ""),
+		ArtifactToken:    config.GetEnv("ARTIFACT_TOKEN", ""),
 		ArtifactTimeout:  config.GetDurationEnv("ARTIFACT_TIMEOUT", 30*time.Second),
 		TimeoutSeconds:   config.GetIntEnv("TIMEOUT_SECONDS", 1800),
 		SharedVolumePath: config.GetEnv("SHARED_VOLUME_PATH", "/workspace"),

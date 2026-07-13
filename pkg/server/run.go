@@ -72,7 +72,7 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 	slog.Info("Orchestrator ready")
 
 	healthChecker := health.NewChecker(orchestrator)
-	jobService := job.NewService(orchestrator, metrics, artifact.DefaultRegistry())
+	jobService := job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), svcCfg.APIKey)
 
 	routerCfg := api.RouterConfig{
 		JobService:    jobService,
@@ -88,7 +88,7 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 	if svcCfg.APIKey != "" {
 		slog.Info("API authentication enabled")
 	} else {
-		slog.Warn("API authentication disabled - no API_KEY configured")
+		slog.Warn("API authentication disabled (including the internal artifact endpoint) - no API_KEY configured")
 	}
 
 	return Serve(ctx, Options{

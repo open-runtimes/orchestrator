@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/observability"
+	"orchestrator/pkg/job"
 	"strings"
 	"time"
 )
@@ -174,6 +175,36 @@ func AuthMiddleware(apiKey string) func(http.Handler) http.Handler {
 			token := parts[1]
 			if subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
 				http.Error(w, "Invalid API key", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// ArtifactAuthMiddleware validates the per-job bearer token on the internal
+// artifact endpoint. The expected token is derived as HMAC-SHA256(apiKey,
+// jobID), so it is bound to the job in the URL path — a token leaked from one
+// job cannot report results for another. If apiKey is empty, authentication
+// is disabled (matching AuthMiddleware).
+func ArtifactAuthMiddleware(apiKey string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if apiKey == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
+			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+				http.Error(w, "Bearer token required", http.StatusUnauthorized)
+				return
+			}
+
+			expected := job.ArtifactToken(apiKey, r.PathValue("jobId"))
+			if subtle.ConstantTimeCompare([]byte(parts[1]), []byte(expected)) != 1 {
+				http.Error(w, "Invalid artifact token", http.StatusUnauthorized)
 				return
 			}
 
