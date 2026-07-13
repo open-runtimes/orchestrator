@@ -55,6 +55,27 @@ func TestJobTracker_PodDeletedMidJob(t *testing.T) {
 	capture.assertHasType(t, job.CallbackTypeExit)
 }
 
+func TestJobTracker_PodDeletedAfterWorkerExit_EmitsComplete(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	tr := newJobTracker(w, &watchConfig{
+		jobID: "force-deleted-job",
+		image: "alpine:latest",
+		dest:  &job.CallbackDest{URL: "https://cb.example"},
+	})
+
+	tr.handleUpdate(t.Context(), podWithWorkerRunning())
+	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0, corev1.PodRunning))
+	capture.assertHasType(t, job.CallbackTypeExit)
+
+	// Pod force-deleted before a terminal phase is observed: complete must
+	// still fire so consumers waiting on it aren't left hanging.
+	capture.reset()
+	tr.handleDelete()
+	capture.assertHasType(t, job.CallbackTypeComplete)
+}
+
 func TestJobTracker_AlreadyTerminatedSkipsEmission(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)
@@ -67,7 +88,7 @@ func TestJobTracker_AlreadyTerminatedSkipsEmission(t *testing.T) {
 
 	// New tracker, pod already Terminated — assume a previous leader emitted.
 	// No callbacks should fire.
-	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0))
+	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0, corev1.PodSucceeded))
 	if len(capture.types()) != 0 {
 		t.Errorf("expected no callbacks for already-terminated pod on first sight, got %v", capture.types())
 	}
@@ -86,9 +107,19 @@ func TestJobTracker_HappyPath(t *testing.T) {
 	tr.handleUpdate(t.Context(), podWithWorkerRunning())
 	capture.assertHasType(t, job.CallbackTypeStart)
 
+	// Worker exits while the artifact sidecar is still processing post-job
+	// artifacts: exit fires, complete does not.
 	capture.reset()
-	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0))
+	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0, corev1.PodRunning))
 	capture.assertHasType(t, job.CallbackTypeExit)
+	if slices.Contains(capture.types(), job.CallbackTypeComplete) {
+		t.Errorf("complete must not fire before the pod terminates, got %v", capture.types())
+	}
+
+	// Sidecar finishes and the pod reaches a terminal phase: complete fires.
+	capture.reset()
+	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0, corev1.PodSucceeded))
+	capture.assertHasType(t, job.CallbackTypeComplete)
 }
 
 // --- helpers ---
@@ -160,11 +191,11 @@ func podWithWorkerRunning() *corev1.Pod {
 	}
 }
 
-func podWithWorkerTerminated(exitCode int32) *corev1.Pod {
+func podWithWorkerTerminated(exitCode int32, phase corev1.PodPhase) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "test"},
 		Status: corev1.PodStatus{
-			Phase: corev1.PodSucceeded,
+			Phase: phase,
 			ContainerStatuses: []corev1.ContainerStatus{
 				{
 					Name: ContainerWorker,

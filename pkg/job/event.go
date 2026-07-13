@@ -13,6 +13,7 @@ const (
 	CallbackTypeArtifact = "orchestrator.job.artifact"
 	CallbackTypeLog      = "orchestrator.job.log"
 	CallbackTypeExit     = "orchestrator.job.exit"
+	CallbackTypeComplete = "orchestrator.job.complete"
 )
 
 // MatchesCallbackFilter returns true if the event type should be sent based on the filter.
@@ -82,6 +83,16 @@ func (b *EventBuilder) BuildLogEvent(lines []string, stream string) *cloudevent.
 		"meta":   b.meta,
 	}
 	return b.Build(CallbackTypeLog, data)
+}
+
+// BuildCompleteEvent creates a job complete event, emitted after post-job
+// artifacts have been processed.
+func (b *EventBuilder) BuildCompleteEvent() *cloudevent.Event {
+	data := map[string]any{
+		"jobId": b.subject,
+		"meta":  b.meta,
+	}
+	return b.Build(CallbackTypeComplete, data)
 }
 
 // BuildExitEvent creates an exit event.

@@ -20,7 +20,8 @@ import (
 // (Docker events, Kubernetes pod phases, etc.) into job.Signals.
 type LifecycleWatcher interface {
 	// Watch blocks until the job completes or ctx is cancelled, calling emit for
-	// each signal in order: optionally Started, then Exited or Failed.
+	// each signal in order: optionally Started, then Exited or Failed, then
+	// Completed once the sidecar has finished post-job artifacts.
 	// LogLine signals may be interleaved after Started.
 	Watch(ctx context.Context, sidecarID, workerID string, emit func(job.Signal))
 }
@@ -100,9 +101,14 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 	}
 
 	if !sidecar.State.Running {
-		if !state.isWorkerStarted {
+		switch {
+		case !state.isWorkerStarted:
 			logger.Error("Sidecar exited before inputs completed")
 			out(job.Failed{Reason: "sidecar exited before inputs completed"})
+		case state.isWorkerExited:
+			// Sidecar exit missed during a stream disconnect; the worker exit
+			// was already emitted, so only the completion is outstanding.
+			out(job.Completed{})
 		}
 		return true
 	}
@@ -229,6 +235,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 					logger.Warn("Sidecar exited while worker still running")
 				default:
 					logger.Info("Sidecar exited, job complete")
+					out(job.Completed{})
 				}
 				return true
 			}

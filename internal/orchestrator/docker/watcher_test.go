@@ -70,6 +70,7 @@ func TestLifecycle_HappyPath(t *testing.T) {
 	w := &fakeWatcher{events: []job.Signal{
 		job.Started{},
 		job.Exited{ExitCode: 0, Duration: 2 * time.Second},
+		job.Completed{},
 	}}
 	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
@@ -84,7 +85,7 @@ func TestLifecycle_HappyPath(t *testing.T) {
 		t.Errorf("want exit code 0, got %v", entry.ExitCode)
 	}
 	got := capture.types()
-	want := []string{job.CallbackTypeStart, job.CallbackTypeExit}
+	want := []string{job.CallbackTypeStart, job.CallbackTypeExit, job.CallbackTypeComplete}
 	if len(got) != len(want) {
 		t.Fatalf("want events %v, got %v", want, got)
 	}

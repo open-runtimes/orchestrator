@@ -11,6 +11,7 @@ type (
 	Started            = lifecycle.Started
 	Exited             = lifecycle.Exited
 	Failed             = lifecycle.Failed
+	Completed          = lifecycle.Completed
 	LogLine            = lifecycle.LogLine
 	Handle[T any]      = lifecycle.Handle[T]
 	Viewer             = lifecycle.Viewer
