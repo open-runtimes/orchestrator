@@ -306,6 +306,9 @@ orchestrator:
   artifactEndpoint: ""
   jobRetention: 15m
   maintenanceInterval: 1m
+  # Max time buffered job log lines wait before a callback flush (they also
+  # flush at 32 lines) — keeps low-volume build logs streaming in near real time.
+  logFlushInterval: 1s
   # How long kubelet waits for the post-sidecar to finish after sending SIGTERM.
   terminationGracePeriodSeconds: 600
   # ImagePullPolicy applied to containers inside job pods. Empty = kubelet default.
