@@ -116,11 +116,12 @@ func writeSquashfs(srcPath, destPath, compression string) error {
 	return nil
 }
 
-// extractSquashfs extracts a squashfs image at srcPath into destDir. If subdir
-// is set, only entries under it are extracted, with the prefix stripped. (This
-// is the `unarchive` path; the `mount` artifact mounts the image read-only
-// instead of materializing it.)
-func extractSquashfs(srcPath, destDir, subdir string) error {
+// extractSquashfs extracts a squashfs image at srcPath into destDir. If
+// strip is set, the first path component of every entry is dropped. If
+// subdir is set, only entries under it are extracted, with the prefix
+// stripped. (This is the `unarchive` path; the `mount` artifact mounts the
+// image read-only instead of materializing it.)
+func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
 	sb, err := squashfs.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("failed to open squashfs: %w", err)
@@ -129,7 +130,8 @@ func extractSquashfs(srcPath, destDir, subdir string) error {
 
 	subdir = strings.Trim(subdir, "/")
 
-	return fs.WalkDir(sb, ".", func(p string, d fs.DirEntry, err error) error {
+	extracted := 0
+	err = fs.WalkDir(sb, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -138,17 +140,25 @@ func extractSquashfs(srcPath, destDir, subdir string) error {
 		}
 
 		rel := p
+		if strip {
+			parts := strings.SplitN(p, "/", 2)
+			if len(parts) < 2 {
+				return nil // the wrapper root directory entry itself
+			}
+			rel = parts[1]
+		}
 		if subdir != "" {
-			if p != subdir && !strings.HasPrefix(p, subdir+"/") {
+			if rel != subdir && !strings.HasPrefix(rel, subdir+"/") {
 				return nil
 			}
-			rel = strings.TrimPrefix(strings.TrimPrefix(p, subdir), "/")
+			rel = strings.TrimPrefix(strings.TrimPrefix(rel, subdir), "/")
 			if rel == "" {
 				return nil
 			}
 		}
 
 		target := filepath.Join(destDir, rel)
+		extracted++
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
@@ -177,6 +187,16 @@ func extractSquashfs(srcPath, destDir, subdir string) error {
 		}
 		return outFile.Close()
 	})
+	if err != nil {
+		return err
+	}
+
+	// See extractTar: an empty result from strip/subdir filtering is a
+	// misconfiguration, not a success.
+	if extracted == 0 && (strip || subdir != "") {
+		return fmt.Errorf("no entries extracted (strip=%t, subdir=%q): archive layout does not match", strip, subdir)
+	}
+	return nil
 }
 
 // singleFileFS exposes exactly one file from an underlying fs.FS at its

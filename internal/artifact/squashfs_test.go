@@ -118,6 +118,54 @@ func TestUnarchive_ExtractsSquashfs(t *testing.T) {
 	}
 }
 
+// TestUnarchive_ExtractsSquashfs_Strip drops the single wrapper directory.
+func TestUnarchive_ExtractsSquashfs_Strip(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src")
+	os.MkdirAll(filepath.Join(srcDir, "repo", "sub"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "repo", "file.txt"), []byte("hello"), 0o644)
+	os.WriteFile(filepath.Join(srcDir, "repo", "sub", "nested.txt"), []byte("nested"), 0o644)
+
+	arc := &Archive{ID: "a", In: "src", Out: "data.sqfs", Format: "squashfs"}
+	if r := arc.Apply(t.Context(), tmpDir); r.Error != nil {
+		t.Fatalf("archive Apply() error = %v", r.Error)
+	}
+
+	un := &Unarchive{ID: "u", In: "data.sqfs", Out: "extracted", Strip: true}
+	if r := un.Apply(t.Context(), tmpDir); r.Error != nil {
+		t.Fatalf("unarchive Apply() error = %v", r.Error)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(tmpDir, "extracted", "file.txt")); err != nil || string(got) != "hello" {
+		t.Fatalf("file.txt = %q, err = %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(tmpDir, "extracted", "sub", "nested.txt")); err != nil || string(got) != "nested" {
+		t.Fatalf("sub/nested.txt = %q, err = %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "extracted", "repo")); !os.IsNotExist(err) {
+		t.Fatal("wrapper root directory should not exist in extracted directory")
+	}
+}
+
+// TestUnarchive_ExtractsSquashfs_Strip_Flat fails loudly when strip is used on
+// an image with no wrapper directory, instead of extracting nothing.
+func TestUnarchive_ExtractsSquashfs_Strip_Flat(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src")
+	os.MkdirAll(srcDir, 0o755)
+	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hello"), 0o644)
+
+	arc := &Archive{ID: "a", In: "src", Out: "data.sqfs", Format: "squashfs"}
+	if r := arc.Apply(t.Context(), tmpDir); r.Error != nil {
+		t.Fatalf("archive Apply() error = %v", r.Error)
+	}
+
+	un := &Unarchive{ID: "u", In: "data.sqfs", Out: "extracted", Strip: true}
+	if r := un.Apply(t.Context(), tmpDir); r.Error == nil {
+		t.Fatal("expected error for strip on a flat image, got success")
+	}
+}
+
 // TestUnarchive_ExtractsSquashfs_Subdir extracts only a subtree.
 func TestUnarchive_ExtractsSquashfs_Subdir(t *testing.T) {
 	tmpDir := t.TempDir()

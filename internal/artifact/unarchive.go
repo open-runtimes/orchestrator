@@ -39,6 +39,7 @@ type Unarchive struct {
 	In      string `json:"in"`               // Source archive path
 	Out     string `json:"out"`              // Destination directory
 	Subdir  string `json:"subdir,omitempty"` // Extract only this subdirectory
+	Strip   bool   `json:"strip,omitempty"`  // Drop the archive's wrapper root directory
 	Depends string `json:"depends,omitempty"`
 }
 
@@ -47,10 +48,13 @@ func (a *Unarchive) ArtifactType() string { return "unarchive" }
 func (a *Unarchive) DependsOn() string    { return a.Depends }
 
 // Apply extracts the archive, detecting squashfs / plain tar / gzip / zstd from
-// its magic bytes. If Subdir is specified, only files under that subdirectory
-// are extracted, with the subdir prefix stripped. For tar, GitHub archives have
-// a root folder (e.g., "repo-main/") which is automatically detected and
-// stripped.
+// its magic bytes. If Strip is set, the first path component of every entry
+// is dropped — git-forge archives (GitHub's "{repo}-{ref}/", Gitea's
+// "{repo}/") wrap the tree in a single root directory whose name the caller
+// can't always predict. If Subdir is specified, only files under that
+// subdirectory are extracted, with the subdir prefix stripped; with Strip
+// the subdir is resolved against the unwrapped tree, without it (legacy) a
+// tar's detected root folder is implicitly prepended to the subdir.
 func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 	srcPath := filepath.Join(basePath, a.In)
 	destDir := filepath.Join(basePath, a.Out)
@@ -65,10 +69,10 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 
 	switch {
 	case isSquashfs(header):
-		if err := extractSquashfs(srcPath, destDir, a.Subdir); err != nil {
+		if err := extractSquashfs(srcPath, destDir, a.Subdir, a.Strip); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
-		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "format", "squashfs")
+		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", "squashfs")
 		return &Result{Status: "success"}
 	case isGzip(header):
 		return a.extractTar(srcPath, destDir, "gzip")
@@ -116,6 +120,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		subdir = strings.Trim(subdir, "/")
 	}
 
+	extracted := 0
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -142,21 +147,29 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		}
 
 		extractPath := cleanName
+		if a.Strip {
+			parts := strings.SplitN(cleanName, "/", 2)
+			if len(parts) < 2 {
+				continue // the wrapper root directory entry itself
+			}
+			extractPath = parts[1]
+		}
+
 		if subdir != "" {
-			if archiveRoot == "" {
-				parts := strings.SplitN(cleanName, "/", 2)
-				if len(parts) > 0 {
-					archiveRoot = parts[0]
+			prefix := subdir
+			if !a.Strip {
+				// Legacy: resolve subdir under the tar's detected root folder.
+				if archiveRoot == "" {
+					archiveRoot = strings.SplitN(cleanName, "/", 2)[0]
 				}
+				prefix = archiveRoot + "/" + subdir
 			}
 
-			fullSubdir := archiveRoot + "/" + subdir
-
-			if !strings.HasPrefix(cleanName, fullSubdir+"/") && cleanName != fullSubdir {
+			if !strings.HasPrefix(extractPath, prefix+"/") && extractPath != prefix {
 				continue
 			}
 
-			extractPath = strings.TrimPrefix(cleanName, fullSubdir)
+			extractPath = strings.TrimPrefix(extractPath, prefix)
 			extractPath = strings.TrimPrefix(extractPath, "/")
 			if extractPath == "" {
 				continue
@@ -164,6 +177,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		}
 
 		targetPath := filepath.Join(destDir, extractPath)
+		extracted++
 
 		switch header.Typeflag {
 		case tar.TypeDir:
@@ -192,6 +206,14 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		}
 	}
 
-	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir)
+	// strip on a flat archive (or a subdir that matches nothing) would
+	// otherwise succeed with an empty destination — a hard-to-trace "no
+	// source code" failure at whatever consumes the output. Fail here, where
+	// the cause is still visible.
+	if extracted == 0 && (a.Strip || subdir != "") {
+		return &Result{Status: "failed", Error: fmt.Errorf("no entries extracted from %s (strip=%t, subdir=%q): archive layout does not match", a.In, a.Strip, subdir)}
+	}
+
+	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip)
 	return &Result{Status: "success"}
 }

@@ -146,6 +146,120 @@ func TestUnarchive_Apply_Subdir_PaxGlobalHeader(t *testing.T) {
 	}
 }
 
+// TestUnarchive_Apply_Strip unwraps a git-forge archive whose tree sits
+// inside a single root directory (Gitea's "{repo}/", GitHub's "{repo}-{ref}/")
+// without the caller having to know that directory's name.
+func TestUnarchive_Apply_Strip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	createTestArchive(t, archiveIn, map[string]string{
+		"repo/README.md":        "readme",
+		"repo/src/index.js":     "node code",
+		"repo/src/package.json": "{}",
+	})
+
+	a := &Unarchive{
+		ID:    "test-unarchive-strip",
+		In:    "test.tar.gz",
+		Out:   "extracted",
+		Strip: true,
+	}
+
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	extractedDir := filepath.Join(tmpDir, "extracted")
+	if got, err := os.ReadFile(filepath.Join(extractedDir, "README.md")); err != nil || string(got) != "readme" {
+		t.Fatalf("README.md = %q, err = %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(extractedDir, "src", "index.js")); err != nil || string(got) != "node code" {
+		t.Fatalf("src/index.js = %q, err = %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(extractedDir, "repo")); !os.IsNotExist(err) {
+		t.Error("wrapper root directory should not exist in extracted directory")
+	}
+}
+
+// TestUnarchive_Apply_Strip_Subdir resolves subdir against the unwrapped
+// tree, unlike the legacy behavior where a detected root is prepended.
+func TestUnarchive_Apply_Strip_Subdir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	createTestArchive(t, archiveIn, map[string]string{
+		"repo/README.md":                "readme",
+		"repo/functions/node/index.js":  "node code",
+		"repo/functions/python/main.py": "python code",
+	})
+
+	a := &Unarchive{
+		ID:     "test-unarchive-strip-subdir",
+		In:     "test.tar.gz",
+		Out:    "extracted",
+		Subdir: "functions/node",
+		Strip:  true,
+	}
+
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	extractedDir := filepath.Join(tmpDir, "extracted")
+	if got, err := os.ReadFile(filepath.Join(extractedDir, "index.js")); err != nil || string(got) != "node code" {
+		t.Fatalf("index.js = %q, err = %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(extractedDir, "main.py")); !os.IsNotExist(err) {
+		t.Error("main.py should not exist in extracted directory")
+	}
+}
+
+// TestUnarchive_Apply_Strip_FlatArchive fails loudly when strip is used on an
+// archive with no wrapper directory: every entry sits at the root, so stripping
+// the first path component would silently extract nothing.
+func TestUnarchive_Apply_Strip_FlatArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	createTestArchive(t, archiveIn, map[string]string{
+		"file.txt": "content",
+	})
+
+	a := &Unarchive{
+		ID:    "test-unarchive-strip-flat",
+		In:    "test.tar.gz",
+		Out:   "extracted",
+		Strip: true,
+	}
+
+	if result := a.Apply(t.Context(), tmpDir); result.Error == nil {
+		t.Fatal("expected error for strip on a flat archive, got success")
+	}
+}
+
+// TestUnarchive_Apply_Subdir_NoMatch fails loudly when subdir matches nothing,
+// instead of succeeding with an empty destination.
+func TestUnarchive_Apply_Subdir_NoMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	createTestArchive(t, archiveIn, map[string]string{
+		"repo-main/README.md": "readme",
+	})
+
+	a := &Unarchive{
+		ID:     "test-unarchive-subdir-nomatch",
+		In:     "test.tar.gz",
+		Out:    "extracted",
+		Subdir: "does/not/exist",
+	}
+
+	if result := a.Apply(t.Context(), tmpDir); result.Error == nil {
+		t.Fatal("expected error for unmatched subdir, got success")
+	}
+}
+
 func TestUnarchive_Apply_InTraversal(t *testing.T) {
 	tmpDir := t.TempDir()
 
