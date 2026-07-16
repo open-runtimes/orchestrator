@@ -174,8 +174,22 @@ This extracts `code.tar.gz` into the `src/` directory.
 - `in` - Archive file to extract (required)
 - `out` - Destination directory (required)
 - `subdir` - Extract only this subdirectory from the archive (optional)
+- `strip` - Drop the first path component of every entry (optional)
 
-The `subdir` option is useful for extracting specific folders from GitHub archive downloads, which have a root folder like `repo-main/`:
+Git-forge archive downloads wrap the tree in a single root directory whose name varies by provider (GitHub uses `repo-main/`, Gitea uses `repo/`). Set `strip` to unwrap it without knowing its name:
+
+```json
+{
+  "id": "extract-code",
+  "type": "unarchive",
+  "in": "repo.tar.gz",
+  "out": "code",
+  "strip": true,
+  "depends": "download-code"
+}
+```
+
+With `strip`, `subdir` is resolved against the unwrapped tree. Combining both is useful for extracting specific folders from a forge archive:
 
 ```json
 {
@@ -192,13 +206,14 @@ The `subdir` option is useful for extracting specific folders from GitHub archiv
       "in": "templates.tar.gz",
       "out": "code",
       "subdir": "nextjs",
+      "strip": true,
       "depends": "download-template"
     }
   ]
 }
 ```
 
-This downloads the templates repo archive and extracts only the `nextjs/` subdirectory into `code/`. The archive root folder (`templates-main/`) is automatically detected and stripped.
+This downloads the templates repo archive and extracts only the `nextjs/` subdirectory into `code/`, dropping the archive's root folder (`templates-main/`). For backward compatibility, a tar's root folder is also implicitly prepended to `subdir` when `strip` is not set — but new callers should be explicit.
 
 Often chained with a download:
 

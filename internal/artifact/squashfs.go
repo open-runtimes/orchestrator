@@ -116,11 +116,12 @@ func writeSquashfs(srcPath, destPath, compression string) error {
 	return nil
 }
 
-// extractSquashfs extracts a squashfs image at srcPath into destDir. If subdir
-// is set, only entries under it are extracted, with the prefix stripped. (This
-// is the `unarchive` path; the `mount` artifact mounts the image read-only
-// instead of materializing it.)
-func extractSquashfs(srcPath, destDir, subdir string) error {
+// extractSquashfs extracts a squashfs image at srcPath into destDir. If
+// strip is set, the first path component of every entry is dropped. If
+// subdir is set, only entries under it are extracted, with the prefix
+// stripped. (This is the `unarchive` path; the `mount` artifact mounts the
+// image read-only instead of materializing it.)
+func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
 	sb, err := squashfs.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("failed to open squashfs: %w", err)
@@ -138,11 +139,18 @@ func extractSquashfs(srcPath, destDir, subdir string) error {
 		}
 
 		rel := p
+		if strip {
+			parts := strings.SplitN(p, "/", 2)
+			if len(parts) < 2 {
+				return nil // the wrapper root directory entry itself
+			}
+			rel = parts[1]
+		}
 		if subdir != "" {
-			if p != subdir && !strings.HasPrefix(p, subdir+"/") {
+			if rel != subdir && !strings.HasPrefix(rel, subdir+"/") {
 				return nil
 			}
-			rel = strings.TrimPrefix(strings.TrimPrefix(p, subdir), "/")
+			rel = strings.TrimPrefix(strings.TrimPrefix(rel, subdir), "/")
 			if rel == "" {
 				return nil
 			}
