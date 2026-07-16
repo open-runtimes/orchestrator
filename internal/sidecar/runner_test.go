@@ -167,6 +167,57 @@ func TestRunner_FullLifecycle(t *testing.T) {
 	}
 }
 
+// TestRunner_PostJobMissingFileFailsFast: by the time post-job artifacts run
+// the worker has exited, so a source file that isn't there will never appear.
+// The artifact must fail within the short flush grace — not park the job (and
+// its complete callback) on the full job timeout.
+func TestRunner_PostJobMissingFileFailsFast(t *testing.T) {
+	tmpDir := t.TempDir()
+	sigFn, triggerDone := triggerSignal()
+	captured := &captureReporter{}
+
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[
+		{"id":"manifest","type":"read","in":"manifest.json","depends":"job"}
+	]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	// A 900s job timeout: if the file wait were still bound to it, this test
+	// would hang far past its own deadline.
+	runner := NewRunner("test-job", tmpDir, 900, reg,
+		WithSignalFunc(sigFn),
+		WithArtifactListener(captured.fn()),
+		WithPostJobFileGrace(100*time.Millisecond),
+	)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx, artifacts) }()
+	triggerDone()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return: post-job file wait is bound to the job timeout")
+	}
+
+	captured.mu.Lock()
+	defer captured.mu.Unlock()
+	if len(captured.reports) != 1 {
+		t.Fatalf("expected 1 artifact report, got %d", len(captured.reports))
+	}
+	if captured.reports[0].Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", captured.reports[0].Status)
+	}
+}
+
 // TestRunner_PreJobDependencyOrder verifies that pre-job artifacts with a
 // depends chain are processed in the correct order.
 func TestRunner_PreJobDependencyOrder(t *testing.T) {
