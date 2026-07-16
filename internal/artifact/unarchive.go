@@ -72,7 +72,7 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 		if err := extractSquashfs(srcPath, destDir, a.Subdir, a.Strip); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
-		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "format", "squashfs")
+		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", "squashfs")
 		return &Result{Status: "success"}
 	case isGzip(header):
 		return a.extractTar(srcPath, destDir, "gzip")
@@ -214,6 +214,6 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("no entries extracted from %s (strip=%t, subdir=%q): archive layout does not match", a.In, a.Strip, subdir)}
 	}
 
-	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir)
+	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip)
 	return &Result{Status: "success"}
 }
