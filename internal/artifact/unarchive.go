@@ -8,11 +8,23 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
 )
+
+// cleanSubdir normalizes a subdir filter to the slash-separated relative form
+// archive entries use — "./astro/starter/" → "astro/starter" — so cosmetic
+// prefixes don't miss every entry.
+func cleanSubdir(s string) string {
+	s = strings.Trim(path.Clean(s), "/")
+	if s == "." {
+		return ""
+	}
+	return s
+}
 
 // isGzip reports whether b starts with the gzip signature.
 func isGzip(b []byte) bool {
@@ -114,11 +126,8 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 
 	tarReader := tar.NewReader(src)
 
-	subdir := a.Subdir
+	subdir := cleanSubdir(a.Subdir)
 	var archiveRoot string
-	if subdir != "" {
-		subdir = strings.Trim(subdir, "/")
-	}
 
 	extracted := 0
 	for {

@@ -173,7 +173,7 @@ This extracts `code.tar.gz` into the `src/` directory.
 **Options:**
 - `in` - Archive file to extract (required)
 - `out` - Destination directory (required)
-- `subdir` - Extract only this subdirectory from the archive (optional)
+- `subdir` - Extract only this subdirectory from the archive (optional; `./` prefixes and trailing slashes are normalized)
 - `strip` - Drop the first path component of every entry (optional)
 
 Git-forge archive downloads wrap the tree in a single root directory whose name varies by provider (GitHub uses `repo-main/`, Gitea uses `repo/`). Set `strip` to unwrap it without knowing its name:
@@ -299,13 +299,15 @@ Include file contents in the callback event:
   "id": "metrics",
   "type": "read",
   "in": "metrics.json",
+  "format": "json",
   "depends": "job"
 }
 ```
 
 - `in` - Path to read from (required)
+- `format` - `text` (default) or `json` (optional)
 
-The file contents (parsed as JSON if valid, otherwise string) are included in the `orchestrator.job.artifact` event's `content` field.
+The file contents are included in the `orchestrator.job.artifact` event's `content` field — always a raw string by default. With `format: "json"` the contents are delivered as the decoded JSON value, and the artifact fails if the file is not valid JSON.
 
 ### Archive Artifact
 
@@ -432,6 +434,8 @@ Use `depends` to chain artifacts. The dependent artifact waits for its dependenc
   ]
 }
 ```
+
+Post-job artifacts wait briefly (a few seconds) for their source file to appear, then fail — the worker has already exited, so a file that isn't there yet will never be. Make sure the worker writes its outputs before exiting.
 
 ## Callbacks
 

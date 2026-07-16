@@ -23,6 +23,12 @@ import (
 // Kubernetes uses startup probes on this file for native sidecar containers.
 const ReadyFile = ".ready"
 
+// defaultPostJobFileGrace bounds how long a post-job artifact waits for its
+// source file to appear. The worker has already exited by then, so the file
+// either exists or never will — a missing file must fail fast instead of
+// parking the job (and its complete callback) on the full job timeout.
+const defaultPostJobFileGrace = 10 * time.Second
+
 // SignalFunc blocks until the worker has finished, then returns.
 // ctx is passed so the implementation can respect cancellation/timeout.
 // The default implementation waits for SIGUSR1 or SIGTERM from the worker process.
@@ -49,6 +55,12 @@ func WithMounter(m Mounter) Option {
 	return func(r *Runner) { r.mounter = m }
 }
 
+// WithPostJobFileGrace overrides how long post-job artifacts wait for their
+// source file to appear. Used in tests to avoid real waits.
+func WithPostJobFileGrace(d time.Duration) Option {
+	return func(r *Runner) { r.postFileGrace = d }
+}
+
 // WithS3Credentials sets the credentials used to sign s3:// download/upload
 // artifacts. Configured per service (jobs vs deployments) and forwarded by the
 // orchestrator into this sidecar's environment.
@@ -71,6 +83,7 @@ type Runner struct {
 	mounted          []string // mount targets to unmount on teardown
 	emitter          emitter.Emitter[job.ArtifactReport]
 	s3               config.S3Credentials
+	postFileGrace    time.Duration // wait for a post-job artifact's source file
 }
 
 // NewRunner creates a new sidecar runner. Production callers pass WithArtifactListener.
@@ -83,6 +96,7 @@ func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, reg *artifact
 		registry:         reg,
 		waitFn:           waitForSignal,
 		mounter:          defaultMounter(),
+		postFileGrace:    defaultPostJobFileGrace,
 	}
 	for _, o := range opts {
 		o(r)
@@ -325,7 +339,15 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 		if waitForFiles {
 			if srcPath := r.registry.SourcePath(a); srcPath != "" {
 				fullPath := filepath.Join(r.sharedVolumePath, srcPath)
-				if err := r.waitForPath(ctx, fullPath); err != nil {
+				// In Run() the parent ctx carries the job timeout, so the
+				// actual window is min(remaining job time, grace) — report the
+				// measured wait, not the configured grace.
+				start := time.Now()
+				waitCtx, cancel := context.WithTimeout(ctx, r.postFileGrace)
+				err := r.waitForPath(waitCtx, fullPath)
+				cancel()
+				if err != nil {
+					err = fmt.Errorf("%s did not appear within %s of worker exit: %w", srcPath, time.Since(start).Round(time.Millisecond), err)
 					r.emitArtifact(a, "failed", nil, err)
 					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
 					return err

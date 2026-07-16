@@ -73,6 +73,11 @@ var (
 			if err := validatePath(a.In); err != nil {
 				return apperrors.Validation(field+".in", "invalid in (path): "+err.Error())
 			}
+			switch a.Format {
+			case "", "text", "json":
+			default:
+				return apperrors.Validation(field+".format", "format must be \"text\" or \"json\"")
+			}
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Read) string { return a.In }),
