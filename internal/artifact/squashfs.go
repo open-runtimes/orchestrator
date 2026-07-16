@@ -130,7 +130,8 @@ func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
 
 	subdir = strings.Trim(subdir, "/")
 
-	return fs.WalkDir(sb, ".", func(p string, d fs.DirEntry, err error) error {
+	extracted := 0
+	err = fs.WalkDir(sb, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -157,6 +158,7 @@ func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
 		}
 
 		target := filepath.Join(destDir, rel)
+		extracted++
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
@@ -185,6 +187,16 @@ func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
 		}
 		return outFile.Close()
 	})
+	if err != nil {
+		return err
+	}
+
+	// See extractTar: an empty result from strip/subdir filtering is a
+	// misconfiguration, not a success.
+	if extracted == 0 && (strip || subdir != "") {
+		return fmt.Errorf("no entries extracted (strip=%t, subdir=%q): archive layout does not match", strip, subdir)
+	}
+	return nil
 }
 
 // singleFileFS exposes exactly one file from an underlying fs.FS at its

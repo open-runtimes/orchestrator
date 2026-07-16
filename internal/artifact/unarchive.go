@@ -120,6 +120,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		subdir = strings.Trim(subdir, "/")
 	}
 
+	extracted := 0
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -176,6 +177,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		}
 
 		targetPath := filepath.Join(destDir, extractPath)
+		extracted++
 
 		switch header.Typeflag {
 		case tar.TypeDir:
@@ -202,6 +204,14 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		default:
 			slog.Debug("Skipping archive entry", "name", header.Name, "type", header.Typeflag)
 		}
+	}
+
+	// strip on a flat archive (or a subdir that matches nothing) would
+	// otherwise succeed with an empty destination — a hard-to-trace "no
+	// source code" failure at whatever consumes the output. Fail here, where
+	// the cause is still visible.
+	if extracted == 0 && (a.Strip || subdir != "") {
+		return &Result{Status: "failed", Error: fmt.Errorf("no entries extracted from %s (strip=%t, subdir=%q): archive layout does not match", a.In, a.Strip, subdir)}
 	}
 
 	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir)

@@ -215,6 +215,51 @@ func TestUnarchive_Apply_Strip_Subdir(t *testing.T) {
 	}
 }
 
+// TestUnarchive_Apply_Strip_FlatArchive fails loudly when strip is used on an
+// archive with no wrapper directory: every entry sits at the root, so stripping
+// the first path component would silently extract nothing.
+func TestUnarchive_Apply_Strip_FlatArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	createTestArchive(t, archiveIn, map[string]string{
+		"file.txt": "content",
+	})
+
+	a := &Unarchive{
+		ID:    "test-unarchive-strip-flat",
+		In:    "test.tar.gz",
+		Out:   "extracted",
+		Strip: true,
+	}
+
+	if result := a.Apply(t.Context(), tmpDir); result.Error == nil {
+		t.Fatal("expected error for strip on a flat archive, got success")
+	}
+}
+
+// TestUnarchive_Apply_Subdir_NoMatch fails loudly when subdir matches nothing,
+// instead of succeeding with an empty destination.
+func TestUnarchive_Apply_Subdir_NoMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	createTestArchive(t, archiveIn, map[string]string{
+		"repo-main/README.md": "readme",
+	})
+
+	a := &Unarchive{
+		ID:     "test-unarchive-subdir-nomatch",
+		In:     "test.tar.gz",
+		Out:    "extracted",
+		Subdir: "does/not/exist",
+	}
+
+	if result := a.Apply(t.Context(), tmpDir); result.Error == nil {
+		t.Fatal("expected error for unmatched subdir, got success")
+	}
+}
+
 func TestUnarchive_Apply_InTraversal(t *testing.T) {
 	tmpDir := t.TempDir()
 

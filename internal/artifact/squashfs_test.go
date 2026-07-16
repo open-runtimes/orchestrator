@@ -147,6 +147,25 @@ func TestUnarchive_ExtractsSquashfs_Strip(t *testing.T) {
 	}
 }
 
+// TestUnarchive_ExtractsSquashfs_Strip_Flat fails loudly when strip is used on
+// an image with no wrapper directory, instead of extracting nothing.
+func TestUnarchive_ExtractsSquashfs_Strip_Flat(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src")
+	os.MkdirAll(srcDir, 0o755)
+	os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hello"), 0o644)
+
+	arc := &Archive{ID: "a", In: "src", Out: "data.sqfs", Format: "squashfs"}
+	if r := arc.Apply(t.Context(), tmpDir); r.Error != nil {
+		t.Fatalf("archive Apply() error = %v", r.Error)
+	}
+
+	un := &Unarchive{ID: "u", In: "data.sqfs", Out: "extracted", Strip: true}
+	if r := un.Apply(t.Context(), tmpDir); r.Error == nil {
+		t.Fatal("expected error for strip on a flat image, got success")
+	}
+}
+
 // TestUnarchive_ExtractsSquashfs_Subdir extracts only a subtree.
 func TestUnarchive_ExtractsSquashfs_Subdir(t *testing.T) {
 	tmpDir := t.TempDir()

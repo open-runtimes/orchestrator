@@ -189,7 +189,7 @@ Git-forge archive downloads wrap the tree in a single root directory whose name 
 }
 ```
 
-With `strip`, `subdir` is resolved against the unwrapped tree. Combining both is useful for extracting specific folders from a forge archive:
+With `strip`, `subdir` is resolved against the unwrapped tree. If `strip` or `subdir` filtering leaves nothing to extract — `strip` on a flat archive with no wrapper directory, or a `subdir` that matches no entries — the artifact fails rather than succeeding with an empty destination. Combining both is useful for extracting specific folders from a forge archive:
 
 ```json
 {
