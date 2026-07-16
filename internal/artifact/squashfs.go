@@ -128,7 +128,7 @@ func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
 	}
 	defer sb.Close()
 
-	subdir = strings.Trim(subdir, "/")
+	subdir = cleanSubdir(subdir)
 
 	extracted := 0
 	err = fs.WalkDir(sb, ".", func(p string, d fs.DirEntry, err error) error {

@@ -89,6 +89,38 @@ func TestUnarchive_Apply_Subdir(t *testing.T) {
 	}
 }
 
+// A cosmetic "./" prefix (or trailing slash) on subdir must not miss every
+// archive entry — the filter is normalized to the entries' relative form.
+func TestUnarchive_Apply_Subdir_DotSlash(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+	createTestArchive(t, archiveIn, map[string]string{
+		"repo-main/astro/starter/index.astro": "astro code",
+		"repo-main/other/main.py":             "python code",
+	})
+
+	a := &Unarchive{
+		ID:     "test-unarchive-dotslash",
+		In:     "test.tar.gz",
+		Out:    "extracted",
+		Subdir: "./astro/starter/",
+	}
+
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "extracted", "index.astro"))
+	if err != nil {
+		t.Fatalf("Failed to read index.astro: %v", err)
+	}
+	if string(content) != "astro code" {
+		t.Errorf("Expected 'astro code', got %q", string(content))
+	}
+}
+
 // TestUnarchive_Apply_Subdir_PaxGlobalHeader reproduces a GitHub git-archive
 // tarball: a leading pax global header (typeflag 'g', carrying the commit SHA)
 // followed by a rooted tree. The global header must not be mistaken for the
