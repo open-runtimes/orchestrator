@@ -339,11 +339,15 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 		if waitForFiles {
 			if srcPath := r.registry.SourcePath(a); srcPath != "" {
 				fullPath := filepath.Join(r.sharedVolumePath, srcPath)
+				// In Run() the parent ctx carries the job timeout, so the
+				// actual window is min(remaining job time, grace) — report the
+				// measured wait, not the configured grace.
+				start := time.Now()
 				waitCtx, cancel := context.WithTimeout(ctx, r.postFileGrace)
 				err := r.waitForPath(waitCtx, fullPath)
 				cancel()
 				if err != nil {
-					err = fmt.Errorf("%s did not appear within %s of worker exit: %w", srcPath, r.postFileGrace, err)
+					err = fmt.Errorf("%s did not appear within %s of worker exit: %w", srcPath, time.Since(start).Round(time.Millisecond), err)
 					r.emitArtifact(a, "failed", nil, err)
 					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
 					return err
