@@ -47,7 +47,7 @@
 | **Write** | Writes inline content from the request into a workspace file | Inject, create |
 | **Read** | Reads a workspace file and includes its content in the callback | Get, cat |
 | **Archive** | Compresses a workspace directory into a tar or squashfs file | Zip, pack |
-| **Unarchive** | Expands a tar (plain/gzip/zstd) or squashfs archive into the workspace | Unzip, unpack, extract |
+| **Unarchive** | Expands a tar (plain/gzip/zstd/lz4) or squashfs archive into the workspace | Unzip, unpack, extract |
 | **Mount** | Mounts a squashfs image into the workspace for the worker, read-only or as a writable tmpfs overlay | Attach, bind |
 | **List** | Enumerates files in a workspace directory and includes the list in the callback | Ls, dir |
 

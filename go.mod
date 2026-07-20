@@ -3,11 +3,11 @@ module orchestrator
 go 1.25.0
 
 require (
-	github.com/KarpelesLab/squashfs v1.2.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-logr/logr v1.4.3
 	github.com/klauspost/compress v1.18.5
+	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/prometheus/client_golang v1.23.2
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.61.0
@@ -44,7 +44,6 @@ require (
 	github.com/google/pprof v0.0.0-20260115054156-294ebfa9ad83 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.3 // indirect
-	github.com/hanwen/go-fuse/v2 v2.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
@@ -65,7 +64,6 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.64.0 // indirect

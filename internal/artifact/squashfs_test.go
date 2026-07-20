@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/KarpelesLab/squashfs"
+	"orchestrator/internal/squashfs"
 )
 
 // archiveSquashfs builds a squashfs image from a small tree and returns its path.
@@ -47,7 +47,7 @@ func assertSquashfsContents(t *testing.T, image string) {
 }
 
 func TestArchive_Squashfs_Compressors(t *testing.T) {
-	for _, comp := range []string{"", "gzip", "zstd"} {
+	for _, comp := range []string{"", "gzip", "zstd", "lz4"} {
 		t.Run("comp="+comp, func(t *testing.T) {
 			image := archiveSquashfs(t, comp)
 
@@ -88,6 +88,41 @@ func TestArchive_Squashfs_InvalidCompression(t *testing.T) {
 	arc := &Archive{ID: "a", In: "src", Out: "out.sqfs", Format: "squashfs", Compression: "brotli"}
 	if r := arc.Apply(t.Context(), tmpDir); r.Error == nil {
 		t.Error("expected error for unsupported compression")
+	}
+}
+
+// TestArchive_Squashfs_BlockSize confirms the block size recorded in the
+// superblock: an unset size defaults to 1 MiB (matching mksquashfs -b 1M), and
+// an explicit size is honored.
+func TestArchive_Squashfs_BlockSize(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  int
+		want uint32
+	}{
+		{"default is 1 MiB", 0, 1 << 20},
+		{"explicit 128 KiB", 128 << 10, 128 << 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			srcDir := filepath.Join(tmpDir, "src")
+			os.MkdirAll(srcDir, 0o755)
+			os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hello"), 0o644)
+
+			arc := &Archive{ID: "a", In: "src", Out: "out.sqfs", Format: "squashfs", BlockSize: tc.set}
+			if r := arc.Apply(t.Context(), tmpDir); r.Error != nil {
+				t.Fatalf("archive Apply() error = %v", r.Error)
+			}
+
+			sb, err := squashfs.Open(filepath.Join(tmpDir, "out.sqfs"))
+			if err != nil {
+				t.Fatalf("squashfs.Open() error = %v", err)
+			}
+			defer sb.Close()
+			if sb.BlockSize != tc.want {
+				t.Fatalf("BlockSize = %d, want %d", sb.BlockSize, tc.want)
+			}
+		})
 	}
 }
 
@@ -203,6 +238,7 @@ func TestTar_RoundTrip(t *testing.T) {
 		{"gzip", "gzip", 0},
 		{"gzip with level", "gzip", 5},
 		{"zstd", "zstd", 0},
+		{"lz4", "lz4", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

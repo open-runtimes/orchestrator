@@ -201,8 +201,13 @@ func TestValidate_Archive(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "tar lz4",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar.lz4", Format: "tar", Compression: "lz4"},
+			wantErr: false,
+		},
+		{
 			name:    "tar invalid compression",
-			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", Compression: "lz4"},
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", Compression: "brotli"},
 			wantErr: true,
 		},
 		{
@@ -233,6 +238,26 @@ func TestValidate_Archive(t *testing.T) {
 		{
 			name:    "squashfs rejects level",
 			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", Compression: "gzip", Level: 5},
+			wantErr: true,
+		},
+		{
+			name:    "squashfs valid block size",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", BlockSize: 1 << 20},
+			wantErr: false,
+		},
+		{
+			name:    "squashfs block size not power of 2",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", BlockSize: 100000},
+			wantErr: true,
+		},
+		{
+			name:    "squashfs block size out of range",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", BlockSize: 2 << 20},
+			wantErr: true,
+		},
+		{
+			name:    "tar rejects block size",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", BlockSize: 1 << 20},
 			wantErr: true,
 		},
 	}

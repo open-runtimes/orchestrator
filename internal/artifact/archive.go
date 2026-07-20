@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4/v4"
 )
 
 // Archive packs a file or directory into a tar or squashfs archive.
@@ -22,9 +23,32 @@ type Archive struct {
 	In          string `json:"in"`                    // Source file or directory
 	Out         string `json:"out"`                   // Destination archive path
 	Format      string `json:"format"`                // "tar" or "squashfs"
-	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd; squashfs: gzip, zstd
+	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd, lz4; squashfs: gzip, zstd, lz4
 	Level       int    `json:"level,omitempty"`       // gzip compression level 1-9 (tar only)
+	BlockSize   int    `json:"blockSize,omitempty"`   // squashfs block size in bytes, power of 2 from 4 KiB to 1 MiB (default 1 MiB)
 	Depends     string `json:"depends,omitempty"`
+}
+
+// squashfs block sizes are powers of two from 4 KiB to 1 MiB. The default
+// matches mksquashfs -b 1M, the format open-runtimes/edge squashes use, and
+// gives the best compression for these read-mostly mount images.
+const (
+	squashfsMinBlockSize     = 4 << 10
+	squashfsMaxBlockSize     = 1 << 20
+	defaultSquashfsBlockSize = 1 << 20
+)
+
+// validSquashfsBlockSize reports whether bs is a legal squashfs block size.
+func validSquashfsBlockSize(bs int) bool {
+	return bs >= squashfsMinBlockSize && bs <= squashfsMaxBlockSize && bs&(bs-1) == 0
+}
+
+// squashfsBlockSize resolves an unset (0) block size to the 1 MiB default.
+func squashfsBlockSize(bs int) uint32 {
+	if bs == 0 {
+		return defaultSquashfsBlockSize
+	}
+	return uint32(bs)
 }
 
 func (a *Archive) ArtifactID() string   { return a.ID }
@@ -48,7 +72,7 @@ func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 	case "tar":
 		return a.applyTar(srcPath, destPath)
 	case "squashfs":
-		if err := writeSquashfs(srcPath, destPath, a.Compression); err != nil {
+		if err := writeSquashfs(srcPath, destPath, a.Compression, squashfsBlockSize(a.BlockSize)); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 		return &Result{Status: "success"}
@@ -83,8 +107,12 @@ func (a *Archive) applyTar(srcPath, destPath string) *Result {
 		}
 		defer zstdWriter.Close()
 		w = zstdWriter
+	case "lz4":
+		lz4Writer := lz4.NewWriter(outFile)
+		defer lz4Writer.Close()
+		w = lz4Writer
 	default:
-		return &Result{Status: "failed", Error: fmt.Errorf("unsupported tar compression: %q (supported: gzip, zstd, none)", a.Compression)}
+		return &Result{Status: "failed", Error: fmt.Errorf("unsupported tar compression: %q (supported: gzip, zstd, lz4, none)", a.Compression)}
 	}
 
 	tarWriter := tar.NewWriter(w)

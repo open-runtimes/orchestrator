@@ -104,7 +104,7 @@ Artifacts handle file operations before and after job execution. An artifact run
 |------|-------------|
 | `download` | Download file from URL |
 | `write` | Write inline content |
-| `unarchive` | Extract a tar (plain/gzip/zstd) or squashfs archive |
+| `unarchive` | Extract a tar (plain/gzip/zstd/lz4) or squashfs archive |
 | `mount` | Mount a squashfs image read-only into the workspace |
 | `upload` | Upload file to URL |
 | `read` | Include file contents in callback event |
@@ -157,7 +157,7 @@ Write inline content to a file:
 
 ### Unarchive Artifact
 
-Extract an archive — tar (plain, gzip-, or zstd-compressed) or squashfs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To mount a squashfs image read-only *in place* instead of copying its files out, use the Mount artifact.)
+Extract an archive — tar (plain, gzip-, zstd-, or lz4-compressed) or squashfs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To mount a squashfs image read-only *in place* instead of copying its files out, use the Mount artifact.)
 
 ```json
 {
@@ -329,8 +329,9 @@ Create a tar or squashfs archive from a file or directory:
 - `in` - Source file or directory (required)
 - `out` - Destination archive path (required)
 - `format` - Container format, either `"tar"` or `"squashfs"` (required)
-- `compression` - Compression algorithm: `gzip` or `zstd`. Defaults to no compression for `tar`; `squashfs` is always compressed (defaults to `gzip`) (optional)
+- `compression` - Compression algorithm: `gzip`, `zstd`, or `lz4`. Defaults to no compression for `tar`; `squashfs` is always compressed (defaults to `gzip`) (optional)
 - `level` - gzip compression level, `1`-`9`. Only valid when `compression` is `gzip` (optional)
+- `blockSize` - squashfs block size in bytes, a power of 2 from `4096` (4 KiB) to `1048576` (1 MiB). Only valid for `squashfs`; defaults to `1048576` (optional)
 
 Create a squashfs archive with zstd compression:
 
