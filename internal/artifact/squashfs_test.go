@@ -91,6 +91,23 @@ func TestArchive_Squashfs_InvalidCompression(t *testing.T) {
 	}
 }
 
+// TestArchive_Squashfs_ApplyRejectsBadBlockSize guards the write path directly:
+// Apply must reject an illegal block size even when Validate was skipped, rather
+// than wrapping a negative value to a huge uint32 that corrupts the image.
+func TestArchive_Squashfs_ApplyRejectsBadBlockSize(t *testing.T) {
+	for _, bs := range []int{-1, 100000, 2 << 20} {
+		tmpDir := t.TempDir()
+		srcDir := filepath.Join(tmpDir, "src")
+		os.MkdirAll(srcDir, 0o755)
+		os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("hello"), 0o644)
+
+		arc := &Archive{ID: "a", In: "src", Out: "out.sqfs", Format: "squashfs", BlockSize: bs}
+		if r := arc.Apply(t.Context(), tmpDir); r.Error == nil {
+			t.Errorf("blockSize %d: expected Apply to fail, got success", bs)
+		}
+	}
+}
+
 // TestArchive_Squashfs_BlockSize confirms the block size recorded in the
 // superblock: an unset size defaults to 1 MiB (matching mksquashfs -b 1M), and
 // an explicit size is honored.

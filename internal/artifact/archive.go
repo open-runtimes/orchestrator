@@ -43,12 +43,20 @@ func validSquashfsBlockSize(bs int) bool {
 	return bs >= squashfsMinBlockSize && bs <= squashfsMaxBlockSize && bs&(bs-1) == 0
 }
 
-// squashfsBlockSize resolves an unset (0) block size to the 1 MiB default.
-func squashfsBlockSize(bs int) uint32 {
+// resolveSquashfsBlockSize maps an unset (0) block size to the 1 MiB default and
+// rejects anything else that isn't a legal squashfs block size. The check runs
+// before the uint32 conversion on purpose: a negative bs would otherwise wrap to
+// a huge value that panics the writer's block splitting or yields a superblock
+// BlockLog readers and kernel mounts reject. Callers may skip Validate, so this
+// guards the write path itself rather than trusting the input.
+func resolveSquashfsBlockSize(bs int) (uint32, error) {
 	if bs == 0 {
-		return defaultSquashfsBlockSize
+		return defaultSquashfsBlockSize, nil
 	}
-	return uint32(bs)
+	if !validSquashfsBlockSize(bs) {
+		return 0, fmt.Errorf("invalid squashfs block size %d: must be a power of 2 between %d and %d", bs, squashfsMinBlockSize, squashfsMaxBlockSize)
+	}
+	return uint32(bs), nil
 }
 
 func (a *Archive) ArtifactID() string   { return a.ID }
@@ -72,7 +80,7 @@ func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 	case "tar":
 		return a.applyTar(srcPath, destPath)
 	case "squashfs":
-		if err := writeSquashfs(srcPath, destPath, a.Compression, squashfsBlockSize(a.BlockSize)); err != nil {
+		if err := writeSquashfs(srcPath, destPath, a.Compression, a.BlockSize); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 		return &Result{Status: "success"}

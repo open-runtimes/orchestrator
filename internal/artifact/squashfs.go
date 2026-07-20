@@ -96,9 +96,14 @@ func squashfsCompression(name string) (squashfs.Compression, error) {
 }
 
 // writeSquashfs builds a squashfs image at destPath from the file or directory
-// at srcPath, using the given compression and block size (bytes).
-func writeSquashfs(srcPath, destPath, compression string, blockSize uint32) error {
+// at srcPath, using the given compression and block size in bytes (0 = default).
+func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
 	comp, err := squashfsCompression(compression)
+	if err != nil {
+		return err
+	}
+
+	resolvedBlockSize, err := resolveSquashfsBlockSize(blockSize)
 	if err != nil {
 		return err
 	}
@@ -114,7 +119,7 @@ func writeSquashfs(srcPath, destPath, compression string, blockSize uint32) erro
 	}
 	defer out.Close()
 
-	w, err := squashfs.NewWriter(out, squashfs.WithCompression(comp), squashfs.WithBlockSize(blockSize))
+	w, err := squashfs.NewWriter(out, squashfs.WithCompression(comp), squashfs.WithBlockSize(resolvedBlockSize))
 	if err != nil {
 		return fmt.Errorf("failed to create squashfs writer: %w", err)
 	}
