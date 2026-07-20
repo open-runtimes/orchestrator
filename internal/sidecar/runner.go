@@ -232,7 +232,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	// Establish mounts at startup, before signaling ready, so they exist when
 	// the worker starts. The startup probe gates the worker on the marker.
 	if len(mounts) > 0 {
-		logger.Info("Establishing squashfs mounts")
+		logger.Info("Establishing image mounts")
 		mountCtx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
 		err := r.establishMounts(mountCtx, mounts)
 		cancel()
@@ -281,8 +281,8 @@ func (r *Runner) writeMountReadyMarker() error {
 	return nil
 }
 
-// establishMounts mounts each squashfs image read-only into the workspace. A
-// failure aborts the job — the worker must not start without its inputs.
+// establishMounts mounts each image read-only into the workspace. A failure
+// aborts the job — the worker must not start without its inputs.
 func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact) error {
 	for _, a := range mounts {
 		m, ok := a.(*artifact.Mount)
@@ -307,7 +307,7 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 
 		r.mounted = append(r.mounted, target)
 		r.emitArtifact(a, "success", nil, nil)
-		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out).Info("Mounted squashfs image")
+		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out).Info("Mounted image")
 	}
 	return nil
 }

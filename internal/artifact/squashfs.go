@@ -3,11 +3,8 @@ package artifact
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4/v4"
@@ -108,11 +105,6 @@ func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
 		return err
 	}
 
-	info, err := os.Stat(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed to stat source: %w", err)
-	}
-
 	out, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create archive file: %w", err)
@@ -124,13 +116,12 @@ func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
 		return fmt.Errorf("failed to create squashfs writer: %w", err)
 	}
 
-	// AddFS streams each file block-by-block during Finalize. For a single file
-	// we wrap it in a one-entry fs.FS rather than AddFile([]byte), which would
-	// buffer the whole file in the sidecar's memory and risk an OOM on a large
-	// input.
-	src := os.DirFS(srcPath)
-	if !info.IsDir() {
-		src = singleFileFS{fsys: os.DirFS(filepath.Dir(srcPath)), name: filepath.Base(srcPath)}
+	// AddFS streams each file block-by-block during Finalize; sourceFS wraps a
+	// single file in a one-entry fs.FS so it streams too, instead of buffering
+	// the whole file in the sidecar's memory (an OOM risk on large inputs).
+	src, err := sourceFS(srcPath)
+	if err != nil {
+		return err
 	}
 	if err := w.AddFS(src); err != nil {
 		return fmt.Errorf("failed to add source: %w", err)
@@ -169,75 +160,7 @@ func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
 	}
 	defer sb.Close()
 
-	subdir = cleanSubdir(subdir)
-
-	extracted := 0
-	err = fs.WalkDir(sb, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == "." {
-			return nil
-		}
-
-		rel := p
-		if strip {
-			parts := strings.SplitN(p, "/", 2)
-			if len(parts) < 2 {
-				return nil // the wrapper root directory entry itself
-			}
-			rel = parts[1]
-		}
-		if subdir != "" {
-			if rel != subdir && !strings.HasPrefix(rel, subdir+"/") {
-				return nil
-			}
-			rel = strings.TrimPrefix(strings.TrimPrefix(rel, subdir), "/")
-			if rel == "" {
-				return nil
-			}
-		}
-
-		target := filepath.Join(destDir, rel)
-		extracted++
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-
-		fi, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return fmt.Errorf("failed to create parent directory: %w", err)
-		}
-
-		entry, err := sb.Open(p)
-		if err != nil {
-			return fmt.Errorf("failed to open entry: %w", err)
-		}
-		defer entry.Close()
-
-		outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fi.Mode().Perm())
-		if err != nil {
-			return fmt.Errorf("failed to create file: %w", err)
-		}
-		if _, err := io.Copy(outFile, entry); err != nil {
-			outFile.Close()
-			return fmt.Errorf("failed to extract file: %w", err)
-		}
-		return outFile.Close()
-	})
-	if err != nil {
-		return err
-	}
-
-	// See extractTar: an empty result from strip/subdir filtering is a
-	// misconfiguration, not a success.
-	if extracted == 0 && (strip || subdir != "") {
-		return fmt.Errorf("no entries extracted (strip=%t, subdir=%q): archive layout does not match", strip, subdir)
-	}
-	return nil
+	return extractFS(sb, destDir, subdir, strip)
 }
 
 // singleFileFS exposes exactly one file from an underlying fs.FS at its

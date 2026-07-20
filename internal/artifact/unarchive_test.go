@@ -4,10 +4,36 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 )
+
+// TestExtractFS_SkipsNonRegular verifies the shared image extractor writes only
+// directories and regular files, skipping symlinks and other special entries
+// (symmetric with extractTar) rather than materializing them as regular files.
+func TestExtractFS_SkipsNonRegular(t *testing.T) {
+	src := fstest.MapFS{
+		"dir/file.txt": {Data: []byte("real"), Mode: 0o644},
+		"link":         {Mode: fs.ModeSymlink, Data: []byte("dir/file.txt")},
+		"pipe":         {Mode: fs.ModeNamedPipe},
+	}
+	dest := t.TempDir()
+	if err := extractFS(src, dest, "", false); err != nil {
+		t.Fatalf("extractFS() error = %v", err)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(dest, "dir", "file.txt")); err != nil || string(got) != "real" {
+		t.Fatalf("dir/file.txt = %q, err = %v", got, err)
+	}
+	for _, skipped := range []string{"link", "pipe"} {
+		if _, err := os.Lstat(filepath.Join(dest, skipped)); !os.IsNotExist(err) {
+			t.Errorf("%s should have been skipped, got err = %v", skipped, err)
+		}
+	}
+}
 
 func TestUnarchive_Interface(t *testing.T) {
 	a := &Unarchive{ID: "ua1", In: "src.tar.gz", Out: "src", Subdir: "functions/node"}

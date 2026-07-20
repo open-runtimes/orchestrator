@@ -282,6 +282,53 @@ func TestIntegration_SquashfsWritableMount(t *testing.T) {
 	}
 }
 
+// TestIntegration_ErofsMount is the squashfs read-only mount test for the erofs
+// format: build an erofs image (write → archive), mount it read-only, and read
+// a file back. The mount path detects the filesystem type from the image magic,
+// so reaching Completed proves erofs images loop-mount as "erofs". Requires the
+// erofs kernel module on nodes.
+func TestIntegration_ErofsMount(t *testing.T) {
+	o, emitter, teardown := setup(t)
+	defer teardown()
+
+	d := wireDispatcher(t, emitter)
+	defer d.Close(context.Background())
+
+	jobID := fmt.Sprintf("mount-erofs-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:    jobID,
+		Image: "alpine:3.20",
+		// Fails (non-zero) unless the mounted file is present with the right
+		// content — so Completed is a real assertion that the mount worked.
+		Command:        `sleep 1 && grep -q "mounted content" /workspace/mnt/hello.txt`,
+		CPU:            0.1,
+		Memory:         64,
+		TimeoutSeconds: 120,
+		Workspace:      "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "w", In: "mounted content", Out: "hello.txt"},
+			&artifact.Archive{ID: "a", In: "hello.txt", Out: "data.erofs", Format: "erofs", Depends: "w"},
+			&artifact.Mount{ID: "m", In: "data.erofs", Out: "mnt", Depends: "a"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), jobID)
+		return err == nil && (s.State == job.StateCompleted || s.State == job.StateFailed)
+	}, testutil.WithTimeout(150*time.Second), testutil.WithInterval(time.Second))
+
+	status, err := o.Status(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("final Status: %v", err)
+	}
+	if status.State != job.StateCompleted {
+		t.Errorf("final state: want completed (mount + read succeeded), got %s (exit=%v)", status.State, status.ExitCode)
+	}
+}
+
 // --- failure path ---
 
 // TestIntegration_NonZeroExit runs a job whose worker exits with a non-zero
@@ -299,8 +346,8 @@ func TestIntegration_NonZeroExit(t *testing.T) {
 
 	jobID := fmt.Sprintf("fail-%d", time.Now().UnixNano())
 	req := &job.Request{
-		ID:             jobID,
-		Image:          "alpine:3.20",
+		ID:    jobID,
+		Image: "alpine:3.20",
 		// Sleep first so the informer sees the Running state before termination,
 		// then exit non-zero. Otherwise the watcher's "already-terminated on
 		// first sight" path (intended for leader failover) skips emission.
