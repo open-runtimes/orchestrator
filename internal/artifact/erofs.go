@@ -1,7 +1,6 @@
 package artifact
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 
@@ -9,15 +8,17 @@ import (
 )
 
 // erofs writes its superblock magic at a fixed offset rather than the start of
-// the image, so callers must sniff at least erofsMagicOffset+4 bytes before
-// checking. The magic is little-endian 0xE0F5E1E2.
-const erofsMagicOffset = 1024
-
-var erofsMagic = []byte{0xe2, 0xe1, 0xf5, 0xe0}
+// the image, so callers must sniff at least erofsMagicOffset+len(erofsMagic)
+// bytes before checking. The magic is little-endian 0xE0F5E1E2.
+const (
+	erofsMagicOffset = 1024
+	erofsMagic       = "\xe2\xe1\xf5\xe0"
+)
 
 // isErofs reports whether b holds the erofs superblock magic at offset 1024.
 func isErofs(b []byte) bool {
-	return len(b) >= erofsMagicOffset+4 && bytes.Equal(b[erofsMagicOffset:erofsMagicOffset+4], erofsMagic)
+	end := erofsMagicOffset + len(erofsMagic)
+	return len(b) >= end && string(b[erofsMagicOffset:end]) == erofsMagic
 }
 
 // writeErofs builds an erofs image at destPath from the file or directory at
