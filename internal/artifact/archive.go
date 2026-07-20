@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -13,16 +14,17 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
-// Archive packs a file or directory into a tar or squashfs archive.
+// Archive packs a file or directory into a tar, squashfs, or erofs archive.
 //
 // Format selects the container; Compression selects the algorithm. For tar an
 // empty value means no compression; squashfs is always compressed (defaults to
-// gzip). Level (1-9) sets the gzip level and applies to tar only.
+// gzip). Level (1-9) sets the gzip level and applies to tar only. erofs images
+// are always uncompressed and take no Compression, Level, or BlockSize.
 type Archive struct {
 	ID          string `json:"id"`
 	In          string `json:"in"`                    // Source file or directory
 	Out         string `json:"out"`                   // Destination archive path
-	Format      string `json:"format"`                // "tar" or "squashfs"
+	Format      string `json:"format"`                // "tar", "squashfs", or "erofs"
 	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd, lz4; squashfs: gzip, zstd, lz4
 	Level       int    `json:"level,omitempty"`       // gzip compression level 1-9 (tar only)
 	BlockSize   int    `json:"blockSize,omitempty"`   // squashfs block size in bytes, power of 2 from 4 KiB to 1 MiB (default 1 MiB)
@@ -63,6 +65,21 @@ func (a *Archive) ArtifactID() string   { return a.ID }
 func (a *Archive) ArtifactType() string { return "archive" }
 func (a *Archive) DependsOn() string    { return a.Depends }
 
+// sourceFS returns an fs.FS over srcPath for streaming into an image writer
+// (squashfs or erofs). A directory maps to its whole tree; a single file maps
+// to a one-entry fs.FS (via singleFileFS) so the writer streams it rather than
+// buffering the entire file in memory.
+func sourceFS(srcPath string) (fs.FS, error) {
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat source: %w", err)
+	}
+	if info.IsDir() {
+		return os.DirFS(srcPath), nil
+	}
+	return singleFileFS{fsys: os.DirFS(filepath.Dir(srcPath)), name: filepath.Base(srcPath)}, nil
+}
+
 // gzipLevel maps an unset level (0) to the gzip default; otherwise returns it.
 func gzipLevel(level int) int {
 	if level == 0 {
@@ -84,8 +101,13 @@ func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 			return &Result{Status: "failed", Error: err}
 		}
 		return &Result{Status: "success"}
+	case "erofs":
+		if err := writeErofs(srcPath, destPath); err != nil {
+			return &Result{Status: "failed", Error: err}
+		}
+		return &Result{Status: "success"}
 	default:
-		return &Result{Status: "failed", Error: fmt.Errorf("unsupported archive format: %s (supported: tar, squashfs)", a.Format)}
+		return &Result{Status: "failed", Error: fmt.Errorf("unsupported archive format: %s (supported: tar, squashfs, erofs)", a.Format)}
 	}
 }
 

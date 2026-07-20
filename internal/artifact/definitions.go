@@ -126,8 +126,22 @@ var (
 				if a.BlockSize != 0 && !validSquashfsBlockSize(a.BlockSize) {
 					return apperrors.Validation(field+".blockSize", "blockSize must be a power of 2 between 4096 and 1048576 (0 means 1 MiB default)")
 				}
+			case "erofs":
+				// erofs images are always uncompressed; the writer exposes no
+				// compression, level, or block size knobs.
+				switch a.Compression {
+				case "", "none":
+				default:
+					return apperrors.Validation(field+".compression", "compression is not supported for erofs (images are always uncompressed)")
+				}
+				if a.Level != 0 {
+					return apperrors.Validation(field+".level", "level is not supported for erofs")
+				}
+				if a.BlockSize != 0 {
+					return apperrors.Validation(field+".blockSize", "blockSize is not supported for erofs")
+				}
 			default:
-				return apperrors.Validation(field+".format", "format must be \"tar\" or \"squashfs\"")
+				return apperrors.Validation(field+".format", "format must be \"tar\", \"squashfs\", or \"erofs\"")
 			}
 			return nil
 		}),

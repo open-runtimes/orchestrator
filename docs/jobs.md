@@ -104,11 +104,11 @@ Artifacts handle file operations before and after job execution. An artifact run
 |------|-------------|
 | `download` | Download file from URL |
 | `write` | Write inline content |
-| `unarchive` | Extract a tar (plain/gzip/zstd/lz4) or squashfs archive |
-| `mount` | Mount a squashfs image read-only into the workspace |
+| `unarchive` | Extract a tar (plain/gzip/zstd/lz4), squashfs, or erofs archive |
+| `mount` | Mount a squashfs or erofs image read-only into the workspace |
 | `upload` | Upload file to URL |
 | `read` | Include file contents in callback event |
-| `archive` | Create tar or squashfs archive |
+| `archive` | Create tar, squashfs, or erofs archive |
 | `list` | List files with glob pattern exclusions |
 | `stat` | Include a file's size (bytes) in callback event |
 
@@ -157,7 +157,7 @@ Write inline content to a file:
 
 ### Unarchive Artifact
 
-Extract an archive — tar (plain, gzip-, zstd-, or lz4-compressed) or squashfs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To mount a squashfs image read-only *in place* instead of copying its files out, use the Mount artifact.)
+Extract an archive — tar (plain, gzip-, zstd-, or lz4-compressed), squashfs, or erofs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To mount a squashfs or erofs image read-only *in place* instead of copying its files out, use the Mount artifact.)
 
 ```json
 {
@@ -239,7 +239,7 @@ Often chained with a download:
 
 ### Mount Artifact
 
-Mount a squashfs image read-only into the workspace, so the worker reads it directly without extraction (preserving the compressed, read-only image):
+Mount a squashfs or erofs image read-only into the workspace, so the worker reads it directly without extraction (preserving the read-only image); the format is detected automatically from the image's magic bytes:
 
 ```json
 {
@@ -266,12 +266,12 @@ Set `writable: true` to give the worker a writable copy-on-write view: the read-
 ```
 
 **Options:**
-- `in` - Squashfs image to mount (required)
+- `in` - Squashfs or erofs image to mount (required)
 - `out` - Mount point directory in the workspace (required)
 - `writable` - Overlay a tmpfs-backed writable layer on the image (optional, default read-only)
 - `size` - Cap the writable overlay's tmpfs in MiB (optional, writable only; 0/omitted = kernel default of half of RAM)
 
-> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the `squashfs` kernel module on nodes (plus `overlay` for writable mounts), and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
+> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the matching kernel module on nodes (`squashfs` or `erofs`, plus `overlay` for writable mounts), and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
 
 ### Upload Artifact
 
@@ -311,7 +311,7 @@ The file contents are included in the `orchestrator.job.artifact` event's `conte
 
 ### Archive Artifact
 
-Create a tar or squashfs archive from a file or directory:
+Create a tar, squashfs, or erofs archive from a file or directory:
 
 ```json
 {
@@ -328,8 +328,8 @@ Create a tar or squashfs archive from a file or directory:
 
 - `in` - Source file or directory (required)
 - `out` - Destination archive path (required)
-- `format` - Container format, either `"tar"` or `"squashfs"` (required)
-- `compression` - Compression algorithm: `gzip`, `zstd`, or `lz4`. Defaults to no compression for `tar`; `squashfs` is always compressed (defaults to `gzip`) (optional)
+- `format` - Container format, one of `"tar"`, `"squashfs"`, or `"erofs"` (required)
+- `compression` - Compression algorithm: `gzip`, `zstd`, or `lz4`. Defaults to no compression for `tar`; `squashfs` is always compressed (defaults to `gzip`); `erofs` images are always uncompressed and take no compression (optional)
 - `level` - gzip compression level, `1`-`9`. Only valid when `compression` is `gzip` (optional)
 - `blockSize` - squashfs block size in bytes, a power of 2 from `4096` (4 KiB) to `1048576` (1 MiB). Only valid for `squashfs`; defaults to `1048576` (optional)
 

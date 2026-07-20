@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 )
 
-// MountReadyFile marks that all squashfs mounts are established. The Kubernetes
+// MountReadyFile marks that all image mounts are established. The Kubernetes
 // native sidecar writes it after mounting; the worker's startup probe waits on
 // it so the worker only starts once its mounts are present.
 const MountReadyFile = ".mounts-ready"
 
-// MountOpts configures a mount. The zero value is a plain read-only squashfs
+// MountOpts configures a mount. The zero value is a plain read-only image
 // mount; Writable layers a tmpfs-backed overlay on top, and SizeMiB caps that
 // tmpfs (0 = kernel default).
 type MountOpts struct {
@@ -19,9 +19,10 @@ type MountOpts struct {
 	SizeMiB  int
 }
 
-// Mounter mounts a squashfs image at a target directory and unmounts it. With
-// opts.Writable the image becomes the read-only lower layer of a tmpfs-backed
-// overlay. Implementations are platform-specific (kernel loop mount on Linux).
+// Mounter mounts a read-only filesystem image (squashfs or erofs) at a target
+// directory and unmounts it. With opts.Writable the image becomes the read-only
+// lower layer of a tmpfs-backed overlay. Implementations are platform-specific
+// (kernel loop mount on Linux).
 type Mounter interface {
 	Mount(image, target string, opts MountOpts) error
 	Unmount(target string) error

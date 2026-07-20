@@ -260,6 +260,31 @@ func TestValidate_Archive(t *testing.T) {
 			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", BlockSize: 1 << 20},
 			wantErr: true,
 		},
+		{
+			name:    "erofs default",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs"},
+			wantErr: false,
+		},
+		{
+			name:    "erofs explicit none compression",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs", Compression: "none"},
+			wantErr: false,
+		},
+		{
+			name:    "erofs rejects compression",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs", Compression: "zstd"},
+			wantErr: true,
+		},
+		{
+			name:    "erofs rejects level",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs", Level: 5},
+			wantErr: true,
+		},
+		{
+			name:    "erofs rejects block size",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs", BlockSize: 1 << 20},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
