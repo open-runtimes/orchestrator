@@ -9,13 +9,16 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/KarpelesLab/squashfs"
 	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4/v4"
+	"orchestrator/internal/squashfs"
 )
 
-// KarpelesLab gates its own zstd compressor behind a build tag. We register it
-// directly instead (klauspost is already a dependency) so squashfs zstd works
-// in every build — symmetric with tar, and no build tags to thread through.
+// The forked squashfs package (internal/squashfs) leaves its zstd and lz4
+// compressors unregistered — it only knows the algorithm IDs. We register the
+// codecs here so squashfs zstd and lz4 work in every build, symmetric with tar.
+// lz4 also needs the compressor-options superblock record the forked writer
+// emits; see the raw-block note on the LZ4 handler below.
 func init() {
 	squashfs.RegisterCompHandler(squashfs.ZSTD, &squashfs.CompHandler{
 		Decompress: squashfs.MakeDecompressor(zstd.ZipDecompressor()),
@@ -35,6 +38,37 @@ func init() {
 			return out.Bytes(), nil
 		},
 	})
+
+	// squashfs compresses each block with the raw lz4 *block* format (not the
+	// self-framed stream lz4.NewWriter/NewReader produce) — that's what the
+	// kernel driver and unsquashfs expect, paired with the compressor-options
+	// record the forked writer emits.
+	squashfs.RegisterCompHandler(squashfs.LZ4, &squashfs.CompHandler{
+		Decompress: func(buf []byte) ([]byte, error) {
+			// A squashfs block never exceeds the 1 MiB format maximum, so a
+			// buffer of that size always holds the decompressed output.
+			dst := make([]byte, 1<<20)
+			n, err := lz4.UncompressBlock(buf, dst)
+			if err != nil {
+				return nil, err
+			}
+			return dst[:n], nil
+		},
+		Compress: func(buf []byte) ([]byte, error) {
+			dst := make([]byte, lz4.CompressBlockBound(len(buf)))
+			var c lz4.Compressor
+			n, err := c.CompressBlock(buf, dst)
+			if err != nil {
+				return nil, err
+			}
+			// n == 0 means incompressible; return the input so the writer stores
+			// the block uncompressed (len(compressed) < len(block) is false).
+			if n == 0 {
+				return buf, nil
+			}
+			return dst[:n], nil
+		},
+	})
 }
 
 // squashfsMagic is the 4-byte signature at the start of every squashfs image.
@@ -46,23 +80,30 @@ func isSquashfs(b []byte) bool {
 }
 
 // squashfsCompression maps a compression name to a squashfs algorithm. An empty
-// name defaults to gzip — squashfs is always compressed. zstd requires the
-// binary to be built with the "zstd" tag.
+// name defaults to gzip — squashfs is always compressed. zstd and lz4 are
+// registered by init() above.
 func squashfsCompression(name string) (squashfs.Compression, error) {
 	switch name {
 	case "", "gzip":
 		return squashfs.GZip, nil
 	case "zstd":
 		return squashfs.ZSTD, nil
+	case "lz4":
+		return squashfs.LZ4, nil
 	default:
-		return 0, fmt.Errorf("unsupported squashfs compression: %q (supported: gzip, zstd)", name)
+		return 0, fmt.Errorf("unsupported squashfs compression: %q (supported: gzip, zstd, lz4)", name)
 	}
 }
 
 // writeSquashfs builds a squashfs image at destPath from the file or directory
-// at srcPath.
-func writeSquashfs(srcPath, destPath, compression string) error {
+// at srcPath, using the given compression and block size in bytes (0 = default).
+func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
 	comp, err := squashfsCompression(compression)
+	if err != nil {
+		return err
+	}
+
+	resolvedBlockSize, err := resolveSquashfsBlockSize(blockSize)
 	if err != nil {
 		return err
 	}
@@ -78,7 +119,7 @@ func writeSquashfs(srcPath, destPath, compression string) error {
 	}
 	defer out.Close()
 
-	w, err := squashfs.NewWriter(out, squashfs.WithCompression(comp))
+	w, err := squashfs.NewWriter(out, squashfs.WithCompression(comp), squashfs.WithBlockSize(resolvedBlockSize))
 	if err != nil {
 		return fmt.Errorf("failed to create squashfs writer: %w", err)
 	}

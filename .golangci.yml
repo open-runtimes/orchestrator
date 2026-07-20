@@ -198,6 +198,10 @@ linters:
         - name: use-slices-sort
         - name: use-waitgroup-go
   exclusions:
+    paths:
+      # Vendored fork of github.com/KarpelesLab/squashfs (see internal/squashfs/FORK.md);
+      # keep it close to upstream, don't hold it to our lint rules.
+      - internal/squashfs
     rules:
       - linters:
           - dupl

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4/v4"
 )
 
 // cleanSubdir normalizes a subdir filter to the slash-separated relative form
@@ -36,13 +37,18 @@ func isZstd(b []byte) bool {
 	return len(b) >= 4 && b[0] == 0x28 && b[1] == 0xb5 && b[2] == 0x2f && b[3] == 0xfd
 }
 
+// isLz4 reports whether b starts with the lz4 frame signature.
+func isLz4(b []byte) bool {
+	return len(b) >= 4 && b[0] == 0x04 && b[1] == 0x22 && b[2] == 0x4d && b[3] == 0x18
+}
+
 // isTar reports whether b holds the "ustar" signature at offset 257, which
 // marks an uncompressed tar archive.
 func isTar(b []byte) bool {
 	return len(b) >= 262 && string(b[257:262]) == "ustar"
 }
 
-// Unarchive extracts a tar archive (plain, gzip, or zstd) or a squashfs image;
+// Unarchive extracts a tar archive (plain, gzip, zstd, or lz4) or a squashfs image;
 // the format is detected from the archive's magic bytes. (To mount a squashfs
 // read-only in place instead of materializing its files, use a "mount"
 // artifact.)
@@ -59,7 +65,7 @@ func (a *Unarchive) ArtifactID() string   { return a.ID }
 func (a *Unarchive) ArtifactType() string { return "unarchive" }
 func (a *Unarchive) DependsOn() string    { return a.Depends }
 
-// Apply extracts the archive, detecting squashfs / plain tar / gzip / zstd from
+// Apply extracts the archive, detecting squashfs / plain tar / gzip / zstd / lz4 from
 // its magic bytes. If Strip is set, the first path component of every entry
 // is dropped — git-forge archives (GitHub's "{repo}-{ref}/", Gitea's
 // "{repo}/") wrap the tree in a single root directory whose name the caller
@@ -90,6 +96,8 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 		return a.extractTar(srcPath, destDir, "gzip")
 	case isZstd(header):
 		return a.extractTar(srcPath, destDir, "zstd")
+	case isLz4(header):
+		return a.extractTar(srcPath, destDir, "lz4")
 	case isTar(header):
 		return a.extractTar(srcPath, destDir, "")
 	default:
@@ -98,7 +106,7 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 }
 
 // extractTar extracts a tar archive at srcPath into destDir, decompressing the
-// stream first with the named codec ("gzip", "zstd", or "" for plain tar).
+// stream first with the named codec ("gzip", "zstd", "lz4", or "" for plain tar).
 func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 	file, err := os.Open(srcPath)
 	if err != nil {
@@ -122,6 +130,8 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		}
 		defer zstdReader.Close()
 		src = zstdReader
+	case "lz4":
+		src = lz4.NewReader(file)
 	}
 
 	tarReader := tar.NewReader(src)
