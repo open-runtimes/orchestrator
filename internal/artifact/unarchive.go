@@ -280,6 +280,14 @@ func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 			}
 		}
 
+		// Materialize only directories and regular files, matching extractTar.
+		// Symlinks, FIFOs, devices, and sockets in an image are skipped rather
+		// than mis-written as regular files (or failing the io.Copy below).
+		if !d.IsDir() && !d.Type().IsRegular() {
+			slog.Debug("Skipping non-regular archive entry", "name", p, "type", d.Type())
+			return nil
+		}
+
 		target := filepath.Join(destDir, rel)
 		extracted++
 		if d.IsDir() {
