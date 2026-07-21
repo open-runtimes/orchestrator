@@ -19,6 +19,7 @@ type Request struct {
 	CPU         float64             `json:"cpu"`    // limit (cores)
 	Memory      int                 `json:"memory"` // limit (MB)
 	Environment map[string]string   `json:"environment,omitempty"`
+	Workspace   string              `json:"workspace,omitempty"`   // working directory and shared-volume mount path (default: /workspace)
 	Artifacts   []artifact.Artifact `json:"artifacts,omitempty"`   // materialized into the workspace before serving
 	Volumes     []volume.Volume     `json:"volumes,omitempty"`     // existing Docker volumes / K8s PVCs mounted into the worker
 	Hosts       []string            `json:"hosts,omitempty"`       // RFC-1123 hostnames (≤253 each); hosts[0] is the primary; empty = [{id}.{domain}]
@@ -133,6 +134,7 @@ type requestJSON struct {
 	CPU         float64           `json:"cpu"`
 	Memory      int               `json:"memory"`
 	Environment map[string]string `json:"environment,omitempty"`
+	Workspace   string            `json:"workspace,omitempty"`
 	Artifacts   json.RawMessage   `json:"artifacts,omitempty"`
 	Volumes     []volume.Volume   `json:"volumes,omitempty"`
 	Hosts       []string          `json:"hosts,omitempty"`
@@ -182,6 +184,7 @@ func (r *Request) fromRaw(raw *requestJSON) error {
 	r.CPU = raw.CPU
 	r.Memory = raw.Memory
 	r.Environment = raw.Environment
+	r.Workspace = raw.Workspace
 	r.Volumes = raw.Volumes
 	r.Hosts = raw.Hosts
 	r.Port = raw.Port
@@ -216,6 +219,7 @@ func (r Request) MarshalJSON() ([]byte, error) {
 		CPU:         r.CPU,
 		Memory:      r.Memory,
 		Environment: r.Environment,
+		Workspace:   r.Workspace,
 		Volumes:     r.Volumes,
 		Hosts:       r.Hosts,
 		Port:        r.Port,

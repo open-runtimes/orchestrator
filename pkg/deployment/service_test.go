@@ -29,6 +29,34 @@ func TestValidate_Sandbox(t *testing.T) {
 	}
 }
 
+// Workspace: empty defaults to /workspace; an absolute path is kept; a
+// relative path is rejected.
+func TestValidate_Workspace(t *testing.T) {
+	t.Parallel()
+	s := &Service{artifacts: artifact.DefaultRegistry(), domain: "example.com"}
+
+	req := &Request{ID: "app", Image: "nginx", Port: 8080}
+	s.applyDefaults(req)
+	if req.Workspace != DefaultWorkspace {
+		t.Errorf("default workspace = %q, want %q", req.Workspace, DefaultWorkspace)
+	}
+
+	req = &Request{ID: "app", Image: "nginx", Port: 8080, Workspace: "/usr/local/server"}
+	s.applyDefaults(req)
+	if err := s.validate(req); err != nil {
+		t.Errorf("absolute workspace: want valid, got %v", err)
+	}
+	if req.Workspace != "/usr/local/server" {
+		t.Errorf("workspace overwritten: got %q", req.Workspace)
+	}
+
+	req = &Request{ID: "app", Image: "nginx", Port: 8080, Workspace: "relative/dir"}
+	s.applyDefaults(req)
+	if err := s.validate(req); !errors.Is(err, apperrors.ErrValidation) {
+		t.Errorf("relative workspace: want validation error, got %v", err)
+	}
+}
+
 // Hosts: empty derives the {id}.{domain} primary; multiple hosts validate
 // individually and reject duplicates.
 func TestValidate_Hosts(t *testing.T) {

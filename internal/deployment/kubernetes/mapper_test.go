@@ -147,6 +147,26 @@ func TestBuildDeployment_ProxyReadinessEnv(t *testing.T) {
 	}
 }
 
+// A custom workspace flows to the worker's WorkingDir and every workspace
+// mount, so the shared-volume contract holds across containers.
+func TestBuildDeployment_CustomWorkspace(t *testing.T) {
+	t.Parallel()
+	req := testRequest()
+	req.Workspace = "/usr/local/server"
+	cfg := Config{WorkerImagePullPolicy: "IfNotPresent"}
+
+	w := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.Containers[0]
+
+	if w.WorkingDir != "/usr/local/server" {
+		t.Errorf("WorkingDir: got %s", w.WorkingDir)
+	}
+	for _, m := range w.VolumeMounts {
+		if m.Name == VolumeWorkspace && m.MountPath != "/usr/local/server" {
+			t.Errorf("workspace mount path: got %s", m.MountPath)
+		}
+	}
+}
+
 func TestBuildDeployment_Worker(t *testing.T) {
 	t.Parallel()
 	req := testRequest()

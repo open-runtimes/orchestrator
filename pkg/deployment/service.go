@@ -10,6 +10,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/observability"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -36,6 +37,7 @@ const (
 	DefaultTimeoutSeconds      = 300
 	DefaultStartTimeoutSeconds = 300
 	DefaultReadyTimeoutSeconds = 600
+	DefaultWorkspace           = "/workspace"
 )
 
 // idPattern is an RFC-1123 label: lowercase alphanumeric with interior hyphens.
@@ -247,6 +249,9 @@ func (s *Service) applyDefaults(req *Request) {
 	if req.ReadyTimeoutSeconds <= 0 {
 		req.ReadyTimeoutSeconds = DefaultReadyTimeoutSeconds
 	}
+	if req.Workspace == "" {
+		req.Workspace = DefaultWorkspace
+	}
 	if len(req.Hosts) == 0 && req.ID != "" {
 		req.Hosts = []string{req.ID + "." + s.domain}
 	}
@@ -285,6 +290,10 @@ func (s *Service) validate(req *Request) error {
 
 	if req.Port <= 0 || req.Port > 65535 {
 		return apperrors.Validation("port", "port must be between 1 and 65535")
+	}
+
+	if req.Workspace != "" && !path.IsAbs(req.Workspace) {
+		return apperrors.Validation("workspace", "workspace must be an absolute path")
 	}
 
 	if len(req.Hosts) > maxHosts {

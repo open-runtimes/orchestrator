@@ -63,6 +63,7 @@ Each host is owned by exactly one deployment — claiming a host another deploym
   "cpu": 1,                       // cores (limit); default 1
   "memory": 512,                  // MB (limit); default 512
   "environment": {"KEY": "value"},
+  "workspace": "/workspace",      // working directory + shared-volume mount path; default /workspace
   "hosts": ["web.example.com"],   // hosts[0] is the primary; default [{id}.{domain}]
   "replicas": 2,                  // fixed count when not autoscaling; default 1
   "concurrency": 50,              // hard per-replica in-flight cap; 0 = unlimited
@@ -76,7 +77,7 @@ Each host is owned by exactly one deployment — claiming a host another deploym
     "liveness":  {"path": "/healthz"},
     "startup":   {"path": "/healthz"}
   },
-  "artifacts": [                  // materialized into /workspace before serving
+  "artifacts": [                  // materialized into the workspace before serving
     {"id": "cfg", "type": "write", "in": "...", "out": "config.yaml"}
   ],
   "callback": {                   // required for async requests — see Async below
