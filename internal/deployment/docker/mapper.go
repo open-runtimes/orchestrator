@@ -31,8 +31,19 @@ const (
 	typeArtifacts = "artifacts"
 )
 
-// workspacePath is where the shared volume is mounted in every container.
+// workspacePath is the default shared-volume mount path when a request does
+// not set req.Workspace.
 const workspacePath = "/workspace"
+
+// workspaceOf is the request's workspace (working directory and shared-volume
+// mount path), falling back to the default for specs stored before the field
+// existed. Every container in a deployment must agree on it.
+func workspaceOf(req *deployment.Request) string {
+	if req.Workspace != "" {
+		return req.Workspace
+	}
+	return workspacePath
+}
 
 // defaultReadyTimeout matches the API default for ReadyTimeoutSeconds.
 const defaultReadyTimeout = 600 * time.Second

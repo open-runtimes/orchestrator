@@ -34,11 +34,23 @@ const (
 
 	VolumeWorkspace = "workspace"
 	VolumeTmp       = "tmp"
-	workspacePath   = "/workspace"
+	// workspacePath is the default shared-volume mount path when a request
+	// does not set req.Workspace.
+	workspacePath = "/workspace"
 
 	portNameProxy = "proxy"
 	portNameAdmin = "admin"
 )
+
+// workspaceOf is the request's workspace (working directory and shared-volume
+// mount path), falling back to the default for specs stored before the field
+// existed. Every container in the pod must agree on it.
+func workspaceOf(req *deployment.Request) string {
+	if req.Workspace != "" {
+		return req.Workspace
+	}
+	return workspacePath
+}
 
 // objectNameFor prefixes a deployment ID or revision name into a managed
 // object name: the marker ConfigMap and HTTPRoute are dep-{id}, a revision's
@@ -166,9 +178,10 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 // workspace before the proxy and worker start. Plain init container: runs to
 // completion first.
 func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container {
+	workspace := workspaceOf(req)
 	env := []corev1.EnvVar{
 		{Name: "JOB_ID", Value: objectNameFor(req.ID)},
-		{Name: "SHARED_VOLUME_PATH", Value: workspacePath},
+		{Name: "SHARED_VOLUME_PATH", Value: workspace},
 	}
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
 	// needs to unmarshal them back into concrete types.
@@ -184,7 +197,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
 		Args:            []string{"-mode=pre"},
 		Env:             env,
-		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
+		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
 		SecurityContext: hardenedSecurityContext(cfg),
 	}
 }
@@ -195,6 +208,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 // pod into the Service's EndpointSlice.
 func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
+	workspace := workspaceOf(req)
 	return corev1.Container{
 		Name:            ContainerProxy,
 		Image:           cfg.SidecarImage,
@@ -216,7 +230,7 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 		},
 		RestartPolicy:   &alwaysRestart,
 		Resources:       proxyResources(),
-		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
+		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
 		SecurityContext: hardenedSecurityContext(cfg),
 	}
 }
@@ -269,6 +283,7 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		cmd = []string{"/bin/sh", "-c", req.Command}
 	}
 
+	workspace := workspaceOf(req)
 	_, workerVolumeMounts := kube.PersistentVolumes(req.Volumes)
 
 	env := make([]corev1.EnvVar, 0, len(req.Environment))
@@ -287,9 +302,9 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		ImagePullPolicy: corev1.PullPolicy(cfg.WorkerImagePullPolicy),
 		Command:         cmd,
 		Env:             env,
-		WorkingDir:      workspacePath,
+		WorkingDir:      workspace,
 		VolumeMounts: append([]corev1.VolumeMount{
-			{Name: VolumeWorkspace, MountPath: workspacePath},
+			{Name: VolumeWorkspace, MountPath: workspace},
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
 		Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),

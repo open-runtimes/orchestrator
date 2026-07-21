@@ -199,9 +199,10 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 		return apperrors.Internal("docker.marshalArtifacts", err)
 	}
 
+	workspace := workspaceOf(req)
 	env := []string{
 		"JOB_ID=dep-" + req.ID,
-		"SHARED_VOLUME_PATH=" + workspacePath,
+		"SHARED_VOLUME_PATH=" + workspace,
 		"ARTIFACTS_JSON=" + string(artifactsJSON),
 	}
 	if o.cfg.ArtifactEndpoint != "" {
@@ -220,7 +221,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 			Labels: containerLabels(req.ID, typeArtifacts),
 		},
 		&container.HostConfig{
-			Mounts:     []mount.Mount{o.workspaceMount(req.ID)},
+			Mounts:     []mount.Mount{o.workspaceMount(req.ID, workspace)},
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
 		o.networkingConfig(), nil, artifactsName(req.ID))
@@ -256,16 +257,17 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 		cmd = []string{"/bin/sh", "-c", req.Command}
 	}
 
+	workspace := workspaceOf(req)
 	resp, err := o.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:      req.Image,
 			Cmd:        cmd,
 			Env:        env,
-			WorkingDir: workspacePath,
+			WorkingDir: workspace,
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
 		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID)}, volumeMounts(req.Volumes)...),
+			Mounts: append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, volumeMounts(req.Volumes)...),
 			Resources: container.Resources{
 				NanoCPUs: int64(req.CPU * 1e9),
 				Memory:   int64(req.Memory) * 1024 * 1024,
@@ -500,9 +502,10 @@ func (o *Orchestrator) containersFor(ctx context.Context, id string) ([]containe
 	return o.listManaged(ctx, filters.Arg("label", labelID+"="+id))
 }
 
-// workspaceMount returns the shared workspace volume mount for a deployment.
-func (o *Orchestrator) workspaceMount(id string) mount.Mount {
-	return mount.Mount{Type: mount.TypeVolume, Source: volumeName(id), Target: workspacePath}
+// workspaceMount returns the shared workspace volume mount for a deployment,
+// targeting the request's workspace path.
+func (o *Orchestrator) workspaceMount(id, path string) mount.Mount {
+	return mount.Mount{Type: mount.TypeVolume, Source: volumeName(id), Target: path}
 }
 
 // volumeMounts attaches existing Docker named volumes to the worker container.
