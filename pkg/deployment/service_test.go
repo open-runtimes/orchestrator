@@ -4,6 +4,7 @@ import (
 	"errors"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/pkg/volume"
 	"testing"
 )
 
@@ -54,6 +55,35 @@ func TestValidate_Workspace(t *testing.T) {
 	s.applyDefaults(req)
 	if err := s.validate(req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Errorf("relative workspace: want validation error, got %v", err)
+	}
+}
+
+// A workspace, the reserved /tmp mount, and each user volume must occupy
+// distinct mount targets — colliding targets emit duplicate Docker/K8s mounts.
+func TestValidate_WorkspaceCollision(t *testing.T) {
+	t.Parallel()
+	s := &Service{artifacts: artifact.DefaultRegistry(), domain: "example.com"}
+
+	vol := func(p string) volume.Volume { return volume.Volume{Source: "data", Path: p} }
+
+	rejected := map[string]*Request{
+		"workspace is reserved /tmp":     {ID: "app", Image: "nginx", Port: 8080, Workspace: "/tmp"},
+		"workspace equals a user volume": {ID: "app", Image: "nginx", Port: 8080, Workspace: "/data", Volumes: []volume.Volume{vol("/data")}},
+		"default workspace vs volume":    {ID: "app", Image: "nginx", Port: 8080, Volumes: []volume.Volume{vol("/workspace")}},
+		"user volume claims /tmp":        {ID: "app", Image: "nginx", Port: 8080, Volumes: []volume.Volume{vol("/tmp")}},
+		"two volumes same path":          {ID: "app", Image: "nginx", Port: 8080, Volumes: []volume.Volume{vol("/data"), vol("/data")}},
+	}
+	for name, req := range rejected {
+		s.applyDefaults(req)
+		if err := s.validate(req); !errors.Is(err, apperrors.ErrValidation) {
+			t.Errorf("%s: want validation error, got %v", name, err)
+		}
+	}
+
+	ok := &Request{ID: "app", Image: "nginx", Port: 8080, Workspace: "/usr/local/server", Volumes: []volume.Volume{vol("/data")}}
+	s.applyDefaults(ok)
+	if err := s.validate(ok); err != nil {
+		t.Errorf("distinct targets: want valid, got %v", err)
 	}
 }
 

@@ -32,6 +32,10 @@ const (
 	maxReplicas     = 32
 )
 
+// reservedTmpPath is the emptyDir the worker always gets at /tmp (K8s); no
+// workspace or user volume may claim it.
+const reservedTmpPath = "/tmp"
+
 // Defaults applied by Apply.
 const (
 	DefaultTimeoutSeconds      = 300
@@ -372,6 +376,26 @@ func (s *Service) validate(req *Request) error {
 		if err := v.Validate(fmt.Sprintf("volumes[%d]", i)); err != nil {
 			return err
 		}
+	}
+
+	// Every worker mount target must be unique: the workspace, the reserved
+	// /tmp emptyDir, and each user volume. A collision makes the mapper emit
+	// duplicate Docker/K8s mounts, which fail container creation or shadow the
+	// artifact workspace behind another volume.
+	ws := req.Workspace
+	if ws == "" {
+		ws = DefaultWorkspace
+	}
+	if path.Clean(ws) == reservedTmpPath {
+		return apperrors.Validation("workspace", fmt.Sprintf("workspace must not be the reserved %q mount", reservedTmpPath))
+	}
+	targets := map[string]string{path.Clean(ws): "workspace", reservedTmpPath: "the reserved /tmp mount"}
+	for i, v := range req.Volumes {
+		clean := path.Clean(v.Path)
+		if owner, ok := targets[clean]; ok {
+			return apperrors.Validation(fmt.Sprintf("volumes[%d].path", i), fmt.Sprintf("mount path %q collides with %s", v.Path, owner))
+		}
+		targets[clean] = fmt.Sprintf("volumes[%d]", i)
 	}
 
 	if req.Callback != nil && req.Callback.URL != "" {
