@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"orchestrator/pkg/deployment"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -229,6 +230,109 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	}
 	if got, ok := data["bodyTruncated"].(bool); !ok || got {
 		t.Errorf("bodyTruncated = %v, want false", data["bodyTruncated"])
+	}
+	if d, ok := data["durationSeconds"].(float64); !ok || d <= 0 {
+		t.Errorf("durationSeconds = %v, want a positive number", data["durationSeconds"])
+	}
+}
+
+// A caller-supplied X-Invocation-Id is honored (echoed on the 202 and carried
+// in the callback) so the caller can correlate to its own record.
+func TestBrokerAsyncHonorsClientInvocationID(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	queue := newCaptureQueue()
+	b := newBroker(queue, nil)
+	req := newDataRequest(t, http.MethodPost, nil)
+	req.Header.Set("X-Invocation-Id", "exec-123")
+
+	rec := httptest.NewRecorder()
+	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
+
+	if got := rec.Header().Get("X-Invocation-Id"); got != "exec-123" {
+		t.Fatalf("response X-Invocation-Id = %q, want exec-123", got)
+	}
+	if data := waitEvent(t, queue); data["invocationId"] != "exec-123" {
+		t.Errorf("callback invocationId = %v, want exec-123", data["invocationId"])
+	}
+}
+
+// The response callback echoes the request's method, path, and headers (a
+// caller-defined metadata channel) while the orchestrator's own control
+// headers are stripped.
+func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	queue := newCaptureQueue()
+	b := newBroker(queue, nil)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, "http://h/run?x=1", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Custom-Meta", "hello")
+	req.Header.Set("Prefer", "respond-async")
+	req.Header.Set("X-Invocation-Id", "exec-9")
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Cookie", "session=secret")
+
+	rec := httptest.NewRecorder()
+	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
+
+	data := waitEvent(t, queue)
+	if data["requestMethod"] != http.MethodPut {
+		t.Errorf("requestMethod = %v, want PUT", data["requestMethod"])
+	}
+	if data["requestPath"] != "/run?x=1" {
+		t.Errorf("requestPath = %v, want /run?x=1", data["requestPath"])
+	}
+	headers, ok := data["requestHeaders"].(map[string][]string)
+	if !ok {
+		t.Fatalf("requestHeaders type = %T, want map[string][]string", data["requestHeaders"])
+	}
+	if got := headers["X-Custom-Meta"]; len(got) != 1 || got[0] != "hello" {
+		t.Errorf("custom metadata header not echoed: %v", headers)
+	}
+	// Orchestrator control headers and credentials must not travel in the echo.
+	for _, h := range []string{"Prefer", "X-Invocation-Id", "Authorization", "Cookie"} {
+		if _, ok := headers[h]; ok {
+			t.Errorf("%s must not be echoed: %v", h, headers)
+		}
+	}
+}
+
+// An over-long request path is bounded in the echo (with a flag) so it can't
+// push the callback past a receiver/proxy limit.
+func TestBrokerAsyncBoundsRequestPath(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	queue := newCaptureQueue()
+	b := newBroker(queue, nil)
+
+	long := "/" + strings.Repeat("a", maxEchoedPathBytes+100)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://h"+long, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
+
+	data := waitEvent(t, queue)
+	if got := data["requestPath"].(string); len(got) != maxEchoedPathBytes {
+		t.Errorf("requestPath length = %d, want %d", len(got), maxEchoedPathBytes)
+	}
+	if truncated, _ := data["requestPathTruncated"].(bool); !truncated {
+		t.Errorf("requestPathTruncated = %v, want true", data["requestPathTruncated"])
 	}
 }
 

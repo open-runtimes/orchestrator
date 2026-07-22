@@ -134,7 +134,13 @@ func (b *broker) async(w http.ResponseWriter, r *http.Request, key, host string,
 		return
 	}
 
-	invocationID := newInvocationID()
+	// Honor a caller-supplied correlation id so the callback can be tied back
+	// to the caller's own record; generate one when absent. It's a correlation
+	// id only — never stored, no uniqueness enforced.
+	invocationID := r.Header.Get("X-Invocation-Id")
+	if invocationID == "" {
+		invocationID = newInvocationID()
+	}
 	req := cloneForForward(r, host, body)
 
 	w.Header().Set("X-Invocation-Id", invocationID)
@@ -152,7 +158,7 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 
 	target, err := b.await(ctx, key, hold, c)
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, 0, nil, false, "no serving capacity became ready")
+		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, "no serving capacity became ready")
 		return
 	}
 
@@ -161,17 +167,21 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 	fwd.URL.Host = target.Host
 	fwd.RequestURI = ""
 
+	// Time the workload round-trip only (excludes the cold-start hold above),
+	// so durationSeconds is the request's own processing time.
+	start := time.Now()
 	resp, err := http.DefaultClient.Do(fwd)
+	elapsed := time.Since(start)
 	if err != nil {
 		slog.Warn("Async forward failed", "key", key, "invocationId", invocationID, "error", err)
-		b.dispatchResponse(spec, invocationID, 0, nil, false, "forward failed: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, "forward failed: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxCallbackResponseBody+1))
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, resp.StatusCode, nil, false, "failed to read response: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, nil, false, "failed to read response: "+err.Error())
 		return
 	}
 	truncated := false
@@ -179,14 +189,34 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 		respBody = respBody[:maxCallbackResponseBody]
 		truncated = true
 	}
-	b.dispatchResponse(spec, invocationID, resp.StatusCode, respBody, truncated, "")
+	b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, respBody, truncated, "")
 }
 
-// dispatchResponse emits the orchestrator.deployment.response CloudEvent.
-func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, status int, body []byte, truncated bool, errMsg string) {
+// dispatchResponse emits the orchestrator.deployment.response CloudEvent. The
+// original request's method, path, and headers are echoed back so a consumer
+// can reconstruct its record from the callback alone — request headers double
+// as a caller-defined metadata channel that round-trips.
+func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, duration time.Duration, status int, body []byte, truncated bool, errMsg string) {
 	data := map[string]any{
-		"deploymentId": spec.ID,
-		"invocationId": invocationID,
+		"deploymentId":  spec.ID,
+		"invocationId":  invocationID,
+		"requestMethod": r.Method,
+	}
+	// Bound the echoed path+query (URIs are ASCII, so a byte cut is safe) so a
+	// long request target can't push the callback past a receiver/proxy limit.
+	path := r.URL.RequestURI()
+	if len(path) > maxEchoedPathBytes {
+		path = path[:maxEchoedPathBytes]
+		data["requestPathTruncated"] = true
+	}
+	data["requestPath"] = path
+	if headers, truncated := echoHeaders(r.Header); headers != nil {
+		data["requestHeaders"] = headers
+	} else if truncated {
+		data["requestHeadersTruncated"] = true
+	}
+	if duration > 0 {
+		data["durationSeconds"] = duration.Seconds()
 	}
 	if status > 0 {
 		data["statusCode"] = status
@@ -308,12 +338,56 @@ func proxyTo(target *url.URL, host string) *httputil.ReverseProxy {
 }
 
 // cloneForForward makes a detached copy of the request with a buffered body.
+// isSensitiveHeader reports headers never echoed in the response event: the
+// callback can be logged or stored by the consumer, so credentials meant for
+// the request path must not travel with it.
+func isSensitiveHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie":
+		return true
+	default:
+		return false
+	}
+}
+
+// maxEchoedHeaderBytes and maxEchoedPathBytes bound the echoed request metadata
+// so a request with large headers or a long path can't produce a callback that
+// exceeds a receiver/proxy limit and fails delivery.
+const (
+	maxEchoedHeaderBytes = 16 << 10 // 16 KiB
+	maxEchoedPathBytes   = 4 << 10  // 4 KiB
+)
+
+// echoHeaders copies request headers for the response event, preserving the
+// multi-value shape (joining is lossy for repeated values and invalid for
+// Set-Cookie) and dropping credential-bearing headers. Over the size cap it
+// returns (nil, true) so the caller ships a truncation flag instead of an
+// undeliverable event.
+func echoHeaders(h http.Header) (map[string][]string, bool) {
+	out := make(map[string][]string, len(h))
+	size := 0
+	for name, values := range h {
+		if isSensitiveHeader(name) {
+			continue
+		}
+		for _, v := range values {
+			size += len(name) + len(v)
+		}
+		out[name] = values
+	}
+	if size > maxEchoedHeaderBytes {
+		return nil, true
+	}
+	return out, false
+}
+
 func cloneForForward(r *http.Request, host string, body []byte) *http.Request {
 	req := r.Clone(context.Background())
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 	req.Host = host
 	req.Header.Del("Prefer")
+	req.Header.Del("X-Invocation-Id")
 	return req
 }
 

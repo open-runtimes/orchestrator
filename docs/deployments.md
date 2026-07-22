@@ -180,6 +180,8 @@ Notes:
 - Async **requires** a `callback` on the deployment spec — without one the request is rejected with `400`.
 - The preference token is matched case-insensitively, but combined RFC 7240 forms (`respond-async, wait=10`) are not recognized and are served synchronously.
 - Delivery is at-most-once: nothing is stored, and `X-Invocation-Id` is a correlation ID, not a polling handle.
+- Send your own `X-Invocation-Id` on the request to set the correlation id (echoed on the `202` and carried in the callback); omit it and the orchestrator generates one.
+- The callback echoes the request's `requestMethod`, `requestPath`, and `requestHeaders`, so the result is self-describing without keeping any local state keyed by the invocation id.
 - Request bodies are buffered up to 10 MiB (`413` beyond that).
 
 ## Timeouts and failure semantics
