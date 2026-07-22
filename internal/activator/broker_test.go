@@ -232,6 +232,75 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	}
 }
 
+// A caller-supplied X-Invocation-Id is honored (echoed on the 202 and carried
+// in the callback) so the caller can correlate to its own record.
+func TestBrokerAsyncHonorsClientInvocationID(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	queue := newCaptureQueue()
+	b := newBroker(queue, nil)
+	req := newDataRequest(t, http.MethodPost, nil)
+	req.Header.Set("X-Invocation-Id", "exec-123")
+
+	rec := httptest.NewRecorder()
+	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
+
+	if got := rec.Header().Get("X-Invocation-Id"); got != "exec-123" {
+		t.Fatalf("response X-Invocation-Id = %q, want exec-123", got)
+	}
+	if data := waitEvent(t, queue); data["invocationId"] != "exec-123" {
+		t.Errorf("callback invocationId = %v, want exec-123", data["invocationId"])
+	}
+}
+
+// The response callback echoes the request's method, path, and headers (a
+// caller-defined metadata channel) while the orchestrator's own control
+// headers are stripped.
+func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	queue := newCaptureQueue()
+	b := newBroker(queue, nil)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, "http://h/run?x=1", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Custom-Meta", "hello")
+	req.Header.Set("Prefer", "respond-async")
+	req.Header.Set("X-Invocation-Id", "exec-9")
+
+	rec := httptest.NewRecorder()
+	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
+
+	data := waitEvent(t, queue)
+	if data["requestMethod"] != http.MethodPut {
+		t.Errorf("requestMethod = %v, want PUT", data["requestMethod"])
+	}
+	if data["requestPath"] != "/run?x=1" {
+		t.Errorf("requestPath = %v, want /run?x=1", data["requestPath"])
+	}
+	headers, ok := data["requestHeaders"].(map[string]string)
+	if !ok {
+		t.Fatalf("requestHeaders type = %T, want map[string]string", data["requestHeaders"])
+	}
+	if headers["X-Custom-Meta"] != "hello" {
+		t.Errorf("custom metadata header not echoed: %v", headers)
+	}
+	if _, ok := headers["Prefer"]; ok {
+		t.Errorf("Prefer must be stripped from the echo: %v", headers)
+	}
+	if _, ok := headers["X-Invocation-Id"]; ok {
+		t.Errorf("X-Invocation-Id must be stripped from the echo: %v", headers)
+	}
+}
+
 // Binary (non-UTF-8) response bodies must survive the JSON callback intact —
 // the rule the two edges drifted apart on before the broker unified them.
 func TestBrokerAsyncCallbackBase64ForBinaryBody(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/pkg/cloudevent"
 	"orchestrator/pkg/deployment"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -134,7 +135,13 @@ func (b *broker) async(w http.ResponseWriter, r *http.Request, key, host string,
 		return
 	}
 
-	invocationID := newInvocationID()
+	// Honor a caller-supplied correlation id so the callback can be tied back
+	// to the caller's own record; generate one when absent. It's a correlation
+	// id only — never stored, no uniqueness enforced.
+	invocationID := r.Header.Get("X-Invocation-Id")
+	if invocationID == "" {
+		invocationID = newInvocationID()
+	}
 	req := cloneForForward(r, host, body)
 
 	w.Header().Set("X-Invocation-Id", invocationID)
@@ -152,7 +159,7 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 
 	target, err := b.await(ctx, key, hold, c)
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, 0, nil, false, "no serving capacity became ready")
+		b.dispatchResponse(spec, invocationID, r, 0, nil, false, "no serving capacity became ready")
 		return
 	}
 
@@ -164,14 +171,14 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 	resp, err := http.DefaultClient.Do(fwd)
 	if err != nil {
 		slog.Warn("Async forward failed", "key", key, "invocationId", invocationID, "error", err)
-		b.dispatchResponse(spec, invocationID, 0, nil, false, "forward failed: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, 0, nil, false, "forward failed: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxCallbackResponseBody+1))
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, resp.StatusCode, nil, false, "failed to read response: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, resp.StatusCode, nil, false, "failed to read response: "+err.Error())
 		return
 	}
 	truncated := false
@@ -179,14 +186,20 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 		respBody = respBody[:maxCallbackResponseBody]
 		truncated = true
 	}
-	b.dispatchResponse(spec, invocationID, resp.StatusCode, respBody, truncated, "")
+	b.dispatchResponse(spec, invocationID, r, resp.StatusCode, respBody, truncated, "")
 }
 
-// dispatchResponse emits the orchestrator.deployment.response CloudEvent.
-func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, status int, body []byte, truncated bool, errMsg string) {
+// dispatchResponse emits the orchestrator.deployment.response CloudEvent. The
+// original request's method, path, and headers are echoed back so a consumer
+// can reconstruct its record from the callback alone — request headers double
+// as a caller-defined metadata channel that round-trips.
+func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, status int, body []byte, truncated bool, errMsg string) {
 	data := map[string]any{
-		"deploymentId": spec.ID,
-		"invocationId": invocationID,
+		"deploymentId":   spec.ID,
+		"invocationId":   invocationID,
+		"requestMethod":  r.Method,
+		"requestPath":    r.URL.RequestURI(),
+		"requestHeaders": flattenHeader(r.Header),
 	}
 	if status > 0 {
 		data["statusCode"] = status
@@ -308,12 +321,23 @@ func proxyTo(target *url.URL, host string) *httputil.ReverseProxy {
 }
 
 // cloneForForward makes a detached copy of the request with a buffered body.
+// flattenHeader collapses an http.Header into a string map for the response
+// event, joining repeated values the way a receiver would read them.
+func flattenHeader(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for name, values := range h {
+		out[name] = strings.Join(values, ", ")
+	}
+	return out
+}
+
 func cloneForForward(r *http.Request, host string, body []byte) *http.Request {
 	req := r.Clone(context.Background())
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 	req.Host = host
 	req.Header.Del("Prefer")
+	req.Header.Del("X-Invocation-Id")
 	return req
 }
 
