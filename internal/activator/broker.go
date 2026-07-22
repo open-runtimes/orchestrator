@@ -159,7 +159,7 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 
 	target, err := b.await(ctx, key, hold, c)
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, r, 0, nil, false, "no serving capacity became ready")
+		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, "no serving capacity became ready")
 		return
 	}
 
@@ -168,17 +168,21 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 	fwd.URL.Host = target.Host
 	fwd.RequestURI = ""
 
+	// Time the workload round-trip only (excludes the cold-start hold above),
+	// so durationSeconds is the request's own processing time.
+	start := time.Now()
 	resp, err := http.DefaultClient.Do(fwd)
+	elapsed := time.Since(start)
 	if err != nil {
 		slog.Warn("Async forward failed", "key", key, "invocationId", invocationID, "error", err)
-		b.dispatchResponse(spec, invocationID, r, 0, nil, false, "forward failed: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, "forward failed: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxCallbackResponseBody+1))
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, r, resp.StatusCode, nil, false, "failed to read response: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, nil, false, "failed to read response: "+err.Error())
 		return
 	}
 	truncated := false
@@ -186,20 +190,23 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 		respBody = respBody[:maxCallbackResponseBody]
 		truncated = true
 	}
-	b.dispatchResponse(spec, invocationID, r, resp.StatusCode, respBody, truncated, "")
+	b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, respBody, truncated, "")
 }
 
 // dispatchResponse emits the orchestrator.deployment.response CloudEvent. The
 // original request's method, path, and headers are echoed back so a consumer
 // can reconstruct its record from the callback alone — request headers double
 // as a caller-defined metadata channel that round-trips.
-func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, status int, body []byte, truncated bool, errMsg string) {
+func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, duration time.Duration, status int, body []byte, truncated bool, errMsg string) {
 	data := map[string]any{
 		"deploymentId":   spec.ID,
 		"invocationId":   invocationID,
 		"requestMethod":  r.Method,
 		"requestPath":    r.URL.RequestURI(),
 		"requestHeaders": flattenHeader(r.Header),
+	}
+	if duration > 0 {
+		data["durationSeconds"] = duration.Seconds()
 	}
 	if status > 0 {
 		data["statusCode"] = status

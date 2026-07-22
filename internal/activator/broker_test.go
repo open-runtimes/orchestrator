@@ -230,6 +230,9 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	if got, ok := data["bodyTruncated"].(bool); !ok || got {
 		t.Errorf("bodyTruncated = %v, want false", data["bodyTruncated"])
 	}
+	if d, ok := data["durationSeconds"].(float64); !ok || d <= 0 {
+		t.Errorf("durationSeconds = %v, want a positive number", data["durationSeconds"])
+	}
 }
 
 // A caller-supplied X-Invocation-Id is honored (echoed on the 202 and carried

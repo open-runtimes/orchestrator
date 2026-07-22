@@ -66,9 +66,9 @@ X-Signature-256: sha256=ab12...
 
 | Type | When | `data` |
 | --- | --- | --- |
-| `orchestrator.deployment.response` | An [async request](deployments.md#async-requests) completed | `{"deploymentId", "invocationId", "requestMethod", "requestPath", "requestHeaders", "statusCode", "body", "bodyEncoding", "bodyTruncated", "error"}` |
+| `orchestrator.deployment.response` | An [async request](deployments.md#async-requests) completed | `{"deploymentId", "invocationId", "requestMethod", "requestPath", "requestHeaders", "durationSeconds", "statusCode", "body", "bodyEncoding", "bodyTruncated", "error"}` |
 
-`invocationId` matches the `X-Invocation-Id` header from the original `202`. `requestMethod`, `requestPath`, and `requestHeaders` echo the original request (minus the orchestrator's own `Prefer`/`X-Invocation-Id`), so a consumer can reconstruct its record from the callback alone — request headers double as a caller-defined metadata channel that round-trips. `body` is the workload's response body; when it isn't valid UTF-8 it arrives base64-encoded with `"bodyEncoding": "base64"`, and bodies over 1 MiB are truncated with `"bodyTruncated": true`. If the request never reached a replica (cold-start timeout, forward failure), `statusCode` and `body` are absent and `error` says why.
+`invocationId` matches the `X-Invocation-Id` header from the original `202`. `requestMethod`, `requestPath`, and `requestHeaders` echo the original request (minus the orchestrator's own `Prefer`/`X-Invocation-Id`), so a consumer can reconstruct its record from the callback alone — request headers double as a caller-defined metadata channel that round-trips. `durationSeconds` is the workload round-trip time (it excludes any cold-start wait) and is absent when the request never reached a replica. `body` is the workload's response body; when it isn't valid UTF-8 it arrives base64-encoded with `"bodyEncoding": "base64"`, and bodies over 1 MiB are truncated with `"bodyTruncated": true`. If the request never reached a replica (cold-start timeout, forward failure), `statusCode` and `body` are absent and `error` says why.
 
 ### Pools
 
