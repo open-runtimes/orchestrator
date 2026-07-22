@@ -201,8 +201,15 @@ func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string,
 		"deploymentId":  spec.ID,
 		"invocationId":  invocationID,
 		"requestMethod": r.Method,
-		"requestPath":   r.URL.RequestURI(),
 	}
+	// Bound the echoed path+query (URIs are ASCII, so a byte cut is safe) so a
+	// long request target can't push the callback past a receiver/proxy limit.
+	path := r.URL.RequestURI()
+	if len(path) > maxEchoedPathBytes {
+		path = path[:maxEchoedPathBytes]
+		data["requestPathTruncated"] = true
+	}
+	data["requestPath"] = path
 	if headers, truncated := echoHeaders(r.Header); headers != nil {
 		data["requestHeaders"] = headers
 	} else if truncated {
@@ -331,20 +338,25 @@ func proxyTo(target *url.URL, host string) *httputil.ReverseProxy {
 }
 
 // cloneForForward makes a detached copy of the request with a buffered body.
-// sensitiveHeaders are never echoed in the response event: the callback can be
-// logged or stored by the consumer, so credentials meant for the request path
-// must not travel with it.
-var sensitiveHeaders = map[string]bool{
-	"Authorization":       true,
-	"Proxy-Authorization": true,
-	"Cookie":              true,
-	"Set-Cookie":          true,
+// isSensitiveHeader reports headers never echoed in the response event: the
+// callback can be logged or stored by the consumer, so credentials meant for
+// the request path must not travel with it.
+func isSensitiveHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie":
+		return true
+	default:
+		return false
+	}
 }
 
-// maxEchoedHeaderBytes bounds the echoed request headers so a request with
-// large headers can't produce a callback that exceeds a receiver/proxy limit
-// and fails delivery.
-const maxEchoedHeaderBytes = 16 << 10 // 16 KiB
+// maxEchoedHeaderBytes and maxEchoedPathBytes bound the echoed request metadata
+// so a request with large headers or a long path can't produce a callback that
+// exceeds a receiver/proxy limit and fails delivery.
+const (
+	maxEchoedHeaderBytes = 16 << 10 // 16 KiB
+	maxEchoedPathBytes   = 4 << 10  // 4 KiB
+)
 
 // echoHeaders copies request headers for the response event, preserving the
 // multi-value shape (joining is lossy for repeated values and invalid for
@@ -355,7 +367,7 @@ func echoHeaders(h http.Header) (map[string][]string, bool) {
 	out := make(map[string][]string, len(h))
 	size := 0
 	for name, values := range h {
-		if sensitiveHeaders[http.CanonicalHeaderKey(name)] {
+		if isSensitiveHeader(name) {
 			continue
 		}
 		for _, v := range values {

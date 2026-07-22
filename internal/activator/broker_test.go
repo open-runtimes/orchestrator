@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"orchestrator/pkg/deployment"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -303,6 +304,35 @@ func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
 		if _, ok := headers[h]; ok {
 			t.Errorf("%s must not be echoed: %v", h, headers)
 		}
+	}
+}
+
+// An over-long request path is bounded in the echo (with a flag) so it can't
+// push the callback past a receiver/proxy limit.
+func TestBrokerAsyncBoundsRequestPath(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	queue := newCaptureQueue()
+	b := newBroker(queue, nil)
+
+	long := "/" + strings.Repeat("a", maxEchoedPathBytes+100)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://h"+long, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
+
+	data := waitEvent(t, queue)
+	if got := data["requestPath"].(string); len(got) != maxEchoedPathBytes {
+		t.Errorf("requestPath length = %d, want %d", len(got), maxEchoedPathBytes)
+	}
+	if truncated, _ := data["requestPathTruncated"].(bool); !truncated {
+		t.Errorf("requestPathTruncated = %v, want true", data["requestPathTruncated"])
 	}
 }
 
