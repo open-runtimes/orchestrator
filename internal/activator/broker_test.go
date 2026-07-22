@@ -278,6 +278,8 @@ func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
 	req.Header.Set("X-Custom-Meta", "hello")
 	req.Header.Set("Prefer", "respond-async")
 	req.Header.Set("X-Invocation-Id", "exec-9")
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Cookie", "session=secret")
 
 	rec := httptest.NewRecorder()
 	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
@@ -289,18 +291,18 @@ func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
 	if data["requestPath"] != "/run?x=1" {
 		t.Errorf("requestPath = %v, want /run?x=1", data["requestPath"])
 	}
-	headers, ok := data["requestHeaders"].(map[string]string)
+	headers, ok := data["requestHeaders"].(map[string][]string)
 	if !ok {
-		t.Fatalf("requestHeaders type = %T, want map[string]string", data["requestHeaders"])
+		t.Fatalf("requestHeaders type = %T, want map[string][]string", data["requestHeaders"])
 	}
-	if headers["X-Custom-Meta"] != "hello" {
+	if got := headers["X-Custom-Meta"]; len(got) != 1 || got[0] != "hello" {
 		t.Errorf("custom metadata header not echoed: %v", headers)
 	}
-	if _, ok := headers["Prefer"]; ok {
-		t.Errorf("Prefer must be stripped from the echo: %v", headers)
-	}
-	if _, ok := headers["X-Invocation-Id"]; ok {
-		t.Errorf("X-Invocation-Id must be stripped from the echo: %v", headers)
+	// Orchestrator control headers and credentials must not travel in the echo.
+	for _, h := range []string{"Prefer", "X-Invocation-Id", "Authorization", "Cookie"} {
+		if _, ok := headers[h]; ok {
+			t.Errorf("%s must not be echoed: %v", h, headers)
+		}
 	}
 }
 

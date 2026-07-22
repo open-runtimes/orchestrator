@@ -14,7 +14,6 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/pkg/cloudevent"
 	"orchestrator/pkg/deployment"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -199,11 +198,15 @@ func (b *broker) forwardAsync(r *http.Request, key string, spec *deployment.Requ
 // as a caller-defined metadata channel that round-trips.
 func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, duration time.Duration, status int, body []byte, truncated bool, errMsg string) {
 	data := map[string]any{
-		"deploymentId":   spec.ID,
-		"invocationId":   invocationID,
-		"requestMethod":  r.Method,
-		"requestPath":    r.URL.RequestURI(),
-		"requestHeaders": flattenHeader(r.Header),
+		"deploymentId":  spec.ID,
+		"invocationId":  invocationID,
+		"requestMethod": r.Method,
+		"requestPath":   r.URL.RequestURI(),
+	}
+	if headers, truncated := echoHeaders(r.Header); headers != nil {
+		data["requestHeaders"] = headers
+	} else if truncated {
+		data["requestHeadersTruncated"] = true
 	}
 	if duration > 0 {
 		data["durationSeconds"] = duration.Seconds()
@@ -328,14 +331,42 @@ func proxyTo(target *url.URL, host string) *httputil.ReverseProxy {
 }
 
 // cloneForForward makes a detached copy of the request with a buffered body.
-// flattenHeader collapses an http.Header into a string map for the response
-// event, joining repeated values the way a receiver would read them.
-func flattenHeader(h http.Header) map[string]string {
-	out := make(map[string]string, len(h))
+// sensitiveHeaders are never echoed in the response event: the callback can be
+// logged or stored by the consumer, so credentials meant for the request path
+// must not travel with it.
+var sensitiveHeaders = map[string]bool{
+	"Authorization":       true,
+	"Proxy-Authorization": true,
+	"Cookie":              true,
+	"Set-Cookie":          true,
+}
+
+// maxEchoedHeaderBytes bounds the echoed request headers so a request with
+// large headers can't produce a callback that exceeds a receiver/proxy limit
+// and fails delivery.
+const maxEchoedHeaderBytes = 16 << 10 // 16 KiB
+
+// echoHeaders copies request headers for the response event, preserving the
+// multi-value shape (joining is lossy for repeated values and invalid for
+// Set-Cookie) and dropping credential-bearing headers. Over the size cap it
+// returns (nil, true) so the caller ships a truncation flag instead of an
+// undeliverable event.
+func echoHeaders(h http.Header) (map[string][]string, bool) {
+	out := make(map[string][]string, len(h))
+	size := 0
 	for name, values := range h {
-		out[name] = strings.Join(values, ", ")
+		if sensitiveHeaders[http.CanonicalHeaderKey(name)] {
+			continue
+		}
+		for _, v := range values {
+			size += len(name) + len(v)
+		}
+		out[name] = values
 	}
-	return out
+	if size > maxEchoedHeaderBytes {
+		return nil, true
+	}
+	return out, false
 }
 
 func cloneForForward(r *http.Request, host string, body []byte) *http.Request {
