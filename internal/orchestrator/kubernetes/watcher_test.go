@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,6 +80,7 @@ func TestJobTracker_PodDeletedAfterWorkerExit_EmitsComplete(t *testing.T) {
 func TestJobTracker_AlreadyTerminatedSkipsEmission(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)
+	w.termStart = time.Now()
 
 	tr := newJobTracker(w, &watchConfig{
 		jobID: "takeover-job",
@@ -86,12 +88,38 @@ func TestJobTracker_AlreadyTerminatedSkipsEmission(t *testing.T) {
 		dest:  &job.CallbackDest{URL: "https://cb.example"},
 	})
 
-	// New tracker, pod already Terminated — assume a previous leader emitted.
-	// No callbacks should fire.
-	tr.handleUpdate(t.Context(), podWithWorkerTerminated(0, corev1.PodSucceeded))
+	// Pod created before this leadership term, already Terminated on first
+	// sight — assume the previous leader emitted. No callbacks should fire.
+	pod := podWithWorkerTerminated(0, corev1.PodSucceeded)
+	pod.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
+	tr.handleUpdate(t.Context(), pod)
 	if len(capture.types()) != 0 {
 		t.Errorf("expected no callbacks for already-terminated pod on first sight, got %v", capture.types())
 	}
+}
+
+func TestJobTracker_FastJobFirstSeenTerminal_EmitsFullLifecycle(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+	w.termStart = time.Now().Add(-time.Minute)
+
+	tr := newJobTracker(w, &watchConfig{
+		jobID: "fast-job",
+		image: "alpine:latest",
+		dest:  &job.CallbackDest{URL: "https://cb.example"},
+	})
+
+	// Pod created during this leadership term but first observed with the
+	// worker already terminated (fast job, informer coalesced the running
+	// state away). No previous leader can have emitted anything — the full
+	// lifecycle must be synthesized from the terminal container status.
+	pod := podWithWorkerTerminated(0, corev1.PodSucceeded)
+	pod.CreationTimestamp = metav1.Now()
+	tr.handleUpdate(t.Context(), pod)
+
+	capture.assertHasType(t, job.CallbackTypeStart)
+	capture.assertHasType(t, job.CallbackTypeExit)
+	capture.assertHasType(t, job.CallbackTypeComplete)
 }
 
 func TestJobTracker_HappyPath(t *testing.T) {

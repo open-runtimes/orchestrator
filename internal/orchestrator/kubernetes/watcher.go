@@ -42,6 +42,7 @@ type k8sLifecycleWatcher struct {
 	emitter      *job.CallbackEmitter
 	metrics      *observability.Metrics // may be nil in tests
 	logFlushWait time.Duration          // max time buffered log lines wait before a flush
+	termStart    time.Time              // when the current leadership term began; set by Start
 
 	mu       sync.Mutex
 	trackers map[string]*jobTracker
@@ -65,6 +66,7 @@ func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitt
 // Safe to call repeatedly (e.g. on each leader-acquire) because a new
 // informer factory is built per call.
 func (w *k8sLifecycleWatcher) Start(ctx context.Context) {
+	w.termStart = time.Now()
 	labelSelector := LabelManagedBy + "=" + ManagedByValue
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		w.client,
@@ -298,15 +300,24 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		t.startLogsLocked(ctx, pod.Name)
 	}
 
-	// If we observe a Pod already in terminal state on first sight, assume a
-	// previous leader (or the previous incarnation of this process before a
-	// restart) already emitted Started + Exited callbacks. Mark the tracker
-	// finished so subsequent events on this Pod are ignored — duplicates on
-	// leader failover would otherwise double-fire the callback pipeline.
+	// A Pod first observed with the worker already terminated is one of two
+	// indistinguishable-by-status cases: created before this leadership term
+	// (the previous leader emitted its callbacks — suppress, or failover
+	// would double-fire), or created during this term by a fast job whose
+	// running state the informer never surfaced (nobody emitted — synthesize
+	// Started here and fall through so the normal exit/complete path fires,
+	// with a faithful start time from the terminal container status).
 	if !t.state.isStarted && worker.State.Terminated != nil {
+		if !pod.CreationTimestamp.After(t.watcher.termStart) {
+			t.state.isStarted = true
+			t.state.isExited = true
+			return isPodTerminal(pod)
+		}
 		t.state.isStarted = true
-		t.state.isExited = true
-		return isPodTerminal(pod)
+		t.state.startTime = worker.State.Terminated.StartedAt.Time
+		t.logger.Info("Worker started (first observed already terminated)")
+		t.emit(job.Started{})
+		t.startLogsLocked(ctx, pod.Name)
 	}
 
 	if t.state.isStarted && !t.state.isExited && worker.State.Terminated != nil {
