@@ -175,7 +175,7 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			_ = o.ctrl.Reserve(jobID)
 			o.ctrl.Commit(jobID, handle, nil)
 			_ = o.ctrl.Apply(jobID, job.Started{})
-			_ = o.ctrl.Apply(jobID, job.Exited{ExitCode: cs.workerExitCode})
+			_ = o.ctrl.Apply(jobID, job.Exited{ExitCode: cs.workerExitCode, Reason: exitReason(cs.workerExitCode, cs.workerOOMKilled)})
 
 		case sidecarRunning && jc.worker == nil:
 			// Sidecar running but no worker — shouldn't happen in normal flow.

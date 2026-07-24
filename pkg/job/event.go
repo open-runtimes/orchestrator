@@ -96,13 +96,16 @@ func (b *EventBuilder) BuildCompleteEvent() *cloudevent.Event {
 }
 
 // BuildExitEvent creates an exit event.
-func (b *EventBuilder) BuildExitEvent(exitCode int, image string, durationSeconds float64, err error) *cloudevent.Event {
+func (b *EventBuilder) BuildExitEvent(exitCode int, reason, image string, durationSeconds float64, err error) *cloudevent.Event {
 	data := map[string]any{
 		"jobId":           b.subject,
 		"exitCode":        exitCode,
 		"image":           image,
 		"durationSeconds": durationSeconds,
 		"meta":            b.meta,
+	}
+	if reason != "" {
+		data["reason"] = reason
 	}
 	if err != nil {
 		data["error"] = err.Error()

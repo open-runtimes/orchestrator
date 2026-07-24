@@ -22,7 +22,16 @@ type Started struct{}
 type Exited struct {
 	ExitCode int
 	Duration time.Duration
+
+	// Reason names why the workload terminated when the backend can attest
+	// to a cause beyond the exit code (e.g. ExitReasonOOM). Empty when the
+	// backend has nothing to add — consumers must treat unknown values as
+	// equivalent to empty.
+	Reason string
 }
+
+// ExitReasonOOM marks a workload killed by the kernel OOM killer.
+const ExitReasonOOM = "oom"
 
 // Failed is emitted when the workload fails before or without starting
 // (e.g. sidecar crash, failure to start the container).

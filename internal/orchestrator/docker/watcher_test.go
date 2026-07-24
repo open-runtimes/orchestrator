@@ -57,6 +57,26 @@ func (c *captureListener) types() []string {
 
 // --- tests ---
 
+func TestExitReason(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		exitCode  int
+		oomKilled bool
+		want      string
+	}{
+		{"oom kill", 137, true, job.ExitReasonOOM},
+		{"plain failure", 1, false, ""},
+		{"sigkill without oom", 137, false, ""},
+		{"child oom survived by entrypoint", 0, true, ""},
+	}
+	for _, tt := range tests {
+		if got := exitReason(tt.exitCode, tt.oomKilled); got != tt.want {
+			t.Errorf("%s: exitReason(%d, %v) = %q, want %q", tt.name, tt.exitCode, tt.oomKilled, got, tt.want)
+		}
+	}
+}
+
 func TestLifecycle_HappyPath(t *testing.T) {
 	t.Parallel()
 	ctrl := job.NewMemoryStore[dockerHandle]()

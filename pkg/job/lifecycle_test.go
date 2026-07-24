@@ -53,6 +53,33 @@ func TestEmitCallback_Exited_EmitsExitEvent(t *testing.T) {
 	}
 }
 
+func TestEmitCallback_Exited_ReasonInPayload(t *testing.T) {
+	em := NewCallbackEmitter()
+	var captured []*CallbackEnvelope
+	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
+
+	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb"}, Exited{ExitCode: 137, Reason: ExitReasonOOM})
+
+	if len(captured) != 1 || captured[0].Payload.Data["reason"] != ExitReasonOOM {
+		t.Errorf("want exit event with reason %q, got %v", ExitReasonOOM, captured)
+	}
+}
+
+func TestEmitCallback_Exited_NoReason_OmitsField(t *testing.T) {
+	em := NewCallbackEmitter()
+	var captured []*CallbackEnvelope
+	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
+
+	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb"}, Exited{ExitCode: 137})
+
+	if len(captured) != 1 {
+		t.Fatalf("want 1 exit event, got %v", captured)
+	}
+	if _, ok := captured[0].Payload.Data["reason"]; ok {
+		t.Errorf("want reason omitted when empty, got %v", captured[0].Payload.Data)
+	}
+}
+
 func TestEmitCallback_Exited_NilDest_StillEmits(t *testing.T) {
 	// Exit events are always emitted even without a callback dest (no URL though).
 	em := NewCallbackEmitter()

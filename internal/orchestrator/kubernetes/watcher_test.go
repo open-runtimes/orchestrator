@@ -150,6 +150,34 @@ func TestJobTracker_HappyPath(t *testing.T) {
 	capture.assertHasType(t, job.CallbackTypeComplete)
 }
 
+func TestJobTracker_OOMKilledWorker_ExitCarriesReason(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	var reasons []any
+	w.emitter.Register(func(e *job.CallbackEnvelope) {
+		if e.Payload != nil && e.Payload.Type == job.CallbackTypeExit {
+			reasons = append(reasons, e.Payload.Data["reason"])
+		}
+	})
+
+	tr := newJobTracker(w, &watchConfig{
+		jobID: "oom-job",
+		image: "alpine:latest",
+		dest:  &job.CallbackDest{URL: "https://cb.example"},
+	})
+
+	tr.handleUpdate(t.Context(), podWithWorkerRunning())
+	pod := podWithWorkerTerminated(137, corev1.PodRunning)
+	pod.Status.ContainerStatuses[0].State.Terminated.Reason = "OOMKilled"
+	tr.handleUpdate(t.Context(), pod)
+
+	capture.assertHasType(t, job.CallbackTypeExit)
+	if len(reasons) != 1 || reasons[0] != job.ExitReasonOOM {
+		t.Errorf("want exit reason %q, got %v", job.ExitReasonOOM, reasons)
+	}
+}
+
 // --- helpers ---
 
 type eventCapture struct {

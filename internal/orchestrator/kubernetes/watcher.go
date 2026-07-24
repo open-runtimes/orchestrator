@@ -323,14 +323,18 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 	if t.state.isStarted && !t.state.isExited && worker.State.Terminated != nil {
 		t.state.isExited = true
 		exitCode := int(worker.State.Terminated.ExitCode)
+		reason := ""
+		if exitCode != 0 && worker.State.Terminated.Reason == "OOMKilled" {
+			reason = job.ExitReasonOOM
+		}
 		duration := time.Duration(0)
 		if !worker.State.Terminated.FinishedAt.IsZero() && !t.state.startTime.IsZero() {
 			duration = worker.State.Terminated.FinishedAt.Sub(t.state.startTime)
 		}
-		t.logger.Info("Worker exited", "exitCode", exitCode)
+		t.logger.Info("Worker exited", "exitCode", exitCode, "reason", reason)
 		time.Sleep(500 * time.Millisecond) // allow log flush
 		t.stopLogsLocked()
-		t.emit(job.Exited{ExitCode: exitCode, Duration: duration})
+		t.emit(job.Exited{ExitCode: exitCode, Reason: reason, Duration: duration})
 		// Not terminal yet: the native sidecar is still processing post-job
 		// artifacts. The pod phase turning terminal marks completion below.
 	}

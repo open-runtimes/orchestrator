@@ -31,9 +31,9 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 			})
 		}
 	case Exited:
-		emitExitCallback(em, jobID, image, dest, ev.ExitCode, ev.Duration.Seconds())
+		emitExitCallback(em, jobID, image, dest, ev.ExitCode, ev.Reason, ev.Duration.Seconds())
 	case Failed:
-		emitExitCallback(em, jobID, image, dest, -1, 0)
+		emitExitCallback(em, jobID, image, dest, -1, "", 0)
 	case Completed:
 		if dest == nil || !MatchesCallbackFilter(CallbackTypeComplete, dest.Events) {
 			return
@@ -57,7 +57,7 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 	}
 }
 
-func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, exitCode int, durationSeconds float64) {
+func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, exitCode int, reason string, durationSeconds float64) {
 	var exitErr error
 	if exitCode != 0 {
 		exitErr = fmt.Errorf("exit code %d", exitCode)
@@ -74,7 +74,7 @@ func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDe
 	}
 
 	builder := NewEventBuilder(jobID, "orchestrator/service", meta)
-	event := builder.BuildExitEvent(exitCode, image, durationSeconds, exitErr)
+	event := builder.BuildExitEvent(exitCode, reason, image, durationSeconds, exitErr)
 	if MatchesCallbackFilter(event.Type, eventFilter) {
 		em.Emit(&CallbackEnvelope{
 			Payload:     event,
