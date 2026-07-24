@@ -44,6 +44,7 @@ func (w *dockerLifecycleWatcher) Watch(ctx context.Context, sidecarID, workerID 
 type watcherState struct {
 	isWorkerStarted bool
 	isWorkerExited  bool
+	isWorkerOOM     bool
 	startTime       time.Time
 	logCancel       context.CancelFunc
 	logDone         chan struct{}
@@ -118,6 +119,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		status    string
 		running   bool
 		exitCode  int
+		oomKilled bool
 		startedAt time.Time
 		ok        bool
 	}
@@ -127,6 +129,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		ws.status = info.State.Status
 		ws.running = info.State.Running
 		ws.exitCode = info.State.ExitCode
+		ws.oomKilled = info.State.OOMKilled
 		if t, parseErr := time.Parse(time.RFC3339Nano, info.State.StartedAt); parseErr == nil {
 			ws.startedAt = t
 		}
@@ -167,12 +170,13 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		if !state.startTime.IsZero() {
 			duration = time.Since(state.startTime)
 		}
-		logger.Info("Worker exited (reconciled)", "exitCode", ws.exitCode)
+		reason := exitReason(ws.exitCode, state.isWorkerOOM || ws.oomKilled)
+		logger.Info("Worker exited (reconciled)", "exitCode", ws.exitCode, "reason", reason)
 		w.stopLogStreaming(state)
 		if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
 			logger.Warn("Failed to signal sidecar", "error", err)
 		}
-		out(job.Exited{ExitCode: ws.exitCode, Duration: duration})
+		out(job.Exited{ExitCode: ws.exitCode, Reason: reason, Duration: duration})
 	}
 
 	return false
@@ -210,21 +214,29 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 				out(job.Started{})
 				state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
 
+			// The oom event fires even when the OOM killer takes a child
+			// process rather than pid 1 — a case where the daemon may leave
+			// State.OOMKilled unset (cgroup v1) — so it is tracked live and
+			// combined with the inspect flag at exit.
+			case event.Actor.ID == workerID && event.Action == "oom":
+				state.isWorkerOOM = true
+
 			case event.Actor.ID == workerID && event.Action == "die" && !state.isWorkerExited:
 				state.isWorkerExited = true
 				exitCode := w.parseExitCode(event)
+				reason := exitReason(exitCode, state.isWorkerOOM || w.inspectOOMKilled(ctx, workerID))
 				duration := time.Duration(0)
 				if !state.startTime.IsZero() {
 					duration = time.Since(state.startTime)
 				}
-				logger.Info("Worker exited", "exitCode", exitCode)
+				logger.Info("Worker exited", "exitCode", exitCode, "reason", reason)
 				// Give logs a moment to flush before stopping the stream.
 				time.Sleep(500 * time.Millisecond)
 				w.stopLogStreaming(state)
 				if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
 					logger.Warn("Failed to signal sidecar", "error", err)
 				}
-				out(job.Exited{ExitCode: exitCode, Duration: duration})
+				out(job.Exited{ExitCode: exitCode, Reason: reason, Duration: duration})
 
 			case event.Actor.ID == sidecarID && event.Action == "die":
 				switch {
@@ -303,6 +315,25 @@ func (w *dockerLifecycleWatcher) streamLogs(ctx context.Context, logger *slog.Lo
 			out(job.LogLine{Stream: stream, Lines: lines})
 		}
 	}
+}
+
+// inspectOOMKilled reads State.OOMKilled off the exited worker, catching OOM
+// kills whose oom event was missed during a stream reconnect.
+func (w *dockerLifecycleWatcher) inspectOOMKilled(ctx context.Context, workerID string) bool {
+	inspectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	info, err := w.client.ContainerInspect(inspectCtx, workerID)
+	return err == nil && info.State.OOMKilled
+}
+
+// exitReason maps what the backend observed to an Exited.Reason. An OOM kill
+// only counts when the worker actually died non-zero — the OOM killer may
+// take a child process the worker's entrypoint survives.
+func exitReason(exitCode int, oomKilled bool) string {
+	if exitCode != 0 && oomKilled {
+		return job.ExitReasonOOM
+	}
+	return ""
 }
 
 func (w *dockerLifecycleWatcher) parseExitCode(event events.Message) int {

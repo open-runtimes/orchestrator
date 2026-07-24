@@ -19,6 +19,9 @@ type (
 	MemoryStore[T any] = lifecycle.MemoryStore[T]
 )
 
+// ExitReasonOOM marks a workload killed by the kernel OOM killer.
+const ExitReasonOOM = lifecycle.ExitReasonOOM
+
 // NewMemoryStore creates a MemoryStore whose errors name the "job" resource.
 func NewMemoryStore[T any]() *MemoryStore[T] {
 	return lifecycle.NewMemoryStore[T]("job")

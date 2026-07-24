@@ -34,10 +34,11 @@ type watchConfig struct {
 // containerState is the Docker state needed to reconstruct a watchConfig on resume.
 // Collected once via inspectContainers, then mapped purely in memory.
 type containerState struct {
-	jobID          string
-	workerExitCode int               // exit code of the worker container
-	workerImage    string            // e.g. "alpine:latest"
-	workerLabels   map[string]string // worker container labels (callback config, meta)
+	jobID           string
+	workerExitCode  int               // exit code of the worker container
+	workerOOMKilled bool              // worker was killed by the kernel OOM killer
+	workerImage     string            // e.g. "alpine:latest"
+	workerLabels    map[string]string // worker container labels (callback config, meta)
 }
 
 // inspectContainers reads the Docker state needed for resume mapping.
@@ -47,6 +48,7 @@ func inspectContainers(ctx context.Context, cli *client.Client, jobID, workerID 
 	if workerID != "" {
 		if info, err := cli.ContainerInspect(ctx, workerID); err == nil {
 			cs.workerExitCode = info.State.ExitCode
+			cs.workerOOMKilled = info.State.OOMKilled
 			cs.workerImage = info.Config.Image
 			cs.workerLabels = info.Config.Labels
 		}
