@@ -209,7 +209,11 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+			// 0o755, not the archive's own mode: a non-writable directory entry
+			// (0o555, or 0o000 from tars built on Windows) would otherwise make
+			// every nested entry fail with EACCES, since the sidecar runs
+			// non-root. extractFS does the same for squashfs/erofs.
+			if err := os.MkdirAll(targetPath, 0o755); err != nil {
 				return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 			}
 
