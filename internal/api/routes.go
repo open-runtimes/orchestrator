@@ -44,7 +44,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	h = ContentTypeMiddleware()(h)
 	h = CORSMiddleware()(h)
 	if cfg.Metrics != nil {
-		h = MetricsMiddleware(cfg.Metrics)(h)
+		h = MetricsMiddleware(cfg.Metrics, mux)(h)
 	}
 	h = LoggingMiddleware()(h)
 	h = RecoveryMiddleware()(h)

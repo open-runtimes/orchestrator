@@ -38,7 +38,10 @@ func LoggingMiddleware() func(http.Handler) http.Handler {
 }
 
 // MetricsMiddleware records HTTP request metrics (latency, traffic, errors).
-func MetricsMiddleware(metrics *observability.Metrics) func(http.Handler) http.Handler {
+// Requests are labelled with the mux route they matched, not the raw URL, so
+// label cardinality stays bounded by the route table — resource IDs and
+// unrouted scanner traffic (/.env, /wp-includes/..., ...) all collapse.
+func MetricsMiddleware(metrics *observability.Metrics, mux *http.ServeMux) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -48,9 +51,23 @@ func MetricsMiddleware(metrics *observability.Metrics) func(http.Handler) http.H
 			next.ServeHTTP(wrapped, r)
 
 			duration := time.Since(start).Seconds()
-			metrics.RecordHTTPRequest(r.Context(), r.Method, r.URL.Path, wrapped.statusCode, duration)
+			metrics.RecordHTTPRequest(r.Context(), r.Method, routePattern(mux, r), wrapped.statusCode, duration)
 		})
 	}
+}
+
+// routePattern returns the path of the mux pattern the request matched, or
+// "other" when nothing matched (404) or the method was wrong (405). The
+// pattern is "METHOD /path", and the method is already its own attribute.
+func routePattern(mux *http.ServeMux, r *http.Request) string {
+	_, pattern := mux.Handler(r)
+	if _, path, ok := strings.Cut(pattern, " "); ok {
+		return path
+	}
+	if pattern == "" {
+		return "other"
+	}
+	return pattern
 }
 
 // RecoveryMiddleware recovers from panics
