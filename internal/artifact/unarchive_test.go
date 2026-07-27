@@ -318,6 +318,54 @@ func TestUnarchive_Apply_Subdir_NoMatch(t *testing.T) {
 	}
 }
 
+// TestUnarchive_Apply_UnwritableDir covers archives whose directory entries are
+// not owner-writable (0o555, or 0o000 from Windows tooling): extraction of
+// anything nested inside them must still succeed, because the sidecar runs as a
+// non-root user that cannot write into such a directory.
+func TestUnarchive_Apply_UnwritableDir(t *testing.T) {
+	for _, dirMode := range []int64{0o555, 0o500, 0} {
+		tmpDir := t.TempDir()
+		archiveIn := filepath.Join(tmpDir, "test.tar.gz")
+
+		file, err := os.Create(archiveIn)
+		if err != nil {
+			t.Fatalf("Failed to create archive file: %v", err)
+		}
+		gzWriter := gzip.NewWriter(file)
+		tarWriter := tar.NewWriter(gzWriter)
+		for _, h := range []*tar.Header{
+			{Name: "src", Typeflag: tar.TypeDir, Mode: dirMode},
+			{Name: "src/admin-frontend", Typeflag: tar.TypeDir, Mode: 0o755},
+			{Name: "src/admin-frontend/main.ts", Typeflag: tar.TypeReg, Mode: 0o644, Size: 4},
+		} {
+			if err := tarWriter.WriteHeader(h); err != nil {
+				t.Fatalf("Failed to write tar header: %v", err)
+			}
+			if h.Typeflag == tar.TypeReg {
+				if _, err := tarWriter.Write([]byte("code")); err != nil {
+					t.Fatalf("Failed to write tar content: %v", err)
+				}
+			}
+		}
+		tarWriter.Close()
+		gzWriter.Close()
+		file.Close()
+
+		a := &Unarchive{ID: "test-unarchive-unwritable", In: "test.tar.gz", Out: "extracted"}
+		if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+			t.Fatalf("dir mode %#o: %v", dirMode, result.Error)
+		}
+
+		got, err := os.ReadFile(filepath.Join(tmpDir, "extracted", "src", "admin-frontend", "main.ts"))
+		if err != nil {
+			t.Fatalf("dir mode %#o: reading extracted file: %v", dirMode, err)
+		}
+		if string(got) != "code" {
+			t.Errorf("dir mode %#o: got %q, want %q", dirMode, got, "code")
+		}
+	}
+}
+
 func TestUnarchive_Apply_InTraversal(t *testing.T) {
 	tmpDir := t.TempDir()
 
