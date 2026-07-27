@@ -34,7 +34,7 @@ Metrics follow Google's Golden 4 Signals pattern: Latency, Traffic, Errors, Satu
 
 **HTTP & Job Metrics:**
 
-The `path` label is normalized per route (`/v1/jobs/{id}`, `/v1/deployments/{id}/traffic`, …) so cardinality is bounded by the route table. Note: the jobs placeholder changed from `{jobId}` to `{id}` when the serving-plane routes were added — dashboards filtering on the old value need updating.
+The `path` label is the mux route the request matched (`/v1/jobs/{jobId}`, `/v1/deployments/{id}/traffic`, …), so cardinality is bounded by the route table. Note: the jobs placeholder is whatever the route declares — it was briefly `{id}` while paths were normalized by hand, so dashboards filtering on that value need updating.
 
 | Signal | Metrics |
 |--------|---------|
@@ -116,18 +116,18 @@ Metrics use consistent labels for filtering and aggregation:
 | Label | Values | Used By |
 |-------|--------|---------|
 | `method` | GET, POST, DELETE | HTTP metrics |
-| `path` | /v1/jobs/{jobId}, /readyz, etc. | HTTP metrics |
+| `path` | /v1/jobs/{jobId}, /readyz, other | HTTP metrics |
 | `status` | 2xx, 4xx, 5xx | HTTP metrics |
 | `image` | alpine:latest, etc. | Job metrics |
 | `success` | true, false | Job duration |
 
-### Path Normalization for Cardinality Control
+### Route Patterns for Cardinality Control
 
-Request paths are normalized to prevent cardinality explosion: `/v1/jobs/abc123` -> `/v1/jobs/{jobId}`.
+The `path` label is the route pattern the request matched, not the URL it asked for: `/v1/jobs/abc123` -> `/v1/jobs/{jobId}`. Requests that match no route (404) or the wrong method (405) are labelled `other`.
 
-**Why?** Without normalization, each unique job ID creates a new time series. This would exhaust memory in Prometheus.
+**Why?** Each unique URL would otherwise create a new time series — one per job ID, plus one per path probed by internet background scanners (`/.env`, `/wp-includes/…`). This would exhaust memory in Prometheus.
 
-See: `internal/observability/attributes.go` -> `normalizePath()`
+See: `internal/api/middleware.go` -> `routePattern()`
 
 ### Health Check Semantics
 
