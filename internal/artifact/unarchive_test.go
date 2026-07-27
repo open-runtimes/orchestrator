@@ -3,10 +3,12 @@ package artifact
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -413,5 +415,70 @@ func createTestArchive(t *testing.T, archiveIn string, files map[string]string) 
 		if _, err := tarWriter.Write([]byte(content)); err != nil {
 			t.Fatalf("Failed to write tar content: %v", err)
 		}
+	}
+}
+
+// TestUnarchive_Apply_MissingSource covers the case where the archive was never
+// produced, typically because the download artifact meant to fetch it failed.
+// The error must name the missing file rather than blaming its format, which is
+// what a silently-ignored os.Open would report.
+func TestUnarchive_Apply_MissingSource(t *testing.T) {
+	a := &Unarchive{ID: "test-unarchive-missing", In: "source.tar.gz", Out: "extracted"}
+
+	result := a.Apply(t.Context(), t.TempDir())
+	if result.Error == nil {
+		t.Fatal("expected error for missing source, got success")
+	}
+	if !os.IsNotExist(errors.Unwrap(result.Error)) {
+		t.Errorf("expected a not-exist error, got %v", result.Error)
+	}
+	if strings.Contains(result.Error.Error(), "unrecognized archive format") {
+		t.Errorf("missing source misreported as a format problem: %v", result.Error)
+	}
+}
+
+// TestUnarchive_Apply_EmptySource covers a zero-byte archive, which has no magic
+// bytes to sniff and would otherwise be reported as an unrecognized format.
+func TestUnarchive_Apply_EmptySource(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "source.tar.gz"), nil, 0o644); err != nil {
+		t.Fatalf("Failed to write empty archive: %v", err)
+	}
+
+	a := &Unarchive{ID: "test-unarchive-empty", In: "source.tar.gz", Out: "extracted"}
+
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error == nil {
+		t.Fatal("expected error for empty source, got success")
+	}
+	if !strings.Contains(result.Error.Error(), "empty") {
+		t.Errorf("expected the error to call the archive empty, got %v", result.Error)
+	}
+}
+
+// TestUnarchive_Apply_UnreadableSource covers a source that opens but cannot be
+// read. A directory is the portable way to produce that: os.Open succeeds and
+// the read fails with EISDIR on both Linux and macOS. The read returns n == 0,
+// so discarding its error would misreport a filesystem failure as an empty
+// archive.
+func TestUnarchive_Apply_UnreadableSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, "source.tar.gz"), 0o755); err != nil {
+		t.Fatalf("Failed to create directory standing in for the archive: %v", err)
+	}
+
+	a := &Unarchive{ID: "test-unarchive-unreadable", In: "source.tar.gz", Out: "extracted"}
+
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error == nil {
+		t.Fatal("expected error for unreadable source, got success")
+	}
+	for _, wrong := range []string{"is empty", "unrecognized archive format"} {
+		if strings.Contains(result.Error.Error(), wrong) {
+			t.Errorf("read failure misreported as %q: %v", wrong, result.Error)
+		}
+	}
+	if !strings.Contains(result.Error.Error(), "failed to read archive header") {
+		t.Errorf("expected the error to name the failed header read, got %v", result.Error)
 	}
 }

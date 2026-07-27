@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -81,11 +82,27 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 	// Read enough to cover every magic we sniff. squashfs "hsqs" sits at offset
 	// 0 and tar "ustar" at 257, but erofs's magic is at offset 1024 — so read
 	// past it (1028 bytes) rather than the 512 the tar/squashfs checks needed.
+	// A source that is missing or empty has no magic to sniff, so it would
+	// otherwise fall through to "unrecognized archive format" and mask the real
+	// failure (typically the download artifact that was meant to produce it).
 	header := make([]byte, 1028)
-	if f, err := os.Open(srcPath); err == nil {
-		n, _ := io.ReadFull(f, header)
-		header = header[:n]
-		f.Close()
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to open archive: %w", err)}
+	}
+	n, err := io.ReadFull(f, header)
+	f.Close()
+
+	// A short read is expected — a small archive is legitimately shorter than
+	// the header we sniff — but any other read error is a filesystem failure
+	// that must not be reported as an empty or unrecognized archive.
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to read archive header: %w", err)}
+	}
+	header = header[:n]
+
+	if n == 0 {
+		return &Result{Status: "failed", Error: fmt.Errorf("archive %s is empty", a.In)}
 	}
 
 	switch {
