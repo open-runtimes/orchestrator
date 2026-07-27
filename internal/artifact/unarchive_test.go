@@ -455,3 +455,30 @@ func TestUnarchive_Apply_EmptySource(t *testing.T) {
 		t.Errorf("expected the error to call the archive empty, got %v", result.Error)
 	}
 }
+
+// TestUnarchive_Apply_UnreadableSource covers a source that opens but cannot be
+// read. A directory is the portable way to produce that: os.Open succeeds and
+// the read fails with EISDIR on both Linux and macOS. The read returns n == 0,
+// so discarding its error would misreport a filesystem failure as an empty
+// archive.
+func TestUnarchive_Apply_UnreadableSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, "source.tar.gz"), 0o755); err != nil {
+		t.Fatalf("Failed to create directory standing in for the archive: %v", err)
+	}
+
+	a := &Unarchive{ID: "test-unarchive-unreadable", In: "source.tar.gz", Out: "extracted"}
+
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error == nil {
+		t.Fatal("expected error for unreadable source, got success")
+	}
+	for _, wrong := range []string{"is empty", "unrecognized archive format"} {
+		if strings.Contains(result.Error.Error(), wrong) {
+			t.Errorf("read failure misreported as %q: %v", wrong, result.Error)
+		}
+	}
+	if !strings.Contains(result.Error.Error(), "failed to read archive header") {
+		t.Errorf("expected the error to name the failed header read, got %v", result.Error)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -89,8 +90,15 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to open archive: %w", err)}
 	}
-	n, _ := io.ReadFull(f, header)
+	n, err := io.ReadFull(f, header)
 	f.Close()
+
+	// A short read is expected — a small archive is legitimately shorter than
+	// the header we sniff — but any other read error is a filesystem failure
+	// that must not be reported as an empty or unrecognized archive.
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to read archive header: %w", err)}
+	}
 	header = header[:n]
 
 	if n == 0 {
