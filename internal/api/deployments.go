@@ -48,7 +48,7 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 	handler = ContentTypeMiddleware()(handler)
 	handler = CORSMiddleware()(handler)
 	if cfg.Metrics != nil {
-		handler = MetricsMiddleware(cfg.Metrics)(handler)
+		handler = MetricsMiddleware(cfg.Metrics, mux)(handler)
 	}
 	handler = LoggingMiddleware()(handler)
 	handler = RecoveryMiddleware()(handler)

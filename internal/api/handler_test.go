@@ -11,6 +11,32 @@ import (
 	"testing"
 )
 
+func TestRoutePattern(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /livez", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /v1/jobs/{jobId}", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("POST /internal/jobs/{jobId}/artifact", func(http.ResponseWriter, *http.Request) {})
+
+	tests := []struct{ method, target, want string }{
+		{"GET", "/livez", "/livez"},
+		{"GET", "/v1/jobs/abc123", "/v1/jobs/{jobId}"},
+		{"POST", "/internal/jobs/abc-def-build/artifact", "/internal/jobs/{jobId}/artifact"},
+		{"GET", "/.env", "other"},
+		{"GET", "/wp-includes/wlwmanifest.xml", "other"},
+		{"DELETE", "/v1/jobs/abc123", "other"}, // 405: no route for this method
+	}
+
+	for _, tt := range tests {
+		req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.target, nil)
+		got := routePattern(mux, req)
+		if got != tt.want {
+			t.Errorf("routePattern(%s %s) = %q, want %q", tt.method, tt.target, got, tt.want)
+		}
+	}
+}
+
 func TestHandler_Livez(t *testing.T) {
 	t.Parallel()
 	handler := &Handler{

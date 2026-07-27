@@ -3,7 +3,6 @@ package observability
 
 import (
 	"fmt"
-	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -33,10 +32,7 @@ func methodAttr(method string) attribute.KeyValue {
 }
 
 func pathAttr(path string) attribute.KeyValue {
-	// Normalize paths with IDs to reduce cardinality
-	// /v1/jobs/abc123 -> /v1/jobs/{jobId}
-	normalized := normalizePath(path)
-	return attribute.String(attrPath, normalized)
+	return attribute.String(attrPath, path)
 }
 
 func statusAttr(code int) attribute.KeyValue {
@@ -92,31 +88,6 @@ func poolAttr(id string) attribute.KeyValue {
 
 func policyAttr(policy string) attribute.KeyValue {
 	return attribute.String(attrPolicy, policy)
-}
-
-// normalizePath replaces dynamic path segments with placeholders so metric
-// label cardinality stays bounded by the route table, not by resource IDs:
-// /v1/jobs/abc → /v1/jobs/{id}; /v1/deployment-pools/py/activations/run-42 →
-// /v1/deployment-pools/{id}/activations/{actId}.
-func normalizePath(path string) string {
-	for _, prefix := range []string{"/v1/jobs/", "/v1/deployments/", "/v1/deployment-pools/"} {
-		rest, ok := strings.CutPrefix(path, prefix)
-		if !ok || rest == "" {
-			continue
-		}
-		normalized := prefix + "{id}"
-		// Keep the fixed sub-resource segment (traffic, revisions,
-		// activations, ...), normalize the item after it.
-		if _, after, found := strings.Cut(rest, "/"); found && after != "" {
-			sub, item, _ := strings.Cut(after, "/")
-			normalized += "/" + sub
-			if item != "" {
-				normalized += "/{actId}"
-			}
-		}
-		return normalized
-	}
-	return path
 }
 
 // WithMethod returns a metric option with the method attribute.
