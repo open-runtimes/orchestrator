@@ -237,4 +237,64 @@ func TestRunInOrder(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+
+	t.Run("skips dependents of a failed artifact and returns the root error", func(t *testing.T) {
+		// The download-then-unarchive shape: if "source" fails, "extract" must not
+		// run on the file it never produced, because the misleading error the
+		// dependent raises would otherwise be the one returned.
+		errSource := errors.New("download failed with status 403")
+		artifacts := []Artifact{
+			&stub{id: "source"},
+			&stub{id: "extract", depends: "source"},
+			&stub{id: "cache"}, // independent of source
+		}
+		var called []string
+		err := RunInOrder(t.Context(), artifacts, func(_ context.Context, a Artifact) error {
+			called = append(called, a.ArtifactID())
+			if a.ArtifactID() == "source" {
+				return errSource
+			}
+			return nil
+		})
+		if !errors.Is(err, errSource) {
+			t.Errorf("expected the root error errSource, got %v", err)
+		}
+		for _, id := range called {
+			if id == "extract" {
+				t.Errorf("extract ran despite its dependency failing, called %v", called)
+			}
+		}
+		var ranCache bool
+		for _, id := range called {
+			if id == "cache" {
+				ranCache = true
+			}
+		}
+		if !ranCache {
+			t.Errorf("independent artifact cache should still run, called %v", called)
+		}
+	})
+
+	t.Run("failure propagates transitively down the chain", func(t *testing.T) {
+		errA := errors.New("a failed")
+		artifacts := []Artifact{
+			&stub{id: "a"},
+			&stub{id: "b", depends: "a"},
+			&stub{id: "c", depends: "b"},
+		}
+		var called []string
+		err := RunInOrder(t.Context(), artifacts, func(_ context.Context, a Artifact) error {
+			called = append(called, a.ArtifactID())
+			if a.ArtifactID() == "a" {
+				return errA
+			}
+			return nil
+		})
+		if !errors.Is(err, errA) {
+			t.Errorf("expected errA, got %v", err)
+		}
+		if len(called) != 1 || called[0] != "a" {
+			t.Errorf("expected only [a] to run, got %v", called)
+		}
+	})
 }

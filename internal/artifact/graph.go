@@ -50,6 +50,10 @@ type ApplyFunc func(ctx context.Context, a Artifact) error
 // phase's artifact) or a sentinel such as JobDependency is already satisfied by
 // the time we run. Artifacts left in a dependency cycle are skipped with a
 // warning log.
+//
+// An artifact whose in-scope dependency failed is skipped rather than run on
+// the dependency's missing output, so the returned error is the root failure
+// instead of whatever the dependent made of the wreckage.
 // Returns the last non-nil error from fn, or nil.
 func RunInOrder(ctx context.Context, artifacts []Artifact, fn ApplyFunc) error {
 	inScope := make(map[string]bool, len(artifacts))
@@ -58,6 +62,7 @@ func RunInOrder(ctx context.Context, artifacts []Artifact, fn ApplyFunc) error {
 	}
 
 	completed := make(map[string]bool)
+	failed := make(map[string]bool)
 	var lastErr error
 
 	for len(completed) < len(artifacts) {
@@ -70,8 +75,18 @@ func RunInOrder(ctx context.Context, artifacts []Artifact, fn ApplyFunc) error {
 			if dep := a.DependsOn(); inScope[dep] && !completed[dep] {
 				continue
 			}
+			if dep := a.DependsOn(); failed[dep] {
+				slog.Warn("artifact skipped because its dependency failed",
+					"artifactId", id,
+					"depends", dep)
+				failed[id] = true
+				completed[id] = true
+				progress = true
+				continue
+			}
 			if err := fn(ctx, a); err != nil {
 				lastErr = err
+				failed[id] = true
 			}
 			completed[id] = true
 			progress = true
