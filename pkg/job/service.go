@@ -27,8 +27,13 @@ const (
 	maxCallbackEvents = 16
 )
 
-// jobIDPattern allows alphanumeric, hyphens, and underscores
-var jobIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+// jobIDPattern allows alphanumeric, hyphens, underscores, and dot-separated
+// segments — callers embed their own resource ids in the job id, and those can
+// contain dots (e.g. an Appwrite project "ashkelon.news.stage"). Each segment
+// must start alphanumeric, so a leading dot, a trailing dot and ".." are all
+// rejected: the K8s backend names the Job "job-<id>", which must be a valid
+// DNS-1123 subdomain, and those three forms are not.
+var jobIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*(\.[a-zA-Z0-9][a-zA-Z0-9_-]*)*$`)
 
 // Service manages job lifecycle using an orchestrator.
 //
@@ -135,7 +140,7 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("id", fmt.Sprintf("job ID exceeds maximum length of %d", maxJobIDLength))
 	}
 	if !jobIDPattern.MatchString(req.ID) {
-		return apperrors.Validation("id", "job ID must be alphanumeric (hyphens and underscores allowed, cannot start with hyphen/underscore)")
+		return apperrors.Validation("id", "job ID must be alphanumeric (hyphens, underscores and dot-separated segments allowed; each segment must start alphanumeric)")
 	}
 
 	if req.Image == "" {

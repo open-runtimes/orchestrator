@@ -37,6 +37,32 @@ func TestValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "ID with dotted segments",
+			req: &Request{
+				ID:    "ashkelon.news.stage-6a67708d79c058e972d8-build",
+				Image: "alpine",
+			},
+			wantErr: false,
+		},
+		{
+			name:    "ID with a leading dot",
+			req:     &Request{ID: ".news-build", Image: "alpine"},
+			wantErr: true,
+			errMsg:  "job ID must be alphanumeric",
+		},
+		{
+			name:    "ID with a trailing dot",
+			req:     &Request{ID: "news-build.", Image: "alpine"},
+			wantErr: true,
+			errMsg:  "job ID must be alphanumeric",
+		},
+		{
+			name:    "ID with consecutive dots",
+			req:     &Request{ID: "news..stage-build", Image: "alpine"},
+			wantErr: true,
+			errMsg:  "job ID must be alphanumeric",
+		},
+		{
 			name: "artifact without ID",
 			req: &Request{
 				ID:    "test-job",
