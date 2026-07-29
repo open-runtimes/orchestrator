@@ -114,17 +114,32 @@ func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
 			Tolerations:                   cfg.Tolerations,
 		}
 
-		return &Orchestrator{
+		o := &Orchestrator{
 			client:       cs,
 			namespace:    ns,
 			sidecarImage: cfg.SidecarImage,
 			cfg:          ocfg,
 			emitter:      emitter,
-			watcher:      newK8sLifecycleWatcher(cs, ns, emitter, cfg.Metrics, cfg.LogFlushInterval),
+			watcher:      newK8sLifecycleWatcher(cs, ns, emitter, cfg.LogFlushInterval),
 			statusCache:  newStatusCache(),
 			metrics:      cfg.Metrics,
-		}, nil
+		}
+		if err := cfg.Metrics.ObserveInt64("orchestrator_trackers",
+			"In-flight per-job lifecycle trackers on the leader (saturation)",
+			func() int64 { trackers, _ := o.watcher.Counts(); return trackers },
+		); err != nil {
+			return nil, err
+		}
+		return o, nil
 	}
+}
+
+// ActiveJobs reports the jobs this replica is watching that have not exited.
+// Only the leader holds trackers, so followers report zero and the sum across
+// replicas is the true in-flight count. Satisfies job.ActiveCounter.
+func (o *Orchestrator) ActiveJobs() int64 {
+	_, active := o.watcher.Counts()
+	return active
 }
 
 // Start begins the lifecycle watcher. With leader election enabled, only the

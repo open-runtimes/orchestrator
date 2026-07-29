@@ -16,6 +16,15 @@ import (
 	"orchestrator/pkg/job"
 )
 
+// activeCounter is the optional surface a backend implements to report its live
+// in-flight job count. Run registers it as the jobs_active async gauge, which is
+// why the count must be derived from live state rather than tallied: a +1/-1
+// pair split across a create request and an exit callback drifts on every
+// restart and every leadership handover.
+type activeCounter interface {
+	ActiveJobs() int64
+}
+
 // Run bootstraps the orchestrator service against the supplied backend factory
 // and blocks until SIGINT/SIGTERM or a server error. It returns nil on a clean
 // shutdown.
@@ -60,11 +69,27 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 		metrics.RecordJobCompleted(context.Background(), image, exitCode == 0, duration)
 	})
 
+	if err := metrics.ObserveInt64("dispatcher_queue_size",
+		"Current number of events in dispatcher queue (saturation)",
+		eventDispatcher.QueueSize,
+	); err != nil {
+		return err
+	}
+
 	orchestrator, err := job.NewOrchestrator(emitter, factory)
 	if err != nil {
 		return err
 	}
 	defer orchestrator.Close()
+
+	if counter, ok := orchestrator.(activeCounter); ok {
+		if err := metrics.ObserveInt64("jobs_active",
+			"Jobs currently in flight on this replica (saturation)",
+			counter.ActiveJobs,
+		); err != nil {
+			return err
+		}
+	}
 
 	if err := orchestrator.Start(ctx); err != nil {
 		return err

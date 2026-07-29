@@ -346,6 +346,20 @@ func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
 	return statuses, nil
 }
 
+// ActiveJobs reports the jobs this replica holds that have not reached a
+// terminal state. Read at scrape time by the jobs_active async gauge, so it is
+// always the live truth — including jobs resumed from a previous process.
+// Satisfies job.ActiveCounter.
+func (o *Orchestrator) ActiveJobs() int64 {
+	var active int64
+	for _, e := range o.ctrl.List() {
+		if e.State == job.StateAccepted || e.State == job.StateRunning {
+			active++
+		}
+	}
+	return active
+}
+
 // Close releases resources held by the orchestrator.
 func (o *Orchestrator) Close() error {
 	if o.cancelMaintenance != nil {

@@ -24,20 +24,20 @@ type Metrics struct {
 	HTTPRequestsTotal   metric.Int64Counter
 	HTTPErrorsTotal     metric.Int64Counter
 
-	// Job metrics (Latency, Traffic, Errors, Saturation)
-	JobDuration    metric.Float64Histogram
-	JobsTotal      metric.Int64Counter
-	JobErrorsTotal metric.Int64Counter
-	JobsActive     metric.Int64UpDownCounter
+	// Job metrics (Latency, Traffic, Errors). JobDuration is labelled
+	// image+success, so its _count doubles as the completion counter and the
+	// error counter — no separate instrument to keep in step with it.
+	// Saturation (jobs_active) is an async gauge, registered by the wiring.
+	JobDuration metric.Float64Histogram
+	JobsTotal   metric.Int64Counter
 
-	// Dispatcher metrics (Latency, Traffic, Errors, Saturation)
-	DispatcherDuration   metric.Float64Histogram
-	DispatcherDelivered  metric.Int64Counter
-	DispatcherFailed     metric.Int64Counter
-	DispatcherDropped    metric.Int64Counter
-	DispatcherRequeued   metric.Int64Counter
-	DispatcherQueueSize  metric.Int64Gauge
-	DispatcherBufferSize int64 // config value for saturation calculation
+	// Dispatcher metrics (Latency, Traffic, Errors). Queue depth is an async
+	// gauge, registered by the wiring.
+	DispatcherDuration  metric.Float64Histogram
+	DispatcherDelivered metric.Int64Counter
+	DispatcherFailed    metric.Int64Counter
+	DispatcherDropped   metric.Int64Counter
+	DispatcherRequeued  metric.Int64Counter
 
 	// Leadership (K8s backend; zero everywhere else). Gauge is 1 on the leader
 	// replica and 0 (or absent) on followers, labelled with the identity so
@@ -48,10 +48,6 @@ type Metrics struct {
 	// Status cache effectiveness (K8s backend).
 	StatusCacheHits   metric.Int64Counter
 	StatusCacheMisses metric.Int64Counter
-
-	// Tracker saturation (K8s backend): number of in-flight per-job trackers
-	// the leader currently owns. The practical concurrent-jobs ceiling.
-	Trackers metric.Int64UpDownCounter
 
 	// K8s API cost: every Run/Stop/Status/List and every informer list+watch
 	// goes through the apiserver. When latency rises here, our HTTP latency
@@ -162,8 +158,6 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 		"Job execution duration in seconds",
 		1, 5, 10, 30, 60, 120, 300, 600, 900, 1800)
 	m.JobsTotal = b.counter("jobs_total", "Total number of jobs created")
-	m.JobErrorsTotal = b.counter("job_errors_total", "Total number of failed jobs")
-	m.JobsActive = b.upDown("jobs_active", "Number of currently running jobs (saturation)")
 
 	// Dispatcher metrics
 	m.DispatcherDuration = b.histogram("dispatcher_duration_seconds",
@@ -173,7 +167,6 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	m.DispatcherFailed = b.counter("dispatcher_failed_total", "Total events failed after retries")
 	m.DispatcherDropped = b.counter("dispatcher_dropped_total", "Total events dropped (buffer full or max requeues)")
 	m.DispatcherRequeued = b.counter("dispatcher_requeued_total", "Total events requeued due to open circuit")
-	m.DispatcherQueueSize = b.gauge("dispatcher_queue_size", "Current number of events in dispatcher queue (saturation)")
 
 	// Leadership (K8s backend).
 	m.LeaderGauge = b.gauge("orchestrator_leader", "1 on the replica currently holding the leader lease, 0 otherwise")
@@ -182,9 +175,6 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	// Status cache.
 	m.StatusCacheHits = b.counter("orchestrator_status_cache_hits_total", "Total Status calls served from the TTL cache")
 	m.StatusCacheMisses = b.counter("orchestrator_status_cache_misses_total", "Total Status calls that missed the cache and hit the K8s API")
-
-	// Tracker saturation.
-	m.Trackers = b.upDown("orchestrator_trackers", "In-flight per-job lifecycle trackers on the leader (saturation)")
 
 	// K8s API.
 	m.K8sAPIDuration = b.histogram("k8s_api_request_duration_seconds",
@@ -233,6 +223,29 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	return m, promhttp.Handler(), nil
 }
 
+// ObserveInt64 registers an asynchronous gauge that reads observe at collection
+// time. Prefer it over an UpDownCounter for anything we can just read: a
+// synchronous +1/-1 pair only stays balanced while one process sees both halves,
+// and ours don't — a restart resets the counter while the jobs it counted keep
+// running, a K8s leadership handover moves the -1 to a replica that never did
+// the +1, and either way the gauge drifts negative and never recovers. An async
+// gauge re-derives the truth on every scrape, so it cannot drift.
+//
+// Safe to call on a nil *Metrics (metrics disabled).
+func (m *Metrics) ObserveInt64(name, desc string, observe func() int64) error {
+	if m == nil {
+		return nil
+	}
+	_, err := m.meter.Int64ObservableGauge(name,
+		metric.WithDescription(desc),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(observe())
+			return nil
+		}),
+	)
+	return err
+}
+
 // RecordHTTPRequest records HTTP request metrics.
 func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, path string, statusCode int, durationSeconds float64) {
 	attrs := metric.WithAttributes(
@@ -251,26 +264,15 @@ func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, path string, st
 
 // RecordJobCreated records a new job being created.
 func (m *Metrics) RecordJobCreated(ctx context.Context, image string) {
-	attrs := metric.WithAttributes(imageAttr(image))
-	m.JobsTotal.Add(ctx, 1, attrs)
-	m.JobsActive.Add(ctx, 1, attrs)
+	m.JobsTotal.Add(ctx, 1, metric.WithAttributes(imageAttr(image)))
 }
 
-// RecordJobCompleted records a job completing (success or failure).
+// RecordJobCompleted records a job completing (success or failure). The
+// histogram's _count series, split by success, is the completion and error
+// rate — job_duration_seconds_count{success="false"} needs no counter of its own.
 func (m *Metrics) RecordJobCompleted(ctx context.Context, image string, success bool, durationSeconds float64) {
-	attrs := metric.WithAttributes(imageAttr(image), successAttr(success))
-	m.JobDuration.Record(ctx, durationSeconds, attrs)
-	m.JobsActive.Add(ctx, -1, metric.WithAttributes(imageAttr(image)))
-
-	if !success {
-		m.JobErrorsTotal.Add(ctx, 1, attrs)
-	}
-}
-
-// RecordJobCancelled records a job being cancelled.
-func (m *Metrics) RecordJobCancelled(ctx context.Context, image string) {
-	attrs := metric.WithAttributes(imageAttr(image))
-	m.JobsActive.Add(ctx, -1, attrs)
+	m.JobDuration.Record(ctx, durationSeconds,
+		metric.WithAttributes(imageAttr(image), successAttr(success)))
 }
 
 // RecordDispatcherDelivered records a successful event delivery with its duration.
@@ -294,11 +296,6 @@ func (m *Metrics) RecordDispatcherRequeued(ctx context.Context) {
 	m.DispatcherRequeued.Add(ctx, 1)
 }
 
-// RecordDispatcherQueueSize records the current queue size.
-func (m *Metrics) RecordDispatcherQueueSize(ctx context.Context, size int64) {
-	m.DispatcherQueueSize.Record(ctx, size)
-}
-
 // RecordLeadership sets this replica's leader gauge and, when acquired, bumps
 // the transitions counter. identity labels both metrics.
 func (m *Metrics) RecordLeadership(ctx context.Context, identity string, acquired bool) {
@@ -319,11 +316,6 @@ func (m *Metrics) RecordStatusCacheHit(ctx context.Context) {
 // RecordStatusCacheMiss bumps the Status cache-miss counter.
 func (m *Metrics) RecordStatusCacheMiss(ctx context.Context) {
 	m.StatusCacheMisses.Add(ctx, 1)
-}
-
-// RecordTrackerDelta adjusts the in-flight tracker gauge by delta (+1 / -1).
-func (m *Metrics) RecordTrackerDelta(ctx context.Context, delta int64) {
-	m.Trackers.Add(ctx, delta)
 }
 
 // RecordK8sAPIRequest records a K8s API call's latency and, if it returned a

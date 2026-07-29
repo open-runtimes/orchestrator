@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"orchestrator/internal/observability"
 	"orchestrator/pkg/job"
 	"strings"
 	"sync"
@@ -30,6 +29,9 @@ import (
 // term in the leader-elected deployment).
 type LifecycleWatcher interface {
 	Start(ctx context.Context)
+
+	// Counts reports tracker and non-exited-job counts for the async gauges.
+	Counts() (trackers, active int64)
 }
 
 // k8sLifecycleWatcher runs a SharedInformer over Pods labelled as managed-by
@@ -40,15 +42,14 @@ type k8sLifecycleWatcher struct {
 	client       kubernetes.Interface
 	namespace    string
 	emitter      *job.CallbackEmitter
-	metrics      *observability.Metrics // may be nil in tests
-	logFlushWait time.Duration          // max time buffered log lines wait before a flush
+	logFlushWait time.Duration // max time buffered log lines wait before a flush
 	termStart    time.Time              // when the current leadership term began; set by Start
 
 	mu       sync.Mutex
 	trackers map[string]*jobTracker
 }
 
-func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter, metrics *observability.Metrics, logFlushWait time.Duration) *k8sLifecycleWatcher {
+func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter, logFlushWait time.Duration) *k8sLifecycleWatcher {
 	if logFlushWait <= 0 {
 		logFlushWait = time.Second
 	}
@@ -57,7 +58,6 @@ func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitt
 		logFlushWait: logFlushWait,
 		namespace: namespace,
 		emitter:   emitter,
-		metrics:   metrics,
 		trackers:  make(map[string]*jobTracker),
 	}
 }
@@ -109,15 +109,27 @@ func (w *k8sLifecycleWatcher) Start(ctx context.Context) {
 	// Leadership term ended (or Close called). Cancel all in-flight trackers
 	// so their log-streaming goroutines exit and no more callbacks fire.
 	w.mu.Lock()
-	dropped := int64(len(w.trackers))
 	for _, t := range w.trackers {
 		t.close()
 	}
 	w.trackers = make(map[string]*jobTracker)
 	w.mu.Unlock()
-	if dropped > 0 && w.metrics != nil {
-		w.metrics.RecordTrackerDelta(context.Background(), -dropped)
+}
+
+// Counts returns the number of trackers this replica holds and, of those, how
+// many are for jobs that have not exited yet. Both are read at scrape time by
+// async gauges, so they are exact by construction — followers, which hold no
+// trackers, report zero and a leadership handover moves the count with it.
+func (w *k8sLifecycleWatcher) Counts() (trackers, active int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, t := range w.trackers {
+		trackers++
+		if t.inFlight() {
+			active++
+		}
 	}
+	return trackers, active
 }
 
 // handle routes a pod event to its tracker, creating one on first observation.
@@ -133,7 +145,6 @@ func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, delet
 
 	w.mu.Lock()
 	t, ok := w.trackers[jobID]
-	created := false
 	if !ok {
 		if deleted {
 			// Pod deleted and we never saw it — nothing to do.
@@ -142,26 +153,16 @@ func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, delet
 		}
 		t = newJobTracker(w, watchConfigFromPod(pod))
 		w.trackers[jobID] = t
-		created = true
 	}
 	w.mu.Unlock()
-
-	if created && w.metrics != nil {
-		w.metrics.RecordTrackerDelta(ctx, 1)
-	}
 
 	if deleted {
 		t.handleDelete()
 		w.mu.Lock()
-		removed := false
 		if cur, ok := w.trackers[jobID]; ok && cur == t {
 			delete(w.trackers, jobID)
-			removed = true
 		}
 		w.mu.Unlock()
-		if removed && w.metrics != nil {
-			w.metrics.RecordTrackerDelta(ctx, -1)
-		}
 		return
 	}
 	t.handleUpdate(ctx, pod)
@@ -241,6 +242,18 @@ func (t *jobTracker) handleDelete() {
 		t.emit(job.Completed{})
 	}
 	t.closeLocked()
+}
+
+// inFlight reports whether the tracker's job can still be running. Both halves
+// matter: a worker can exit while the pod lives on (the native sidecar is still
+// processing post-job artifacts), and a pod that fails before its worker ever
+// starts reaches terminal state without setting isExited. Keying off closed too
+// means any terminal path — present or future — stops counting immediately
+// rather than at pod deletion, which may be a retention period away or never.
+func (t *jobTracker) inFlight() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.closed && !t.state.isExited
 }
 
 // close tears the tracker down; used when the watcher's context is cancelled
