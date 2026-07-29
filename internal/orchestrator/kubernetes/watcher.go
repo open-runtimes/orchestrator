@@ -125,7 +125,7 @@ func (w *k8sLifecycleWatcher) Counts() (trackers, active int64) {
 	defer w.mu.Unlock()
 	for _, t := range w.trackers {
 		trackers++
-		if !t.exited() {
+		if t.inFlight() {
 			active++
 		}
 	}
@@ -244,11 +244,16 @@ func (t *jobTracker) handleDelete() {
 	t.closeLocked()
 }
 
-// exited reports whether the job's worker has already exited.
-func (t *jobTracker) exited() bool {
+// inFlight reports whether the tracker's job can still be running. Both halves
+// matter: a worker can exit while the pod lives on (the native sidecar is still
+// processing post-job artifacts), and a pod that fails before its worker ever
+// starts reaches terminal state without setting isExited. Keying off closed too
+// means any terminal path — present or future — stops counting immediately
+// rather than at pod deletion, which may be a retention period away or never.
+func (t *jobTracker) inFlight() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.state.isExited
+	return !t.closed && !t.state.isExited
 }
 
 // close tears the tracker down; used when the watcher's context is cancelled

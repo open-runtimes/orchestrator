@@ -318,3 +318,27 @@ func TestWatcher_Counts(t *testing.T) {
 		t.Fatalf("deleted: want 0 tracker / 0 active, got %d / %d", trackers, active)
 	}
 }
+
+// A pod that fails before its worker ever starts reaches terminal state without
+// setting isExited, and its tracker stays mapped until the pod is deleted — a
+// retention period away, or forever if TTL cleanup never runs. It must stop
+// counting as active the moment it goes terminal.
+func TestWatcher_Counts_PodFailedBeforeWorkerStarted(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "test",
+			Labels:    map[string]string{LabelJobID: "never-started-job"},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodFailed, Reason: "ImagePullBackOff"},
+	}
+	w.handle(t.Context(), pod, false)
+	capture.assertHasType(t, job.CallbackTypeExit)
+
+	if trackers, active := w.Counts(); trackers != 1 || active != 0 {
+		t.Fatalf("want 1 tracker / 0 active, got %d / %d", trackers, active)
+	}
+}
