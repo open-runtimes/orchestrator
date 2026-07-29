@@ -42,7 +42,6 @@ type MetricsRecorder interface {
 	RecordDispatcherFailed(ctx context.Context)
 	RecordDispatcherDropped(ctx context.Context)
 	RecordDispatcherRequeued(ctx context.Context)
-	RecordDispatcherQueueSize(ctx context.Context, size int64)
 }
 
 // NewMemory creates a new in-memory dispatcher.
@@ -81,28 +80,14 @@ func NewMemory(cfg Config, metrics MetricsRecorder) *Memory {
 		go d.worker()
 	}
 
-	// Start queue size reporter if metrics enabled
-	if metrics != nil {
-		go d.reportQueueSize()
-	}
-
 	d.logger.Info("Dispatcher started", "workers", cfg.Workers, "buffer", cfg.BufferSize)
 	return d
 }
 
-// reportQueueSize periodically reports the queue size metric.
-func (d *Memory) reportQueueSize() {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-d.shutdown:
-			return
-		case <-ticker.C:
-			d.metrics.RecordDispatcherQueueSize(context.Background(), int64(len(d.queue)))
-		}
-	}
+// QueueSize returns the number of events waiting for a worker. Read at scrape
+// time by the dispatcher_queue_size async gauge.
+func (d *Memory) QueueSize() int64 {
+	return int64(len(d.queue))
 }
 
 // Dispatch queues an event for async delivery.

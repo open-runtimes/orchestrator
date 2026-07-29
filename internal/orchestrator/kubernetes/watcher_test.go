@@ -226,7 +226,7 @@ func newTrackerFixture(t *testing.T) (*eventCapture, *k8sLifecycleWatcher) {
 	capture := &eventCapture{}
 	emitter := job.NewCallbackEmitter()
 	capture.register(emitter)
-	w := newK8sLifecycleWatcher(fake.NewClientset(), "test", emitter, nil, 0)
+	w := newK8sLifecycleWatcher(fake.NewClientset(), "test", emitter, 0)
 	return capture, w
 }
 
@@ -286,5 +286,35 @@ func podNodeLostWithStaleRunning() *corev1.Pod {
 				},
 			},
 		},
+	}
+}
+
+// Counts backs the jobs_active and orchestrator_trackers async gauges. A
+// tracker stays in the map after its worker exits (until the pod is deleted),
+// so it keeps counting as a tracker but stops counting as an active job.
+func TestWatcher_Counts(t *testing.T) {
+	t.Parallel()
+	_, w := newTrackerFixture(t)
+
+	pod := podWithWorkerRunning()
+	pod.Labels = map[string]string{LabelJobID: "counted-job"}
+	w.handle(t.Context(), pod, false)
+
+	if trackers, active := w.Counts(); trackers != 1 || active != 1 {
+		t.Fatalf("running: want 1 tracker / 1 active, got %d / %d", trackers, active)
+	}
+
+	exited := podWithWorkerTerminated(0, corev1.PodRunning)
+	exited.Labels = map[string]string{LabelJobID: "counted-job"}
+	w.handle(t.Context(), exited, false)
+
+	if trackers, active := w.Counts(); trackers != 1 || active != 0 {
+		t.Fatalf("exited: want 1 tracker / 0 active, got %d / %d", trackers, active)
+	}
+
+	w.handle(t.Context(), exited, true)
+
+	if trackers, active := w.Counts(); trackers != 0 || active != 0 {
+		t.Fatalf("deleted: want 0 tracker / 0 active, got %d / %d", trackers, active)
 	}
 }

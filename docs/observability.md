@@ -40,8 +40,10 @@ The `path` label is the mux route the request matched (`/v1/jobs/{jobId}`, `/v1/
 |--------|---------|
 | Latency | `http_request_duration_seconds`, `job_duration_seconds` |
 | Traffic | `http_requests_total`, `jobs_total` |
-| Errors | `http_errors_total`, `job_errors_total` |
+| Errors | `http_errors_total`, `job_duration_seconds_count{success="false"}` |
 | Saturation | `jobs_active` |
+
+Job completions and job errors are both read off `job_duration_seconds_count`, which carries `image` and `success` — there is no separate `job_errors_total` to fall out of step with it.
 
 **Dispatcher (Callback) Metrics:**
 
@@ -64,6 +66,20 @@ Only populated when `ORCHESTRATOR_BACKEND=kubernetes`; for the Docker backend th
 | K8s API | `k8s_api_request_duration_seconds{verb,resource}`, `k8s_api_errors_total{verb,resource,status}` |
 
 The K8s API metrics cover every call the orchestrator makes to the apiserver — `Run`/`Stop`/`Status`/`List` and the informer's list+watch — instrumented via a `rest.Config.Wrap` transport.
+
+### Saturation metrics are asynchronous gauges
+
+`jobs_active`, `orchestrator_trackers` and `dispatcher_queue_size` are OTel
+*observable* gauges: nothing increments them, and a callback reads the live
+value (non-terminal jobs, tracker map size, queue length) when Prometheus
+scrapes. This is deliberate. Tallying them with an `UpDownCounter` requires one
+process to see both the `+1` and the `-1`, and this service never does — a
+restart zeroes the counter while the jobs it counted keep running and later
+report their exits, and a K8s leadership handover moves the `-1` to a replica
+that never did the `+1`. Both leak negative permanently. Read the state instead;
+it cannot drift. Register new saturation metrics with
+`Metrics.ObserveInt64`, and reach for `UpDownCounter` only when the increment
+and decrement are provably in the same function (e.g. a `defer`).
 
 See: `internal/observability/metrics.go`, `internal/orchestrator/kubernetes/transport.go`
 
@@ -150,11 +166,12 @@ histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by 
 # Request rate by endpoint
 sum(rate(http_requests_total[5m])) by (method, path)
 
-# Job success rate
-1 - (sum(rate(job_errors_total[5m])) / sum(rate(jobs_total[5m])))
+# Job success rate (numerator and denominator from the same exit path;
+# ratioing exits against jobs_total creates would skew on every restart)
+sum(rate(job_duration_seconds_count{success="true"}[5m])) / sum(rate(job_duration_seconds_count[5m]))
 
-# Active jobs by image
-sum(jobs_active) by (image)
+# Active jobs (sum across replicas: on K8s only the leader holds trackers)
+sum(jobs_active)
 
 # Job duration P95
 histogram_quantile(0.95, sum(rate(job_duration_seconds_bucket[5m])) by (le))

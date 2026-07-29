@@ -23,6 +23,8 @@ type noopWatcher struct{}
 
 func (noopWatcher) Start(ctx context.Context) { <-ctx.Done() }
 
+func (noopWatcher) Counts() (int64, int64) { return 0, 0 }
+
 func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator, *fake.Clientset) {
 	t.Helper()
 	cs := fake.NewClientset()
@@ -331,7 +333,7 @@ func TestWatcher_ResumesExistingPodOnStart(t *testing.T) {
 		}
 	})
 
-	w := newK8sLifecycleWatcher(cs, "orchestrator", emitter, nil, 0)
+	w := newK8sLifecycleWatcher(cs, "orchestrator", emitter, 0)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go w.Start(ctx)
@@ -417,6 +419,8 @@ type signalingWatcher struct {
 	id     string
 	events chan<- string
 }
+
+func (s *signalingWatcher) Counts() (int64, int64) { return 0, 0 }
 
 func (s *signalingWatcher) Start(ctx context.Context) {
 	s.events <- "started:" + s.id
