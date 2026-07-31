@@ -6,6 +6,10 @@
 *.dylib
 /jobs-service
 /job-sidecar
+/deployments-service
+/deployments-activator
+/deployments-sidecar
+/pool-shim
 
 # Test artifacts
 *.test
