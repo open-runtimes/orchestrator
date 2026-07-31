@@ -18,6 +18,30 @@ import (
 	"github.com/pierrec/lz4/v4"
 )
 
+// An extracted tree is materialized with our own permissions, never the
+// archive's: the sidecar runs non-root, so a restrictive entry mode — 0o600 on
+// a file the uploader kept private, 0o555 or 0o000 on a directory from a tar
+// built on Windows — makes every later read fail with EACCES, and the archive
+// step that packs the build output reports "permission denied" long after the
+// build itself succeeded. Only the execute bit is carried over, since a source
+// tree can legitimately ship executable scripts.
+//
+// Applied with an explicit Chmod rather than OpenFile's mode argument, which
+// the umask masks and which a truncating open of an existing file — a duplicate
+// archive entry, or a path an earlier artifact already wrote — ignores
+// entirely, leaving the stale mode that this is meant to rule out.
+const (
+	extractDirMode  fs.FileMode = 0o755
+	extractFileMode fs.FileMode = 0o644
+)
+
+func extractMode(mode fs.FileMode) fs.FileMode {
+	if mode.Perm()&0o111 != 0 {
+		return extractFileMode | 0o111
+	}
+	return extractFileMode
+}
+
 // cleanSubdir normalizes a subdir filter to the slash-separated relative form
 // archive entries use — "./astro/starter/" → "astro/starter" — so cosmetic
 // prefixes don't miss every entry.
@@ -226,22 +250,23 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			// 0o755, not the archive's own mode: a non-writable directory entry
-			// (0o555, or 0o000 from tars built on Windows) would otherwise make
-			// every nested entry fail with EACCES, since the sidecar runs
-			// non-root. extractFS does the same for squashfs/erofs.
-			if err := os.MkdirAll(targetPath, 0o755); err != nil {
+			if err := os.MkdirAll(targetPath, extractDirMode); err != nil {
 				return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 			}
 
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(targetPath), extractDirMode); err != nil {
 				return &Result{Status: "failed", Error: fmt.Errorf("failed to create parent directory: %w", err)}
 			}
 
-			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			mode := extractMode(os.FileMode(header.Mode))
+			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 			if err != nil {
 				return &Result{Status: "failed", Error: fmt.Errorf("failed to create file: %w", err)}
+			}
+			if err := outFile.Chmod(mode); err != nil {
+				outFile.Close()
+				return &Result{Status: "failed", Error: fmt.Errorf("failed to set file mode: %w", err)}
 			}
 
 			if _, err := io.Copy(outFile, tarReader); err != nil {
@@ -312,14 +337,14 @@ func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 		target := filepath.Join(destDir, rel)
 		extracted++
 		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			return os.MkdirAll(target, extractDirMode)
 		}
 
 		fi, err := d.Info()
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), extractDirMode); err != nil {
 			return fmt.Errorf("failed to create parent directory: %w", err)
 		}
 
@@ -329,9 +354,14 @@ func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 		}
 		defer entry.Close()
 
-		outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fi.Mode().Perm())
+		mode := extractMode(fi.Mode())
+		outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 		if err != nil {
 			return fmt.Errorf("failed to create file: %w", err)
+		}
+		if err := outFile.Chmod(mode); err != nil {
+			outFile.Close()
+			return fmt.Errorf("failed to set file mode: %w", err)
 		}
 		if _, err := io.Copy(outFile, entry); err != nil {
 			outFile.Close()

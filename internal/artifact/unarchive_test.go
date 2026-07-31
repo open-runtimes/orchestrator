@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/fstest"
 )
@@ -365,6 +366,102 @@ func TestUnarchive_Apply_UnwritableDir(t *testing.T) {
 		if string(got) != "code" {
 			t.Errorf("dir mode %#o: got %q, want %q", dirMode, got, "code")
 		}
+	}
+}
+
+// writeModeArchive builds a single-entry gzipped tar at tmpDir/test.tar.gz
+// holding "package.json" with the given mode.
+func writeModeArchive(t *testing.T, tmpDir string, mode int64) {
+	t.Helper()
+
+	file, err := os.Create(filepath.Join(tmpDir, "test.tar.gz"))
+	if err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+	gzWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzWriter)
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "package.json", Typeflag: tar.TypeReg, Mode: mode, Size: 2}); err != nil {
+		t.Fatalf("Failed to write tar header: %v", err)
+	}
+	if _, err := tarWriter.Write([]byte("{}")); err != nil {
+		t.Fatalf("Failed to write tar content: %v", err)
+	}
+	tarWriter.Close()
+	gzWriter.Close()
+	file.Close()
+}
+
+// TestUnarchive_Apply_NormalizesFileModes verifies extraction ignores the
+// archive's own file modes. A source tarball built on the uploader's machine can
+// carry an owner-only 0o600 entry, which the non-root sidecar could not read
+// back when packing the build output — the build succeeded and then reported
+// "permission denied" from the archive step.
+//
+// A restrictive umask is set throughout, since OpenFile's mode argument alone
+// would be masked by it and these assertions would then pass or fail on the
+// environment rather than on the extraction logic.
+func TestUnarchive_Apply_NormalizesFileModes(t *testing.T) {
+	defer syscall.Umask(syscall.Umask(0o077))
+
+	for _, tc := range []struct {
+		name string
+		mode int64
+		want fs.FileMode
+	}{
+		{"owner only", 0o600, 0o644},
+		{"unreadable", 0, 0o644},
+		{"executable", 0o700, 0o755},
+		{"already permissive", 0o644, 0o644},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			writeModeArchive(t, tmpDir, tc.mode)
+
+			a := &Unarchive{ID: "test-unarchive-modes", In: "test.tar.gz", Out: "extracted"}
+			if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+				t.Fatalf("Apply: %v", result.Error)
+			}
+
+			fi, err := os.Stat(filepath.Join(tmpDir, "extracted", "package.json"))
+			if err != nil {
+				t.Fatalf("Stat: %v", err)
+			}
+			if got := fi.Mode().Perm(); got != tc.want {
+				t.Errorf("mode %#o extracted as %#o, want %#o", tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUnarchive_Apply_NormalizesExistingFileMode verifies a destination that
+// already exists is re-moded too. OpenFile's mode argument applies only when it
+// creates the file, so a truncating open over a path an earlier artifact (or a
+// duplicate archive entry) already wrote would otherwise keep the stale mode and
+// reintroduce the unreadable-source failure.
+func TestUnarchive_Apply_NormalizesExistingFileMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeModeArchive(t, tmpDir, 0o644)
+
+	destDir := filepath.Join(tmpDir, "extracted")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	target := filepath.Join(destDir, "package.json")
+	if err := os.WriteFile(target, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	a := &Unarchive{ID: "test-unarchive-existing-mode", In: "test.tar.gz", Out: "extracted"}
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply: %v", result.Error)
+	}
+
+	fi, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o644 {
+		t.Errorf("pre-existing 0o600 destination left as %#o, want %#o", got, 0o644)
 	}
 }
 
