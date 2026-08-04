@@ -10,7 +10,7 @@ import (
 // idleLoop is the warm control loop with the activation idle rule installed —
 // the wiring Start uses, driven by a fake clock.
 func idleLoop(o *Orchestrator) *warm.Controller {
-	return o.warm.Controller(newIdleReaper(o).hooks())
+	return o.warm.Controller(o.idleRule().Hooks())
 }
 
 func TestIdleTeardown_DeactivatesAfterNoRequestDelta(t *testing.T) {

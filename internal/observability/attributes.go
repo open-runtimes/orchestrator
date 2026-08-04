@@ -19,6 +19,7 @@ const (
 	attrVerb       = "verb"
 	attrResource   = "resource"
 	attrCreated    = "created"
+	attrEdge       = "edge" // which activator edge: deployment | sandbox
 	attrOutcome    = "outcome"
 	attrResult     = "result"
 	attrDirection  = "direction"
@@ -65,6 +66,10 @@ func resourceAttr(resource string) attribute.KeyValue {
 
 func createdAttr(created bool) attribute.KeyValue {
 	return attribute.Bool(attrCreated, created)
+}
+
+func edgeAttr(edge string) attribute.KeyValue {
+	return attribute.String(attrEdge, edge)
 }
 
 func outcomeAttr(outcome string) attribute.KeyValue {

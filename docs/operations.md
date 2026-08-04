@@ -1,6 +1,6 @@
 # Operations Guide
 
-How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), and [pools](pools.md) guides instead.
+How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), [pools](pools.md), and [sandboxes](sandboxes.md) guides instead.
 
 - [What gets deployed](#what-gets-deployed)
 - [Prerequisites](#prerequisites)
@@ -133,6 +133,30 @@ deployments:
 
 Each pool keeps `size` pods warm at all times; claimed pods are replaced off the request path. See the [pools guide](pools.md) for the consumer side.
 
+## Sandboxes
+
+[Sandboxes](sandboxes.md) are live workspaces created from their own warm pools, reached at their own hostnames. Three pieces of operator config:
+
+```yaml
+deployments:
+  sandboxes:
+    domain: sandboxes.example.com   # needs a wildcard DNS record: *.sandboxes.example.com
+    pools:
+      - id: py
+        image: ghcr.io/open-runtimes/sandbox:0.1.0   # must serve the sandbox contract
+        command: /usr/local/bin/sandbox              # the image's entrypoint; the claim execs it
+        port: 3000
+        size: 4
+        runtimeClass: gvisor       # untrusted code is the expected workload here
+        maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod
+    edge:
+      enabled: true                # the wildcard edge every sandbox request passes through
+```
+
+The edge is the deployments-activator image in `EDGE_MODE=sandbox`, with its own Deployment and one wildcard `HTTPRoute` for `*.{domain}`. It is permanently on the data path, so scale it for sandbox traffic (`edge.autoscaling`) rather than for cold starts.
+
+**A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandboxes.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
+
 ## Configuration reference
 
 The most consequential values (see `charts/orchestrator/values.yaml` for the full annotated set):
@@ -196,6 +220,7 @@ deployments:
 
 The NetworkPolicy admits ingress only from the gateway, the activator, and the control plane, and blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
+<a id="isolation-tiers"></a>
 **Isolation tiers.** Workloads can request stronger kernel isolation with `"runtimeClass": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.
 
 **Secrets at rest.** Deployment specs — including callback signing keys — are stored in Secrets, not ConfigMaps or annotations. Pool claim tokens are HMAC-derived per pod from an install key that never leaves its Secret.

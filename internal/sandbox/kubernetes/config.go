@@ -6,7 +6,6 @@ import (
 	"orchestrator/internal/observability"
 	"orchestrator/internal/warm"
 	"orchestrator/pkg/pool"
-	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,25 +14,28 @@ import (
 const (
 	defaultNamespace       = "orchestrator"
 	defaultRunAsUser       = 65532 // distroless "nonroot"
-	defaultGatewayName     = "orchestrator"
-	defaultPoolDomain      = "localhost"
-	defaultLeaderLeaseName = "deployments-service-pools-leader"
+	defaultSandboxDomain   = "localhost"
+	defaultLeaderLeaseName = "deployments-service-sandboxes-leader"
 
 	defaultOrphanTTL = 60 * time.Second
+
+	// hostPrefix leads every sandbox hostname, so the wildcard route and the
+	// token are never confused for each other: {hostPrefix}{token}.{domain}.
+	hostPrefix = "s-"
 )
 
-// Config holds configuration for the Kubernetes pool orchestrator.
+// Config holds configuration for the Kubernetes sandbox orchestrator.
 type Config struct {
 	SidecarImage string      // deployments-sidecar (proxy) image (set by the caller)
 	ShimImage    string      // pool-shim image for the shim-install init container (set by the caller)
-	Pools        []pool.Pool // configured pools (set by the caller from POOLS_JSON)
+	Pools        []pool.Pool // configured sandbox pools (set by the caller from SANDBOX_POOLS_JSON)
 
 	Kubeconfig             string
 	Context                string // kubeconfig context to pin; empty uses current-context
 	Namespace              string
-	SidecarImagePullPolicy string // applied to shim-install + proxy; empty = kubelet default
-	WorkerImagePullPolicy  string // applied to the workload (pool image) container; empty = kubelet default
-	RunAsUser              int64  // UID/GID for every container; default 65532
+	SidecarImagePullPolicy string
+	WorkerImagePullPolicy  string
+	RunAsUser              int64
 
 	// Overcommit derives warm-pod requests from declared limits (internal/kube).
 	Overcommit kube.Overcommit
@@ -41,33 +43,34 @@ type Config struct {
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every warm pod to a node pool (internal/kube).
 	NodeSelector map[string]string
-
-	// RuntimeClasses maps isolation tiers (gvisor, kata) to the
-	// RuntimeClass stamped on warm pods (KUBE_RUNTIME_CLASSES,
-	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
-	// default. Defaults: gvisor→gvisor, kata→kata.
+	// RuntimeClasses maps isolation tiers (gvisor, kata) to the RuntimeClass
+	// stamped on warm pods (KUBE_RUNTIME_CLASSES). Untrusted, model-generated
+	// code is the expected sandbox workload, so gvisor or kata is the right
+	// choice for a sandbox pool even though runc is the platform default.
 	RuntimeClasses map[string]string
 
-	GatewayEnabled   bool   // reconcile per-activation HTTPRoutes; off for pre-Gateway clusters
-	GatewayName      string // parentRef Gateway name
-	GatewayNamespace string // parentRef Gateway namespace; default = Namespace
+	// SandboxDomain is the wildcard domain sandboxes are reached at:
+	// s-{token}.{SandboxDomain}. One HTTPRoute for *.{SandboxDomain} backs it
+	// (operator config, in the chart) — there is no per-sandbox route to
+	// program, so a create is as fast as the claim.
+	SandboxDomain string
+	// Scheme is the URL scheme handed back to callers (https where the gateway
+	// terminates TLS).
+	Scheme string
 
-	PoolDomain string        // default hostname suffix for HTTP activations: {id}.{PoolDomain}
-	OrphanTTL  time.Duration // discard claimed-but-unlabeled pods (crashed mid-claim) after this
+	OrphanTTL time.Duration // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 
 	// LeaderElection gates the control loop (replenishment + GC) to one
 	// replica; disabled = single-replica mode.
 	LeaderElection kube.LeaderElectionConfig
 
-	// Metrics receives K8s API, leadership, and pool telemetry. Set by the
-	// caller (not the environment); may be nil in tests.
+	// Metrics receives K8s API, leadership, and warm-pool telemetry. Set by
+	// the caller (not the environment); may be nil in tests.
 	Metrics *observability.Metrics
 }
 
 // LoadConfigFromEnv loads orchestrator configuration from environment
-// variables, mirroring the deployments Kubernetes backend's names where the
-// concept matches. SidecarImage, ShimImage, and Pools are provided by the
-// caller.
+// variables. SidecarImage, ShimImage, and Pools are provided by the caller.
 func LoadConfigFromEnv() (Config, error) {
 	classes, err := kube.ParseRuntimeClasses(config.GetEnv("KUBE_RUNTIME_CLASSES", ""))
 	if err != nil {
@@ -93,31 +96,19 @@ func LoadConfigFromEnv() (Config, error) {
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
 
-		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
-		GatewayName:      config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
-		GatewayNamespace: config.GetEnv("KUBE_GATEWAY_NAMESPACE", ""),
-
-		PoolDomain: config.GetEnv("POOL_DOMAIN", defaultPoolDomain),
-		OrphanTTL:  config.GetDurationEnv("POOL_ORPHAN_TTL", defaultOrphanTTL),
+		SandboxDomain: config.GetEnv("SANDBOX_DOMAIN", defaultSandboxDomain),
+		Scheme:        config.GetEnv("SANDBOX_SCHEME", "http"),
+		OrphanTTL:     config.GetDurationEnv("SANDBOX_ORPHAN_TTL", defaultOrphanTTL),
 
 		LeaderElection: kube.LeaderElectionConfig{
 			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
-			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", defaultLeaderLeaseName),
+			LeaseName:     config.GetEnv("KUBE_SANDBOX_LEADER_LEASE_NAME", defaultLeaderLeaseName),
 			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
 			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),
 			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),
 			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
 		},
 	}, nil
-}
-
-// boolEnv parses a boolean environment variable, falling back to the default
-// on absence or a malformed value.
-func boolEnv(key string, defaultValue bool) bool {
-	if v, err := strconv.ParseBool(config.GetEnv(key, strconv.FormatBool(defaultValue))); err == nil {
-		return v
-	}
-	return defaultValue
 }
 
 func (c *Config) applyDefaults() {
@@ -127,14 +118,11 @@ func (c *Config) applyDefaults() {
 	if c.RunAsUser <= 0 {
 		c.RunAsUser = defaultRunAsUser
 	}
-	if c.GatewayName == "" {
-		c.GatewayName = defaultGatewayName
+	if c.SandboxDomain == "" {
+		c.SandboxDomain = defaultSandboxDomain
 	}
-	if c.GatewayNamespace == "" {
-		c.GatewayNamespace = c.Namespace
-	}
-	if c.PoolDomain == "" {
-		c.PoolDomain = defaultPoolDomain
+	if c.Scheme == "" {
+		c.Scheme = "http"
 	}
 	if c.OrphanTTL <= 0 {
 		c.OrphanTTL = defaultOrphanTTL
@@ -147,9 +135,16 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// warmConfig projects the pool config onto the warm-pool manager's — the
-// images, hardening, placement, and GC knobs it shares with every other warm
-// consumer.
+// URLFor builds a sandbox's URL from its capability token. The token — not the
+// caller-chosen id — is the address, so a guessed id reaches nothing.
+func (c *Config) URLFor(token string) string {
+	if token == "" {
+		return ""
+	}
+	return c.Scheme + "://" + hostPrefix + token + "." + c.SandboxDomain
+}
+
+// warmConfig projects the sandbox config onto the warm-pool manager's.
 func (c *Config) warmConfig() warm.Config {
 	return warm.Config{
 		Namespace:              c.Namespace,

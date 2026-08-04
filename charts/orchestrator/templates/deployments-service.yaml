@@ -119,6 +119,20 @@ spec:
             - name: POOL_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
             {{- end }}
+            {{- if .Values.deployments.sandboxes.pools }}
+            - name: SANDBOX_POOLS_JSON
+              value: {{ .Values.deployments.sandboxes.pools | toJson | quote }}
+            - name: POOL_SHIM_IMAGE
+              value: {{ include "orchestrator.poolShimImage" . | quote }}
+            - name: SANDBOX_DOMAIN
+              value: {{ required "deployments.sandboxes.domain is required when sandbox pools are configured" .Values.deployments.sandboxes.domain | quote }}
+            - name: SANDBOX_SCHEME
+              value: {{ .Values.deployments.sandboxes.scheme | quote }}
+            {{- if .Values.deployments.leaderElection.enabled }}
+            - name: KUBE_SANDBOX_LEADER_LEASE_NAME
+              value: {{ default (printf "%s-sandboxes-leader" (include "orchestrator.deploymentsName" .)) .Values.deployments.sandboxes.leaseName | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.deployments.leaderElection.enabled }}
             - name: KUBE_LEADER_ELECTION
               value: "true"

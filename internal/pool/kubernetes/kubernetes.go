@@ -49,14 +49,16 @@ const (
 // naming is this consumer's label and pod-name contract. Pool pods are not
 // sandbox pods: separate keys keep each consumer's pods visible to exactly one
 // control loop.
-var naming = warm.Naming{
-	ManagedBy:  ManagedByValue,
-	Kind:       "pool",
-	Pool:       LabelPoolID,
-	Claim:      LabelActivation,
-	Spec:       AnnotationActivationSpec,
-	NamePrefix: "pool",
-	SecretName: "pool-claim-key",
+func naming() warm.Naming {
+	return warm.Naming{
+		ManagedBy:  ManagedByValue,
+		Kind:       "pool",
+		Pool:       LabelPoolID,
+		Claim:      LabelActivation,
+		Spec:       AnnotationActivationSpec,
+		NamePrefix: "pool",
+		SecretName: "pool-claim-key",
+	}
 }
 
 // Orchestrator implements pool.Orchestrator using Kubernetes.
@@ -121,10 +123,20 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	o.stop = cancel
-	hooks := newIdleReaper(o).hooks()
+	hooks := o.idleRule().Hooks()
 	go kube.RunLeaderElected(runCtx, o.client, o.cfg.Namespace, o.cfg.LeaderElection,
 		func(loopCtx context.Context) { o.warm.RunControl(loopCtx, hooks) }, o.onLeadership)
 	return nil
+}
+
+// idleRule is the activation end-of-life rule: IdleTimeoutSeconds with no
+// request-count movement across it deactivates.
+func (o *Orchestrator) idleRule() *warm.IdleReaper {
+	return warm.NewIdleReaper(o.warm, func(pod *corev1.Pod) time.Duration {
+		var act pool.Activation
+		o.warm.Spec(pod, &act)
+		return time.Duration(act.IdleTimeoutSeconds) * time.Second
+	}, o.Deactivate)
 }
 
 // onLeadership records leadership transitions when metrics are wired.
@@ -191,7 +203,7 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 	// key), so no secret material rests on the pod object. A
 	// restart-reconstructed activation therefore cannot deliver callbacks: the
 	// documented at-most-once semantics.
-	if err := o.warm.Bind(ctx, pod.Name, act.ID, redacted(act)); err != nil {
+	if err := o.warm.Bind(ctx, pod.Name, act.ID, redacted(act), nil); err != nil {
 		return nil, err
 	}
 	return o.exposeHTTP(ctx, p, act, pod)

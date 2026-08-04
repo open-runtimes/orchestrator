@@ -119,7 +119,7 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 func seedClaimKey(t *testing.T, cs *fake.Clientset) {
 	t.Helper()
 	_, err := cs.CoreV1().Secrets(testNS).Create(t.Context(), &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: naming.SecretName, Namespace: testNS},
+		ObjectMeta: metav1.ObjectMeta{Name: naming().SecretName, Namespace: testNS},
 		Data:       map[string][]byte{"key": testInstallKey},
 	}, metav1.CreateOptions{})
 	if err != nil {

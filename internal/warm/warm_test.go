@@ -198,7 +198,7 @@ func TestBind_StampsClaimAndSpec(t *testing.T) {
 	m, cs, _ := newTestManager(t, testPool("std"))
 	addPod(t, cs, warmPodFixture(m, "std", "pod-a", "10.0.0.1"))
 
-	if err := m.Bind(t.Context(), "pod-a", "act1", map[string]string{"command": "serve"}); err != nil {
+	if err := m.Bind(t.Context(), "pod-a", "act1", map[string]string{"command": "serve"}, map[string]string{"sandbox.token": "abc"}); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 	pod, err := cs.CoreV1().Pods(testNS).Get(t.Context(), "pod-a", metav1.GetOptions{})

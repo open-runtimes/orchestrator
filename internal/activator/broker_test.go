@@ -98,7 +98,7 @@ func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	b := newBroker(newCaptureQueue(), nil)
+	b := newBroker(newCaptureQueue(), nil, edgeDeployment)
 	c := &fakeCapacity{target: mustURL(t, backend.URL)}
 
 	rec := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
 }
 
 func TestBrokerColdHoldRaisesOnceThen503(t *testing.T) {
-	b := newBroker(newCaptureQueue(), nil)
+	b := newBroker(newCaptureQueue(), nil, edgeDeployment)
 	c := &fakeCapacity{readyAfter: 1 << 30} // never ready
 
 	const concurrent = 5
@@ -160,7 +160,7 @@ func TestBrokerColdStartServesAfterRaise(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	b := newBroker(newCaptureQueue(), nil)
+	b := newBroker(newCaptureQueue(), nil, edgeDeployment)
 	c := &fakeCapacity{target: mustURL(t, backend.URL), readyAfter: 2}
 
 	rec := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestBrokerColdStartServesAfterRaise(t *testing.T) {
 }
 
 func TestBrokerAsyncRequiresCallback(t *testing.T) {
-	b := newBroker(newCaptureQueue(), nil)
+	b := newBroker(newCaptureQueue(), nil, edgeDeployment)
 	spec := brokerSpec()
 	spec.Callback = nil
 
@@ -188,7 +188,7 @@ func TestBrokerAsyncRequiresCallback(t *testing.T) {
 }
 
 func TestBrokerAsyncRejectsOversizedBody(t *testing.T) {
-	b := newBroker(newCaptureQueue(), nil)
+	b := newBroker(newCaptureQueue(), nil, edgeDeployment)
 
 	body := bytes.NewReader(make([]byte, maxAsyncRequestBody+1))
 	rec := httptest.NewRecorder()
@@ -207,7 +207,7 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil)
+	b := newBroker(queue, nil, edgeDeployment)
 	c := &fakeCapacity{target: mustURL(t, backend.URL)}
 
 	rec := httptest.NewRecorder()
@@ -245,7 +245,7 @@ func TestBrokerAsyncHonorsClientInvocationID(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil)
+	b := newBroker(queue, nil, edgeDeployment)
 	req := newDataRequest(t, http.MethodPost, nil)
 	req.Header.Set("X-Invocation-Id", "exec-123")
 
@@ -270,7 +270,7 @@ func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil)
+	b := newBroker(queue, nil, edgeDeployment)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, "http://h/run?x=1", http.NoBody)
 	if err != nil {
@@ -316,7 +316,7 @@ func TestBrokerAsyncBoundsRequestPath(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil)
+	b := newBroker(queue, nil, edgeDeployment)
 
 	long := "/" + strings.Repeat("a", maxEchoedPathBytes+100)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://h"+long, http.NoBody)
@@ -346,7 +346,7 @@ func TestBrokerAsyncCallbackBase64ForBinaryBody(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil)
+	b := newBroker(queue, nil, edgeDeployment)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), time.Second,
@@ -373,7 +373,7 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil)
+	b := newBroker(queue, nil, edgeDeployment)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), time.Second,
@@ -390,7 +390,7 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 
 func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil)
+	b := newBroker(queue, nil, edgeDeployment)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), 200*time.Millisecond,
@@ -419,25 +419,25 @@ type fakeRecorder struct {
 	asyncs []string
 }
 
-func (f *fakeRecorder) RecordActivatorHold(_ context.Context, outcome string, _ float64) {
+func (f *fakeRecorder) RecordActivatorHold(_ context.Context, _, outcome string, _ float64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.holds = append(f.holds, outcome)
 }
 
-func (f *fakeRecorder) RecordActivatorQueueDelta(_ context.Context, delta int64) {
+func (f *fakeRecorder) RecordActivatorQueueDelta(_ context.Context, _ string, delta int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queue += delta
 }
 
-func (f *fakeRecorder) RecordActivatorRaise(context.Context) {
+func (f *fakeRecorder) RecordActivatorRaise(context.Context, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.raises++
 }
 
-func (f *fakeRecorder) RecordActivatorAsync(_ context.Context, result string) {
+func (f *fakeRecorder) RecordActivatorAsync(_ context.Context, _, result string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asyncs = append(f.asyncs, result)
@@ -453,7 +453,7 @@ func TestBrokerRecordsTelemetry(t *testing.T) {
 	defer backend.Close()
 
 	rec := &fakeRecorder{}
-	b := newBroker(newCaptureQueue(), rec)
+	b := newBroker(newCaptureQueue(), rec, edgeDeployment)
 
 	// Served (warm).
 	b.sync(httptest.NewRecorder(), newDataRequest(t, http.MethodGet, nil), "dep", "h", time.Second,
@@ -477,7 +477,7 @@ func TestBrokerRecordsTelemetry(t *testing.T) {
 
 func TestBrokerRecordsAsyncResult(t *testing.T) {
 	rec := &fakeRecorder{}
-	b := newBroker(newCaptureQueue(), rec)
+	b := newBroker(newCaptureQueue(), rec, edgeDeployment)
 
 	// Hold times out → the async response callback carries an error → failed.
 	recorder := httptest.NewRecorder()

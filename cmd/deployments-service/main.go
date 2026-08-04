@@ -20,8 +20,10 @@ import (
 	"orchestrator/internal/observability"
 	poolkubernetes "orchestrator/internal/pool/kubernetes"
 	"orchestrator/internal/proxy"
+	sandboxkubernetes "orchestrator/internal/sandbox/kubernetes"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
+	"orchestrator/pkg/sandbox"
 	"orchestrator/pkg/server"
 	"os"
 	"time"
@@ -128,14 +130,38 @@ func main() {
 		slog.Info("Pools configured", "count", len(pools))
 	}
 
+	// Sandbox pools are config-declared too: no SANDBOX_POOLS_JSON → no
+	// sandbox orchestrator, no sandbox routes.
+	sandboxPools, err := sandbox.LoadPools(config.GetEnv("SANDBOX_POOLS_JSON", ""))
+	if err != nil {
+		slog.Error("Invalid sandbox pool configuration", "error", err)
+		os.Exit(1)
+	}
+	var sandboxSvc *sandbox.Service
+	if len(sandboxPools) > 0 {
+		sandboxOrchestrator, err := buildSandboxOrchestrator(ctx, backend, sandboxPools, metrics)
+		if err != nil {
+			slog.Error("Failed to build sandbox orchestrator", "error", err)
+			os.Exit(1)
+		}
+		defer sandboxOrchestrator.Close()
+		if err := sandboxOrchestrator.Start(ctx); err != nil {
+			slog.Error("Failed to start sandbox orchestrator", "error", err)
+			os.Exit(1)
+		}
+		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.DefaultRegistry())
+		slog.Info("Sandbox pools configured", "count", len(sandboxPools))
+	}
+
 	healthChecker := health.NewChecker(orchestrator)
 	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{
-		Service:       svc,
-		Metrics:       metrics,
-		HealthChecker: healthChecker,
-		APIKey:        svcCfg.APIKey,
-		PoolService:   poolSvc,
-		Dispatcher:    eventDispatcher,
+		Service:        svc,
+		Metrics:        metrics,
+		HealthChecker:  healthChecker,
+		APIKey:         svcCfg.APIKey,
+		PoolService:    poolSvc,
+		Dispatcher:     eventDispatcher,
+		SandboxService: sandboxSvc,
 	})
 
 	if svcCfg.APIKey == "" {
@@ -179,6 +205,28 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 		cfg.Pools = pools
 		cfg.Metrics = metrics
 		return poolkubernetes.NewOrchestrator(ctx, cfg)
+	default:
+		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
+	}
+}
+
+// buildSandboxOrchestrator builds the sandbox backend. Sandboxes are
+// Kubernetes-only: they are reached through a wildcard gateway route, and their
+// isolation tiers are RuntimeClasses.
+func buildSandboxOrchestrator(ctx context.Context, backend string, pools []pool.Pool, metrics *observability.Metrics) (sandbox.Orchestrator, error) {
+	switch backend {
+	case "docker":
+		return nil, errors.New("sandboxes require the Kubernetes backend")
+	case "kubernetes":
+		cfg, err := sandboxkubernetes.LoadConfigFromEnv()
+		if err != nil {
+			return nil, err
+		}
+		cfg.SidecarImage = config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+		cfg.ShimImage = config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
+		cfg.Pools = pools
+		cfg.Metrics = metrics
+		return sandboxkubernetes.NewOrchestrator(ctx, cfg)
 	default:
 		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
 	}

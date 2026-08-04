@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
@@ -167,6 +168,17 @@ func (m *Manager) AllClaimed(ctx context.Context, poolID string) ([]corev1.Pod, 
 	return m.list(ctx, m.selector(poolID)+","+m.cfg.Naming.Claim)
 }
 
+// Claimed finds the pod(s) bound to a claim in any pool — for consumers whose
+// claim ids are unique across pools, so their API paths need no pool.
+func (m *Manager) Claimed(ctx context.Context, claimID string) ([]corev1.Pod, error) {
+	return m.list(ctx, m.managed()+","+m.cfg.Naming.Claim+"="+claimID)
+}
+
+// EveryClaimed lists every claimed pod across all this consumer's pools.
+func (m *Manager) EveryClaimed(ctx context.Context) ([]corev1.Pod, error) {
+	return m.list(ctx, m.managed()+","+m.cfg.Naming.Claim)
+}
+
 func (m *Manager) list(ctx context.Context, selector string) ([]corev1.Pod, error) {
 	list, err := m.client.CoreV1().Pods(m.cfg.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
@@ -176,8 +188,15 @@ func (m *Manager) list(ctx context.Context, selector string) ([]corev1.Pod, erro
 }
 
 func (m *Manager) selector(poolID string) string {
-	return LabelManagedBy + "=" + m.cfg.Naming.ManagedBy + "," + m.cfg.Naming.Pool + "=" + poolID
+	return m.managed() + "," + m.cfg.Naming.Pool + "=" + poolID
 }
+
+func (m *Manager) managed() string {
+	return LabelManagedBy + "=" + m.cfg.Naming.ManagedBy
+}
+
+// PoolID reads the pool a pod belongs to.
+func (m *Manager) PoolID(pod *corev1.Pod) string { return pod.Labels[m.cfg.Naming.Pool] }
 
 // ClaimID reads the claim a pod is bound to ("" while warm).
 func (m *Manager) ClaimID(pod *corev1.Pod) string { return pod.Labels[m.cfg.Naming.Claim] }
@@ -221,16 +240,18 @@ func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *proxy.ClaimReque
 }
 
 // Bind stamps the accepted claim onto the pod: the claim label (the status,
-// list, and GC key) and the spec annotation (status reconstruction). Callers
-// must strip secret material from spec first — the pod object is not a safe
-// place to rest it.
-func (m *Manager) Bind(ctx context.Context, podName, claimID string, spec any) error {
+// list, and GC key), the spec annotation (status reconstruction), and any
+// consumer labels the claim routes by. Callers must strip secret material from
+// spec first — the pod object is not a safe place to rest it.
+func (m *Manager) Bind(ctx context.Context, podName, claimID string, spec any, labels map[string]string) error {
 	encoded, err := json.Marshal(spec)
 	if err != nil {
 		return apperrors.Internal("kubernetes.marshalSpec", err)
 	}
+	bound := map[string]string{m.cfg.Naming.Claim: claimID}
+	maps.Copy(bound, labels)
 	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
-		"labels":      map[string]string{m.cfg.Naming.Claim: claimID},
+		"labels":      bound,
 		"annotations": map[string]string{m.cfg.Naming.Spec: string(encoded)},
 	}})
 	if err != nil {

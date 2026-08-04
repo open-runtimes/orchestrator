@@ -297,3 +297,14 @@ rollingUpdate:
   maxUnavailable: 0
   maxSurge: 1
 {{- end }}
+
+{{- define "orchestrator.sandboxEdgeLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: sandbox-edge
+{{- end -}}
+
+{{- define "orchestrator.sandboxEdgeSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: sandbox-edge
+{{- end -}}

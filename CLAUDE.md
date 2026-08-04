@@ -22,9 +22,9 @@ Job orchestration service for running containerized workloads with async callbac
 - `cmd/job-sidecar` — sidecar for artifact processing and job lifecycle
 - `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane
 - `cmd/deployments-sidecar` — reverse proxy in every deployment replica (readiness, drain, concurrency cap)
-- `cmd/deployments-activator` — K8s buffering edge for cold/async traffic (gateway routes here with X-Revision)
+- `cmd/deployments-activator` — K8s data-plane edge; `EDGE_MODE=deployment` buffers cold/async traffic (gateway routes here with X-Revision), `EDGE_MODE=sandbox` is the wildcard sandbox edge (resolves the sandbox from the Host)
 - `cmd/pool-shim` — warm-pod entrypoint: blocks on a FIFO, execs the activation payload as PID 1
-- `internal/` — core packages: api, job, artifact, dispatcher, kube (shared K8s client/leader election), orchestrator/{docker,kubernetes}, sidecar, config
+- `internal/` — core packages: api, job, artifact, dispatcher, kube (shared K8s client/leader election), warm (warm-pool engine: pods, claim, replenish, GC — shared by pools and sandboxes), claim (the claim protocol), orchestrator/{docker,kubernetes}, sandbox/kubernetes, sidecar, config
 - `pkg/` — reusable utilities: backoff, circuitbreaker, cloudevent, lifecycle (shared workload FSM/store), server
 - `charts/orchestrator/` — Helm chart
 - `hack/` — dev-only assets (kind config, dev values, install-tools.sh)
@@ -33,6 +33,7 @@ Job orchestration service for running containerized workloads with async callbac
 ## Key concepts
 
 - Jobs run in Docker containers or Kubernetes `batch/v1.Job` resources; artifacts are ordered by `depends` field
+- Sandboxes are live workspaces claimed from warm pools (K8s only); exec and files are the sandbox image's HTTP contract, not ours, and a sandbox's hostname carries an unguessable capability token
 - K8s backend uses a native sidecar (K8s 1.29+) — kubelet sends SIGTERM to the sidecar when the worker exits
 - Callbacks use CloudEvents 1.0 with optional HMAC-SHA256 signing
 - Service survives restarts — in-flight jobs are resumed
