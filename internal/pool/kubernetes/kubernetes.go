@@ -17,7 +17,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
-	"orchestrator/internal/pool/claim"
+	"orchestrator/internal/claim"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
 	"sync"

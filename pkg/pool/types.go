@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/claim"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/volume"
 )
@@ -35,10 +36,10 @@ type Pool struct {
 	Burst string `json:"burst,omitempty"`
 }
 
-// Burst policies.
+// Burst policies, owned by the claim protocol that implements them.
 const (
-	BurstReject = "reject"
-	BurstCold   = "cold"
+	BurstReject = claim.BurstReject
+	BurstCold   = claim.BurstCold
 )
 
 // LoadPools parses the POOLS_JSON config value.

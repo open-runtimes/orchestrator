@@ -18,9 +18,16 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/proxy"
-	"orchestrator/pkg/pool"
 	"strconv"
 	"time"
+)
+
+// Burst policies: what happens when a claim arrives and no warm unit is
+// free. Declared here because the flow implements them; fleet declarations
+// validate against these names.
+const (
+	BurstReject = "reject" // 429 — never pay a cold start on the request path
+	BurstCold   = "cold"   // create a unit on demand and pay the cold start
 )
 
 // ErrConflict is the racing loser's result: the unit's sidecar already
@@ -81,16 +88,16 @@ func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID
 		return unit, recordPoison(ctx, rec, poolID, err)
 	}
 
-	if burst != pool.BurstCold {
+	if burst != BurstCold {
 		if rec != nil {
-			rec.RecordPoolBurst(ctx, poolID, pool.BurstReject)
+			rec.RecordPoolBurst(ctx, poolID, BurstReject)
 		}
 		slog.Warn("Pool exhausted, rejecting activation", "poolId", poolID, "activationId", req.ActivationID)
 		return nil, exhausted(poolID)
 	}
 
 	if rec != nil {
-		rec.RecordPoolBurst(ctx, poolID, pool.BurstCold)
+		rec.RecordPoolBurst(ctx, poolID, BurstCold)
 	}
 	slog.Warn("Pool exhausted, cold-creating capacity", "poolId", poolID, "activationId", req.ActivationID)
 	created, err := inv.Create(ctx)

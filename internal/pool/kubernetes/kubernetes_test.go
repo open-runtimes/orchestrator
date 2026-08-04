@@ -6,7 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/pool/claim"
+	"orchestrator/internal/claim"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"

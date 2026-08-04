@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"orchestrator/internal/pool/claim"
+	"orchestrator/internal/claim"
 	"orchestrator/internal/proxy"
 	"strconv"
 	"time"
