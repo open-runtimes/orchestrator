@@ -252,6 +252,10 @@ deployments:
     #     runtimeClass: gvisor
     #     maxIdleSeconds: 900
     pools: []
+    # Sandboxes may also declare extra ports per create call; each is addressed
+    # at s-{token}-{port}.{domain} — the same label, so one wildcard cert covers
+    # every port of every sandbox.
+    #
     # Wildcard domain sandboxes are addressed at: s-{token}.{domain}. Requires
     # a wildcard DNS record (*.{domain}) pointing at the gateway. Each
     # sandbox's hostname carries a 128-bit capability token, so treat the URL

@@ -6,6 +6,7 @@ import (
 	"orchestrator/internal/observability"
 	"orchestrator/internal/warm"
 	"orchestrator/pkg/pool"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -142,6 +143,32 @@ func (c *Config) URLFor(token string) string {
 		return ""
 	}
 	return c.Scheme + "://" + hostPrefix + token + "." + c.SandboxDomain
+}
+
+// PortURLFor addresses one of a sandbox's secondary ports. The port rides in
+// the SAME DNS label as the token rather than a label of its own: a wildcard
+// certificate covers exactly one label (RFC 6125), so s-{token}-{port} is
+// reachable under one *.{domain} cert while s-{port}.{token}.{domain} would
+// need a certificate per sandbox.
+func (c *Config) PortURLFor(token string, port int) string {
+	if token == "" {
+		return ""
+	}
+	return c.Scheme + "://" + hostPrefix + token + "-" + strconv.Itoa(port) + "." + c.SandboxDomain
+}
+
+// URLsFor addresses every port a sandbox serves, keyed by port number: the
+// pool's own primary plus each extra port the request declared.
+func (c *Config) URLsFor(token string, primary int, ports []int) map[string]string {
+	if token == "" {
+		return nil
+	}
+	urls := make(map[string]string, len(ports)+1)
+	urls[strconv.Itoa(primary)] = c.URLFor(token)
+	for _, port := range ports {
+		urls[strconv.Itoa(port)] = c.PortURLFor(token, port)
+	}
+	return urls
 }
 
 // warmConfig projects the sandbox config onto the warm-pool manager's.

@@ -26,10 +26,10 @@ func (f *fakeOrchestrator) Create(_ context.Context, req *Request) (*Status, err
 }
 
 func (f *fakeOrchestrator) Status(context.Context, string) (*Status, error) { return &Status{}, nil }
-func (f *fakeOrchestrator) List(context.Context) ([]Status, error)         { return nil, nil }
-func (f *fakeOrchestrator) Delete(context.Context, string) error           { return nil }
-func (f *fakeOrchestrator) Ready(context.Context) error                    { return nil }
-func (f *fakeOrchestrator) Close() error                                   { return nil }
+func (f *fakeOrchestrator) List(context.Context) ([]Status, error)          { return nil, nil }
+func (f *fakeOrchestrator) Delete(context.Context, string) error            { return nil }
+func (f *fakeOrchestrator) Ready(context.Context) error                     { return nil }
+func (f *fakeOrchestrator) Close() error                                    { return nil }
 
 func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 	if len(pools) == 0 {
@@ -155,5 +155,32 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 	}
 	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: maxTimeoutSecs + 1}); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error over the timeout ceiling")
+	}
+}
+
+// Ports are per-sandbox (a container may bind any port at any time), but not
+// unconstrained: the sidecar's own ports and the pool's primary are refused.
+func TestCreate_ValidatesPorts(t *testing.T) {
+	t.Parallel()
+	svc, orch := testService()
+
+	if _, err := svc.Create(context.Background(), &Request{Pool: "py", Ports: []int{5173, 9229}}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(orch.last.Ports) != 2 {
+		t.Errorf("ports not passed through: %v", orch.last.Ports)
+	}
+
+	for name, ports := range map[string][]int{
+		"sidecar data port":  {8000},
+		"sidecar admin port": {8001},
+		"the pool's own":     {3000},
+		"out of range":       {70000},
+		"zero":               {0},
+		"duplicate":          {5173, 5173},
+	} {
+		if _, err := svc.Create(context.Background(), &Request{Pool: "py", Ports: ports}); !errors.Is(err, apperrors.ErrValidation) {
+			t.Errorf("%s (%v): want a validation error, got %v", name, ports, err)
+		}
 	}
 }

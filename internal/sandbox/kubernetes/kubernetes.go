@@ -190,7 +190,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if err := o.warm.Bind(ctx, pod.Name, req.ID, req, map[string]string{LabelToken: req.Token}); err != nil {
 		return nil, err
 	}
-	return o.awaitServing(ctx, req, pod)
+	return o.awaitServing(ctx, p, req, pod)
 }
 
 // claimRequest maps the sandbox onto the sidecar claim protocol; a request
@@ -202,6 +202,7 @@ func claimRequest(p *pool.Pool, req *sandbox.Request) *proxy.ClaimRequest {
 		Environment:    req.Environment,
 		Artifacts:      req.Artifacts,
 		Port:           p.Port,
+		Ports:          req.Ports,
 		TimeoutSeconds: req.TimeoutSeconds,
 	}
 }
@@ -209,11 +210,12 @@ func claimRequest(p *pool.Pool, req *sandbox.Request) *proxy.ClaimRequest {
 // awaitServing waits for the sandbox's sidecar to report the workload serving,
 // so a 201 means the URL is live. Never ready in time → the sandbox is torn
 // down and reported failed.
-func (o *Orchestrator) awaitServing(ctx context.Context, req *sandbox.Request, pod *corev1.Pod) (*sandbox.Status, error) {
+func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Pool, req *sandbox.Request, pod *corev1.Pod) (*sandbox.Status, error) {
 	status := &sandbox.Status{
 		ID:     req.ID,
 		PoolID: req.Pool,
 		URL:    o.cfg.URLFor(req.Token),
+		URLs:   o.cfg.URLsFor(req.Token, p.Port, req.Ports),
 	}
 	deadline := time.Now().Add(o.serveWait)
 	for !o.warm.Sidecar().Ready(ctx, pod.Status.PodIP) {
@@ -263,10 +265,18 @@ func (o *Orchestrator) List(ctx context.Context) ([]sandbox.Status, error) {
 // creating until the contract answers, then ready. A workload exit or infra
 // failure → failed; deletion in flight → deleting.
 func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
+	token := pod.Labels[LabelToken]
 	status := sandbox.Status{
 		ID:     o.warm.ClaimID(pod),
 		PoolID: o.warm.PoolID(pod),
-		URL:    o.cfg.URLFor(pod.Labels[LabelToken]),
+		URL:    o.cfg.URLFor(token),
+	}
+	// The extra ports come off the stored spec, the primary off the pool — so a
+	// reconstructed sandbox advertises exactly the addresses it was created with.
+	var spec sandbox.Request
+	o.warm.Spec(pod, &spec)
+	if p := o.warm.Pool(status.PoolID); p != nil {
+		status.URLs = o.cfg.URLsFor(token, p.Port, spec.Ports)
 	}
 	if pod.DeletionTimestamp != nil {
 		status.State = sandbox.StateDeleting

@@ -280,3 +280,113 @@ func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 		t.Fatalf("claim after poison: got %d, want 409", status)
 	}
 }
+
+// A claim may declare extra ports. They are addressable through the same data
+// listener via HeaderPort — dialed on loopback inside this pod, so the header
+// can never reach another pod, and never a port the claim did not declare.
+func TestPoolClaim_ExtraPorts(t *testing.T) {
+	primary := backendOnLoopback(t, "primary")
+	extra := backendOnLoopback(t, "extra")
+
+	cfg := poolConfig(t)
+	execCh := shimReader(t, cfg.Workspace)
+	p := startProxy(t, cfg)
+
+	if status := postActivate(t, p, testClaimToken, ClaimRequest{
+		ActivationID: "act-ports",
+		Command:      "serve",
+		Port:         primary,
+		Ports:        []int{extra},
+	}); status != http.StatusOK {
+		t.Fatalf("claim: got %d, want 200", status)
+	}
+	<-execCh
+
+	waitReady(t, p)
+
+	// No hint → the primary port, exactly as before extra ports existed.
+	if _, body := get(t, localURL(t, p.DataAddr(), "/")); body != "primary" {
+		t.Errorf("unhinted request: got %q, want primary", body)
+	}
+	// The declared extra.
+	if status, body := getWithPort(t, p, strconv.Itoa(extra)); status != http.StatusOK || body != "extra" {
+		t.Errorf("declared port: got %d %q, want 200 extra", status, body)
+	}
+	// An undeclared port is refused rather than dialed — including the
+	// sidecar's own admin port.
+	for _, port := range []string{"1", strconv.Itoa(DefaultProxyPort), strconv.Itoa(DefaultAdminPort), "notaport"} {
+		if status, _ := getWithPort(t, p, port); status != http.StatusNotFound {
+			t.Errorf("undeclared port %s: got %d, want 404", port, status)
+		}
+	}
+}
+
+// The port hint is the machinery's, not the workload's: it must not reach the
+// upstream.
+func TestPoolClaim_PortHintStrippedFromUpstream(t *testing.T) {
+	seen := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get(HeaderPort)
+	}))
+	t.Cleanup(backend.Close)
+	port := backendPort(t, backend)
+
+	cfg := poolConfig(t)
+	execCh := shimReader(t, cfg.Workspace)
+	p := startProxy(t, cfg)
+	if status := postActivate(t, p, testClaimToken, ClaimRequest{
+		ActivationID: "act-strip", Command: "serve", Port: port, Ports: []int{port},
+	}); status != http.StatusOK {
+		t.Fatalf("claim: got %d, want 200", status)
+	}
+	<-execCh
+	waitReady(t, p)
+
+	if status, _ := getWithPort(t, p, strconv.Itoa(port)); status != http.StatusOK {
+		t.Fatalf("request: got %d, want 200", status)
+	}
+	if hint := <-seen; hint != "" {
+		t.Errorf("workload saw the port hint: %q", hint)
+	}
+}
+
+// backendOnLoopback starts a server answering with body and returns its port.
+func backendOnLoopback(t *testing.T, body string) int {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(backend.Close)
+	return backendPort(t, backend)
+}
+
+func backendPort(t *testing.T, backend *httptest.Server) int {
+	t.Helper()
+	_, portStr, err := net.SplitHostPort(backend.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split backend addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse backend port: %v", err)
+	}
+	return port
+}
+
+// getWithPort issues a data-plane request naming a port, the way the sandbox
+// edge does.
+func getWithPort(t *testing.T, p *Proxy, port string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, localURL(t, p.DataAddr(), "/"), nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set(HeaderPort, port)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}

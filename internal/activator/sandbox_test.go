@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"orchestrator/internal/proxy"
 	"testing"
 	"time"
 
@@ -171,5 +172,69 @@ func TestSandboxEdge_ClaimsNoPathOfItsOwn(t *testing.T) {
 	}
 	if len(seen) != 6 {
 		t.Errorf("sandbox saw %v", seen)
+	}
+}
+
+// A sandbox's extra ports are addressed by hostname, and the port rides in the
+// same label as the token: one wildcard cert covers every port of every
+// sandbox.
+func TestSandboxEdge_PortLabelBecomesThePortHint(t *testing.T) {
+	var hints []string
+	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hints = append(hints, r.Header.Get(proxy.HeaderPort))
+		w.WriteHeader(http.StatusOK)
+	}))
+	act := newTestSandboxActivator(t, SandboxConfig{ProxyPort: port, AdminPort: port, Hold: time.Second},
+		sandboxPod(testToken, "sbx-1", ip, true))
+
+	for _, tc := range []struct{ host, want string }{
+		{"s-" + testToken + "." + testSandboxDomain, ""},          // the pool's own port
+		{"s-" + testToken + "-5173." + testSandboxDomain, "5173"}, // a declared extra
+	} {
+		rec := httptest.NewRecorder()
+		act.ServeHTTP(rec, sandboxRequest(t, tc.host))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("host %q: status = %d", tc.host, rec.Code)
+		}
+	}
+	if len(hints) != 2 || hints[0] != "" || hints[1] != "5173" {
+		t.Errorf("port hints reaching the sandbox: got %q", hints)
+	}
+}
+
+// The hint is the hostname's to give. A client that sets the header itself must
+// not reach a port its URL did not name.
+func TestSandboxEdge_StripsClientSuppliedPortHint(t *testing.T) {
+	var hints []string
+	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hints = append(hints, r.Header.Get(proxy.HeaderPort))
+		w.WriteHeader(http.StatusOK)
+	}))
+	act := newTestSandboxActivator(t, SandboxConfig{ProxyPort: port, AdminPort: port, Hold: time.Second},
+		sandboxPod(testToken, "sbx-1", ip, true))
+
+	req := sandboxRequest(t, "s-"+testToken+"."+testSandboxDomain)
+	req.Header.Set(proxy.HeaderPort, "8001") // the sidecar's admin port
+	rec := httptest.NewRecorder()
+	act.ServeHTTP(rec, req)
+
+	if len(hints) != 1 || hints[0] != "" {
+		t.Errorf("client-supplied hint survived: got %q", hints)
+	}
+}
+
+// A token containing a hyphenated tail that is not a port must not be mistaken
+// for one — the sandbox would be unreachable.
+func TestSandboxEdge_NonNumericSuffixIsPartOfTheToken(t *testing.T) {
+	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	act := newTestSandboxActivator(t, SandboxConfig{ProxyPort: port, AdminPort: port, Hold: time.Second},
+		sandboxPod("abc-def", "sbx-1", ip, true))
+
+	rec := httptest.NewRecorder()
+	act.ServeHTTP(rec, sandboxRequest(t, "s-abc-def."+testSandboxDomain))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 }

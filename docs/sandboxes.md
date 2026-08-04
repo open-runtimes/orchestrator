@@ -8,6 +8,7 @@ A sandbox is created from a **sandbox pool** — standing warm capacity, the sam
 - [The sandbox contract](#the-sandbox-contract)
 - [Running commands](#running-commands)
 - [Files](#files)
+- [Ports](#ports)
 - [Persistence](#persistence)
 - [Isolation](#isolation)
 - [Lifecycle](#lifecycle)
@@ -88,6 +89,41 @@ curl -X POST http://localhost:8080/v1/sandbox \
 ```
 
 If artifact materialization fails the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
+
+## Ports
+
+A sandbox serves its pool's port — the contract — and any extra ports you declare at create time. Each gets its own hostname, so a dev server, a language server, or a terminal socket is reachable alongside `/execute`:
+
+```bash
+curl -X POST http://localhost:8080/v1/sandbox \
+  -H "Content-Type: application/json" \
+  -d '{"pool": "py", "ports": [5173, 9229]}'
+```
+
+```json
+{
+  "id": "py-3f9c1a02",
+  "poolId": "py",
+  "status": "ready",
+  "url": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
+  "urls": {
+    "3000": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
+    "5173": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f-5173.sandboxes.example.com",
+    "9229": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f-9229.sandboxes.example.com"
+  }
+}
+```
+
+Read the addresses out of `urls`; don't build them. Ports are **not** a pool dimension the way [`volumes`](#persistence) and [`runtimeClass`](#isolation) are: a container may bind a port at any time, so nothing about the warm pod fixes them. Nothing needs to be listening when you create the sandbox either — start the dev server from an `/execute` call later and its URL begins working.
+
+Two rules the platform enforces:
+
+- **Only declared ports are reachable.** The port travels in the hostname; the edge turns it into a hint the sidecar checks against the claim, and the dial happens on loopback inside that sandbox's own pod. A port you did not declare is `404`, and a hint a client sets by hand is discarded.
+- **The port shares the token's DNS label** (`s-{token}-5173`), rather than nesting as `s-5173.{token}`. A wildcard certificate covers exactly one label, so the flat form is reachable under one `*.{domain}` cert while the nested form would need a certificate per sandbox.
+
+Readiness is the primary port's alone: a secondary port that never comes up does not fail the sandbox, and traffic to it counts as activity for the [idle timeout](#lifecycle) like any other request. `8000` and `8001` belong to the sidecar and are refused.
+
+WebSocket traffic (terminals, LSP) upgrades cleanly through the edge — but set `timeoutSeconds: 0` for those sandboxes, or the per-request bound will cut long-lived connections.
 
 ## Persistence
 

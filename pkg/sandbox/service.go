@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ const (
 	maxTimeoutSecs = 3600
 	maxArtifacts   = 64
 	defaultTimeout = 300
+	maxPorts       = 16
 
 	// tokenBytes sizes the capability token in the hostname. 128 bits, because
 	// reaching the URL is sufficient to execute code inside the sandbox — the
@@ -166,6 +168,9 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 			req.IdleTimeoutSeconds = p.MaxIdleSeconds
 		}
 	}
+	if err := validatePorts(req.Ports, p.Port); err != nil {
+		return err
+	}
 	if len(req.Artifacts) > maxArtifacts {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
 	}
@@ -173,6 +178,30 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 		if err := s.artifacts.Validate(i, a); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validatePorts checks the extra ports a sandbox asks for. The sidecar's own
+// data and admin ports are refused: they are the machinery's, and exposing the
+// admin one would hand out the claim surface and the request counters.
+func validatePorts(ports []int, primary int) error {
+	if len(ports) > maxPorts {
+		return apperrors.Validation("ports", fmt.Sprintf("ports exceed maximum of %d", maxPorts))
+	}
+	seen := make(map[int]bool, len(ports))
+	for _, port := range ports {
+		switch {
+		case port < 1 || port > 65535:
+			return apperrors.Validation("ports", fmt.Sprintf("port %d is out of range (1-65535)", port))
+		case port == proxy.DefaultProxyPort || port == proxy.DefaultAdminPort:
+			return apperrors.Validation("ports", fmt.Sprintf("port %d is reserved by the sandbox sidecar", port))
+		case port == primary:
+			return apperrors.Validation("ports", fmt.Sprintf("port %d is the pool's own port and is always served", port))
+		case seen[port]:
+			return apperrors.Validation("ports", fmt.Sprintf("duplicate port %d", port))
+		}
+		seen[port] = true
 	}
 	return nil
 }

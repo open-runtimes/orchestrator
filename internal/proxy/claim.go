@@ -27,16 +27,27 @@ const (
 	// ShimFIFOName is the FIFO (relative to the shared workspace) the shim
 	// blocks on; the sidecar writes one ShimExec JSON line to trigger the exec.
 	ShimFIFOName = ".pool-exec.fifo"
+
+	// HeaderPort names which of the claim's ports a request is for. Set by the
+	// sandbox edge from the request's hostname and NEVER trusted from a client
+	// — the edge strips any inbound copy. The port is dialed on loopback inside
+	// the claimed pod, so it can only ever reach that pod's own listeners, and
+	// only ports the claim declared.
+	HeaderPort = "X-Sandbox-Port"
 )
 
 // ClaimRequest is what a pool backend POSTs to claim the pod.
 type ClaimRequest struct {
-	ActivationID   string            `json:"activationId"`
-	Command        string            `json:"command"`
-	Environment    map[string]string `json:"environment,omitempty"`
-	Artifacts      artifact.Set      `json:"artifacts,omitempty"`
-	Port           int               `json:"port"` // the container port the activation serves — the proxy target + readiness subject
-	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"`
+	ActivationID string            `json:"activationId"`
+	Command      string            `json:"command"`
+	Environment  map[string]string `json:"environment,omitempty"`
+	Artifacts    artifact.Set      `json:"artifacts,omitempty"`
+	Port         int               `json:"port"` // the container port the activation serves — the proxy target + readiness subject
+	// Ports are additional ports the workload serves, reachable via HeaderPort.
+	// Only Port is probed for readiness: a secondary port may come up late (a
+	// dev server started from an exec) without ever failing the sandbox.
+	Ports          []int `json:"ports,omitempty"`
+	TimeoutSeconds int   `json:"timeoutSeconds,omitempty"`
 }
 
 // ClaimState is the sidecar's authoritative claim record.

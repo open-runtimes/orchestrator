@@ -24,11 +24,17 @@ type Request struct {
 	ID string `json:"id,omitempty"`
 	// Command is the payload the claim execs; empty falls back to the pool's,
 	// which is the usual case (the pool's image already serves the contract).
-	Command            string            `json:"command,omitempty"`
-	Environment        map[string]string `json:"environment,omitempty"`
-	Artifacts          artifact.Set      `json:"artifacts,omitempty"` // materialized into the workspace before ready
-	TimeoutSeconds     int               `json:"timeoutSeconds,omitempty"`
-	IdleTimeoutSeconds int               `json:"idleTimeoutSeconds,omitempty"` // tear down after this long with no traffic; 0 = until DELETE
+	Command     string            `json:"command,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
+	// Ports are extra ports this sandbox serves, beyond the pool's own. Each
+	// gets its own hostname, so a caller can reach a dev server, an LSP, or a
+	// terminal socket alongside the contract. Unlike volumes and the isolation
+	// tier, ports are NOT fixed by the warm pod: a container may bind any port
+	// at any time, so this stays a per-sandbox field.
+	Ports              []int        `json:"ports,omitempty"`
+	Artifacts          artifact.Set `json:"artifacts,omitempty"` // materialized into the workspace before ready
+	TimeoutSeconds     int          `json:"timeoutSeconds,omitempty"`
+	IdleTimeoutSeconds int          `json:"idleTimeoutSeconds,omitempty"` // tear down after this long with no traffic; 0 = until DELETE
 
 	// Pool names the sandbox pool to claim from.
 	Pool string `json:"pool"`
@@ -59,7 +65,11 @@ type Status struct {
 	PoolID string `json:"poolId"`
 	State  string `json:"status"` // creating|ready|failed|deleting
 	URL    string `json:"url,omitempty"`
-	Error  string `json:"error,omitempty"`
+	// URLs addresses every port the sandbox serves, keyed by port number
+	// (including the pool's own). Present so callers never build a hostname
+	// themselves — the token in it is not derivable from the id.
+	URLs  map[string]string `json:"urls,omitempty"`
+	Error string            `json:"error,omitempty"`
 }
 
 // ListResponse is the response for listing live sandboxes.

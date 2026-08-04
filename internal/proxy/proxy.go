@@ -57,13 +57,27 @@ type binding struct {
 	reverse *httputil.ReverseProxy
 	prober  *prober
 	timeout time.Duration // per-request total → 504
+
+	// extra holds the claim's secondary ports, keyed by port. A request naming
+	// one (HeaderPort) is dialed there on loopback instead of Target; anything
+	// not in here is refused, so the header can never widen what the claim
+	// declared.
+	extra map[int]string
 }
 
 func newBinding(cfg Config) *binding {
 	return &binding{
 		reverse: &httputil.ReverseProxy{
 			Rewrite: func(r *httputil.ProxyRequest) {
-				r.SetURL(&url.URL{Scheme: "http", Host: cfg.Target})
+				// handleData resolved (and validated) which port this request is
+				// for; the hint itself is ours, not the workload's, so it is
+				// stripped before forwarding.
+				target := cfg.Target
+				if addr, ok := r.In.Context().Value(targetKey{}).(string); ok && addr != "" {
+					target = addr
+				}
+				r.Out.Header.Del(HeaderPort)
+				r.SetURL(&url.URL{Scheme: "http", Host: target})
 				r.SetXForwarded()
 			},
 			ErrorHandler: writeProxyError,
@@ -71,6 +85,28 @@ func newBinding(cfg Config) *binding {
 		prober:  newProber(cfg),
 		timeout: cfg.Timeout,
 	}
+}
+
+// targetKey carries the resolved upstream address from handleData (which
+// validates the port) into the proxy's Rewrite hook.
+type targetKey struct{}
+
+// target resolves which upstream address a request is for: the claim's primary
+// port by default, a declared secondary port when HeaderPort names one. An
+// undeclared port is ("", false) — a 404, never a dial.
+func (b *binding) target(r *http.Request, primary string) (string, bool) {
+	raw := r.Header.Get(HeaderPort)
+	if raw == "" {
+		return primary, true
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return "", false
+	}
+	if addr, ok := b.extra[port]; ok {
+		return addr, true
+	}
+	return "", false
 }
 
 // New creates a proxy from cfg. Call Run (or Start) to serve.
@@ -162,7 +198,13 @@ func (p *Proxy) handleData(w http.ResponseWriter, r *http.Request) {
 	p.requests.Add(1)
 	defer p.accumulate(-1)
 
-	ctx := r.Context()
+	target, ok := b.target(r, p.cfg.Target)
+	if !ok {
+		http.Error(w, "port not exposed by this workload", http.StatusNotFound)
+		return
+	}
+
+	ctx := context.WithValue(r.Context(), targetKey{}, target)
 	if b.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, b.timeout)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"orchestrator/internal/proxy"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,11 +20,12 @@ import (
 
 // The sandbox edge is the third edge over the same broker, and the cheapest:
 // one wildcard HTTPRoute for *.{domain} sends every sandbox here, and the
-// leading DNS label of the request's Host IS the sandbox's capability token —
-// no resolve, no id→token indirection, no cache. Per-sandbox routes were the
-// alternative and do not survive the churn: a new HTTPRoute is not live until
-// the gateway programs it, often seconds, so a create would hand back a URL
-// that 503s for longer than the sub-second claim it was built to avoid.
+// leading DNS label of the request's Host carries the sandbox's capability
+// token (and, optionally, which of its ports) — no resolve, no id→token
+// indirection, no cache. Per-sandbox routes were the alternative and do not
+// survive the churn: a new HTTPRoute is not live until the gateway programs it,
+// often seconds, so a create would hand back a URL that 503s for longer than
+// the sub-second claim it was built to avoid.
 const (
 	// sandboxHostPrefix leads every sandbox hostname (internal/sandbox).
 	sandboxHostPrefix = "s-"
@@ -41,7 +43,8 @@ const (
 // SandboxConfig configures the SandboxActivator.
 type SandboxConfig struct {
 	Namespace string
-	// Domain is the wildcard sandbox domain; hosts are s-{token}.{Domain}.
+	// Domain is the wildcard sandbox domain; hosts are s-{token}.{Domain}, or
+	// s-{token}-{port}.{Domain} for a sandbox's extra ports.
 	Domain string
 	// ManagedBy and TokenLabel are the sandbox backend's label contract
 	// (internal/sandbox/kubernetes).
@@ -109,22 +112,46 @@ func (a *SandboxActivator) Start(ctx context.Context) error {
 // and never logged or echoed: it is the credential, so an error body says only
 // that nothing answers there.
 func (a *SandboxActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	token := a.token(hostOnly(r.Host))
+	token, port := a.resolve(hostOnly(r.Host))
 	if token == "" {
 		http.Error(w, "not a sandbox host", http.StatusNotFound)
 		return
 	}
+
+	// The port hint is derived from the hostname, never accepted from the
+	// client: an inbound copy is dropped, so a caller cannot reach a port the
+	// hostname did not name (and the sidecar refuses any the claim did not
+	// declare either).
+	r.Header.Del(proxy.HeaderPort)
+	if port != "" {
+		r.Header.Set(proxy.HeaderPort, port)
+	}
 	a.broker.sync(w, r, token, r.Host, a.cfg.Hold, sandboxCapacity{a: a, token: token})
 }
 
-// token extracts the capability token from a sandbox host, or "" when the host
-// is not one of ours.
-func (a *SandboxActivator) token(host string) string {
+// resolve splits a sandbox host into its capability token and (optionally) the
+// port it addresses: s-{token}.{domain} is the pool's own port, and
+// s-{token}-{port}.{domain} is one of the sandbox's declared extras. Both live
+// in ONE DNS label because a wildcard certificate covers exactly one (RFC
+// 6125) — nesting the port as its own label would need a cert per sandbox.
+// Returns ("", "") when the host is not one of ours.
+func (a *SandboxActivator) resolve(host string) (token, port string) {
 	label, domain, ok := strings.Cut(host, ".")
 	if !ok || !strings.EqualFold(domain, a.cfg.Domain) {
-		return ""
+		return "", ""
 	}
-	return strings.TrimPrefix(label, sandboxHostPrefix)
+	label = strings.TrimPrefix(label, sandboxHostPrefix)
+	if base, suffix, ok := strings.Cut(label, "-"); ok && isPort(suffix) {
+		return base, suffix
+	}
+	return label, ""
+}
+
+// isPort reports whether s is a plausible port number, so a hyphen inside a
+// token (or a trailing word) is not mistaken for one.
+func isPort(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n > 0 && n <= 65535
 }
 
 // sandboxCapacity adapts one sandbox to the broker's seam: the target is the

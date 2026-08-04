@@ -129,7 +129,8 @@ func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
 }
 
 // arm late-binds the data plane onto the claimed workload: reverse target
-// TargetHost:Port, the claim's per-request timeout, and the readiness prober
+// TargetHost:Port (plus any secondary ports), the claim's per-request timeout,
+// and the readiness prober
 // — from here /ready means the workload serves.
 func (p *Proxy) arm(req ClaimRequest) {
 	cfg := p.cfg
@@ -138,6 +139,13 @@ func (p *Proxy) arm(req ClaimRequest) {
 		cfg.Timeout = time.Duration(req.TimeoutSeconds) * time.Second
 	}
 	b := newBinding(cfg)
+	// Secondary ports are addressable but never probed — see ClaimRequest.Ports.
+	if len(req.Ports) > 0 {
+		b.extra = make(map[int]string, len(req.Ports))
+		for _, port := range req.Ports {
+			b.extra[port] = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(port))
+		}
+	}
 	p.bind.Store(b)
 	go b.prober.run(p.runCtx)
 }

@@ -325,3 +325,44 @@ func TestURLFor_TokenOnly(t *testing.T) {
 		t.Errorf("a sandbox with no token has no URL, got %s", got)
 	}
 }
+
+// Every port a sandbox serves is addressable, and the port shares the token's
+// DNS label so one wildcard certificate covers them all.
+func TestCreate_PortsGetTheirOwnHostnames(t *testing.T) {
+	t.Parallel()
+	o, cs, sidecar := newTestOrchestrator(t, testPool("py"))
+	addPod(t, cs, warmPodFixture(o, "py", "sbx-py-aaaaa", "10.0.0.1"))
+
+	req := request("agent")
+	req.Ports = []int{5173}
+	status, err := o.Create(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := map[string]string{
+		"3000": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
+		"5173": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f-5173.sandboxes.example.com",
+	}
+	for port, url := range want {
+		if status.URLs[port] != url {
+			t.Errorf("urls[%s]: want %s, got %s", port, url, status.URLs[port])
+		}
+	}
+	if status.URL != want["3000"] {
+		t.Errorf("url must stay the primary port's: got %s", status.URL)
+	}
+	// The claim carries them, so the sidecar knows which ports may be reached.
+	if len(sidecar.last.Ports) != 1 || sidecar.last.Ports[0] != 5173 {
+		t.Errorf("claim ports: got %v", sidecar.last.Ports)
+	}
+
+	// And a reconstructed sandbox advertises the same set — the ports come off
+	// the stored spec, not memory.
+	reread, err := o.Status(t.Context(), "agent")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if reread.URLs["5173"] != want["5173"] {
+		t.Errorf("reconstructed urls: got %v", reread.URLs)
+	}
+}
