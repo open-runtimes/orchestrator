@@ -217,7 +217,7 @@
               "burst": { "enum": ["cold", "reject"] },
               "environment": { "$ref": "#/$defs/stringMap" },
               "meta": { "$ref": "#/$defs/stringMap" },
-              "probes": { "type": "object" },
+              "probes": { "$ref": "#/$defs/probes" },
               "volumes": {
                 "type": "array",
                 "items": {
@@ -253,6 +253,27 @@
     "stringMap": {
       "type": "object",
       "additionalProperties": { "type": "string" }
+    },
+    "probes": {
+      "description": "pkg/deployment.Probes. Closed: POOLS_JSON is decoded by encoding/json, which drops unknown fields silently, so a misspelling here would leave the pool running with no probe rather than failing.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "readiness": { "$ref": "#/$defs/probe" },
+        "liveness": { "$ref": "#/$defs/probe" },
+        "startup": { "$ref": "#/$defs/probe" }
+      }
+    },
+    "probe": {
+      "description": "pkg/deployment.Probe. An empty path means a TCP connect rather than an HTTP GET.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "periodMillis": { "type": "integer", "minimum": 1 },
+        "timeoutMillis": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 }
+      }
     },
     "quantity": {
       "description": "Kubernetes quantity — a string like \"100m\"/\"200Gi\", or a bare number.",
