@@ -41,11 +41,11 @@ type Config struct {
 	// NodeSelector pins every warm pod to a node pool (internal/kube).
 	NodeSelector map[string]string
 
-	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
-	// RuntimeClass stamped on warm pods (KUBE_SANDBOX_RUNTIME_CLASSES,
+	// RuntimeClasses maps isolation tiers (gvisor, kata) to the
+	// RuntimeClass stamped on warm pods (KUBE_RUNTIME_CLASSES,
 	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
 	// default. Defaults: gvisor→gvisor, kata→kata.
-	SandboxRuntimeClasses map[string]string
+	RuntimeClasses map[string]string
 
 	GatewayEnabled   bool   // reconcile per-activation HTTPRoutes; off for pre-Gateway clusters
 	GatewayName      string // parentRef Gateway name
@@ -68,7 +68,7 @@ type Config struct {
 // concept matches. SidecarImage, ShimImage, and Pools are provided by the
 // caller.
 func LoadConfigFromEnv() (Config, error) {
-	sandboxClasses, err := kube.ParseSandboxRuntimeClasses(config.GetEnv("KUBE_SANDBOX_RUNTIME_CLASSES", ""))
+	classes, err := kube.ParseRuntimeClasses(config.GetEnv("KUBE_RUNTIME_CLASSES", ""))
 	if err != nil {
 		return Config{}, err
 	}
@@ -90,7 +90,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
-		SandboxRuntimeClasses:  sandboxClasses,
+		RuntimeClasses:         classes,
 
 		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:      config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
@@ -138,8 +138,8 @@ func (c *Config) applyDefaults() {
 	if c.OrphanTTL <= 0 {
 		c.OrphanTTL = defaultOrphanTTL
 	}
-	if c.SandboxRuntimeClasses == nil {
-		c.SandboxRuntimeClasses, _ = kube.ParseSandboxRuntimeClasses("")
+	if c.RuntimeClasses == nil {
+		c.RuntimeClasses, _ = kube.ParseRuntimeClasses("")
 	}
 	if c.LeaderElection.Enabled {
 		c.LeaderElection.ApplyDefaults(defaultLeaderLeaseName)

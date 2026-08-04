@@ -196,7 +196,7 @@ deployments:
 
 The NetworkPolicy admits ingress only from the gateway, the activator, and the control plane, and blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
-**Sandbox tiers.** Workloads can request stronger kernel isolation with `"sandbox": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_SANDBOX_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.
+**Isolation tiers.** Workloads can request stronger kernel isolation with `"runtimeClass": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.
 
 **Secrets at rest.** Deployment specs — including callback signing keys — are stored in Secrets, not ConfigMaps or annotations. Pool claim tokens are HMAC-derived per pod from an install key that never leaves its Secret.
 

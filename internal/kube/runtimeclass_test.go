@@ -4,11 +4,11 @@ import (
 	"testing"
 )
 
-func TestParseSandboxRuntimeClasses(t *testing.T) {
+func TestParseRuntimeClasses(t *testing.T) {
 	t.Parallel()
 
 	// Empty value → the defaults.
-	classes, err := ParseSandboxRuntimeClasses("")
+	classes, err := ParseRuntimeClasses("")
 	if err != nil {
 		t.Fatalf("empty: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestParseSandboxRuntimeClasses(t *testing.T) {
 
 	// Overrides win, unmentioned tiers keep their default; empty segments
 	// and whitespace are tolerated.
-	classes, err = ParseSandboxRuntimeClasses(" kata=kata-qemu, ,")
+	classes, err = ParseRuntimeClasses(" kata=kata-qemu, ,")
 	if err != nil {
 		t.Fatalf("override: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestParseSandboxRuntimeClasses(t *testing.T) {
 
 	// Malformed entries and non-mappable tiers error.
 	for _, raw := range []string{"gvisor", "gvisor=", "=gvisor", "runc=runc", "firecracker=fc"} {
-		if _, err := ParseSandboxRuntimeClasses(raw); err == nil {
+		if _, err := ParseRuntimeClasses(raw); err == nil {
 			t.Errorf("%q: want error, got nil", raw)
 		}
 	}
@@ -36,7 +36,7 @@ func TestParseSandboxRuntimeClasses(t *testing.T) {
 
 func TestRuntimeClassFor(t *testing.T) {
 	t.Parallel()
-	classes, _ := ParseSandboxRuntimeClasses("kata=kata-qemu")
+	classes, _ := ParseRuntimeClasses("kata=kata-qemu")
 
 	// runc and the empty default stamp nothing.
 	if got := RuntimeClassFor(classes, ""); got != "" {

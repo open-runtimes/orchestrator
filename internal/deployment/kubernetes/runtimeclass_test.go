@@ -15,47 +15,47 @@ func TestBuildDeployment_RuntimeClass(t *testing.T) {
 	t.Parallel()
 	cfg := Config{SidecarImage: "sidecar:latest"}
 	cfg.applyDefaults()
-	cfg.SandboxRuntimeClasses[deployment.SandboxKata] = "kata-qemu"
+	cfg.RuntimeClasses[deployment.RuntimeClassKata] = "kata-qemu"
 
-	for sandbox, want := range map[string]string{
-		"":                       "",
-		deployment.SandboxRunc:   "",
-		deployment.SandboxGvisor: "gvisor",
-		deployment.SandboxKata:   "kata-qemu",
+	for tier, want := range map[string]string{
+		"":                            "",
+		deployment.RuntimeClassRunc:   "",
+		deployment.RuntimeClassGvisor: "gvisor",
+		deployment.RuntimeClassKata:   "kata-qemu",
 	} {
 		req := testRequest()
-		req.Sandbox = sandbox
+		req.RuntimeClass = tier
 		got := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.RuntimeClassName
 		switch {
 		case want == "" && got != nil:
-			t.Errorf("sandbox %q: want no runtimeClassName, got %q", sandbox, *got)
+			t.Errorf("tier %q: want no runtimeClassName, got %q", tier, *got)
 		case want != "" && (got == nil || *got != want):
-			t.Errorf("sandbox %q: want runtimeClassName %q, got %v", sandbox, want, got)
+			t.Errorf("tier %q: want runtimeClassName %q, got %v", tier, want, got)
 		}
 	}
 }
 
-func TestLoadConfigFromEnv_SandboxRuntimeClasses(t *testing.T) {
-	t.Setenv("KUBE_SANDBOX_RUNTIME_CLASSES", "kata=kata-qemu")
+func TestLoadConfigFromEnv_RuntimeClasses(t *testing.T) {
+	t.Setenv("KUBE_RUNTIME_CLASSES", "kata=kata-qemu")
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
 		t.Fatalf("LoadConfigFromEnv: %v", err)
 	}
-	if cfg.SandboxRuntimeClasses["kata"] != "kata-qemu" || cfg.SandboxRuntimeClasses["gvisor"] != "gvisor" {
-		t.Errorf("SandboxRuntimeClasses: got %v", cfg.SandboxRuntimeClasses)
+	if cfg.RuntimeClasses["kata"] != "kata-qemu" || cfg.RuntimeClasses["gvisor"] != "gvisor" {
+		t.Errorf("RuntimeClasses: got %v", cfg.RuntimeClasses)
 	}
 
-	t.Setenv("KUBE_SANDBOX_RUNTIME_CLASSES", "bogus")
+	t.Setenv("KUBE_RUNTIME_CLASSES", "bogus")
 	if _, err := LoadConfigFromEnv(); err == nil {
-		t.Error("malformed KUBE_SANDBOX_RUNTIME_CLASSES: want error")
+		t.Error("malformed KUBE_RUNTIME_CLASSES: want error")
 	}
 }
 
-func TestApply_SandboxRuntimeClassChecked(t *testing.T) {
+func TestApply_RuntimeClassChecked(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	o, cs := newTestOrchestrator(t)
-	req := &deployment.Request{ID: "web", Image: "nginx:1.27", Hosts: []string{"web.example.com"}, Port: 8080, Sandbox: deployment.SandboxGvisor}
+	req := &deployment.Request{ID: "web", Image: "nginx:1.27", Hosts: []string{"web.example.com"}, Port: 8080, RuntimeClass: deployment.RuntimeClassGvisor}
 
 	// Missing RuntimeClass → validation error, nothing minted.
 	if _, err := o.Apply(ctx, req); !errors.Is(err, apperrors.ErrValidation) {

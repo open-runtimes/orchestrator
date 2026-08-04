@@ -9,24 +9,24 @@ import (
 
 // Request is the declarative deployment spec. POST is create-or-update.
 type Request struct {
-	ID          string            `json:"id"` // RFC-1123 label (≤63); part of object names
-	Meta        map[string]string `json:"meta,omitempty"`
-	Image       string            `json:"image"`
-	Sandbox     string            `json:"sandbox,omitempty"` // RuntimeClass tier: runc (default) | gvisor | kata (K8s only)
-	Command     string            `json:"command,omitempty"`
-	CPU         float64           `json:"cpu"`    // limit (cores)
-	Memory      int               `json:"memory"` // limit (MB)
-	Environment map[string]string `json:"environment,omitempty"`
-	Workspace   string            `json:"workspace,omitempty"`   // working directory and shared-volume mount path (default: /workspace)
-	Artifacts   artifact.Set      `json:"artifacts,omitempty"`   // materialized into the workspace before serving
-	Volumes     []volume.Volume   `json:"volumes,omitempty"`     // existing Docker volumes / K8s PVCs mounted into the worker
-	Hosts       []string          `json:"hosts,omitempty"`       // RFC-1123 hostnames (≤253 each); hosts[0] is the primary; empty = [{id}.{domain}]
-	Port        int               `json:"port"`                  // container port serving HTTP
-	Replicas    int               `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
-	Concurrency int               `json:"concurrency,omitempty"` // hard per-replica in-flight cap; 0 = unlimited
-	Autoscaling *Autoscaling      `json:"autoscaling,omitempty"`
-	Probes      *Probes           `json:"probes,omitempty"`
-	Callback    *Callback         `json:"callback,omitempty"`
+	ID           string            `json:"id"` // RFC-1123 label (≤63); part of object names
+	Meta         map[string]string `json:"meta,omitempty"`
+	Image        string            `json:"image"`
+	RuntimeClass string            `json:"runtimeClass,omitempty"` // isolation tier: runc (default) | gvisor | kata (K8s only)
+	Command      string            `json:"command,omitempty"`
+	CPU          float64           `json:"cpu"`    // limit (cores)
+	Memory       int               `json:"memory"` // limit (MB)
+	Environment  map[string]string `json:"environment,omitempty"`
+	Workspace    string            `json:"workspace,omitempty"`   // working directory and shared-volume mount path (default: /workspace)
+	Artifacts    artifact.Set      `json:"artifacts,omitempty"`   // materialized into the workspace before serving
+	Volumes      []volume.Volume   `json:"volumes,omitempty"`     // existing Docker volumes / K8s PVCs mounted into the worker
+	Hosts        []string          `json:"hosts,omitempty"`       // RFC-1123 hostnames (≤253 each); hosts[0] is the primary; empty = [{id}.{domain}]
+	Port         int               `json:"port"`                  // container port serving HTTP
+	Replicas     int               `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
+	Concurrency  int               `json:"concurrency,omitempty"` // hard per-replica in-flight cap; 0 = unlimited
+	Autoscaling  *Autoscaling      `json:"autoscaling,omitempty"`
+	Probes       *Probes           `json:"probes,omitempty"`
+	Callback     *Callback         `json:"callback,omitempty"`
 
 	TimeoutSeconds      int `json:"timeoutSeconds,omitempty"`      // per-request total → 504; default 300
 	StartTimeoutSeconds int `json:"startTimeoutSeconds,omitempty"` // activator wait for a ready endpoint → 503; default 300
@@ -67,17 +67,17 @@ type Callback struct {
 	Key    string   `json:"key,omitempty"` // HMAC signing key
 }
 
-// Sandbox tiers (docs/operations.md): the RuntimeClass isolation level
+// Isolation tiers (docs/operations.md): the RuntimeClass
 // for the workload pod. Kubernetes only; the empty string means runc.
 const (
-	SandboxRunc   = "runc" // default: shared host kernel, hardening floor only
-	SandboxGvisor = "gvisor"
-	SandboxKata   = "kata"
+	RuntimeClassRunc   = "runc" // default: shared host kernel, hardening floor only
+	RuntimeClassGvisor = "gvisor"
+	RuntimeClassKata   = "kata"
 )
 
-// ValidSandbox reports whether s names a sandbox tier ("" = runc default).
-func ValidSandbox(s string) bool {
-	return s == "" || s == SandboxRunc || s == SandboxGvisor || s == SandboxKata
+// ValidRuntimeClass reports whether s names an isolation tier ("" = runc default).
+func ValidRuntimeClass(s string) bool {
+	return s == "" || s == RuntimeClassRunc || s == RuntimeClassGvisor || s == RuntimeClassKata
 }
 
 // Deployment states.

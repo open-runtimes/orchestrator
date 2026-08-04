@@ -136,7 +136,7 @@
 | --- | --- | --- |
 | **Workload namespace** | The hardened namespace (restricted PSA, default-deny, quota) where workload pods run | Jobs namespace, tenant ns |
 | **Release namespace** | The namespace holding the control plane: services, Activator, gateway wiring | System namespace |
-| **Sandbox** | A workload's isolation tier — runc, gvisor, or kata — mapped to a RuntimeClass | Runtime, isolation level |
+| **Runtime class** | A workload's isolation tier — runc, gvisor, or kata — mapped to a Kubernetes RuntimeClass | Sandbox, runtime |
 | **Overcommit** | The divisor deriving a workload's CPU request from its declared limit | Oversubscription ratio |
 
 ## Infrastructure

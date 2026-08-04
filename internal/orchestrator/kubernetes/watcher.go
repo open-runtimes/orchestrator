@@ -43,7 +43,7 @@ type k8sLifecycleWatcher struct {
 	namespace    string
 	emitter      *job.CallbackEmitter
 	logFlushWait time.Duration // max time buffered log lines wait before a flush
-	termStart    time.Time              // when the current leadership term began; set by Start
+	termStart    time.Time     // when the current leadership term began; set by Start
 
 	mu       sync.Mutex
 	trackers map[string]*jobTracker
@@ -56,9 +56,9 @@ func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitt
 	return &k8sLifecycleWatcher{
 		client:       client,
 		logFlushWait: logFlushWait,
-		namespace: namespace,
-		emitter:   emitter,
-		trackers:  make(map[string]*jobTracker),
+		namespace:    namespace,
+		emitter:      emitter,
+		trackers:     make(map[string]*jobTracker),
 	}
 }
 

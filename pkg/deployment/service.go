@@ -288,8 +288,8 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("image", "image is required")
 	}
 
-	if !ValidSandbox(req.Sandbox) {
-		return apperrors.Validation("sandbox", fmt.Sprintf("sandbox must be one of %q, %q, %q", SandboxRunc, SandboxGvisor, SandboxKata))
+	if !ValidRuntimeClass(req.RuntimeClass) {
+		return apperrors.Validation("runtimeClass", fmt.Sprintf("runtimeClass must be one of %q, %q, %q", RuntimeClassRunc, RuntimeClassGvisor, RuntimeClassKata))
 	}
 
 	if req.Port <= 0 || req.Port > 65535 {

@@ -84,7 +84,7 @@ Each host is owned by exactly one deployment — claiming a host another deploym
     "url": "https://acme.test/hook",
     "key": "signing-secret"
   },
-  "sandbox": "gvisor",            // isolation tier: runc (default) | gvisor | kata — K8s only
+  "runtimeClass": "gvisor",       // isolation tier: runc (default) | gvisor | kata — K8s only
   "timeoutSeconds": 300,              // per-request total → 504; default 300
   "startTimeoutSeconds": 300, // wait for capacity on a cold start → 503; default 300
   "readyTimeoutSeconds": 600      // ready deadline before a rollout is marked failed; default 600
@@ -200,5 +200,5 @@ The Docker backend (`ORCHESTRATOR_BACKEND=docker`) is the dev-parity implementat
 
 - **Single revision**: applies replace in place; there is no revision history, so traffic splitting returns `400` (100% to the deployment itself, or an empty release, are accepted no-ops).
 - **One replica**: `replicas` is clamped to 1; autoscaling honors only 0↔1 (scale-to-zero still works).
-- **No sandbox tiers**: `"sandbox"` other than `runc` is rejected.
+- **No isolation tiers**: `"runtimeClass"` other than `runc` is rejected.
 - The data plane is served by the orchestrator's own listener rather than a gateway — same host-based routing, same async semantics.

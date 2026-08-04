@@ -43,7 +43,7 @@ func run(ctx context.Context) error {
 
 	queue := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 	act := activator.NewRevisionActivator(client, queue, activator.RevisionConfig{
-		Namespace:            config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
+		Namespace:    config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
 		StartTimeout: time.Duration(config.GetIntEnv("START_TIMEOUT_SECONDS", 300)) * time.Second,
 	}, metrics)
 	if err := act.Start(ctx); err != nil {

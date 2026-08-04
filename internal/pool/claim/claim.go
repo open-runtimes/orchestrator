@@ -34,7 +34,7 @@ var ErrConflict = errors.New("unit already claimed")
 //nolint:errname // single-word names; the package is the namespace
 type Poison struct {
 	Unit string // stamped by the flow with the poisoned unit
-	Msg    string
+	Msg  string
 }
 
 func (e *Poison) Error() string { return e.Msg }

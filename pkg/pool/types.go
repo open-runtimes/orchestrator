@@ -17,17 +17,17 @@ import (
 // adding, resizing, or removing one is a config change + rollout, not a
 // runtime call, so the API over pools is read + activate only.
 type Pool struct {
-	ID          string             `json:"id"`
-	Image       string             `json:"image"`
-	Sandbox     string             `json:"sandbox,omitempty"` // RuntimeClass tier: runc (default) | gvisor | kata (K8s only). A pool dimension — warm pods are runtime-fixed at creation, so warm fleets are keyed by (image, sandbox).
-	Size        int                `json:"size"`              // warm pods kept ready
-	CPU         float64            `json:"cpu"`
-	Memory      int                `json:"memory"`
-	Port        int                `json:"port"` // required — the container port activations serve HTTP on
-	Probes      *deployment.Probes `json:"probes,omitempty"`
-	Environment map[string]string  `json:"environment,omitempty"`
-	Meta        map[string]string  `json:"meta,omitempty"`
-	Volumes     []volume.Volume    `json:"volumes,omitempty"` // existing K8s PVCs mounted into every warm pod in the fleet
+	ID           string             `json:"id"`
+	Image        string             `json:"image"`
+	RuntimeClass string             `json:"runtimeClass,omitempty"` // isolation tier: runc (default) | gvisor | kata (K8s only). A pool dimension — warm pods are runtime-fixed at creation, so warm fleets are keyed by (image, runtimeClass).
+	Size         int                `json:"size"`                   // warm pods kept ready
+	CPU          float64            `json:"cpu"`
+	Memory       int                `json:"memory"`
+	Port         int                `json:"port"` // required — the container port activations serve HTTP on
+	Probes       *deployment.Probes `json:"probes,omitempty"`
+	Environment  map[string]string  `json:"environment,omitempty"`
+	Meta         map[string]string  `json:"meta,omitempty"`
+	Volumes      []volume.Volume    `json:"volumes,omitempty"` // existing K8s PVCs mounted into every warm pod in the fleet
 
 	// Burst controls what happens when an activation arrives and no warm pod
 	// is free: "cold" (default) → create a pod on demand and pay the cold
@@ -72,9 +72,9 @@ func LoadPools(raw string) ([]Pool, error) {
 		if p.Burst != BurstReject && p.Burst != BurstCold {
 			return nil, fmt.Errorf("pool %q: burst must be %q or %q", p.ID, BurstReject, BurstCold)
 		}
-		if !deployment.ValidSandbox(p.Sandbox) {
-			return nil, fmt.Errorf("pool %q: sandbox must be one of %q, %q, %q",
-				p.ID, deployment.SandboxRunc, deployment.SandboxGvisor, deployment.SandboxKata)
+		if !deployment.ValidRuntimeClass(p.RuntimeClass) {
+			return nil, fmt.Errorf("pool %q: runtimeClass must be one of %q, %q, %q",
+				p.ID, deployment.RuntimeClassRunc, deployment.RuntimeClassGvisor, deployment.RuntimeClassKata)
 		}
 		for j, v := range p.Volumes {
 			if err := v.Validate(fmt.Sprintf("pool %q volumes[%d]", p.ID, j)); err != nil {

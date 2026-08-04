@@ -108,7 +108,7 @@ func (o *Orchestrator) RunLeaderElected(ctx context.Context, run func(context.Co
 //     rollout reconciler auto-cuts once the new revision reports ready
 //     (unless traffic was pinned manually).
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
-	if err := o.checkRuntimeClass(ctx, req.Sandbox); err != nil {
+	if err := o.checkRuntimeClass(ctx, req.RuntimeClass); err != nil {
 		return false, err
 	}
 	specJSON, err := json.Marshal(req)
@@ -139,17 +139,17 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool
 	return false, o.mintNextRevision(ctx, req, m, string(specJSON))
 }
 
-// checkRuntimeClass verifies the sandbox tier's RuntimeClass is installed
+// checkRuntimeClass verifies the tier's RuntimeClass is installed
 // before any revision is minted — a missing class would otherwise strand the
 // revision's pods Pending.
-func (o *Orchestrator) checkRuntimeClass(ctx context.Context, sandbox string) error {
-	rc := kube.RuntimeClassFor(o.cfg.SandboxRuntimeClasses, sandbox)
+func (o *Orchestrator) checkRuntimeClass(ctx context.Context, tier string) error {
+	rc := kube.RuntimeClassFor(o.cfg.RuntimeClasses, tier)
 	if rc == "" {
 		return nil
 	}
 	_, err := o.client.NodeV1().RuntimeClasses().Get(ctx, rc, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return apperrors.Validation("sandbox", fmt.Sprintf("RuntimeClass %q (sandbox %q) is not installed", rc, sandbox))
+		return apperrors.Validation("runtimeClass", fmt.Sprintf("RuntimeClass %q (tier %q) is not installed", rc, tier))
 	}
 	if err != nil {
 		return apperrors.Internal("kubernetes.getRuntimeClass", err)

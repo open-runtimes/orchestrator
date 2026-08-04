@@ -14,37 +14,37 @@ import (
 func TestBuildWarmPod_RuntimeClass(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig()
-	cfg.SandboxRuntimeClasses[deployment.SandboxKata] = "kata-qemu"
+	cfg.RuntimeClasses[deployment.RuntimeClassKata] = "kata-qemu"
 
-	for sandbox, want := range map[string]string{
-		"":                       "",
-		deployment.SandboxRunc:   "",
-		deployment.SandboxGvisor: "gvisor",
-		deployment.SandboxKata:   "kata-qemu",
+	for tier, want := range map[string]string{
+		"":                            "",
+		deployment.RuntimeClassRunc:   "",
+		deployment.RuntimeClassGvisor: "gvisor",
+		deployment.RuntimeClassKata:   "kata-qemu",
 	} {
 		p := mapperPool()
-		p.Sandbox = sandbox
+		p.RuntimeClass = tier
 		got := buildWarmPod(p, cfg, "pool-std-1", "token").Spec.RuntimeClassName
 		switch {
 		case want == "" && got != nil:
-			t.Errorf("sandbox %q: want no runtimeClassName, got %q", sandbox, *got)
+			t.Errorf("tier %q: want no runtimeClassName, got %q", tier, *got)
 		case want != "" && (got == nil || *got != want):
-			t.Errorf("sandbox %q: want runtimeClassName %q, got %v", sandbox, want, got)
+			t.Errorf("tier %q: want runtimeClassName %q, got %v", tier, want, got)
 		}
 	}
 }
 
-func TestLoadConfigFromEnv_SandboxRuntimeClasses(t *testing.T) {
-	t.Setenv("KUBE_SANDBOX_RUNTIME_CLASSES", "gvisor=runsc")
+func TestLoadConfigFromEnv_RuntimeClasses(t *testing.T) {
+	t.Setenv("KUBE_RUNTIME_CLASSES", "gvisor=runsc")
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
 		t.Fatalf("LoadConfigFromEnv: %v", err)
 	}
-	if cfg.SandboxRuntimeClasses["gvisor"] != "runsc" || cfg.SandboxRuntimeClasses["kata"] != "kata" {
-		t.Errorf("SandboxRuntimeClasses: got %v", cfg.SandboxRuntimeClasses)
+	if cfg.RuntimeClasses["gvisor"] != "runsc" || cfg.RuntimeClasses["kata"] != "kata" {
+		t.Errorf("RuntimeClasses: got %v", cfg.RuntimeClasses)
 	}
 
-	t.Setenv("KUBE_SANDBOX_RUNTIME_CLASSES", "runc=runc")
+	t.Setenv("KUBE_RUNTIME_CLASSES", "runc=runc")
 	if _, err := LoadConfigFromEnv(); err == nil {
 		t.Error("runc mapping: want error")
 	}
@@ -53,7 +53,7 @@ func TestLoadConfigFromEnv_SandboxRuntimeClasses(t *testing.T) {
 func TestStart_MissingRuntimeClassFails(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	o, cs, _ := newTestOrchestrator(t, pool.Pool{ID: "sbx", Image: "runtime:latest", Size: 1, Sandbox: deployment.SandboxKata})
+	o, cs, _ := newTestOrchestrator(t, pool.Pool{ID: "sbx", Image: "runtime:latest", Size: 1, RuntimeClass: deployment.RuntimeClassKata})
 
 	// Operator config names an uninstalled RuntimeClass → Start fails loudly.
 	err := o.Start(ctx)

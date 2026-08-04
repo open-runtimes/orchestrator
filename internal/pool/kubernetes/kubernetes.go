@@ -125,19 +125,19 @@ func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leadin
 	}
 }
 
-// checkRuntimeClasses verifies every pool's sandbox RuntimeClass is installed
-// — a pool's sandbox is operator config, so a missing class fails Start
+// checkRuntimeClasses verifies every pool's RuntimeClass is installed
+// — a pool's tier is operator config, so a missing class fails Start
 // loudly instead of stranding warm pods Pending.
 func (o *Orchestrator) checkRuntimeClasses(ctx context.Context) error {
 	for i := range o.cfg.Pools {
 		p := &o.cfg.Pools[i]
-		rc := kube.RuntimeClassFor(o.cfg.SandboxRuntimeClasses, p.Sandbox)
+		rc := kube.RuntimeClassFor(o.cfg.RuntimeClasses, p.RuntimeClass)
 		if rc == "" {
 			continue
 		}
 		_, err := o.client.NodeV1().RuntimeClasses().Get(ctx, rc, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("pool %q: RuntimeClass %q (sandbox %q) is not installed", p.ID, rc, p.Sandbox)
+			return fmt.Errorf("pool %q: RuntimeClass %q (tier %q) is not installed", p.ID, rc, p.RuntimeClass)
 		}
 		if err != nil {
 			return apperrors.Internal("kubernetes.getRuntimeClass", err)

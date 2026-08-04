@@ -8,24 +8,24 @@ import (
 	"testing"
 )
 
-func TestValidate_Sandbox(t *testing.T) {
+func TestValidate_RuntimeClass(t *testing.T) {
 	t.Parallel()
 	s := &Service{artifacts: artifact.DefaultRegistry(), domain: "example.com"}
 
-	for _, sandbox := range []string{"", SandboxRunc, SandboxGvisor, SandboxKata} {
-		req := &Request{ID: "app", Image: "nginx", Port: 8080, Sandbox: sandbox}
+	for _, tier := range []string{"", RuntimeClassRunc, RuntimeClassGvisor, RuntimeClassKata} {
+		req := &Request{ID: "app", Image: "nginx", Port: 8080, RuntimeClass: tier}
 		s.applyDefaults(req)
 		if err := s.validate(req); err != nil {
-			t.Errorf("sandbox %q: want valid, got %v", sandbox, err)
+			t.Errorf("tier %q: want valid, got %v", tier, err)
 		}
 	}
 
-	for _, sandbox := range []string{"firecracker", "Runc", "gVisor"} {
-		req := &Request{ID: "app", Image: "nginx", Port: 8080, Sandbox: sandbox}
+	for _, tier := range []string{"firecracker", "Runc", "gVisor"} {
+		req := &Request{ID: "app", Image: "nginx", Port: 8080, RuntimeClass: tier}
 		s.applyDefaults(req)
 		err := s.validate(req)
 		if !errors.Is(err, apperrors.ErrValidation) {
-			t.Errorf("sandbox %q: want validation error, got %v", sandbox, err)
+			t.Errorf("tier %q: want validation error, got %v", tier, err)
 		}
 	}
 }

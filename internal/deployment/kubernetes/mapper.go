@@ -166,9 +166,9 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 			},
 		}},
 	}
-	// Sandbox tier (docs/operations.md): gvisor/kata stamp their mapped
+	// Isolation tier (docs/operations.md): gvisor/kata stamp their mapped
 	// RuntimeClass; runc (the default) stamps nothing.
-	if rc := kube.RuntimeClassFor(cfg.SandboxRuntimeClasses, req.Sandbox); rc != "" {
+	if rc := kube.RuntimeClassFor(cfg.RuntimeClasses, req.RuntimeClass); rc != "" {
 		spec.RuntimeClassName = &rc
 	}
 	return spec

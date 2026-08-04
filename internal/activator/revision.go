@@ -56,9 +56,9 @@ const (
 
 // RevisionConfig configures the RevisionActivator.
 type RevisionConfig struct {
-	Namespace            string
-	ProxyPort            int32         // workload pod data port (proxy.DefaultProxyPort)
-	AdminPort            int32         // workload pod admin port for direct probing (proxy.DefaultAdminPort)
+	Namespace    string
+	ProxyPort    int32         // workload pod data port (proxy.DefaultProxyPort)
+	AdminPort    int32         // workload pod admin port for direct probing (proxy.DefaultAdminPort)
 	StartTimeout time.Duration // wait for the first reachable pod → 503; default 300s
 }
 

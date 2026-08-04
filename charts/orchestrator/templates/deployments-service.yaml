@@ -264,7 +264,7 @@ subjects:
     name: {{ include "orchestrator.deploymentsName" . }}
     namespace: {{ .Release.Namespace }}
 ---
-# Sandbox tiers (docs/operations.md): the service validates a workload's
+# Isolation tiers (docs/operations.md): the service validates a workload's
 # RuntimeClass exists before minting revisions / replenishing pools.
 # RuntimeClasses are cluster-scoped, so this is the service's one
 # cluster-scoped grant.

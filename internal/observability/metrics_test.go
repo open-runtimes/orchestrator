@@ -61,7 +61,6 @@ func TestRecordJobMetrics(t *testing.T) {
 	metrics.RecordJobCompleted(ctx, "python:3.11", false, 120.0)
 }
 
-
 // Saturation gauges must be read at collection time, not tallied: a job that
 // outlives a restart (or whose exit is observed by a different replica) reports
 // a completion the process never counted a start for, and a synchronous

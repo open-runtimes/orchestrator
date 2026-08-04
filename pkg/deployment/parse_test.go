@@ -33,7 +33,7 @@ func TestRequestSpecRoundTrip(t *testing.T) {
 	req, err := Parse([]byte(`{
 		"id": "web",
 		"image": "img",
-		"sandbox": "gvisor",
+		"runtimeClass": "gvisor",
 		"port": 8080,
 		"replicas": 2,
 		"environment": {"K": "v"},
@@ -54,7 +54,7 @@ func TestRequestSpecRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if back.Sandbox != "gvisor" {
+	if back.RuntimeClass != "gvisor" {
 		t.Errorf("round trip dropped the isolation tier: %+v", back)
 	}
 	if len(back.Artifacts) != 1 || back.Port != 8080 || back.Replicas != 2 || back.Environment["K"] != "v" {

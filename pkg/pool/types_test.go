@@ -21,25 +21,25 @@ func TestLoadPools_Volumes(t *testing.T) {
 	}
 }
 
-func TestLoadPools_Sandbox(t *testing.T) {
+func TestLoadPools_RuntimeClass(t *testing.T) {
 	t.Parallel()
 
 	pools, err := LoadPools(`[
 		{"id":"a","image":"node:20","port":3000},
-		{"id":"b","image":"node:20","port":3000,"sandbox":"runc"},
-		{"id":"c","image":"node:20","port":3000,"sandbox":"gvisor"},
-		{"id":"d","image":"node:20","port":3000,"sandbox":"kata"}
+		{"id":"b","image":"node:20","port":3000,"runtimeClass":"runc"},
+		{"id":"c","image":"node:20","port":3000,"runtimeClass":"gvisor"},
+		{"id":"d","image":"node:20","port":3000,"runtimeClass":"kata"}
 	]`)
 	if err != nil {
-		t.Fatalf("valid sandboxes: %v", err)
+		t.Fatalf("valid tiers: %v", err)
 	}
 	if len(pools) != 4 {
 		t.Fatalf("want 4 pools, got %d", len(pools))
 	}
 
-	_, err = LoadPools(`[{"id":"a","image":"node:20","port":3000,"sandbox":"firecracker"}]`)
-	if err == nil || !strings.Contains(err.Error(), "sandbox") {
-		t.Errorf("invalid sandbox: want sandbox error, got %v", err)
+	_, err = LoadPools(`[{"id":"a","image":"node:20","port":3000,"runtimeClass":"firecracker"}]`)
+	if err == nil || !strings.Contains(err.Error(), "runtimeClass") {
+		t.Errorf("invalid tier: want runtimeClass error, got %v", err)
 	}
 }
 

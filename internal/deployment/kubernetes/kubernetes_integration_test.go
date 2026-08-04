@@ -140,15 +140,15 @@ func requireGateway(t *testing.T, o *Orchestrator) {
 
 func serverRequest(id string) *deployment.Request {
 	return &deployment.Request{
-		ID:                      id,
-		Image:                   workerImage,
-		Command:                 "/agnhost netexec --http-port=8080",
-		CPU:                     0.1,
-		Memory:                  64,
-		Hosts:                   []string{id + ".example.com"},
-		Port:                    8080,
-		Replicas:                1,
-		TimeoutSeconds:          60,
+		ID:                  id,
+		Image:               workerImage,
+		Command:             "/agnhost netexec --http-port=8080",
+		CPU:                 0.1,
+		Memory:              64,
+		Hosts:               []string{id + ".example.com"},
+		Port:                8080,
+		Replicas:            1,
+		TimeoutSeconds:      60,
 		ReadyTimeoutSeconds: 120,
 	}
 }

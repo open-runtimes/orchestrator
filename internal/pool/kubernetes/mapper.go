@@ -107,13 +107,13 @@ func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
-	// Sandbox tier (docs/operations.md): a POOL dimension — warm pods
+	// Isolation tier (docs/operations.md): a POOL dimension — warm pods
 	// are runtime-fixed at creation, so warm fleets are keyed by (image,
 	// sandbox). gvisor/kata stamp their mapped RuntimeClass; runc (the
 	// default) stamps nothing. NOTE: replenishment only tops counts up — it
 	// does not replace existing warm pods on config drift, so a sandbox
 	// change applies to newly created pods only.
-	if rc := kube.RuntimeClassFor(cfg.SandboxRuntimeClasses, p.Sandbox); rc != "" {
+	if rc := kube.RuntimeClassFor(cfg.RuntimeClasses, p.RuntimeClass); rc != "" {
 		pod.Spec.RuntimeClassName = &rc
 	}
 	return pod
