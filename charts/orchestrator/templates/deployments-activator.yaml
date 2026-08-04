@@ -21,6 +21,9 @@ spec:
         {{- include "orchestrator.activatorSelectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-activator
+      {{- with include "orchestrator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
       topologySpreadConstraints:

@@ -22,12 +22,14 @@ spec:
     metadata:
       labels:
         {{- include "orchestrator.deploymentsSelectorLabels" . | nindent 8 }}
-      {{- with .Values.deployments.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
+      {{- with include "orchestrator.podAnnotations" (dict "annotations" .Values.deployments.podAnnotations "s3" .Values.deployments.s3) }}
+      {{- . | nindent 6 }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "orchestrator.deploymentsName" . }}
+      {{- with include "orchestrator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
       topologySpreadConstraints:

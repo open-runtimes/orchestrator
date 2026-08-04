@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "orchestrator chart values",
+  "description": "Every object is closed (additionalProperties: false) so a misspelled key fails the install instead of being silently ignored — most of this chart's values are consumed inside `with`/`if` blocks, which swallow typos. Free-form maps (node selectors, annotations, environment) stay open on purpose.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["jobs", "deployments", "service", "orchestrator"],
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "imagePullSecrets": { "$ref": "#/$defs/imagePullSecrets" },
+    "replicaCount": { "type": "integer", "minimum": 0 },
+    "autoscaling": { "$ref": "#/$defs/autoscaling" },
+    "leaderElection": { "$ref": "#/$defs/leaderElection" },
+    "resources": { "$ref": "#/$defs/resources" },
+    "podAnnotations": { "$ref": "#/$defs/stringMap" },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "create": { "type": "boolean" } }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "jobSidecarCreate": { "type": "boolean" },
+        "jobSidecarName": { "type": "string" },
+        "jobSidecarImagePullSecrets": { "$ref": "#/$defs/imagePullSecrets" }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "apiPort": { "$ref": "#/$defs/port" },
+        "metricsPort": { "$ref": "#/$defs/port" }
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "description": "Raw corev1.EnvVar entries.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "value": { "type": ["string", "number", "boolean"] },
+          "valueFrom": { "type": "object" }
+        }
+      }
+    },
+    "orchestrator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jobNamespace": { "type": "string" },
+        "jobNamespaceCreate": { "type": "boolean" },
+        "artifactEndpoint": { "type": "string" },
+        "jobRetention": { "$ref": "#/$defs/duration" },
+        "maintenanceInterval": { "$ref": "#/$defs/duration" },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+        "workerImagePullPolicy": { "$ref": "#/$defs/pullPolicy" },
+        "sidecarImagePullPolicy": { "$ref": "#/$defs/pullPolicy" }
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "fullnameOverride": { "type": "string" },
+        "image": { "$ref": "#/$defs/pullableImage" },
+        "sidecarImage": { "$ref": "#/$defs/image" },
+        "s3": { "$ref": "#/$defs/s3" },
+        "auth": { "$ref": "#/$defs/auth" },
+        "cpuOvercommit": { "type": "number" },
+        "memoryOvercommit": { "type": "number" },
+        "workloadTolerations": { "$ref": "#/$defs/tolerations" },
+        "workloadNodeSelector": { "$ref": "#/$defs/stringMap" },
+        "logFlushInterval": { "$ref": "#/$defs/duration" },
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "gatewayClassName": { "type": "string" },
+            "listeners": {
+              "type": "array",
+              "description": "Gateway API listener entries, passed through verbatim.",
+              "items": { "type": "object" }
+            }
+          }
+        },
+        "httpRoute": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "parentRefs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "namespace": { "type": "string" },
+                  "sectionName": { "type": "string" },
+                  "group": { "type": "string" },
+                  "kind": { "type": "string" }
+                }
+              }
+            },
+            "hostnames": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "deployments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "fullnameOverride": { "type": "string" },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "image": { "$ref": "#/$defs/pullableImage" },
+        "sidecarImage": { "$ref": "#/$defs/image" },
+        "shimImage": { "$ref": "#/$defs/image" },
+        "s3": { "$ref": "#/$defs/s3" },
+        "auth": { "$ref": "#/$defs/auth" },
+        "dataPort": { "$ref": "#/$defs/port" },
+        "domain": { "type": "string", "minLength": 1 },
+        "podAnnotations": { "$ref": "#/$defs/stringMap" },
+        "cpuOvercommit": { "type": "number" },
+        "memoryOvercommit": { "type": "number" },
+        "workloadTolerations": { "$ref": "#/$defs/tolerations" },
+        "workloadNodeSelector": { "$ref": "#/$defs/stringMap" },
+        "leaderElection": { "$ref": "#/$defs/leaderElection" },
+        "autoscaling": { "$ref": "#/$defs/autoscaling" },
+        "resources": { "$ref": "#/$defs/resources" },
+        "limitRange": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean" } }
+        },
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "name": { "type": "string" },
+            "namespace": { "type": "string" }
+          }
+        },
+        "workloadNamespace": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "name": { "type": "string" },
+            "create": { "type": "boolean" },
+            "podSecurity": { "enum": ["", "privileged", "baseline", "restricted"] },
+            "networkPolicy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "gatewayNamespace": { "type": "string" }
+              }
+            },
+            "resourceQuota": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "pods": { "type": "integer", "minimum": 0 },
+                "requestsCpu": { "$ref": "#/$defs/quantity" },
+                "requestsMemory": { "$ref": "#/$defs/quantity" }
+              }
+            }
+          }
+        },
+        "activator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "replicaCount": { "type": "integer", "minimum": 0 },
+            "autoscaling": { "$ref": "#/$defs/autoscaling" },
+            "image": { "$ref": "#/$defs/pullableImage" },
+            "port": { "$ref": "#/$defs/port" },
+            "resources": { "$ref": "#/$defs/resources" }
+          }
+        },
+        "pools": {
+          "type": "array",
+          "description": "pkg/pool.Pool entries. id, image and port are required; the service rejects the rest at startup.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "image", "port"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "image": { "type": "string", "minLength": 1 },
+              "port": { "$ref": "#/$defs/port" },
+              "size": { "type": "integer", "minimum": 0 },
+              "cpu": { "type": "number", "minimum": 0 },
+              "memory": { "type": "integer", "minimum": 0 },
+              "sandbox": { "enum": ["", "runc", "gvisor", "kata"] },
+              "burst": { "enum": ["cold", "reject"] },
+              "environment": { "$ref": "#/$defs/stringMap" },
+              "meta": { "$ref": "#/$defs/stringMap" },
+              "probes": { "type": "object" },
+              "volumes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["source", "path"],
+                  "properties": {
+                    "source": { "type": "string", "minLength": 1 },
+                    "path": { "type": "string", "minLength": 1 },
+                    "subPath": { "type": "string" },
+                    "readonly": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "imagePullSecrets": {
+      "type": "array",
+      "description": "LocalObjectReference entries. Names resolve in the namespace of the pod using them.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "quantity": {
+      "description": "Kubernetes quantity — a string like \"100m\"/\"200Gi\", or a bare number.",
+      "type": ["string", "integer", "number"]
+    },
+    "duration": {
+      "description": "Go duration, e.g. 15m, 1s, 1h30m.",
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+    },
+    "pullPolicy": { "enum": ["", "Always", "IfNotPresent", "Never"] },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "description": "Fully overrides repository+tag when set — use for digests.",
+          "type": "string"
+        },
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      }
+    },
+    "pullableImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string" },
+        "repository": { "type": "string" },
+        "tag": { "type": "string" },
+        "pullPolicy": { "$ref": "#/$defs/pullPolicy" }
+      }
+    },
+    "s3": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "endpoint": { "type": "string" },
+        "region": { "type": "string" },
+        "forcePathStyle": { "type": "boolean" },
+        "accessKeyId": { "type": "string" },
+        "secretAccessKey": { "type": "string" },
+        "existingSecret": { "type": "string" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "secretKey": { "type": "string" }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "leaderElection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "leaseName": { "type": "string" },
+        "leaseDurationSeconds": { "type": "integer", "minimum": 1 },
+        "renewDeadlineSeconds": { "type": "integer", "minimum": 1 },
+        "retryPeriodSeconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "$ref": "#/$defs/resourceList" },
+        "limits": { "$ref": "#/$defs/resourceList" }
+      }
+    },
+    "resourceList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "$ref": "#/$defs/quantity" },
+        "memory": { "$ref": "#/$defs/quantity" },
+        "ephemeral-storage": { "$ref": "#/$defs/quantity" }
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "description": "Standard pod-spec tolerations.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string" },
+          "operator": { "enum": ["Equal", "Exists"] },
+          "value": { "type": "string" },
+          "effect": { "enum": ["", "NoSchedule", "PreferNoSchedule", "NoExecute"] },
+          "tolerationSeconds": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

@@ -2,11 +2,34 @@
 # The chart does NOT create a namespace — install with `helm install -n <ns> --create-namespace`
 # or apply a Namespace manifest separately.
 
+# Override the app name in the recommended labels, and the release-derived
+# prefix every resource name is built from. Both empty by default.
+nameOverride: ""
+fullnameOverride: ""
+
+# Pull credentials for every pod this chart renders — the control-plane
+# Deployments — for a private registry or mirror.
+# Each entry is {name: <secret>}, e.g.:
+#   imagePullSecrets:
+#     - name: ghcr-creds
+# A pull secret is referenced by name only, and that name always resolves in
+# the namespace of the pod using it. Every pod the chart renders lives in the
+# release namespace, so that is where these must exist. The one exception is
+# the job-pod ServiceAccount, which the chart creates in
+# orchestrator.jobNamespace and which inherits this list — see
+# serviceAccount.jobSidecarImagePullSecrets when that namespace differs.
+# Deployment replicas and warm pods are created by the service rather than the
+# chart; their credentials go on the account they run as (docs/operations.md).
+imagePullSecrets: []
+
 # The chart ships one API today (jobs). Future APIs (deployments, statefulsets, ...)
 # will be added as additional Deployments + Services in the same chart, each
 # with its own component name. Resource naming for the jobs API lives under
 # `jobs.fullnameOverride` so it doesn't collide with the release's fullname.
 jobs:
+  # Install the jobs service (Deployment + Service + RBAC + PDB/HPA). Opt-in
+  # like every component, so a bare `helm install` renders nothing at all.
+  enabled: false
   # Empty uses "jobs" when the release is named "orchestrator", otherwise
   # "<release>-jobs" to keep resources scoped to the release.
   fullnameOverride: ""
@@ -288,6 +311,13 @@ serviceAccount:
   jobSidecarCreate: true
   # Empty defaults to "<release>-job-sidecar" so releases sharing a namespace don't collide.
   jobSidecarName: ""
+  # Pull secrets for the job-pod ServiceAccount, which lives in
+  # orchestrator.jobNamespace. Empty inherits the top-level imagePullSecrets,
+  # which is right while jobs share the release namespace. Set this when
+  # orchestrator.jobNamespace differs and the credentials are named
+  # differently there — a name that does not exist in the job namespace leaves
+  # private-image job pods in ImagePullBackOff, whatever the top-level list says.
+  jobSidecarImagePullSecrets: []
 
 rbac:
   create: true

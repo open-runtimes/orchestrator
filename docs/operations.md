@@ -30,8 +30,8 @@ Both derive all state from the cluster: restarts and replica failovers lose noth
 
 ## Prerequisites
 
-- **Kubernetes 1.29+** — jobs rely on native sidecar containers.
-- **Helm 3.8+** — the chart is published as an OCI artifact.
+- **Kubernetes 1.29+** — jobs rely on native sidecar containers. The chart declares this as `kubeVersion`, so an older cluster fails the install rather than accepting jobs that then never terminate. `helm template` checks the constraint against the Helm CLI's own built-in version — pass `--kube-version` if your CLI is older than your cluster.
+- **Helm 3.8+** — the chart is published as an OCI artifact. Values are validated against `values.schema.json` on template/install/upgrade: unknown keys are rejected rather than silently ignored, so a misspelling fails loudly.
 - For deployments: the **Gateway API CRDs** and a gateway controller with two *Extended* features — per-backendRef `RequestHeaderModifier` filters and `RegularExpression` header matching. Verified on **Traefik** (Gateway API v1.5+); Envoy Gateway and Istio also implement both. Without a gateway, set `deployments.gateway.enabled=false`: deployments still run, but you provide your own routing.
 
 ## Installing
@@ -158,9 +158,18 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Buffering-edge replicas |
 | `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
+| `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
 | `extraEnv` | `[]` | Extra environment for the services (e.g. `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |
 
 Autoscaler tuning via `extraEnv`: `AUTOSCALER_WINDOW` (sliding window, default 60s) and `AUTOSCALER_TICK` (evaluation period, default 2s). A shorter window scales — in both directions — more aggressively.
+
+## Private registries
+
+`imagePullSecrets` supplies pull credentials to every pod the chart renders. Each entry is `{name: <secret>}`.
+
+Workload pods — job pods, deployment replicas, warm pods — are created by the services rather than the chart, so pod-level values cannot reach them; they inherit credentials from the ServiceAccount they run as. The chart stamps `imagePullSecrets` onto the job-pod ServiceAccount it creates (`serviceAccount.jobSidecarCreate`), which covers job pods. Deployment replicas and warm pods currently run under the workload namespace's `default` ServiceAccount, so a private *runtime* image there needs the secret attached to that account out of band.
+
+A pull secret is referenced **by name only, and the name resolves in the namespace of the pod using it** — there is no cross-namespace reference. Every pod the chart renders lives in the release namespace, so that is where `imagePullSecrets` must exist. The job-pod ServiceAccount is the exception: the chart creates it in `orchestrator.jobNamespace`. While that is the release namespace (the default) one secret covers everything, but once they differ the same name has to exist in the job namespace too, and `serviceAccount.jobSidecarImagePullSecrets` overrides the list when the credentials are named differently there.
 
 ## Hardening
 
