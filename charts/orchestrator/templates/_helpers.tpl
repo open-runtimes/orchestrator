@@ -78,6 +78,18 @@
 {{- end -}}
 {{- end -}}
 
+{{/*
+  imagePullSecrets: pull credentials for every pod this chart renders. Not for
+  workload pods (job pods, deployment replicas, warm pods) — the services
+  create those, so their credentials go on the ServiceAccount they run as.
+*/}}
+{{- define "orchestrator.imagePullSecrets" -}}
+{{- with .Values.imagePullSecrets -}}
+imagePullSecrets:
+{{- toYaml . | nindent 2 }}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.activatorImage" -}}
 {{- if .Values.deployments.activator.image.ref -}}
 {{- .Values.deployments.activator.image.ref -}}
@@ -201,11 +213,43 @@ pod manifest.
 {{- end -}}
 {{- end -}}
 
+{{/*
+  labels: the recommended label set, for resource metadata only. Deliberately
+  NOT the selector — version changes on every release and selectors are
+  immutable, which is why every component keeps a separate SelectorLabels
+  define.
+*/}}
 {{- define "orchestrator.labels" -}}
 app.kubernetes.io/name: {{ include "orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | replace "+" "_" | trunc 63 | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+{{- end -}}
+
+{{/*
+  podAnnotations: a component's user annotations, plus a checksum of the
+  chart-managed S3 credentials so that `helm upgrade` with rotated keys
+  actually rolls the pods — without it the old credentials stay live in the
+  running ones. Call with {annotations, s3}; renders nothing when there is
+  neither. An existingSecret is not hashed: its contents are not ours to see,
+  so rotating it is the operator's rollout to trigger.
+
+  Merged into one dict rather than emitted as two blocks, so a user
+  annotation named checksum/s3 cannot shadow the generated one — as a
+  duplicate YAML key it would win and freeze the marker, quietly defeating
+  the rollout it exists to trigger. deepCopy because .Values is shared across
+  templates and set would otherwise mutate it.
+*/}}
+{{- define "orchestrator.podAnnotations" -}}
+{{- $annotations := deepCopy (default (dict) .annotations) -}}
+{{- if and .s3.enabled (not .s3.existingSecret) -}}
+{{- $_ := set $annotations "checksum/s3" (.s3 | toJson | sha256sum) -}}
+{{- end -}}
+{{- with $annotations -}}
+annotations:
+{{- toYaml . | nindent 2 }}
+{{- end -}}
 {{- end -}}
 
 {{/*

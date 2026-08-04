@@ -4,3 +4,20 @@ description: Job orchestration service for containerized workloads with async ca
 type: application
 version: 0.4.5
 appVersion: "0.4.4"
+# Jobs run their sidecar as a native sidecar container, which is 1.29+. Declared
+# so an older cluster fails the install instead of accepting jobs that then
+# never terminate. `helm template` checks this against the Helm CLI's own
+# built-in version — pass --kube-version if your CLI is older than your cluster.
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/open-runtimes/orchestrator
+sources:
+  - https://github.com/open-runtimes/orchestrator
+icon: https://avatars.githubusercontent.com/u/98597422?v=4
+keywords:
+  - jobs
+  - orchestration
+  - containers
+  - serverless
+maintainers:
+  - name: open-runtimes
+    url: https://github.com/open-runtimes
