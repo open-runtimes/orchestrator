@@ -77,18 +77,13 @@ func runSandbox(ctx context.Context) error {
 	}
 	slog.Info("Informer caches synced")
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.Handle("/", edge)
-
-	// The data plane goes on an Extra server: an exec against a sandbox can
-	// legitimately run for minutes, far past the management server's
-	// WriteTimeout.
+	// The data listener serves the edge and NOTHING else. Every path belongs to
+	// the sandbox: mounting our own /healthz here would shadow the contract's
+	// /healthz for every sandbox behind the edge. Our probes live on the
+	// management port.
 	dataServer := &http.Server{
 		Addr:              ":" + config.GetEnv("ACTIVATOR_PORT", "8081"),
-		Handler:           mux,
+		Handler:           edge,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

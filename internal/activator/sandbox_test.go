@@ -145,3 +145,31 @@ func TestSandboxEdge_HostNormalization(t *testing.T) {
 		}
 	}
 }
+
+// Every path belongs to the sandbox. The edge must not answer any of them
+// itself — mounting its own /healthz on the data listener once shadowed the
+// contract's /healthz for every sandbox behind it (the edge's own probes live
+// on the management listener instead).
+func TestSandboxEdge_ClaimsNoPathOfItsOwn(t *testing.T) {
+	var seen []string
+	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path)
+		_, _ = io.WriteString(w, "sandbox")
+	}))
+	act := newTestSandboxActivator(t, SandboxConfig{ProxyPort: port, AdminPort: port, Hold: time.Second},
+		sandboxPod(testToken, "sbx-1", ip, true))
+
+	for _, path := range []string{"/healthz", "/execute", "/files/main.py", "/stats", "/ready", "/"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+			"http://s-"+testToken+"."+testSandboxDomain+path, nil)
+		req.Host = "s-" + testToken + "." + testSandboxDomain
+		rec := httptest.NewRecorder()
+		act.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.String() != "sandbox" {
+			t.Errorf("%s: the edge answered instead of the sandbox (status %d, body %q)", path, rec.Code, rec.Body.String())
+		}
+	}
+	if len(seen) != 6 {
+		t.Errorf("sandbox saw %v", seen)
+	}
+}

@@ -71,7 +71,7 @@ curl -X PUT  http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/fil
 curl         http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/files/out.json
 ```
 
-Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON.
+Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the pool machinery's own `.pool/`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
 
 For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready:
 

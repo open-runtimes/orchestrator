@@ -53,6 +53,8 @@ spec:
           ports:
             - name: data
               containerPort: {{ .Values.deployments.sandboxes.edge.port }}
+            - name: mgmt
+              containerPort: {{ .Values.service.apiPort }}
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
           env:
@@ -68,18 +70,25 @@ spec:
               value: {{ required "deployments.sandboxes.domain is required when the sandbox edge is enabled" .Values.deployments.sandboxes.domain | quote }}
             - name: SANDBOX_HOLD_SECONDS
               value: {{ .Values.deployments.sandboxes.edge.holdSeconds | quote }}
+            - name: PORT
+              value: {{ .Values.service.apiPort | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
+          {{- /*
+          Probes hit the management port, not the data port: the data listener
+          serves only sandbox traffic, since every path there belongs to the
+          sandbox (including the contract's own /healthz).
+          */}}
           readinessProbe:
             httpGet:
               path: /healthz
-              port: data
+              port: mgmt
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
-              port: data
+              port: mgmt
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
