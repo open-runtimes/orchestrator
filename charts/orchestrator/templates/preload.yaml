@@ -1,0 +1,33 @@
+{{/*
+  One pre-pull DaemonSet per plane, each pinned to that plane's own workload
+  node pool — that pool is the whole point, so the DaemonSet carries the same
+  nodeSelector/tolerations as the pods whose pulls it is warming.
+
+  The pool-shim is not listed: it is already the DaemonSet's own no-op and
+  holder image, so it lands on the node either way.
+*/}}
+{{- if and .Values.jobs.enabled .Values.jobs.preload.enabled }}
+---
+{{- include "orchestrator.preloadDaemonSet" (dict
+      "root" .
+      "name" (include "orchestrator.jobsName" .)
+      "component" "jobs"
+      "nodeSelector" .Values.jobs.workloadNodeSelector
+      "tolerations" .Values.jobs.workloadTolerations
+      "images" (concat (list (include "orchestrator.jobSidecarImage" .)) .Values.jobs.preload.extraImages)
+    ) }}
+{{- end }}
+{{- if and .Values.deployments.enabled .Values.deployments.preload.enabled }}
+---
+{{- include "orchestrator.preloadDaemonSet" (dict
+      "root" .
+      "name" (include "orchestrator.deploymentsName" .)
+      "component" "deployments"
+      "nodeSelector" .Values.deployments.workloadNodeSelector
+      "tolerations" .Values.deployments.workloadTolerations
+      "images" (concat (list
+            (include "orchestrator.deploymentsSidecarImage" .)
+            (include "orchestrator.jobSidecarImage" .)
+          ) .Values.deployments.preload.extraImages)
+    ) }}
+{{- end }}

@@ -8,7 +8,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 # Pull credentials for every pod this chart renders — the control-plane
-# Deployments — for a private registry or mirror.
+# Deployments and the pre-pull DaemonSets — for a private registry or mirror.
 # Each entry is {name: <secret>}, e.g.:
 #   imagePullSecrets:
 #     - name: ghcr-creds
@@ -109,6 +109,17 @@ jobs:
   #   workloadNodeSelector:
   #     workload: edge-builds
   workloadNodeSelector: {}
+  # Pre-pull the images job pods need onto every node of the pool above (a
+  # DaemonSet carrying the same workloadNodeSelector/workloadTolerations), so
+  # the first job scheduled to a fresh node doesn't pay the pull. The
+  # job-sidecar and pool-shim images are always included.
+  preload:
+    enabled: false
+    # Additional images to pre-pull — typically the runtime images jobs
+    # actually run, which the chart cannot know, e.g.:
+    #   extraImages:
+    #     - openruntimes/node:v5-22
+    extraImages: []
   # Max time buffered job log lines wait before a callback flush (they also
   # flush at 32 lines) — keeps low-volume build logs streaming in near real time.
   logFlushInterval: 1s
@@ -214,6 +225,13 @@ deployments:
   # workloadTolerations when the pool is tainted. Independent from
   # jobs.workloadNodeSelector.
   workloadNodeSelector: {}
+  # Pre-pull the images workload pods need onto every node of the pool above,
+  # exactly as jobs.preload does for job pods. The deployments-sidecar,
+  # job-sidecar, and pool-shim images are always included; list the runtime
+  # images your deployments and pools use under extraImages.
+  preload:
+    enabled: false
+    extraImages: []
   # Leader election gates the background reconcilers (rollout auto-cut, cold
   # endpoint flip, autoscaler) to one replica. Required when replicaCount > 1.
   leaderElection:
@@ -280,6 +298,26 @@ deployments:
       memory: 64Mi
     limits:
       memory: 256Mi
+
+# Settings shared by both pre-pull DaemonSets. Which images get pulled, and
+# onto which nodes, is per-plane — see jobs.preload / deployments.preload.
+preload:
+  # Idle container that keeps each pre-pull pod alive, so the images it pulled
+  # stay pinned against kubelet's image GC. Not tied to the chart's appVersion;
+  # override the whole thing for an air-gapped registry.
+  pauseImage:
+    ref: ""
+    repository: registry.k8s.io/pause
+    tag: "3.10"
+  # ServiceAccount for the pre-pull pods. Empty uses the namespace's default.
+  # Point this at an SA that already carries imagePullSecrets to reuse the same
+  # credentials the workload pods pull with — its pull secrets are merged in
+  # even though no token is mounted.
+  serviceAccountName: ""
+  # PriorityClass for the pre-pull pods. Empty uses the cluster default (0).
+  # Point this at a negative-priority PriorityClass so warming a cache never
+  # preempts or outbids real work on a full node.
+  priorityClassName: ""
 
 replicaCount: 1
 

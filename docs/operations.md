@@ -158,6 +158,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Buffering-edge replicas |
 | `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
+| `deployments.preload.{enabled,extraImages}` | disabled | Pre-pull images onto the workload node pool (below) |
+| `jobs.preload.{enabled,extraImages}` | disabled | Same, independently for the job node pool |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
 | `extraEnv` | `[]` | Extra environment for the services (e.g. `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |
 
@@ -165,11 +167,14 @@ Autoscaler tuning via `extraEnv`: `AUTOSCALER_WINDOW` (sliding window, default 6
 
 ## Private registries
 
-`imagePullSecrets` supplies pull credentials to every pod the chart renders. Each entry is `{name: <secret>}`.
+A pre-pull container that cannot authenticate lands in `ImagePullBackOff` and the node it was meant to warm stays cold, so credentials have to reach it one of two ways:
 
-Workload pods — job pods, deployment replicas, warm pods — are created by the services rather than the chart, so pod-level values cannot reach them; they inherit credentials from the ServiceAccount they run as. The chart stamps `imagePullSecrets` onto the job-pod ServiceAccount it creates (`serviceAccount.jobSidecarCreate`), which covers job pods. Deployment replicas and warm pods currently run under the workload namespace's `default` ServiceAccount, so a private *runtime* image there needs the secret attached to that account out of band.
+- **`imagePullSecrets`** (top level) is stamped on every pod the chart renders — both control-plane Deployments and both pre-pull DaemonSets. Each entry is `{name: <secret>}`.
+- **`preload.serviceAccountName`** points the pre-pull pods at a ServiceAccount that already carries pull secrets. The ServiceAccount admission plugin merges them into the pod even though the pre-pull pods mount no token.
 
-A pull secret is referenced **by name only, and the name resolves in the namespace of the pod using it** — there is no cross-namespace reference. Every pod the chart renders lives in the release namespace, so that is where `imagePullSecrets` must exist. The job-pod ServiceAccount is the exception: the chart creates it in `orchestrator.jobNamespace`. While that is the release namespace (the default) one secret covers everything, but once they differ the same name has to exist in the job namespace too, and `serviceAccount.jobSidecarImagePullSecrets` overrides the list when the credentials are named differently there.
+Workload pods — job pods, deployment replicas, warm pods — are created by the services rather than the chart, so pod-level values cannot reach them; they inherit credentials from the ServiceAccount they run as. The chart stamps `imagePullSecrets` onto the job-pod ServiceAccount it creates (`serviceAccount.jobSidecarCreate`), which covers job pods. Deployment replicas and warm pods currently run under the workload namespace's `default` ServiceAccount, so a private *runtime* image there needs the secret attached to that account out of band. Pre-pulling a runtime image does not remove this requirement: it only warms the node cache, and the workload pod still authenticates on its own when the tag is not already present.
+
+A pull secret is referenced **by name only, and the name resolves in the namespace of the pod using it** — there is no cross-namespace reference. Every pod the chart renders lives in the release namespace, so that is where `imagePullSecrets` must exist. The job-pod ServiceAccount is the exception: the chart creates it in `orchestrator.jobNamespace`. While that is the release namespace (the default) one secret covers everything, but once they differ the same name has to exist in the job namespace too, and `serviceAccount.jobSidecarImagePullSecrets` overrides the list when the credentials are named differently there. Getting this wrong is quiet in a specific way: the pre-pull DaemonSet authenticates fine and warms the node, while job pods on that same warm node still fail to pull anything not already cached.
 
 ## Hardening
 
@@ -210,6 +215,24 @@ The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the pl
 - **Node selector**: tolerations only *allow* the tainted pool; to *pin* pods to it, also set `deployments.workloadNodeSelector` / `jobs.workloadNodeSelector` (e.g. `{workload: edge-builds}`) — a standard pod-spec nodeSelector stamped on every workload/job pod of that plane.
 - Replicas spread across nodes via topology spread constraints, and durably multi-replica deployments get a PodDisruptionBudget automatically.
 - `limitRange.enabled` adds defaults for containers that declare nothing, preventing BestEffort pods.
+
+## Image pre-pull
+
+The first pod scheduled to a fresh node pays the image pull — seconds of cold start for a deployment, or a job that looks slow for no visible reason. `jobs.preload.enabled` / `deployments.preload.enabled` render a DaemonSet per plane that pulls those images ahead of time, carrying the **same `workloadNodeSelector` and `workloadTolerations` as the plane's pods**, so it warms exactly the nodes the workloads land on and nothing else.
+
+Each DaemonSet always includes that plane's own sidecar images (`job-sidecar`, plus `deployments-sidecar` and `pool-shim` for deployments). The images the chart cannot know — the runtimes your jobs and deployments actually run — go in `extraImages`:
+
+```yaml
+jobs:
+  preload:
+    enabled: true
+    extraImages:
+      - openruntimes/node:v5-22
+```
+
+Each image is pulled by an init container, so the pull cost is paid once per node at DaemonSet rollout. The pod then idles on `registry.k8s.io/pause` (~1m CPU / 8Mi per node) — staying alive is what keeps the pulled images pinned against kubelet's image GC. Adding or changing `extraImages` is a values change and a rollout; nodes joining later are warmed by the DaemonSet controller as usual. Private registries need credentials to reach the pre-pull pods too — see above.
+
+Three shared knobs in `preload`: `pauseImage` (override for air-gapped registries — it is the one image here not published by this project), `priorityClassName`, which should point at a negative-priority PriorityClass so warming a cache never preempts or outbids real work on a full node, and `serviceAccountName`.
 
 ## Scaling the control plane
 
