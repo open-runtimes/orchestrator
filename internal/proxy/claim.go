@@ -31,12 +31,12 @@ const (
 
 // ClaimRequest is what a pool backend POSTs to claim the pod.
 type ClaimRequest struct {
-	ActivationID   string              `json:"activationId"`
-	Command        string              `json:"command"`
-	Environment    map[string]string   `json:"environment,omitempty"`
-	Artifacts      []artifact.Artifact `json:"artifacts,omitempty"`
-	Port           int                 `json:"port"` // the container port the activation serves — the proxy target + readiness subject
-	TimeoutSeconds int                 `json:"timeoutSeconds,omitempty"`
+	ActivationID   string            `json:"activationId"`
+	Command        string            `json:"command"`
+	Environment    map[string]string `json:"environment,omitempty"`
+	Artifacts      artifact.Set      `json:"artifacts,omitempty"`
+	Port           int               `json:"port"` // the container port the activation serves — the proxy target + readiness subject
+	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"`
 }
 
 // ClaimState is the sidecar's authoritative claim record.

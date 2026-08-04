@@ -3,32 +3,30 @@
 package deployment
 
 import (
-	"encoding/json"
-	"fmt"
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/volume"
 )
 
 // Request is the declarative deployment spec. POST is create-or-update.
 type Request struct {
-	ID          string              `json:"id"` // RFC-1123 label (≤63); part of object names
-	Meta        map[string]string   `json:"meta,omitempty"`
-	Image       string              `json:"image"`
-	Sandbox     string              `json:"sandbox,omitempty"` // RuntimeClass tier: runc (default) | gvisor | kata (K8s only)
-	Command     string              `json:"command,omitempty"`
-	CPU         float64             `json:"cpu"`    // limit (cores)
-	Memory      int                 `json:"memory"` // limit (MB)
-	Environment map[string]string   `json:"environment,omitempty"`
-	Workspace   string              `json:"workspace,omitempty"`   // working directory and shared-volume mount path (default: /workspace)
-	Artifacts   []artifact.Artifact `json:"artifacts,omitempty"`   // materialized into the workspace before serving
-	Volumes     []volume.Volume     `json:"volumes,omitempty"`     // existing Docker volumes / K8s PVCs mounted into the worker
-	Hosts       []string            `json:"hosts,omitempty"`       // RFC-1123 hostnames (≤253 each); hosts[0] is the primary; empty = [{id}.{domain}]
-	Port        int                 `json:"port"`                  // container port serving HTTP
-	Replicas    int                 `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
-	Concurrency int                 `json:"concurrency,omitempty"` // hard per-replica in-flight cap; 0 = unlimited
-	Autoscaling *Autoscaling        `json:"autoscaling,omitempty"`
-	Probes      *Probes             `json:"probes,omitempty"`
-	Callback    *Callback           `json:"callback,omitempty"`
+	ID          string            `json:"id"` // RFC-1123 label (≤63); part of object names
+	Meta        map[string]string `json:"meta,omitempty"`
+	Image       string            `json:"image"`
+	Sandbox     string            `json:"sandbox,omitempty"` // RuntimeClass tier: runc (default) | gvisor | kata (K8s only)
+	Command     string            `json:"command,omitempty"`
+	CPU         float64           `json:"cpu"`    // limit (cores)
+	Memory      int               `json:"memory"` // limit (MB)
+	Environment map[string]string `json:"environment,omitempty"`
+	Workspace   string            `json:"workspace,omitempty"`   // working directory and shared-volume mount path (default: /workspace)
+	Artifacts   artifact.Set      `json:"artifacts,omitempty"`   // materialized into the workspace before serving
+	Volumes     []volume.Volume   `json:"volumes,omitempty"`     // existing Docker volumes / K8s PVCs mounted into the worker
+	Hosts       []string          `json:"hosts,omitempty"`       // RFC-1123 hostnames (≤253 each); hosts[0] is the primary; empty = [{id}.{domain}]
+	Port        int               `json:"port"`                  // container port serving HTTP
+	Replicas    int               `json:"replicas,omitempty"`    // fixed count; default 1 (Docker: always 1)
+	Concurrency int               `json:"concurrency,omitempty"` // hard per-replica in-flight cap; 0 = unlimited
+	Autoscaling *Autoscaling      `json:"autoscaling,omitempty"`
+	Probes      *Probes           `json:"probes,omitempty"`
+	Callback    *Callback         `json:"callback,omitempty"`
 
 	TimeoutSeconds      int `json:"timeoutSeconds,omitempty"`      // per-request total → 504; default 300
 	StartTimeoutSeconds int `json:"startTimeoutSeconds,omitempty"` // activator wait for a ready endpoint → 503; default 300
@@ -124,123 +122,14 @@ type ListResponse struct {
 	Deployments []StatusResponse `json:"deployments"`
 }
 
-// requestJSON mirrors Request with json.RawMessage artifacts (same pattern as pkg/job).
-type requestJSON struct {
-	ID          string            `json:"id"`
-	Meta        map[string]string `json:"meta,omitempty"`
-	Image       string            `json:"image"`
-	Sandbox     string            `json:"sandbox,omitempty"`
-	Command     string            `json:"command,omitempty"`
-	CPU         float64           `json:"cpu"`
-	Memory      int               `json:"memory"`
-	Environment map[string]string `json:"environment,omitempty"`
-	Workspace   string            `json:"workspace,omitempty"`
-	Artifacts   json.RawMessage   `json:"artifacts,omitempty"`
-	Volumes     []volume.Volume   `json:"volumes,omitempty"`
-	Hosts       []string          `json:"hosts,omitempty"`
-	Port        int               `json:"port"`
-	Replicas    int               `json:"replicas,omitempty"`
-	Concurrency int               `json:"concurrency,omitempty"`
-	Autoscaling *Autoscaling      `json:"autoscaling,omitempty"`
-	Probes      *Probes           `json:"probes,omitempty"`
-	Callback    *Callback         `json:"callback,omitempty"`
-
-	TimeoutSeconds      int `json:"timeoutSeconds,omitempty"`
-	StartTimeoutSeconds int `json:"startTimeoutSeconds,omitempty"`
-	ReadyTimeoutSeconds int `json:"readyTimeoutSeconds,omitempty"`
-}
-
 // Parse decodes an API request body, rejecting unknown fields — a typo'd
 // field name must fail loudly, not silently deploy defaults. Strictness
 // belongs at the API edge only: stored specs (Spec Secrets, volume labels)
-// keep the lenient UnmarshalJSON so version skew never strands them.
+// decode leniently so version skew never strands them.
 func Parse(data []byte) (*Request, error) {
-	var raw requestJSON
-	if err := artifact.UnmarshalStrict(data, &raw); err != nil {
-		return nil, err
-	}
 	var r Request
-	if err := r.fromRaw(&raw); err != nil {
+	if err := artifact.UnmarshalStrict(data, &r); err != nil {
 		return nil, err
 	}
 	return &r, nil
-}
-
-// UnmarshalJSON decodes artifacts into their concrete types via the registry.
-func (r *Request) UnmarshalJSON(data []byte) error {
-	var raw requestJSON
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	return r.fromRaw(&raw)
-}
-
-func (r *Request) fromRaw(raw *requestJSON) error {
-	r.ID = raw.ID
-	r.Meta = raw.Meta
-	r.Image = raw.Image
-	r.Sandbox = raw.Sandbox
-	r.Command = raw.Command
-	r.CPU = raw.CPU
-	r.Memory = raw.Memory
-	r.Environment = raw.Environment
-	r.Workspace = raw.Workspace
-	r.Volumes = raw.Volumes
-	r.Hosts = raw.Hosts
-	r.Port = raw.Port
-	r.Replicas = raw.Replicas
-	r.Concurrency = raw.Concurrency
-	r.Autoscaling = raw.Autoscaling
-	r.Probes = raw.Probes
-	r.Callback = raw.Callback
-	r.TimeoutSeconds = raw.TimeoutSeconds
-	r.StartTimeoutSeconds = raw.StartTimeoutSeconds
-	r.ReadyTimeoutSeconds = raw.ReadyTimeoutSeconds
-
-	if len(raw.Artifacts) > 0 && string(raw.Artifacts) != "null" {
-		artifacts, err := artifact.UnmarshalArtifacts(raw.Artifacts)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal artifacts: %w", err)
-		}
-		r.Artifacts = artifacts
-	}
-
-	return nil
-}
-
-// MarshalJSON encodes artifacts with their type discriminator.
-func (r Request) MarshalJSON() ([]byte, error) {
-	raw := requestJSON{
-		ID:          r.ID,
-		Meta:        r.Meta,
-		Image:       r.Image,
-		Sandbox:     r.Sandbox,
-		Command:     r.Command,
-		CPU:         r.CPU,
-		Memory:      r.Memory,
-		Environment: r.Environment,
-		Workspace:   r.Workspace,
-		Volumes:     r.Volumes,
-		Hosts:       r.Hosts,
-		Port:        r.Port,
-		Replicas:    r.Replicas,
-		Concurrency: r.Concurrency,
-		Autoscaling: r.Autoscaling,
-		Probes:      r.Probes,
-		Callback:    r.Callback,
-
-		TimeoutSeconds:      r.TimeoutSeconds,
-		StartTimeoutSeconds: r.StartTimeoutSeconds,
-		ReadyTimeoutSeconds: r.ReadyTimeoutSeconds,
-	}
-
-	if len(r.Artifacts) > 0 {
-		artifactsData, err := artifact.MarshalArtifacts(r.Artifacts)
-		if err != nil {
-			return nil, err
-		}
-		raw.Artifacts = artifactsData
-	}
-
-	return json.Marshal(raw)
 }

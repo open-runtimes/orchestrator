@@ -91,90 +91,22 @@ type Activation struct {
 	Host               string               `json:"host,omitempty"` // RFC-1123 hostname; else {id}.{pool-domain}
 	Command            string               `json:"command"`
 	Environment        map[string]string    `json:"environment,omitempty"`
-	Artifacts          []artifact.Artifact  `json:"artifacts,omitempty"`
+	Artifacts          artifact.Set         `json:"artifacts,omitempty"`
 	TimeoutSeconds     int                  `json:"timeoutSeconds,omitempty"`     // per-request bound → 504
 	IdleTimeoutSeconds int                  `json:"idleTimeoutSeconds,omitempty"` // tear down after idleness; 0 = until DELETE
-	Callback           *deployment.Callback `json:"callback,omitempty"`
-}
-
-// activationJSON mirrors Activation with json.RawMessage artifacts (same
-// pattern as pkg/job and pkg/deployment).
-type activationJSON struct {
-	ID                 string               `json:"id,omitempty"`
-	Host               string               `json:"host,omitempty"`
-	Command            string               `json:"command"`
-	Environment        map[string]string    `json:"environment,omitempty"`
-	Artifacts          json.RawMessage      `json:"artifacts,omitempty"`
-	TimeoutSeconds     int                  `json:"timeoutSeconds,omitempty"`
-	IdleTimeoutSeconds int                  `json:"idleTimeoutSeconds,omitempty"`
 	Callback           *deployment.Callback `json:"callback,omitempty"`
 }
 
 // Parse decodes an API request body, rejecting unknown fields — a typo'd
 // field name must fail loudly, not silently activate with defaults.
 // Strictness belongs at the API edge only: stored specs (pod annotations)
-// keep the lenient UnmarshalJSON so version skew never strands them.
+// decode leniently so version skew never strands them.
 func Parse(data []byte) (*Activation, error) {
-	var raw activationJSON
-	if err := artifact.UnmarshalStrict(data, &raw); err != nil {
-		return nil, err
-	}
 	var a Activation
-	if err := a.fromRaw(&raw); err != nil {
+	if err := artifact.UnmarshalStrict(data, &a); err != nil {
 		return nil, err
 	}
 	return &a, nil
-}
-
-// UnmarshalJSON decodes artifacts into their concrete types via the registry
-// — a plain decode cannot land on the artifact.Artifact interface.
-func (a *Activation) UnmarshalJSON(data []byte) error {
-	var raw activationJSON
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	return a.fromRaw(&raw)
-}
-
-func (a *Activation) fromRaw(raw *activationJSON) error {
-	a.ID = raw.ID
-	a.Host = raw.Host
-	a.Command = raw.Command
-	a.Environment = raw.Environment
-	a.TimeoutSeconds = raw.TimeoutSeconds
-	a.IdleTimeoutSeconds = raw.IdleTimeoutSeconds
-	a.Callback = raw.Callback
-
-	if len(raw.Artifacts) > 0 && string(raw.Artifacts) != "null" {
-		artifacts, err := artifact.UnmarshalArtifacts(raw.Artifacts)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal artifacts: %w", err)
-		}
-		a.Artifacts = artifacts
-	}
-	return nil
-}
-
-// MarshalJSON stamps each artifact with its "type" discriminator via the
-// registry — required for the round trip through pod annotations.
-func (a Activation) MarshalJSON() ([]byte, error) {
-	raw := activationJSON{
-		ID:                 a.ID,
-		Host:               a.Host,
-		Command:            a.Command,
-		Environment:        a.Environment,
-		TimeoutSeconds:     a.TimeoutSeconds,
-		IdleTimeoutSeconds: a.IdleTimeoutSeconds,
-		Callback:           a.Callback,
-	}
-	if len(a.Artifacts) > 0 {
-		data, err := artifact.MarshalArtifacts(a.Artifacts)
-		if err != nil {
-			return nil, err
-		}
-		raw.Artifacts = data
-	}
-	return json.Marshal(raw)
 }
 
 // Activation states.

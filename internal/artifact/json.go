@@ -3,6 +3,7 @@ package artifact
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 )
 
 // UnmarshalStrict decodes JSON rejecting unknown fields — the API-edge
@@ -13,6 +14,34 @@ func UnmarshalStrict(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	return dec.Decode(v)
+}
+
+// Set is a spec's artifact slice: it carries the registry round-trip
+// (concrete types in, "type" discriminators out) on the field itself, so
+// artifact-bearing specs need no hand-written codec of their own. Before this
+// existed, every such spec kept a shadow struct plus a fromRaw/MarshalJSON
+// pair, and each new field had to be threaded through all of them — a field
+// missed there is dropped silently on the wire.
+type Set []Artifact
+
+// UnmarshalJSON decodes each artifact into its concrete type via the registry
+// — a plain decode cannot land on the Artifact interface.
+func (s *Set) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*s = nil
+		return nil
+	}
+	artifacts, err := UnmarshalArtifacts(data)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal artifacts: %w", err)
+	}
+	*s = artifacts
+	return nil
+}
+
+// MarshalJSON stamps each artifact with its "type" discriminator.
+func (s Set) MarshalJSON() ([]byte, error) {
+	return MarshalArtifacts(s)
 }
 
 // UnmarshalArtifact unmarshals a JSON artifact into the appropriate concrete type.
