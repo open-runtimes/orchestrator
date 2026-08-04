@@ -14,6 +14,14 @@
 jobs:
   enabled: true
 
+  # Pre-pull onto every node jobs can land on, so the first job scheduled to a
+  # fresh node doesn't pay the image pull. The sidecar images are included
+  # automatically; list the runtimes your jobs actually run.
+  preload:
+    enabled: true
+    extraImages:
+      - openruntimes/node:v5-22
+
   # Publicly expose the jobs API via Gateway API. You own the Gateway
   # (listener config, TLS, load balancer) as with deployments.gateway below —
   # omit jobs.gateway and set jobs.httpRoute.parentRefs instead to attach to

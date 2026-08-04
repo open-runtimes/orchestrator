@@ -90,6 +90,144 @@ imagePullSecrets:
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.pauseImage" -}}
+{{- if .Values.preload.pauseImage.ref -}}
+{{- .Values.preload.pauseImage.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.preload.pauseImage.repository .Values.preload.pauseImage.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+  preloadSelectorLabels: identity of a plane's pre-pull DaemonSet. Takes a
+  dict {root, component} rather than the root context, because one define
+  serves both planes.
+*/}}
+{{- define "orchestrator.preloadSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" .root }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/component: {{ .component }}-preload
+{{- end -}}
+
+{{/*
+  preloadDaemonSet: a DaemonSet that pre-pulls a plane's images onto the nodes
+  that plane's workloads land on, so the first job/revision scheduled to a
+  fresh node doesn't pay the pull. Call with a dict:
+  {root, name, component, images, nodeSelector, tolerations}.
+
+  Each image is pulled by giving it a container — but a pre-pull container has
+  to exit 0, and our images are distroless with no shell, so there is nothing
+  generic to run inside them. The pool-shim already solves exactly this for
+  warm pods: `-install <path>` copies its own static binary out and exits. So
+  one init container installs the shim into a shared emptyDir and every
+  pre-pull container execs that binary, each writing its copy to its own path
+  (the images run as different users, so they cannot overwrite each other's).
+
+  Deliberately no runAsNonRoot in the pod security context — extraImages are
+  arbitrary user runtimes and some of them are root images. fsGroup is what
+  lets them write into the emptyDir regardless of their user.
+*/}}
+{{- define "orchestrator.preloadDaemonSet" -}}
+{{- $root := .root -}}
+{{- $labels := dict "root" $root "component" .component -}}
+{{- $images := list -}}
+{{- range .images }}{{- if and . (not (has . $images)) }}{{- $images = append $images . }}{{- end }}{{- end }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .name }}-preload
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "orchestrator.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}-preload
+spec:
+  selector:
+    matchLabels:
+      {{- include "orchestrator.preloadSelectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.preloadSelectorLabels" $labels | nindent 8 }}
+    spec:
+      # A private registry can be reached two ways: chart-level
+      # imagePullSecrets, or a ServiceAccount that already carries them (the
+      # route workload pods use). Both work here — the ServiceAccount
+      # admission plugin merges an SA's pull secrets into the pod regardless
+      # of token automount, which stays off since nothing here calls the API.
+      {{- with $root.Values.preload.serviceAccountName }}
+      serviceAccountName: {{ . | quote }}
+      {{- end }}
+      automountServiceAccountToken: false
+      {{- with include "orchestrator.imagePullSecrets" $root }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      # Pre-pulling is never worth evicting or outbidding real work.
+      priorityClassName: {{ $root.Values.preload.priorityClassName | quote }}
+      {{- with .nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        # Makes the shared emptyDir group-writable for every image's own user.
+        fsGroup: 65532
+      volumes:
+        - name: shim
+          emptyDir: {}
+      initContainers:
+        - name: install-shim
+          image: {{ include "orchestrator.poolShimImage" $root | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/ko-app/pool-shim", "-install", "/shim/noop"]
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" $root | nindent 12 }}
+          resources:
+            {{- include "orchestrator.preloadResources" $root | nindent 12 }}
+          volumeMounts:
+            - name: shim
+              mountPath: /shim
+        {{- range $i, $image := $images }}
+        - name: preload-{{ $i }}
+          image: {{ $image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/shim/noop", "-install", "/shim/noop-{{ $i }}"]
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" $root | nindent 12 }}
+          resources:
+            {{- include "orchestrator.preloadResources" $root | nindent 12 }}
+          volumeMounts:
+            - name: shim
+              mountPath: /shim
+        {{- end }}
+      containers:
+        # Once the pulls are done the pod only has to stay alive, so that the
+        # images it pulled stay pinned against kubelet's image GC. pause is
+        # the upstream image for exactly that and does nothing else.
+        - name: pause
+          image: {{ include "orchestrator.pauseImage" $root | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            {{- include "orchestrator.containerSecurityContext" $root | nindent 12 }}
+          resources:
+            {{- include "orchestrator.preloadResources" $root | nindent 12 }}
+{{- end -}}
+
+{{/* Pre-pull containers do nothing but exist; keep them out of the scheduler's way. */}}
+{{- define "orchestrator.preloadResources" -}}
+requests:
+  cpu: 1m
+  memory: 8Mi
+limits:
+  memory: 32Mi
+{{- end -}}
+
 {{- define "orchestrator.activatorImage" -}}
 {{- if .Values.deployments.activator.image.ref -}}
 {{- .Values.deployments.activator.image.ref -}}

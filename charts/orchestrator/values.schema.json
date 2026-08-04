@@ -4,7 +4,7 @@
   "description": "Every object is closed (additionalProperties: false) so a misspelled key fails the install instead of being silently ignored — most of this chart's values are consumed inside `with`/`if` blocks, which swallow typos. Free-form maps (node selectors, annotations, environment) stay open on purpose.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["jobs", "deployments", "service", "orchestrator"],
+  "required": ["jobs", "deployments", "preload", "service", "orchestrator"],
   "properties": {
     "nameOverride": { "type": "string" },
     "fullnameOverride": { "type": "string" },
@@ -67,6 +67,15 @@
         "sidecarImagePullPolicy": { "$ref": "#/$defs/pullPolicy" }
       }
     },
+    "preload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pauseImage": { "$ref": "#/$defs/image" },
+        "serviceAccountName": { "type": "string" },
+        "priorityClassName": { "type": "string" }
+      }
+    },
     "jobs": {
       "type": "object",
       "additionalProperties": false,
@@ -82,6 +91,7 @@
         "memoryOvercommit": { "type": "number" },
         "workloadTolerations": { "$ref": "#/$defs/tolerations" },
         "workloadNodeSelector": { "$ref": "#/$defs/stringMap" },
+        "preload": { "$ref": "#/$defs/planePreload" },
         "logFlushInterval": { "$ref": "#/$defs/duration" },
         "gateway": {
           "type": "object",
@@ -141,6 +151,7 @@
         "memoryOvercommit": { "type": "number" },
         "workloadTolerations": { "$ref": "#/$defs/tolerations" },
         "workloadNodeSelector": { "$ref": "#/$defs/stringMap" },
+        "preload": { "$ref": "#/$defs/planePreload" },
         "leaderElection": { "$ref": "#/$defs/leaderElection" },
         "autoscaling": { "$ref": "#/$defs/autoscaling" },
         "resources": { "$ref": "#/$defs/resources" },
@@ -273,6 +284,15 @@
         "periodMillis": { "type": "integer", "minimum": 1 },
         "timeoutMillis": { "type": "integer", "minimum": 1 },
         "failureThreshold": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "planePreload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "extraImages": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       }
     },
     "quantity": {
