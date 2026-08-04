@@ -1,4 +1,4 @@
-package kubernetes
+package warm
 
 import (
 	"context"
@@ -14,14 +14,13 @@ import (
 )
 
 // Claim tokens are DERIVED, never stored: token = hex(HMAC-SHA256(installKey,
-// podName)). The install key lives in the pool-claim-key Secret; a warm pod
-// gets its token injected as POOL_CLAIM_TOKEN env at creation, and the claim
-// path re-derives it from the pod name — no annotation, nothing readable off
-// the pod object.
+// podName)). The install key lives in the consumer's claim-key Secret; a warm
+// pod gets its token injected as POOL_CLAIM_TOKEN env at creation, and the
+// claim path re-derives it from the pod name — no annotation, nothing readable
+// off the pod object.
 const (
-	claimKeySecretName = "pool-claim-key"
-	claimKeySecretKey  = "key"
-	claimKeyBytes      = 32
+	claimKeySecretKey = "key"
+	claimKeyBytes     = 32
 )
 
 // deriveClaimToken computes a pod's claim bearer token from the install key
@@ -32,16 +31,17 @@ func deriveClaimToken(key []byte, podName string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// claimKey returns the install key, get-or-creating the pool-claim-key Secret
-// on first use and caching it for the process lifetime.
-func (o *Orchestrator) claimKey(ctx context.Context) ([]byte, error) {
-	o.keyMu.Lock()
-	defer o.keyMu.Unlock()
-	if o.installKey != nil {
-		return o.installKey, nil
+// claimKey returns the install key, get-or-creating the claim-key Secret on
+// first use and caching it for the process lifetime.
+func (m *Manager) claimKey(ctx context.Context) ([]byte, error) {
+	m.keyMu.Lock()
+	defer m.keyMu.Unlock()
+	if m.installKey != nil {
+		return m.installKey, nil
 	}
-	secrets := o.client.CoreV1().Secrets(o.namespace)
-	s, err := secrets.Get(ctx, claimKeySecretName, metav1.GetOptions{})
+	secrets := m.client.CoreV1().Secrets(m.cfg.Namespace)
+	name := m.cfg.Naming.SecretName
+	s, err := secrets.Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		fresh := make([]byte, claimKeyBytes)
 		if _, err := rand.Read(fresh); err != nil {
@@ -49,19 +49,19 @@ func (o *Orchestrator) claimKey(ctx context.Context) ([]byte, error) {
 		}
 		s, err = secrets.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   claimKeySecretName,
-				Labels: map[string]string{LabelManagedBy: ManagedByValue},
+				Name:   name,
+				Labels: map[string]string{LabelManagedBy: m.cfg.Naming.ManagedBy},
 			},
 			Data: map[string][]byte{claimKeySecretKey: fresh},
 		}, metav1.CreateOptions{})
 		if apierrors.IsAlreadyExists(err) {
 			// A racing replica created it first — use theirs.
-			s, err = secrets.Get(ctx, claimKeySecretName, metav1.GetOptions{})
+			s, err = secrets.Get(ctx, name, metav1.GetOptions{})
 		}
 	}
 	if err != nil {
 		return nil, apperrors.Internal("kubernetes.claimKey", err)
 	}
-	o.installKey = s.Data[claimKeySecretKey]
-	return o.installKey, nil
+	m.installKey = s.Data[claimKeySecretKey]
+	return m.installKey, nil
 }

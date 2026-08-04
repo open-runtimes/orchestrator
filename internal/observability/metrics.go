@@ -382,38 +382,38 @@ func (m *Metrics) RecordAutoscalerScrapeError(ctx context.Context) {
 }
 
 // RecordPoolActivationStarted records an activation entering flight.
-func (m *Metrics) RecordPoolActivationStarted(ctx context.Context, id string) {
-	attrs := metric.WithAttributes(poolAttr(id))
+func (m *Metrics) RecordPoolActivationStarted(ctx context.Context, kind, id string) {
+	attrs := metric.WithAttributes(kindAttr(kind), poolAttr(id))
 	m.PoolActivations.Add(ctx, 1, attrs)
 	m.PoolActivationsActive.Add(ctx, 1, attrs)
 }
 
 // RecordPoolActivationFinished records an activation leaving flight with its
 // wall time (claim through serving).
-func (m *Metrics) RecordPoolActivationFinished(ctx context.Context, id string, success bool, durationSeconds float64) {
-	m.PoolActivationsActive.Add(ctx, -1, metric.WithAttributes(poolAttr(id)))
-	m.PoolActivationDuration.Record(ctx, durationSeconds, metric.WithAttributes(poolAttr(id), successAttr(success)))
+func (m *Metrics) RecordPoolActivationFinished(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
+	m.PoolActivationsActive.Add(ctx, -1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
+	m.PoolActivationDuration.Record(ctx, durationSeconds, metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
 }
 
 // RecordPoolConflict records a lost claim race.
-func (m *Metrics) RecordPoolConflict(ctx context.Context, id string) {
-	m.PoolClaimConflicts.Add(ctx, 1, metric.WithAttributes(poolAttr(id)))
+func (m *Metrics) RecordPoolConflict(ctx context.Context, kind, id string) {
+	m.PoolClaimConflicts.Add(ctx, 1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
 }
 
 // RecordPoolPoisoned records a pod poisoned by a failed activation.
-func (m *Metrics) RecordPoolPoisoned(ctx context.Context, id string) {
-	m.PoolPoisoned.Add(ctx, 1, metric.WithAttributes(poolAttr(id)))
+func (m *Metrics) RecordPoolPoisoned(ctx context.Context, kind, id string) {
+	m.PoolPoisoned.Add(ctx, 1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
 }
 
 // RecordPoolBurst records an activation arriving at an empty pool and the
 // policy that decided its fate.
-func (m *Metrics) RecordPoolBurst(ctx context.Context, id, policy string) {
-	m.PoolBurst.Add(ctx, 1, metric.WithAttributes(poolAttr(id), policyAttr(policy)))
+func (m *Metrics) RecordPoolBurst(ctx context.Context, kind, id, policy string) {
+	m.PoolBurst.Add(ctx, 1, metric.WithAttributes(kindAttr(kind), poolAttr(id), policyAttr(policy)))
 }
 
 // RecordPoolCapacity records a pool's warm/claimed pod counts.
-func (m *Metrics) RecordPoolCapacity(ctx context.Context, id string, warm, claimed int64) {
-	attrs := metric.WithAttributes(poolAttr(id))
+func (m *Metrics) RecordPoolCapacity(ctx context.Context, kind, id string, warm, claimed int64) {
+	attrs := metric.WithAttributes(kindAttr(kind), poolAttr(id))
 	m.PoolWarm.Record(ctx, warm, attrs)
 	m.PoolClaimed.Record(ctx, claimed, attrs)
 }

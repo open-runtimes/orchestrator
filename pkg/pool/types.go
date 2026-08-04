@@ -1,6 +1,8 @@
-// Package pool defines the warm-pool domain: config-declared fleets of a
-// runtime image kept idle, onto which an activation late-binds a payload —
-// claim + inject + exec instead of schedule + pull + start. See
+// Package pool defines the warm-pool domain: config-declared pools of a
+// runtime image kept idle, onto which a claim late-binds a payload — claim +
+// inject + exec instead of schedule + pull + start. The Pool declaration is
+// shared by every consumer of standing warm capacity (deployment-pool
+// activations, sandboxes); Activation is the deployment-pool one. See
 // docs/pools.md.
 package pool
 
@@ -13,28 +15,41 @@ import (
 	"orchestrator/pkg/volume"
 )
 
-// Pool is the service-config schema (loaded at startup from POOLS_JSON, which
-// Helm renders from a `pools:` list). A pool is standing warm capacity —
-// adding, resizing, or removing one is a config change + rollout, not a
-// runtime call, so the API over pools is read + activate only.
+// Pool is the service-config schema for one warm pool (Helm renders it from a
+// `pools:` list). A pool is standing capacity — adding, resizing, or removing
+// one is a config change plus a rollout, not a runtime call, so the API over
+// pools is read-only.
 type Pool struct {
-	ID           string             `json:"id"`
-	Image        string             `json:"image"`
-	RuntimeClass string             `json:"runtimeClass,omitempty"` // isolation tier: runc (default) | gvisor | kata (K8s only). A pool dimension — warm pods are runtime-fixed at creation, so warm fleets are keyed by (image, runtimeClass).
-	Size         int                `json:"size"`                   // warm pods kept ready
-	CPU          float64            `json:"cpu"`
-	Memory       int                `json:"memory"`
-	Port         int                `json:"port"` // required — the container port activations serve HTTP on
-	Probes       *deployment.Probes `json:"probes,omitempty"`
-	Environment  map[string]string  `json:"environment,omitempty"`
-	Meta         map[string]string  `json:"meta,omitempty"`
-	Volumes      []volume.Volume    `json:"volumes,omitempty"` // existing K8s PVCs mounted into every warm pod in the fleet
+	ID    string `json:"id"`
+	Image string `json:"image"`
+	// Command is the payload a claim execs when the request does not name one.
+	// Sandbox pools set it (their image serves the sandbox contract);
+	// activations late-bind their own command instead.
+	Command string `json:"command,omitempty"`
+	// RuntimeClass is the isolation tier: runc (default) | gvisor | kata. A
+	// pool dimension, not a per-claim field — warm pods are runtime-fixed at
+	// creation, so warm pools are keyed by (image, runtimeClass).
+	RuntimeClass string            `json:"runtimeClass,omitempty"`
+	Size         int               `json:"size"` // warm pods kept ready
+	CPU          float64           `json:"cpu"`
+	Memory       int               `json:"memory"`
+	Port         int               `json:"port"` // required — the container port the claimed workload serves HTTP on
+	Environment  map[string]string `json:"environment,omitempty"`
+	Volumes      []volume.Volume   `json:"volumes,omitempty"` // existing K8s PVCs mounted into every warm pod in the pool
 
-	// Burst controls what happens when an activation arrives and no warm pod
-	// is free: "cold" (default) → create a pod on demand and pay the cold
-	// start; "reject" → 429. Always logged either way.
+	// Burst controls what happens when a claim arrives and no warm pod is
+	// free: "cold" (default) → create a pod on demand and pay the cold start;
+	// "reject" → 429. Always logged either way.
 	Burst string `json:"burst,omitempty"`
+
+	// MaxIdleSeconds caps a claim's requested idle timeout (0 = uncapped).
+	// Sandbox pools want one: an abandoned sandbox holds a warm pod hostage.
+	MaxIdleSeconds int `json:"maxIdleSeconds,omitempty"`
 }
+
+// MetricKind labels this consumer's warm-pool telemetry, distinguishing
+// deployment pools from sandbox pools in the shared pool_* series.
+const MetricKind = "pool"
 
 // Burst policies, owned by the claim protocol that implements them.
 const (
@@ -44,12 +59,18 @@ const (
 
 // LoadPools parses the POOLS_JSON config value.
 func LoadPools(raw string) ([]Pool, error) {
+	return Load(raw, "POOLS_JSON")
+}
+
+// Load parses a pool list from config. source names the environment variable
+// it came from, so a malformed value points at its own knob.
+func Load(raw, source string) ([]Pool, error) {
 	if raw == "" {
 		return nil, nil
 	}
 	var pools []Pool
 	if err := json.Unmarshal([]byte(raw), &pools); err != nil {
-		return nil, fmt.Errorf("invalid POOLS_JSON: %w", err)
+		return nil, fmt.Errorf("invalid %s: %w", source, err)
 	}
 	seen := make(map[string]bool, len(pools))
 	for i := range pools {
@@ -77,6 +98,9 @@ func LoadPools(raw string) ([]Pool, error) {
 			return nil, fmt.Errorf("pool %q: runtimeClass must be one of %q, %q, %q",
 				p.ID, deployment.RuntimeClassRunc, deployment.RuntimeClassGvisor, deployment.RuntimeClassKata)
 		}
+		if p.MaxIdleSeconds < 0 {
+			return nil, fmt.Errorf("pool %q: maxIdleSeconds must be non-negative", p.ID)
+		}
 		for j, v := range p.Volumes {
 			if err := v.Validate(fmt.Sprintf("pool %q volumes[%d]", p.ID, j)); err != nil {
 				return nil, err
@@ -84,6 +108,15 @@ func LoadPools(raw string) ([]Pool, error) {
 		}
 	}
 	return pools, nil
+}
+
+// ByID indexes a pool list for lookup by the API and the backends.
+func ByID(pools []Pool) map[string]*Pool {
+	byID := make(map[string]*Pool, len(pools))
+	for i := range pools {
+		byID[pools[i].ID] = &pools[i]
+	}
+	return byID
 }
 
 // Activation is the runtime request late-bound onto a warm pod.

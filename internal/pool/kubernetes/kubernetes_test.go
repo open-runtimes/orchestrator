@@ -8,6 +8,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/proxy"
+	"orchestrator/internal/warm"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
 	"strings"
@@ -19,7 +20,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	krand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	gatewayfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
@@ -58,7 +58,7 @@ func (f *fakeClaims) Claim(_ context.Context, podIP, token string, req *proxy.Cl
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.conflict[podIP] {
-		return errClaimConflict
+		return claim.ErrConflict
 	}
 	if f.poison[podIP] {
 		return &claim.Poison{Msg: "artifacts failed: boom"}
@@ -91,15 +91,6 @@ func (f *fakeClaims) Requests(_ context.Context, podIP string) (int64, error) {
 func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake.Clientset, *fakeClaims) {
 	t.Helper()
 	cs := fake.NewClientset()
-	// The fake tracker does not resolve GenerateName; do it the way the API
-	// server would so createWarmPod works.
-	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		pod := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
-		if pod.Name == "" && pod.GenerateName != "" {
-			pod.Name = pod.GenerateName + krand.String(5)
-		}
-		return false, nil, nil
-	})
 	cfg := Config{
 		SidecarImage:   "sidecar:latest",
 		ShimImage:      "shim:latest",
@@ -110,14 +101,30 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 		Pools:          pools,
 	}
 	cfg.applyDefaults()
-	o := wireOrchestrator(cs, gatewayfake.NewClientset(), cfg)
 	claims := newFakeClaims()
-	o.claims = claims
-	o.installKey = testInstallKey // normally get-or-created from the pool-claim-key Secret on Start
+	o := wireOrchestrator(cs, gatewayfake.NewClientset(), cfg, func(w *warm.Config) {
+		w.Client = claims
+		w.Poll = time.Millisecond
+		w.ColdWait = time.Second
+	})
+	// Normally get-or-created from the pool-claim-key Secret on Start.
+	seedClaimKey(t, cs)
 	o.poll = time.Millisecond
-	o.coldWait = time.Second
 	o.serveWait = 50 * time.Millisecond
 	return o, cs, claims
+}
+
+// seedClaimKey pre-creates the claim-key Secret with a fixed key, so derived
+// claim tokens are deterministic.
+func seedClaimKey(t *testing.T, cs *fake.Clientset) {
+	t.Helper()
+	_, err := cs.CoreV1().Secrets(testNS).Create(t.Context(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: naming.SecretName, Namespace: testNS},
+		Data:       map[string][]byte{"key": testInstallKey},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("seed claim key: %v", err)
+	}
 }
 
 // warmPodFixture is a running, warm-ready pool pod as the replenisher would
@@ -126,9 +133,12 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 func warmPodFixture(poolID, name, ip string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   testNS,
-			Labels:      poolLabels(poolID),
+			Name:      name,
+			Namespace: testNS,
+			Labels: map[string]string{
+				LabelManagedBy: ManagedByValue,
+				LabelPoolID:    poolID,
+			},
 			Annotations: map[string]string{},
 		},
 		Status: corev1.PodStatus{
@@ -138,7 +148,7 @@ func warmPodFixture(poolID, name, ip string) *corev1.Pod {
 				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
 			},
 			ContainerStatuses: []corev1.ContainerStatus{{
-				Name:  ContainerWorkload,
+				Name:  warm.ContainerWorkload,
 				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
 			}},
 		},
@@ -164,7 +174,7 @@ func claimedPodFixture(poolID, name, ip, activationID string, act pool.Activatio
 
 func setWorkloadTerminated(pod *corev1.Pod, exitCode int32) {
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
-		Name: ContainerWorkload,
+		Name: warm.ContainerWorkload,
 		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
 			ExitCode: exitCode,
 		}},
@@ -392,7 +402,7 @@ func TestActivate_UnknownPoolNotFound(t *testing.T) {
 func TestStatusFromPod_Derivation(t *testing.T) {
 	t.Parallel()
 	o, _, _ := newTestOrchestrator(t, testPool("web"))
-	web := o.pools["web"]
+	web := o.warm.Pool("web")
 
 	serving := claimedPodFixture("web", "pod-a", "10.0.0.1", "act1", pool.Activation{Command: "serve"})
 
@@ -521,91 +531,6 @@ func TestDeactivate_TearsDownEverything(t *testing.T) {
 	}
 	if _, err := o.gateway.GatewayV1().HTTPRoutes(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Errorf("want the route deleted, got %v", err)
-	}
-}
-
-// --- secret material at rest (docs/operations.md) ---
-
-func TestDeriveClaimToken_DeterministicPerPod(t *testing.T) {
-	t.Parallel()
-	a1 := deriveClaimToken(testInstallKey, "pool-std-aaaaa")
-	a2 := deriveClaimToken(testInstallKey, "pool-std-aaaaa")
-	b := deriveClaimToken(testInstallKey, "pool-std-bbbbb")
-	other := deriveClaimToken([]byte("another-install-key-32-bytes-xx!"), "pool-std-aaaaa")
-	if a1 != a2 {
-		t.Error("token must be deterministic for (key, podName)")
-	}
-	if a1 == b {
-		t.Error("tokens must differ across pods")
-	}
-	if a1 == other {
-		t.Error("tokens must differ across install keys")
-	}
-	if len(a1) != 64 { // hex(HMAC-SHA256)
-		t.Errorf("token length: want 64 hex chars, got %d", len(a1))
-	}
-}
-
-func TestClaimKey_GetOrCreateIdempotent(t *testing.T) {
-	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, testPool("std"))
-	o.installKey = nil // exercise the get-or-create path
-
-	first, err := o.claimKey(t.Context())
-	if err != nil {
-		t.Fatalf("claimKey: %v", err)
-	}
-	if len(first) != claimKeyBytes {
-		t.Fatalf("key length: want %d, got %d", claimKeyBytes, len(first))
-	}
-	secret, err := cs.CoreV1().Secrets(testNS).Get(t.Context(), claimKeySecretName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("expected the pool-claim-key Secret: %v", err)
-	}
-	if string(secret.Data[claimKeySecretKey]) != string(first) {
-		t.Error("cached key must match the stored Secret")
-	}
-
-	// A second orchestrator against the same cluster adopts the same key.
-	o2 := wireOrchestrator(cs, o.gateway, o.cfg)
-	second, err := o2.claimKey(t.Context())
-	if err != nil {
-		t.Fatalf("claimKey (second): %v", err)
-	}
-	if string(second) != string(first) {
-		t.Error("get-or-create must be idempotent across replicas")
-	}
-}
-
-func TestCreateWarmPod_InjectsDerivedTokenNoAnnotation(t *testing.T) {
-	t.Parallel()
-	o, cs, _ := newTestOrchestrator(t, testPool("std"))
-
-	created, err := o.createWarmPod(t.Context(), o.pools["std"])
-	if err != nil {
-		t.Fatalf("createWarmPod: %v", err)
-	}
-	pod := getPod(t, cs, created.Name)
-	if _, ok := pod.Annotations["pool.claim-token"]; ok {
-		t.Error("claim token must never be annotated on the pod")
-	}
-	want := deriveClaimToken(testInstallKey, pod.Name)
-	found := false
-	for _, c := range pod.Spec.InitContainers {
-		if c.Name != ContainerProxy {
-			continue
-		}
-		for _, env := range c.Env {
-			if env.Name == proxy.EnvClaimToken {
-				found = true
-				if env.Value != want {
-					t.Errorf("POOL_CLAIM_TOKEN: want the derived token, got %q", env.Value)
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("sidecar must still receive POOL_CLAIM_TOKEN env")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/warm"
 	"orchestrator/pkg/pool"
 	"strconv"
 	"time"
@@ -143,5 +144,26 @@ func (c *Config) applyDefaults() {
 	}
 	if c.LeaderElection.Enabled {
 		c.LeaderElection.ApplyDefaults(defaultLeaderLeaseName)
+	}
+}
+
+// warmConfig projects the pool config onto the warm-pool manager's — the
+// images, hardening, placement, and GC knobs it shares with every other warm
+// consumer.
+func (c *Config) warmConfig() warm.Config {
+	return warm.Config{
+		Namespace:              c.Namespace,
+		SidecarImage:           c.SidecarImage,
+		ShimImage:              c.ShimImage,
+		SidecarImagePullPolicy: c.SidecarImagePullPolicy,
+		WorkerImagePullPolicy:  c.WorkerImagePullPolicy,
+		RunAsUser:              c.RunAsUser,
+		Overcommit:             c.Overcommit,
+		Tolerations:            c.Tolerations,
+		NodeSelector:           c.NodeSelector,
+		RuntimeClasses:         c.RuntimeClasses,
+		OrphanTTL:              c.OrphanTTL,
+		Naming:                 naming,
+		Metrics:                c.Metrics,
 	}
 }

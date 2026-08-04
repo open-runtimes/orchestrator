@@ -11,29 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestBuildWarmPod_RuntimeClass(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig()
-	cfg.RuntimeClasses[deployment.RuntimeClassKata] = "kata-qemu"
-
-	for tier, want := range map[string]string{
-		"":                            "",
-		deployment.RuntimeClassRunc:   "",
-		deployment.RuntimeClassGvisor: "gvisor",
-		deployment.RuntimeClassKata:   "kata-qemu",
-	} {
-		p := mapperPool()
-		p.RuntimeClass = tier
-		got := buildWarmPod(p, cfg, "pool-std-1", "token").Spec.RuntimeClassName
-		switch {
-		case want == "" && got != nil:
-			t.Errorf("tier %q: want no runtimeClassName, got %q", tier, *got)
-		case want != "" && (got == nil || *got != want):
-			t.Errorf("tier %q: want runtimeClassName %q, got %v", tier, want, got)
-		}
-	}
-}
-
 func TestLoadConfigFromEnv_RuntimeClasses(t *testing.T) {
 	t.Setenv("KUBE_RUNTIME_CLASSES", "gvisor=runsc")
 	cfg, err := LoadConfigFromEnv()
@@ -68,7 +45,7 @@ func TestStart_MissingRuntimeClassFails(t *testing.T) {
 	}, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create RuntimeClass: %v", err)
 	}
-	if err := o.checkRuntimeClasses(ctx); err != nil {
+	if err := o.warm.Start(ctx); err != nil {
 		t.Errorf("want ok, got %v", err)
 	}
 }

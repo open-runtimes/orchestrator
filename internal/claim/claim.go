@@ -1,9 +1,10 @@
-// Package claim owns the warm-pod claim protocol shared by the pool
-// backends: iterate the free warm units, win one via the sidecar claim POST
-// (the POST is the claim — the sidecar is the serialization point), fall to
-// the pool's burst policy on exhaustion, and retry once when a cold-created
-// unit is stolen by a racing activation. Backends stay inventories: how to
-// list, create, and address warm units.
+// Package claim owns the warm-unit claim protocol shared by every consumer of
+// standing warm capacity — pool activations, sandboxes, deployment cold
+// starts: iterate the free warm units, win one via the sidecar claim POST (the
+// POST is the claim — the sidecar is the serialization point), fall to the
+// fleet's burst policy on exhaustion, and retry once when a cold-created unit
+// is stolen by a racing claim. Backends stay inventories: how to list, create,
+// and address warm units.
 package claim
 
 import (

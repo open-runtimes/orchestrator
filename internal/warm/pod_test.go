@@ -1,14 +1,18 @@
-package kubernetes
+package warm
 
 import (
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/pool"
 	"testing"
 
+	"orchestrator/internal/kube"
+	"orchestrator/pkg/deployment"
+
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
-// mapperPool is testPool plus the resource and env fields buildWarmPod maps.
+// mapperPool is testPool plus the resource and env fields buildPod maps.
 func mapperPool() *pool.Pool {
 	p := testPool("std")
 	p.CPU = 0.5
@@ -17,42 +21,46 @@ func mapperPool() *pool.Pool {
 	return &p
 }
 
-func testConfig() Config {
-	cfg := Config{SidecarImage: "sidecar:latest", ShimImage: "shim:latest", RunAsUser: 65532}
-	cfg.applyDefaults()
-	return cfg
+// testBuilder is a Manager wired for pod-shape assertions only.
+func testBuilder(t *testing.T, tune ...func(*Config)) *Manager {
+	t.Helper()
+	cfg := Config{SidecarImage: "sidecar:latest", ShimImage: "shim:latest", RunAsUser: 65532, Naming: testNaming}
+	for _, f := range tune {
+		f(&cfg)
+	}
+	return New(fake.NewClientset(), nil, cfg)
 }
 
-func TestBuildWarmPod_Shape(t *testing.T) {
+func TestBuildPod_Shape(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(mapperPool(), testConfig(), "pool-std-aabbc", "aabbccdd")
+	pod := testBuilder(t).buildPod(mapperPool(), "pool-std-aabbc", "aabbccdd")
 
-	if warm.Name != "pool-std-aabbc" {
-		t.Errorf("want the caller-chosen name (the claim token derives from it), got %q", warm.Name)
+	if pod.Name != "pool-std-aabbc" {
+		t.Errorf("want the caller-chosen name (the claim token derives from it), got %q", pod.Name)
 	}
-	if warm.Labels[LabelManagedBy] != ManagedByValue || warm.Labels[LabelPoolID] != "std" {
-		t.Errorf("labels: got %v", warm.Labels)
+	if pod.Labels[LabelManagedBy] != testNaming.ManagedBy || pod.Labels[testNaming.Pool] != "std" {
+		t.Errorf("labels: got %v", pod.Labels)
 	}
-	if warm.Labels[LabelActivation] != "" {
+	if pod.Labels[testNaming.Claim] != "" {
 		t.Error("a warm pod must not carry an activation label")
 	}
-	if len(warm.Annotations) != 0 {
-		t.Errorf("a warm pod must carry no annotations (tokens are derived, never stored): got %v", warm.Annotations)
+	if len(pod.Annotations) != 0 {
+		t.Errorf("a warm pod must carry no annotations (tokens are derived, never stored): got %v", pod.Annotations)
 	}
-	if warm.Spec.RestartPolicy != corev1.RestartPolicyNever {
-		t.Errorf("restart policy: want Never, got %s", warm.Spec.RestartPolicy)
+	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Errorf("restart policy: want Never, got %s", pod.Spec.RestartPolicy)
 	}
-	if warm.Spec.AutomountServiceAccountToken == nil || *warm.Spec.AutomountServiceAccountToken {
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
 		t.Error("service account token must not be mounted")
 	}
-	if len(warm.Spec.Volumes) != 2 {
-		t.Fatalf("want workspace + tmp volumes, got %v", warm.Spec.Volumes)
+	if len(pod.Spec.Volumes) != 2 {
+		t.Fatalf("want workspace + tmp volumes, got %v", pod.Spec.Volumes)
 	}
 
-	if len(warm.Spec.InitContainers) != 2 {
-		t.Fatalf("want 2 init containers, got %d", len(warm.Spec.InitContainers))
+	if len(pod.Spec.InitContainers) != 2 {
+		t.Fatalf("want 2 init containers, got %d", len(pod.Spec.InitContainers))
 	}
-	install := warm.Spec.InitContainers[0]
+	install := pod.Spec.InitContainers[0]
 	if install.Name != ContainerShimInstall || install.Image != "shim:latest" {
 		t.Errorf("shim-install: got %s/%s", install.Name, install.Image)
 	}
@@ -63,7 +71,7 @@ func TestBuildWarmPod_Shape(t *testing.T) {
 		t.Error("shim-install must be a plain init container (run to completion)")
 	}
 
-	sidecar := warm.Spec.InitContainers[1]
+	sidecar := pod.Spec.InitContainers[1]
 	if sidecar.Name != ContainerProxy || sidecar.Image != "sidecar:latest" {
 		t.Errorf("proxy: got %s/%s", sidecar.Name, sidecar.Image)
 	}
@@ -85,10 +93,10 @@ func TestBuildWarmPod_Shape(t *testing.T) {
 		t.Errorf("proxy readiness probe (the warm-ready gate): got %+v", probe)
 	}
 
-	if len(warm.Spec.Containers) != 1 {
-		t.Fatalf("want 1 container, got %d", len(warm.Spec.Containers))
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("want 1 container, got %d", len(pod.Spec.Containers))
 	}
-	workload := warm.Spec.Containers[0]
+	workload := pod.Spec.Containers[0]
 	if workload.Name != ContainerWorkload || workload.Image != "runtime:latest" {
 		t.Errorf("workload: got %s/%s", workload.Name, workload.Image)
 	}
@@ -106,20 +114,21 @@ func TestBuildWarmPod_Shape(t *testing.T) {
 	}
 }
 
-func TestBuildWarmPod_Tolerations(t *testing.T) {
+func TestBuildPod_Tolerations(t *testing.T) {
 	t.Parallel()
-	cfg := testConfig()
-	cfg.Tolerations = []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}
-	got := buildWarmPod(mapperPool(), cfg, "pool-std-x", "tok").Spec.Tolerations
+	builder := testBuilder(t, func(c *Config) {
+		c.Tolerations = []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}
+	})
+	got := builder.buildPod(mapperPool(), "pool-std-x", "tok").Spec.Tolerations
 	if len(got) != 1 || got[0].Key != "workload" {
 		t.Errorf("tolerations: want workload=edge-builds:NoSchedule, got %+v", got)
 	}
 }
 
-func TestBuildWarmPod_Resources(t *testing.T) {
+func TestBuildPod_Resources(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(mapperPool(), testConfig(), "pool-std-x", "tok")
-	res := warm.Spec.Containers[0].Resources
+	pod := testBuilder(t).buildPod(mapperPool(), "pool-std-x", "tok")
+	res := pod.Spec.Containers[0].Resources
 
 	if got := res.Requests.Cpu().MilliValue(); got != 500 {
 		t.Errorf("cpu request: want 500m, got %dm", got)
@@ -133,17 +142,17 @@ func TestBuildWarmPod_Resources(t *testing.T) {
 	}
 
 	// A bare pool keeps no workload resources at all.
-	bare := buildWarmPod(&pool.Pool{ID: "bare", Image: "img"}, testConfig(), "pool-bare-x", "tok")
+	bare := testBuilder(t).buildPod(&pool.Pool{ID: "bare", Image: "img"}, "pool-bare-x", "tok")
 	bareRes := bare.Spec.Containers[0].Resources
 	if len(bareRes.Requests) != 0 || len(bareRes.Limits) != 0 {
 		t.Errorf("bare pool resources: got %+v", bareRes)
 	}
 }
 
-func TestBuildWarmPod_SecurityFloor(t *testing.T) {
+func TestBuildPod_SecurityFloor(t *testing.T) {
 	t.Parallel()
-	warm := buildWarmPod(mapperPool(), testConfig(), "pool-std-x", "tok")
-	containers := append(warm.Spec.InitContainers, warm.Spec.Containers...)
+	pod := testBuilder(t).buildPod(mapperPool(), "pool-std-x", "tok")
+	containers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
 	for _, c := range containers {
 		sc := c.SecurityContext
 		if sc == nil {
@@ -163,6 +172,30 @@ func TestBuildWarmPod_SecurityFloor(t *testing.T) {
 		}
 		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 			t.Errorf("%s: want read-only rootfs", c.Name)
+		}
+	}
+}
+
+func TestBuildPod_RuntimeClass(t *testing.T) {
+	t.Parallel()
+	builder := testBuilder(t, func(c *Config) {
+		c.RuntimeClasses, _ = kube.ParseRuntimeClasses("kata=kata-qemu")
+	})
+
+	for tier, want := range map[string]string{
+		"":                            "",
+		deployment.RuntimeClassRunc:   "",
+		deployment.RuntimeClassGvisor: "gvisor",
+		deployment.RuntimeClassKata:   "kata-qemu",
+	} {
+		p := mapperPool()
+		p.RuntimeClass = tier
+		got := builder.buildPod(p, "pool-std-1", "token").Spec.RuntimeClassName
+		switch {
+		case want == "" && got != nil:
+			t.Errorf("tier %q: want no runtimeClassName, got %q", tier, *got)
+		case want != "" && (got == nil || *got != want):
+			t.Errorf("tier %q: want runtimeClassName %q, got %v", tier, want, got)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"orchestrator/internal/claim"
 	"strings"
 	"testing"
 )
@@ -55,10 +56,10 @@ func TestLoadPools_BurstDefaultsToCold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pools[0].Burst != BurstCold {
+	if pools[0].Burst != claim.BurstCold {
 		t.Errorf("default burst = %q, want cold", pools[0].Burst)
 	}
-	if pools[1].Burst != BurstReject {
+	if pools[1].Burst != claim.BurstReject {
 		t.Errorf("explicit burst = %q, want reject preserved", pools[1].Burst)
 	}
 }

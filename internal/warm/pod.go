@@ -1,4 +1,4 @@
-package kubernetes
+package warm
 
 import (
 	"crypto/rand"
@@ -17,21 +17,6 @@ import (
 )
 
 const (
-	LabelManagedBy  = "managed-by"
-	LabelPoolID     = "pool.id"
-	LabelActivation = "pool.activation"
-	ManagedByValue  = "deployments-service"
-
-	// AnnotationActivationSpec carries the accepted pool.Activation JSON on
-	// claimed pods — the Status reconstruction source. The callback signing
-	// key is stripped before writing (see bindPod); claim tokens are derived,
-	// never annotated (see token.go).
-	AnnotationActivationSpec = "pool.activation-spec"
-
-	ContainerShimInstall = "shim-install"
-	ContainerProxy       = "proxy"
-	ContainerWorkload    = "workload"
-
 	VolumeWorkspace = "workspace"
 	VolumeTmp       = "tmp"
 	workspacePath   = "/workspace"
@@ -44,26 +29,8 @@ const (
 	envSharedVolume = "SHARED_VOLUME_PATH"
 )
 
-// poolLabels are stamped on every warm pod.
-func poolLabels(poolID string) map[string]string {
-	return map[string]string{
-		LabelManagedBy: ManagedByValue,
-		LabelPoolID:    poolID,
-	}
-}
-
-// activationLabels are stamped on an activation's Service and HTTPRoute (the
-// claimed pod gains LabelActivation by patch instead).
-func activationLabels(poolID, activationID string) map[string]string {
-	return map[string]string{
-		LabelManagedBy:  ManagedByValue,
-		LabelPoolID:     poolID,
-		LabelActivation: activationID,
-	}
-}
-
-// randHex returns n random bytes hex-encoded (2n characters, RFC-1123 safe).
-func randHex(n int) (string, error) {
+// RandHex returns n random bytes hex-encoded (2n characters, RFC-1123 safe).
+func RandHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -71,7 +38,16 @@ func randHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// buildWarmPod maps a pool onto one warm pod, named pool-{id}-{suffix} (the
+// PoolLabels are stamped on every warm pod, and are the selector consumers
+// reuse for their own objects.
+func (m *Manager) PoolLabels(poolID string) map[string]string {
+	return map[string]string{
+		LabelManagedBy:    m.cfg.Naming.ManagedBy,
+		m.cfg.Naming.Pool: poolID,
+	}
+}
+
+// buildPod maps a pool onto one warm pod, named {prefix}-{id}-{suffix} (the
 // name is chosen by the caller — the claim token derives from it). All
 // containers share an emptyDir workspace:
 //
@@ -86,13 +62,14 @@ func randHex(n int) (string, error) {
 //
 // RestartPolicy Never: when the exec'd workload exits, the pod completes and
 // the kubelet SIGTERMs the sidecar — the pod is discarded, never reused.
-func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
+func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 	autoMount := false
 	podVolumes, _ := kube.PersistentVolumes(p.Volumes)
-	pod := &corev1.Pod{
+	cfg := m.cfg
+	warmPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
-			Labels: poolLabels(p.ID),
+			Labels: m.PoolLabels(p.ID),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyNever,
@@ -107,16 +84,16 @@ func buildWarmPod(p *pool.Pool, cfg Config, name, token string) *corev1.Pod {
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
-	// Isolation tier (docs/operations.md): a POOL dimension — warm pods
-	// are runtime-fixed at creation, so warm fleets are keyed by (image,
-	// sandbox). gvisor/kata stamp their mapped RuntimeClass; runc (the
+	// Isolation tier (docs/operations.md): a POOL dimension — warm pods are
+	// runtime-fixed at creation, so warm pools are keyed by (image,
+	// runtimeClass). gvisor/kata stamp their mapped RuntimeClass; runc (the
 	// default) stamps nothing. NOTE: replenishment only tops counts up — it
-	// does not replace existing warm pods on config drift, so a sandbox
-	// change applies to newly created pods only.
+	// does not replace existing warm pods on config drift, so a tier change
+	// applies to newly created pods only.
 	if rc := kube.RuntimeClassFor(cfg.RuntimeClasses, p.RuntimeClass); rc != "" {
-		pod.Spec.RuntimeClassName = &rc
+		warmPod.Spec.RuntimeClassName = &rc
 	}
-	return pod
+	return warmPod
 }
 
 // shimInstallContainer copies the shim binary into the shared workspace
@@ -186,7 +163,7 @@ func proxyResources() corev1.ResourceRequirements {
 }
 
 // workloadContainer is the pool image, entrypoint overridden to the installed
-// shim so the container idles until an activation execs the real payload.
+// shim so the container idles until a claim execs the real payload.
 func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
 	env := make([]corev1.EnvVar, 0, len(p.Environment))
 	for _, k := range slices.Sorted(maps.Keys(p.Environment)) {

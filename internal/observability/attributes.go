@@ -24,6 +24,7 @@ const (
 	attrDirection  = "direction"
 	attrDeployment = "deployment"
 	attrPool       = "pool"
+	attrKind       = "kind" // which warm-pool consumer: pool | sandbox
 	attrPolicy     = "policy"
 )
 
@@ -80,6 +81,10 @@ func directionAttr(direction string) attribute.KeyValue {
 
 func deploymentAttr(id string) attribute.KeyValue {
 	return attribute.String(attrDeployment, id)
+}
+
+func kindAttr(kind string) attribute.KeyValue {
+	return attribute.String(attrKind, kind)
 }
 
 func poolAttr(id string) attribute.KeyValue {

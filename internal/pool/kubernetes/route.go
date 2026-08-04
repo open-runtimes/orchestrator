@@ -48,7 +48,7 @@ func (o *Orchestrator) createActivationService(ctx context.Context, poolID, acti
 			}},
 		},
 	}
-	_, err := o.client.CoreV1().Services(o.namespace).Create(ctx, svc, metav1.CreateOptions{})
+	_, err := o.client.CoreV1().Services(o.cfg.Namespace).Create(ctx, svc, metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return apperrors.Internal("kubernetes.createService", err)
 	}
@@ -88,7 +88,7 @@ func (o *Orchestrator) createActivationRoute(ctx context.Context, poolID, activa
 			}},
 		},
 	}
-	_, err := o.gateway.GatewayV1().HTTPRoutes(o.namespace).Create(ctx, route, metav1.CreateOptions{})
+	_, err := o.gateway.GatewayV1().HTTPRoutes(o.cfg.Namespace).Create(ctx, route, metav1.CreateOptions{})
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return apperrors.Internal("kubernetes.createRoute", err)
 	}
@@ -99,14 +99,24 @@ func (o *Orchestrator) createActivationRoute(ctx context.Context, poolID, activa
 // tolerating already-gone objects (exec activations never had them).
 func (o *Orchestrator) deleteActivationObjects(ctx context.Context, activationID string) error {
 	if o.cfg.GatewayEnabled {
-		err := o.gateway.GatewayV1().HTTPRoutes(o.namespace).Delete(ctx, activationObjectName(activationID), metav1.DeleteOptions{})
+		err := o.gateway.GatewayV1().HTTPRoutes(o.cfg.Namespace).Delete(ctx, activationObjectName(activationID), metav1.DeleteOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return apperrors.Internal("kubernetes.deleteRoute", err)
 		}
 	}
-	err := o.client.CoreV1().Services(o.namespace).Delete(ctx, activationObjectName(activationID), metav1.DeleteOptions{})
+	err := o.client.CoreV1().Services(o.cfg.Namespace).Delete(ctx, activationObjectName(activationID), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return apperrors.Internal("kubernetes.deleteService", err)
 	}
 	return nil
+}
+
+// activationLabels are stamped on an activation's Service and HTTPRoute (the
+// claimed pod gains LabelActivation by patch instead).
+func activationLabels(poolID, activationID string) map[string]string {
+	return map[string]string{
+		LabelManagedBy:  ManagedByValue,
+		LabelPoolID:     poolID,
+		LabelActivation: activationID,
+	}
 }

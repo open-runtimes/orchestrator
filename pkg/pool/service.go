@@ -80,12 +80,12 @@ func (s *Service) Activate(ctx context.Context, poolID string, act *Activation) 
 	logger := slog.With("poolId", poolID, "activationId", act.ID)
 	start := time.Now()
 	if s.metrics != nil {
-		s.metrics.RecordPoolActivationStarted(ctx, poolID)
+		s.metrics.RecordPoolActivationStarted(ctx, MetricKind, poolID)
 	}
 	status, err := s.orchestrator.Activate(ctx, poolID, act)
 	if s.metrics != nil {
 		success := err == nil && status != nil && status.State != StateFailed
-		s.metrics.RecordPoolActivationFinished(ctx, poolID, success, time.Since(start).Seconds())
+		s.metrics.RecordPoolActivationFinished(ctx, MetricKind, poolID, success, time.Since(start).Seconds())
 	}
 	if err != nil {
 		logger.Error("Activation failed", "error", err)
