@@ -95,14 +95,19 @@ If artifact materialization fails the sandbox is `failed` with the reason, and i
 
 The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-ins buy durability:
 
-- **`artifacts`** — bulk in, at create time (above).
-- **`volumes`** — mount an existing Docker volume or K8s PVC, the same [schema](jobs.md#volumes) jobs and deployments use. Attach-only: the orchestrator never creates, sizes, or deletes the storage.
+- **`artifacts`** — bulk in, per sandbox, at create time (above).
+- **`volumes`** — an existing Docker volume or K8s PVC, the same [schema](jobs.md#volumes) jobs and deployments use. Attach-only: the orchestrator never creates, sizes, or deletes the storage.
+
+**`volumes` is a pool dimension, not a per-sandbox field** — the same constraint as [`runtimeClass`](#isolation), and for the same reason. A warm pod is already running when you claim it, and its mounts were fixed when it was created; the claim protocol late-binds a command, environment, and artifacts, but it cannot attach storage to a live pod. So the volume is declared on the pool and mounted into every warm pod in that fleet:
 
 ```json
-{"pool": "py", "volumes": [{"source": "agent-scratch", "path": "/data"}]}
+// operator config, not an API call
+{"id": "py", "image": "open-runtimes/sandbox-python:3.12", "volumes": [{"source": "agent-scratch", "path": "/data"}]}
 ```
 
-Nothing is checkpointed and there is no suspend/resume — a sandbox is either running or gone. Anything worth keeping goes in a volume, or gets read out through `/files` before teardown.
+Want per-sandbox storage? Declare a pool per storage shape. The alternative — accepting `volumes` on the create call and cold-starting a pod for it — is what `agent-sandbox`'s `SandboxClaim` does ("Specifying this field forces a cold start because warm pool pods will not have these volumes"), and it is rejected here for now: it silently turns a sub-second create into a slow one, which is a bad thing to do quietly.
+
+Nothing is checkpointed and there is no suspend/resume — a sandbox is either running or gone. Anything worth keeping goes in a pool volume, or gets read out through `/files` before teardown.
 
 ## Isolation
 
@@ -201,8 +206,8 @@ This is the same topology as agent-sandbox's Sandbox Router — a shared edge ke
 
 What the broker actually requires is small: an opaque `key string` and a `capacity` with `Target(ctx) (*url.URL, error)` and `Raise(ctx) error` (`broker.go:40-46`). A `SandboxActivator` supplies both trivially:
 
-- **Host → id needs no lookup.** With `{id}.{sandbox domain}`, the leading DNS label *is* the sandbox id. Cheaper than either existing edge — no `Resolver` scan, no informer read, no resolve cache (`activator.go:67-84` becomes unnecessary).
-- **`Target`** is `revisionCapacity.Target` with a different label selector: list pods for the sandbox id, take a ready one. `readyPodTarget`, `podDataTarget`, `probeCandidates`, and `probeReady` (`revision.go:197-266`) are reusable as-is — including the direct-sidecar-probe trick that beats kubelet readiness propagation, which matters for a sub-second claim.
+- **Host → token needs no lookup.** With `{token}.{sandbox domain}`, the leading DNS label *is* the [capability token](#the-url-is-a-capability) — never the caller-chosen `id`, which is guessable and must never be addressable. Cheaper than either existing edge: no `Resolver` scan, no id→token indirection, no resolve cache (`activator.go:67-84` becomes unnecessary).
+- **`Target`** is `revisionCapacity.Target` with a different label selector: list pods carrying that token, take a ready one. `readyPodTarget`, `podDataTarget`, `probeCandidates`, and `probeReady` (`revision.go:197-266`) are reusable as-is — including the direct-sidecar-probe trick that beats kubelet readiness propagation, which matters for a sub-second claim.
 - **`Raise` is a no-op.** A sandbox has no scale-from-zero: it is a claimed pod, and if the pod is gone the sandbox is gone. This dissolves the "does being on the data path conflict with scale-from-zero" worry — there is no raise to conflict with. Holding still earns its keep during `creating` (the pod exists, artifacts are materializing), so `hold` should be a few seconds rather than the deployments `StartTimeout` of 300s.
 
 **Use `broker.sync` only.** The async path is deployment-typed — `async` takes a `*deployment.Request` for `spec.Callback`/`spec.TimeoutSeconds`, and `dispatchResponse` hardcodes the `orchestrator.deployment.response` event type, the `deploymentId` key, and `source = "orchestrator/deployments"` (`broker.go:121,199,247`). Generalizing that means parameterizing the callback/event triple, and there is no reason to: async exec belongs to the image's contract now, not ours. Sync-only also keeps file uploads streaming through `httputil.ReverseProxy` (`broker.go:326`) rather than hitting the async path's 10 MiB buffer.
@@ -246,12 +251,16 @@ Breaking, and cheap now:
 | Env | `KUBE_SANDBOX_RUNTIME_CLASSES` | `KUBE_RUNTIME_CLASSES` |
 | File | `internal/kube/sandbox.go` | `internal/kube/runtimeclass.go` |
 
-Call sites: `pkg/deployment/types.go:17,72-83`, `pkg/pool/types.go:22,75-78`, `internal/kube/sandbox.go`, `internal/deployment/{docker,kubernetes}`, `internal/pool/kubernetes`, `charts/orchestrator`, `docs/{deployments,operations}.md`, `UBIQUITOUS_LANGUAGE.md:139`. Mechanical, and it deletes the ambiguity rather than documenting around it.
+Call sites: `pkg/deployment/types.go:17,72-83`, `pkg/pool/types.go:22,75-78`, `internal/kube/sandbox.go`, `internal/deployment/{docker,kubernetes}`, `internal/pool/kubernetes`, `charts/orchestrator`, `docs/{deployments,operations}.md`, `UBIQUITOUS_LANGUAGE.md:139`.
+
+**The wire field is serialized in four places, not one.** `pkg/deployment/types.go` carries the public `Request.Sandbox` (`:17`) *and* a shadow copy in `requestJSON` (`:132`), plus the two hand-written halves that move values between them — `fromRaw` (`:182`) and `MarshalJSON` (`:217`). Miss any of the three and the failure is quiet in the worst way: a `runtimeClass` request parses fine and silently drops its isolation setting, so the workload runs on the shared host kernel while the caller believes it asked for gVisor. Change all four together, and add a round-trip test asserting the tier survives marshal→unmarshal.
+
+That hazard is itself an argument for the [codec extraction](#the-shared-engine): the shadow-struct pattern is duplicated across `pkg/deployment` and `pkg/pool`, so every field either package adds carries the same four-place obligation.
 
 ### Deliberately out of scope
 
-**Suspend/resume.** `agent-sandbox` makes this first-class (`operatingMode: Running|Suspended` — delete the pod, keep the CR, Service, and PVCs). Right feature eventually, wrong one now: it requires owning per-sandbox PVC lifecycle, quota, and cleanup, and a resume cannot use warm-pool claiming, so it needs a second, slower creation path. Ephemeral-plus-attachable-volumes covers the agent use case.
+**Suspend/resume.** `agent-sandbox` makes this first-class (`operatingMode: Running|Suspended` — delete the pod, keep the CR, Service, and PVCs). Right feature eventually, wrong one now: it requires owning per-sandbox PVC lifecycle, quota, and cleanup, and a resume cannot use warm-pool claiming, so it needs a second, slower creation path. Ephemeral workspaces plus pool-level volumes cover the agent use case.
 
-**Per-sandbox managed storage.** Same reasoning — `volumes` attaches storage whose lifecycle someone else owns, which is exactly why it is cheap.
+**Per-sandbox managed storage.** Same reasoning, plus the warm-pod constraint: pool `volumes` attach storage whose lifecycle someone else owns, which is exactly why they are cheap, and a live pod's mounts cannot be changed at claim time regardless.
 
 **A sandbox network policy.** Untrusted code with default-open egress is the real exposure, and we have no equivalent to agent-sandbox's managed default-deny NetworkPolicy (`docs/security/threat_model.md`). A genuine gap, but a platform concern spanning pools and deployments too — its own change, not this one.
