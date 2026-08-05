@@ -138,20 +138,21 @@ Each pool keeps `size` pods warm at all times; claimed pods are replaced off the
 [Sandboxes](sandboxes.md) are live workspaces created from their own warm pools, reached at their own hostnames. Three pieces of operator config:
 
 ```yaml
-deployments:
-  sandboxes:
-    domain: sandboxes.example.com   # needs a wildcard DNS record: *.sandboxes.example.com
-    pools:
-      - id: py
-        image: ghcr.io/open-runtimes/sandbox:0.1.0   # must serve the sandbox contract
-        command: /usr/local/bin/sandbox              # the image's entrypoint; the claim execs it
-        port: 3000
-        size: 4
-        runtimeClass: gvisor       # untrusted code is the expected workload here
-        maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod
-    proxy:
-      enabled: true                # the wildcard data plane every sandbox request passes through
+sandboxes:
+  domain: sandboxes.example.com   # needs a wildcard DNS record: *.sandboxes.example.com
+  pools:
+    - id: py
+      image: ghcr.io/open-runtimes/sandbox:0.1.0   # must serve the sandbox contract
+      command: /usr/local/bin/sandbox              # the image's entrypoint; the claim execs it
+      port: 3000
+      size: 4
+      runtimeClass: gvisor       # untrusted code is the expected workload here
+      maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod
+  proxy:
+    enabled: true                # the wildcard data plane every sandbox request passes through
 ```
+
+`sandboxes` sits alongside `jobs` and `deployments` because a sandbox is a workload kind, not a deployments feature — but the API is served by the deployments service today, so `deployments.enabled` must be true as well. The chart fails the install if it is not, rather than rendering a proxy with nothing behind it.
 
 Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production the sandbox proxy is its own Deployment behind one wildcard `HTTPRoute` for `*.{domain}` — not a mode of the activator: it is permanently on the request path, reads pods only, and raises nothing. Scale it for sandbox traffic (`sandboxes.proxy.autoscaling`) rather than for cold starts.
 

@@ -136,14 +136,13 @@ The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-in
 
 ```yaml
 # values.yaml — operator config, not an API call
-deployments:
-  sandboxes:
-    pools:
-      - id: py
-        image: ghcr.io/open-runtimes/sandbox:0.1.0
-        volumes:
-          - source: agent-scratch
-            path: /data
+sandboxes:
+  pools:
+    - id: py
+      image: ghcr.io/open-runtimes/sandbox:0.1.0
+      volumes:
+        - source: agent-scratch
+          path: /data
 ```
 
 Want per-sandbox storage? Declare a pool per storage shape. Accepting `volumes` on the create call would mean cold-starting a pod for it, which silently turns a sub-second create into a slow one — a bad thing to do quietly.
@@ -191,18 +190,19 @@ curl http://localhost:8080/v1/sandbox-pool
 
 ```yaml
 deployments:
-  sandboxes:
-    domain: sandboxes.example.com   # needs a wildcard DNS record for *.sandboxes.example.com
-    pools:
-      - id: py
-        image: ghcr.io/open-runtimes/sandbox:0.1.0
-        command: /usr/local/bin/sandbox
-        port: 3000
-        size: 4
-        runtimeClass: gvisor
-        maxIdleSeconds: 900
-    proxy:
-      enabled: true
+  enabled: true                     # serves /v1/sandbox and reconciles the pools
+sandboxes:
+  domain: sandboxes.example.com     # needs a wildcard DNS record for *.sandboxes.example.com
+  pools:
+    - id: py
+      image: ghcr.io/open-runtimes/sandbox:0.1.0
+      command: /usr/local/bin/sandbox
+      port: 3000
+      size: 4
+      runtimeClass: gvisor
+      maxIdleSeconds: 900
+  proxy:
+    enabled: true
 ```
 
 The **sandbox proxy** is the component every sandbox request passes through: one wildcard `HTTPRoute` for `*.{domain}` sends traffic to it, and it resolves the sandbox from the capability token in the request's `Host`.

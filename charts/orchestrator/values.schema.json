@@ -422,68 +422,68 @@
           "items": {
             "$ref": "#/$defs/pool"
           }
+        }
+      }
+    },
+    "sandboxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Sandboxes (docs/sandboxes.md): a workload kind alongside jobs and deployments. Served by the deployments service today, so deployments.enabled must also be true.",
+      "properties": {
+        "pools": {
+          "type": "array",
+          "description": "pkg/pool.Pool entries, same schema as deployments.pools. The image must serve the sandbox contract, so command and port name its entrypoint and listen port.",
+          "items": {
+            "$ref": "#/$defs/pool"
+          }
         },
-        "sandboxes": {
+        "domain": {
+          "type": "string"
+        },
+        "scheme": {
+          "enum": [
+            "http",
+            "https"
+          ]
+        },
+        "leaseName": {
+          "type": "string"
+        },
+        "proxy": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Sandboxes (docs/sandboxes.md): live workspaces claimed from their own warm pools and reached at s-{token}.{domain}. domain is required once pools or the edge are configured.",
           "properties": {
-            "pools": {
-              "type": "array",
-              "description": "pkg/pool.Pool entries, same schema as deployments.pools. The image must serve the sandbox contract, so command and port name its entrypoint and listen port.",
-              "items": {
-                "$ref": "#/$defs/pool"
-              }
+            "enabled": {
+              "type": "boolean"
             },
-            "domain": {
-              "type": "string"
+            "replicaCount": {
+              "type": "integer",
+              "minimum": 0
             },
-            "scheme": {
-              "enum": [
-                "http",
-                "https"
-              ]
+            "autoscaling": {
+              "$ref": "#/$defs/autoscaling"
             },
-            "leaseName": {
-              "type": "string"
+            "port": {
+              "$ref": "#/$defs/port"
             },
-            "proxy": {
+            "holdSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "route": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
                 "enabled": {
                   "type": "boolean"
-                },
-                "replicaCount": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "autoscaling": {
-                  "$ref": "#/$defs/autoscaling"
-                },
-                "port": {
-                  "$ref": "#/$defs/port"
-                },
-                "holdSeconds": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "route": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "enabled": {
-                      "type": "boolean"
-                    }
-                  }
-                },
-                "resources": {
-                  "$ref": "#/$defs/resources"
-                },
-                "image": {
-                  "$ref": "#/$defs/pullableImage"
                 }
               }
+            },
+            "resources": {
+              "$ref": "#/$defs/resources"
+            },
+            "image": {
+              "$ref": "#/$defs/pullableImage"
             }
           }
         }

@@ -1,4 +1,7 @@
-{{- if and .Values.deployments.enabled .Values.deployments.sandboxes.proxy.enabled }}
+{{- if .Values.sandboxes.proxy.enabled }}
+{{- if not .Values.deployments.enabled }}
+{{- fail "sandboxes.proxy.enabled requires deployments.enabled: the deployments service is what serves /v1/sandbox and reconciles sandbox pools" }}
+{{- end }}
 {{- /*
 The sandbox proxy: one wildcard HTTPRoute for *.{domain} sends every sandbox
 here, and it resolves the sandbox from the capability token in the request's
@@ -13,8 +16,8 @@ metadata:
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 spec:
-  {{- if not .Values.deployments.sandboxes.proxy.autoscaling.enabled }}
-  replicas: {{ .Values.deployments.sandboxes.proxy.replicaCount }}
+  {{- if not .Values.sandboxes.proxy.autoscaling.enabled }}
+  replicas: {{ .Values.sandboxes.proxy.replicaCount }}
   {{- end }}
   strategy:
     {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
@@ -45,7 +48,7 @@ spec:
       containers:
         - name: sandbox-proxy
           image: {{ include "orchestrator.sandboxProxyImage" . | quote }}
-          imagePullPolicy: {{ .Values.deployments.sandboxes.proxy.image.pullPolicy }}
+          imagePullPolicy: {{ .Values.sandboxes.proxy.image.pullPolicy }}
           securityContext:
             {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
@@ -53,22 +56,22 @@ spec:
               mountPath: /tmp
           ports:
             - name: data
-              containerPort: {{ .Values.deployments.sandboxes.proxy.port }}
+              containerPort: {{ .Values.sandboxes.proxy.port }}
             - name: mgmt
               containerPort: {{ .Values.service.apiPort }}
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
           env:
             - name: ACTIVATOR_PORT
-              value: {{ .Values.deployments.sandboxes.proxy.port | quote }}
+              value: {{ .Values.sandboxes.proxy.port | quote }}
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
             - name: SANDBOX_DOMAIN
-              value: {{ required "deployments.sandboxes.domain is required when the sandbox proxy is enabled" .Values.deployments.sandboxes.domain | quote }}
+              value: {{ required "sandboxes.domain is required when the sandbox proxy is enabled" .Values.sandboxes.domain | quote }}
             - name: SANDBOX_HOLD_SECONDS
-              value: {{ .Values.deployments.sandboxes.proxy.holdSeconds | quote }}
+              value: {{ .Values.sandboxes.proxy.holdSeconds | quote }}
             - name: PORT
               value: {{ .Values.service.apiPort | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
@@ -91,7 +94,7 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.deployments.sandboxes.proxy.resources | nindent 12 }}
+            {{- toYaml .Values.sandboxes.proxy.resources | nindent 12 }}
 ---
 apiVersion: v1
 kind: Service
@@ -106,7 +109,7 @@ spec:
     {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 4 }}
   ports:
     - name: data
-      port: {{ .Values.deployments.sandboxes.proxy.port }}
+      port: {{ .Values.sandboxes.proxy.port }}
       targetPort: data
 ---
 apiVersion: v1
@@ -150,7 +153,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
     namespace: {{ .Release.Namespace }}
-{{- if and .Values.deployments.sandboxes.proxy.route.enabled .Values.deployments.gateway.enabled }}
+{{- if and .Values.sandboxes.proxy.route.enabled .Values.deployments.gateway.enabled }}
 ---
 {{- /*
 One wildcard route for every sandbox that will ever exist. Nothing is
@@ -169,16 +172,16 @@ spec:
     - name: {{ .Values.deployments.gateway.name }}
       namespace: {{ default .Release.Namespace .Values.deployments.gateway.namespace }}
   hostnames:
-    - {{ printf "*.%s" .Values.deployments.sandboxes.domain | quote }}
+    - {{ printf "*.%s" .Values.sandboxes.domain | quote }}
   rules:
     - backendRefs:
         - name: sandbox-proxy
-          port: {{ .Values.deployments.sandboxes.proxy.port }}
+          port: {{ .Values.sandboxes.proxy.port }}
 {{- end }}
 {{- /*
 Replica-aware PDB — see the jobs PDB note; singletons never get one.
 */}}
-{{- if or (gt (int .Values.deployments.sandboxes.proxy.replicaCount) 1) (and .Values.deployments.sandboxes.proxy.autoscaling.enabled (gt (int .Values.deployments.sandboxes.proxy.autoscaling.minReplicas) 1)) }}
+{{- if or (gt (int .Values.sandboxes.proxy.replicaCount) 1) (and .Values.sandboxes.proxy.autoscaling.enabled (gt (int .Values.sandboxes.proxy.autoscaling.minReplicas) 1)) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -193,7 +196,7 @@ spec:
     matchLabels:
       {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 6 }}
 {{- end }}
-{{- if .Values.deployments.sandboxes.proxy.autoscaling.enabled }}
+{{- if .Values.sandboxes.proxy.autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -207,14 +210,14 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
-  minReplicas: {{ .Values.deployments.sandboxes.proxy.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.deployments.sandboxes.proxy.autoscaling.maxReplicas }}
+  minReplicas: {{ .Values.sandboxes.proxy.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.sandboxes.proxy.autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.deployments.sandboxes.proxy.autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ .Values.sandboxes.proxy.autoscaling.targetCPUUtilizationPercentage }}
 {{- end }}
 {{- end }}

@@ -99,10 +99,10 @@ imagePullSecrets:
 {{- end -}}
 
 {{- define "orchestrator.sandboxProxyImage" -}}
-{{- if .Values.deployments.sandboxes.proxy.image.ref -}}
-{{- .Values.deployments.sandboxes.proxy.image.ref -}}
+{{- if .Values.sandboxes.proxy.image.ref -}}
+{{- .Values.sandboxes.proxy.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.sandboxes.proxy.image.repository (default .Chart.AppVersion .Values.deployments.sandboxes.proxy.image.tag) -}}
+{{- printf "%s:%s" .Values.sandboxes.proxy.image.repository (default .Chart.AppVersion .Values.sandboxes.proxy.image.tag) -}}
 {{- end -}}
 {{- end -}}
 

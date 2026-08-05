@@ -122,8 +122,8 @@ if DEPLOYMENTS_ENABLED:
         'deployments.activator.image.repository=' + DEPLOYMENTS_ACTIVATOR_IMAGE,
         'deployments.activator.image.pullPolicy=Never',
         'deployments.shimImage.repository=' + POOL_SHIM_IMAGE,
-        'deployments.sandboxes.proxy.image.repository=' + SANDBOX_PROXY_IMAGE,
-        'deployments.sandboxes.proxy.image.pullPolicy=Never',
+        'sandboxes.proxy.image.repository=' + SANDBOX_PROXY_IMAGE,
+        'sandboxes.proxy.image.pullPolicy=Never',
     ]
 
 k8s_yaml(helm(

@@ -50,7 +50,7 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/component: deployments
-        {{- if .Values.deployments.sandboxes.proxy.enabled }}
+        {{- if .Values.sandboxes.proxy.enabled }}
         # The sandbox proxy is permanently on the data path for sandbox pods.
         - namespaceSelector:
             matchLabels:
