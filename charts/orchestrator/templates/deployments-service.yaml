@@ -126,6 +126,8 @@ spec:
               value: {{ include "orchestrator.poolShimImage" . | quote }}
             - name: SANDBOX_DOMAIN
               value: {{ required "sandboxes.domain is required when sandbox pools are configured" .Values.sandboxes.domain | quote }}
+            - name: SANDBOX_AGENT_IMAGE
+              value: {{ include "orchestrator.sandboxAgentImage" . | quote }}
             - name: SANDBOX_SCHEME
               value: {{ .Values.sandboxes.scheme | quote }}
             {{- if .Values.deployments.leaderElection.enabled }}

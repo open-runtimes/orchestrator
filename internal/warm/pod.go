@@ -52,8 +52,10 @@ func (m *Manager) PoolLabels(poolID string) map[string]string {
 // containers share an emptyDir workspace:
 //
 //   - initContainer "shim-install": copies the pool-shim binary into the
-//     workspace (the pool image is the user's runtime and has no shim) — plus,
-//     when the consumer asks for it, the sandbox agent — then exits;
+//     workspace (the pool image is the user's runtime and has no shim), exits;
+//   - initContainer "agent-install" (when the consumer declares an Agent): the
+//     publishing image, its command replaced by a copy of the binary into the
+//     workspace — how a sandbox pool serves the contract from any image;
 //   - initContainer "proxy": the deployments-sidecar as a native sidecar
 //     (restartPolicy: Always) in pool mode — armed with the claim token, its
 //     /ready probe is the warm-ready gate before a claim and the serving
@@ -81,7 +83,7 @@ func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 				{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			}, podVolumes...),
-			InitContainers: []corev1.Container{shimInstallContainer(cfg), proxyContainer(cfg, token)},
+			InitContainers: initContainers(cfg, token),
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
@@ -97,18 +99,40 @@ func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 	return warmPod
 }
 
+// initContainers builds the pod's init containers in order: the shim install,
+// the optional agent install, then the sidecar (a native sidecar, which the
+// kubelet starts and leaves running).
+func initContainers(cfg Config, token string) []corev1.Container {
+	containers := []corev1.Container{shimInstallContainer(cfg)}
+	if cfg.Agent.Image != "" {
+		containers = append(containers, agentInstallContainer(cfg))
+	}
+	return append(containers, proxyContainer(cfg, token))
+}
+
+// agentInstallContainer copies the contract-serving binary out of the image that
+// publishes it. Plain `cp` with no shell and no mkdir, so the only thing the
+// publishing image must provide is the binary and a cp — and the pinned tag or
+// digest of that image IS the version pin.
+func agentInstallContainer(cfg Config) corev1.Container {
+	return corev1.Container{
+		Name:            ContainerAgentInstall,
+		Image:           cfg.Agent.Image,
+		ImagePullPolicy: corev1.PullPolicy(cfg.WorkerImagePullPolicy),
+		Command:         []string{"cp", cfg.Agent.Source, cfg.Agent.Dest},
+		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
+		SecurityContext: hardenedSecurityContext(cfg),
+	}
+}
+
 // shimInstallContainer copies the shim binary into the shared workspace
 // before anything else runs. Plain init container: runs to completion first.
 func shimInstallContainer(cfg Config) corev1.Container {
-	args := []string{"-install", shimPath}
-	if cfg.AgentPath != "" {
-		args = append(args, "-install-agent", cfg.AgentPath)
-	}
 	return corev1.Container{
 		Name:            ContainerShimInstall,
 		Image:           cfg.ShimImage,
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
-		Args:            args,
+		Args:            []string{"-install", shimPath},
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
 		SecurityContext: hardenedSecurityContext(cfg),
 	}

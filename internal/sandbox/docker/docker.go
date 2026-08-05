@@ -302,19 +302,25 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *sandbox.Request) e
 	return nil
 }
 
-// installAgent copies the sandbox agent out of the pool-shim image into the
-// sandbox's workspace volume, the same way the shim-install init container does
-// on Kubernetes. It is what lets a pool run an ordinary runtime image: the image
-// serves the sandbox contract by running the agent, without implementing
-// anything itself.
+// installAgent copies the sandbox agent out of the image that publishes it into
+// the sandbox's workspace volume — the same move as the agent-install init
+// container on Kubernetes, and what lets a pool run an ordinary runtime image
+// that serves the contract without implementing it.
 func (o *Orchestrator) installAgent(ctx, pullCtx context.Context, id string) error {
-	if err := o.pullImageIfNeeded(pullCtx, o.cfg.ShimImage); err != nil {
-		return apperrors.Internal("docker.pullShimImage", err)
+	if err := o.pullImageIfNeeded(pullCtx, o.cfg.AgentImage); err != nil {
+		return apperrors.Internal("docker.pullAgentImage", err)
 	}
 	resp, err := o.client.ContainerCreate(ctx,
 		&container.Config{
-			Image:  o.cfg.ShimImage,
-			Cmd:    []string{"-install", workspacePath + "/.pool/shim", "-install-agent", agentPath},
+			Image:      o.cfg.AgentImage,
+			Entrypoint: []string{"cp"},
+			Cmd:        []string{agentSource, agentPath},
+			// Root, like the artifacts step: a Docker volume takes its ownership
+			// from whichever image mounts it first, so the copy cannot assume the
+			// agent image's own user can write there. The binary lands 0755, so
+			// the worker reads it whatever user it runs as. (On Kubernetes the
+			// workspace is a world-writable emptyDir and the install container
+			// keeps the hardening floor.)
 			User:   "0",
 			Labels: containerLabels(id, typeAgent),
 		},

@@ -14,9 +14,14 @@ const (
 	// {hostPrefix}{token}.{domain}, and {hostPrefix}{token}-{port}.{domain}.
 	hostPrefix = "s-"
 
-	// agentPath is where the agent-install container drops the sandbox agent,
-	// and therefore the default command a sandbox runs.
-	agentPath = workspacePath + "/.sandbox/agent"
+	// agentPath is where the agent-install container drops the sandbox agent, and
+	// therefore the default command a sandbox runs. At the workspace root, so the
+	// copy needs no mkdir and the publishing image needs no shell.
+	agentPath = workspacePath + "/.sandbox-agent"
+	// agentSource is the binary's path inside the agent image.
+	agentSource = "/usr/local/bin/sandbox"
+	// defaultAgentImage publishes the reference agent, pinned by tag.
+	defaultAgentImage = "ghcr.io/open-runtimes/sandbox:0.1.0"
 
 	// reapTick is how often the idle sweep runs. Docker has no leader election
 	// and one service process, so the loop simply runs.
@@ -25,10 +30,12 @@ const (
 
 // Config holds configuration for the Docker sandbox orchestrator.
 type Config struct {
-	SidecarImage    string      // deployments-sidecar (proxy) image (set by the caller)
-	JobSidecarImage string      // job-sidecar image for artifact materialization
-	ShimImage       string      // pool-shim image; carries the vendored sandbox agent
-	Pools           []pool.Pool // configured sandbox pools (set by the caller from SANDBOX_POOLS_JSON)
+	SidecarImage    string // deployments-sidecar (proxy) image (set by the caller)
+	JobSidecarImage string // job-sidecar image for artifact materialization
+	// AgentImage publishes the binary that serves the sandbox contract; it is
+	// copied out of this image into each sandbox's workspace.
+	AgentImage string
+	Pools      []pool.Pool // configured sandbox pools (set by the caller from SANDBOX_POOLS_JSON)
 
 	Network          string   // Docker network to attach sandbox containers to
 	ArtifactEndpoint string   // base URL for sidecar artifact reporting
@@ -50,6 +57,7 @@ func LoadConfigFromEnv() Config {
 		extraHosts = strings.Split(hosts, ",")
 	}
 	return Config{
+		AgentImage:       config.GetEnv("SANDBOX_AGENT_IMAGE", defaultAgentImage),
 		JobSidecarImage:  config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Network:          config.GetEnv("DOCKER_NETWORK", ""),
 		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8080"),
@@ -61,6 +69,9 @@ func LoadConfigFromEnv() Config {
 }
 
 func (c *Config) applyDefaults() {
+	if c.AgentImage == "" {
+		c.AgentImage = defaultAgentImage
+	}
 	if c.SandboxDomain == "" {
 		c.SandboxDomain = defaultSandboxDomain
 	}

@@ -486,6 +486,9 @@
               "$ref": "#/$defs/pullableImage"
             }
           }
+        },
+        "agentImage": {
+          "$ref": "#/$defs/pullableImage"
         }
       }
     }

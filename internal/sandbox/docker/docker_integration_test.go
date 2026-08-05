@@ -72,12 +72,12 @@ func clientImage() string {
 	return "alpine:latest"
 }
 
-// shimTestImage carries the vendored agent (hack/fetch-sandbox-agent.sh).
-func shimTestImage() string {
-	if img := os.Getenv("POOL_SHIM_IMAGE"); img != "" {
+// agentTestImage publishes the contract-serving binary the tests install.
+func agentTestImage() string {
+	if img := os.Getenv("SANDBOX_AGENT_IMAGE"); img != "" {
 		return img
 	}
-	return "ko.local/pool-shim:latest"
+	return "ghcr.io/open-runtimes/sandbox:0.1.0"
 }
 
 // testPool mirrors what an operator declares for an ordinary runtime image: an
@@ -91,7 +91,7 @@ func newTestOrchestrator(t *testing.T, networkName string) *Orchestrator {
 	o, err := NewOrchestrator(t.Context(), Config{
 		SidecarImage:    sidecarTestImage(),
 		JobSidecarImage: jobSidecarTestImage(),
-		ShimImage:       shimTestImage(),
+		AgentImage:      agentTestImage(),
 		Pools:           []pool.Pool{testPool()},
 		Network:         networkName,
 		SandboxDomain:   "sandboxes.test",

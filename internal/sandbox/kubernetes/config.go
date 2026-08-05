@@ -24,20 +24,29 @@ const (
 	// token are never confused for each other: {hostPrefix}{token}.{domain}.
 	hostPrefix = "s-"
 
-	// agentPath is where the shim-install container drops the sandbox agent, and
-	// therefore the default command a sandbox execs. It lives under the
-	// workspace because that is the one volume every container in the pod
-	// shares.
-	agentPath = workspacePath + "/.sandbox/agent"
+	// agentPath is where the agent-install container drops the sandbox agent, and
+	// therefore the default command a sandbox execs. It lives at the workspace
+	// root — the one volume every container in the pod shares — so the copy
+	// needs no mkdir and the publishing image needs no shell.
+	agentPath = workspacePath + "/.sandbox-agent"
+	// agentSource is the binary's path inside the agent image.
+	agentSource = "/usr/local/bin/sandbox"
+	// defaultAgentImage publishes the reference agent. Pinned: an image tag is
+	// the version, and an operator may pin harder with a digest.
+	defaultAgentImage = "ghcr.io/open-runtimes/sandbox:0.1.0"
 	// workspacePath mirrors internal/warm's workspace mount.
 	workspacePath = "/workspace"
 )
 
 // Config holds configuration for the Kubernetes sandbox orchestrator.
 type Config struct {
-	SidecarImage string      // deployments-sidecar (proxy) image (set by the caller)
-	ShimImage    string      // pool-shim image for the shim-install init container (set by the caller)
-	Pools        []pool.Pool // configured sandbox pools (set by the caller from SANDBOX_POOLS_JSON)
+	SidecarImage string // deployments-sidecar (proxy) image (set by the caller)
+	ShimImage    string // pool-shim image for the shim-install init container (set by the caller)
+	// AgentImage publishes the binary that serves the sandbox contract. It is
+	// copied out of this image into every warm pod's workspace, which is what
+	// lets a pool run an ordinary runtime image.
+	AgentImage string
+	Pools      []pool.Pool // configured sandbox pools (set by the caller from SANDBOX_POOLS_JSON)
 
 	Kubeconfig             string
 	Context                string // kubeconfig context to pin; empty uses current-context
@@ -105,6 +114,7 @@ func LoadConfigFromEnv() (Config, error) {
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
 
+		AgentImage:    config.GetEnv("SANDBOX_AGENT_IMAGE", defaultAgentImage),
 		SandboxDomain: config.GetEnv("SANDBOX_DOMAIN", defaultSandboxDomain),
 		Scheme:        config.GetEnv("SANDBOX_SCHEME", "http"),
 		OrphanTTL:     config.GetDurationEnv("SANDBOX_ORPHAN_TTL", defaultOrphanTTL),
@@ -126,6 +136,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RunAsUser <= 0 {
 		c.RunAsUser = defaultRunAsUser
+	}
+	if c.AgentImage == "" {
+		c.AgentImage = defaultAgentImage
 	}
 	if c.SandboxDomain == "" {
 		c.SandboxDomain = defaultSandboxDomain
@@ -204,7 +217,7 @@ func (c *Config) warmConfig() warm.Config {
 		// Every sandbox pool gets the agent, so a pool's image needs to serve
 		// nothing itself; the agent is told which port to listen on and where the
 		// workspace is.
-		AgentPath: agentPath,
+		Agent: warm.Agent{Image: c.AgentImage, Source: agentSource, Dest: agentPath},
 		WorkloadEnv: func(p *pool.Pool) map[string]string {
 			return map[string]string{
 				"SANDBOX_PORT":      strconv.Itoa(p.Port),

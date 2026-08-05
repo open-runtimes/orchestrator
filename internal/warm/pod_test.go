@@ -199,3 +199,46 @@ func TestBuildPod_RuntimeClass(t *testing.T) {
 		}
 	}
 }
+
+// A consumer that declares an Agent gets an extra init container that copies the
+// binary out of the image publishing it — how a sandbox pool serves the contract
+// from an image that implements nothing.
+func TestBuildPod_AgentInstall(t *testing.T) {
+	t.Parallel()
+	builder := testBuilder(t, func(c *Config) {
+		c.Agent = Agent{
+			Image:  "ghcr.io/open-runtimes/sandbox:0.1.0",
+			Source: "/usr/local/bin/sandbox",
+			Dest:   "/workspace/.sandbox-agent",
+		}
+	})
+	pod := builder.buildPod(mapperPool(), "sbx-py-aabbc", "tok")
+
+	if len(pod.Spec.InitContainers) != 3 {
+		t.Fatalf("want shim-install, agent-install, proxy; got %d", len(pod.Spec.InitContainers))
+	}
+	agent := pod.Spec.InitContainers[1]
+	if agent.Name != ContainerAgentInstall || agent.Image != "ghcr.io/open-runtimes/sandbox:0.1.0" {
+		t.Errorf("agent-install: got %s/%s", agent.Name, agent.Image)
+	}
+	// Plain cp: no shell, no mkdir, so the publishing image needs to contain
+	// nothing but the binary and a cp.
+	if got := agent.Command; len(got) != 3 || got[0] != "cp" || got[1] != "/usr/local/bin/sandbox" || got[2] != "/workspace/.sandbox-agent" {
+		t.Errorf("agent-install command: got %v", got)
+	}
+	if agent.RestartPolicy != nil {
+		t.Error("agent-install must be a plain init container (run to completion)")
+	}
+	if len(agent.VolumeMounts) != 1 || agent.VolumeMounts[0].MountPath != workspacePath {
+		t.Errorf("agent-install must mount the workspace: got %v", agent.VolumeMounts)
+	}
+	if agent.SecurityContext == nil || agent.SecurityContext.RunAsNonRoot == nil || !*agent.SecurityContext.RunAsNonRoot {
+		t.Error("agent-install must run under the hardening floor like every other container")
+	}
+
+	// Deployment pools declare no agent and keep two init containers.
+	plain := testBuilder(t).buildPod(mapperPool(), "pool-std-aabbc", "tok")
+	if len(plain.Spec.InitContainers) != 2 {
+		t.Errorf("without an Agent: want 2 init containers, got %d", len(plain.Spec.InitContainers))
+	}
+}

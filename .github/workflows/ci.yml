@@ -103,9 +103,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Vendor the sandbox agent
-        run: bash hack/fetch-sandbox-agent.sh
-
       - name: Compute image tags
         id: tags
         run: |
@@ -217,9 +214,6 @@ jobs:
           cache: true
 
       - uses: ko-build/setup-ko@v0.9
-
-      - name: Vendor the sandbox agent
-        run: bash hack/fetch-sandbox-agent.sh
 
       - name: Build sidecar images
         run: |

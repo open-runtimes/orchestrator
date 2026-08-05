@@ -36,15 +36,28 @@ const (
 	// LabelManagedBy marks every object a warm pool owns.
 	LabelManagedBy = "managed-by"
 
-	ContainerShimInstall = "shim-install"
-	ContainerProxy       = "proxy"
-	ContainerWorkload    = "workload"
+	ContainerShimInstall  = "shim-install"
+	ContainerAgentInstall = "agent-install"
+	ContainerProxy        = "proxy"
+	ContainerWorkload     = "workload"
 
 	defaultPoll     = 500 * time.Millisecond
 	defaultColdWait = 120 * time.Second // burst-cold: bound on a new pod turning warm-ready
 	defaultOrphan   = 60 * time.Second
 	controlTick     = 2 * time.Second
 )
+
+// Agent describes a binary to install into every warm pod's workspace, copied
+// straight out of the image that publishes it — no vendoring, no download, and
+// the version is pinned the way every other image is.
+type Agent struct {
+	Image string // image publishing the binary, e.g. ghcr.io/open-runtimes/sandbox:0.1.0
+	// Source is the binary's path inside that image, Dest where it lands in the
+	// workspace. Dest sits at the workspace root so the copy needs no mkdir, and
+	// therefore no shell in the publishing image.
+	Source string
+	Dest   string
+}
 
 // Naming is the consumer's label and name contract. Each consumer keeps its
 // own keys so its pods are its own — a rollout must never leave the other
@@ -78,11 +91,11 @@ type Config struct {
 	// Metrics receives pool capacity and claim telemetry; may be nil.
 	Metrics *observability.Metrics
 
-	// AgentPath, when set, has the shim-install container also drop the vendored
-	// sandbox agent there — so a pool's image serves the sandbox contract by
-	// running it, whatever the image is. Empty for deployment pools, which
-	// late-bind their own command.
-	AgentPath string
+	// Agent, when set, adds an init container that copies a contract-serving
+	// binary out of a published image into the workspace — so a pool's image
+	// serves the contract by running it, whatever the image is. Unset for
+	// deployment pools, which late-bind their own command.
+	Agent Agent
 	// WorkloadEnv contributes environment to the workload container, on top of
 	// the pool's own — the agent's SANDBOX_* settings, for consumers that
 	// install it.

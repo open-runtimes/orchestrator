@@ -82,7 +82,7 @@ curl -X PUT  http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/fil
 curl         http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/files/out.json
 ```
 
-Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the machinery's own `.pool/`, `.sandbox/`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
+Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the machinery's own `.pool/`, `.sandbox-agent`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
 
 For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready:
 
@@ -241,26 +241,28 @@ One environment note: the service reaches sandboxes by container address, so it 
 
 Not part of the API contract — the reasoning behind the shape above.
 
-### Why the agent is installed rather than baked in
+### Why the agent is installed rather than required of the image
 
 The contract has to be served from inside the sandbox (see below), but requiring
 it of the *image* would have made every pool image a custom build. So the agent
-travels the same road as the pool shim: a static binary, vendored into the
-pool-shim image at build time (`hack/fetch-sandbox-agent.sh`), copied into the
-workspace by the shim-install init container, and exec'd as the sandbox's
-command.
+is installed instead: `ghcr.io/open-runtimes/sandbox` runs as an init container
+with its command replaced by
 
-Vendored rather than downloaded per pod on purpose: a warm pod is created for
-every sandbox that will ever be claimed, so a fetch there would put GitHub's
-availability and rate limits on the sandbox creation path.
+```
+cp /usr/local/bin/sandbox /workspace/.sandbox-agent
+```
 
-The version **and both SHA-256 digests** are pinned in that script, and the
-digests are deliberately not read from the release's own `checksums.txt` — that
-file can be replaced along with the asset it describes, so it proves the download
-survived transit and nothing more. A re-cut release therefore fails the build
-rather than silently changing the binary that runs inside every sandbox.
-Upgrading is one commit that changes the version and both digests, so review sees
-exactly which bytes were accepted.
+and the claim then execs that path. Plain `cp` — no shell, no mkdir — so the
+publishing image needs to contain nothing but the binary and a `cp`, and the
+destination sits at the workspace root for the same reason.
+
+Distributing it as an image rather than a fetched artifact is the point: the tag
+(or digest, via `sandboxes.agentImage.ref`) IS the version pin, the registry
+verifies the bytes, the kubelet caches it per node instead of per pod, and an
+air-gapped install mirrors it like any other image. The alternative we tried —
+vendoring the release tarball into our own image at build time — needed a fetch
+script, hand-maintained SHA-256 digests, and a build-time network call, to end up
+in the same place.
 
 ### Why exec and files live inside the sandbox
 

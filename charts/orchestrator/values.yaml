@@ -310,6 +310,14 @@ sandboxes:
   # at s-{token}-{port}.{domain} — the same label, so one wildcard cert covers
   # every port of every sandbox.
   #
+  # Image publishing the agent that serves the sandbox contract. It is used as an
+  # init container whose command is replaced by a copy of the binary into the
+  # sandbox's workspace — so pool images stay ordinary runtime images, and this
+  # tag (or a digest in `ref`) is the agent version pin.
+  agentImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/sandbox
+    tag: "0.1.0"
   # Wildcard domain sandboxes are addressed at: s-{token}.{domain}. Requires
   # a wildcard DNS record (*.{domain}) pointing at the gateway. Each
   # sandbox's hostname carries a 128-bit capability token, so treat the URL

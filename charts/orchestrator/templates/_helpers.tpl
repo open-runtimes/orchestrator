@@ -98,6 +98,18 @@ imagePullSecrets:
 {{- end -}}
 {{- end -}}
 
+{{/*
+  sandboxAgentImage: the image the contract-serving binary is copied out of.
+  Tagged, not floating: this is the agent version pin.
+*/}}
+{{- define "orchestrator.sandboxAgentImage" -}}
+{{- if .Values.sandboxes.agentImage.ref -}}
+{{- .Values.sandboxes.agentImage.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.sandboxes.agentImage.repository (required "sandboxes.agentImage.tag is required (pin the agent version)" .Values.sandboxes.agentImage.tag) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.sandboxProxyImage" -}}
 {{- if .Values.sandboxes.proxy.image.ref -}}
 {{- .Values.sandboxes.proxy.image.ref -}}
