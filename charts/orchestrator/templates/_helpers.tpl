@@ -49,11 +49,15 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.deploymentsSidecarImage" -}}
-{{- if .Values.deployments.sidecarImage.ref -}}
-{{- .Values.deployments.sidecarImage.ref -}}
+{{/*
+  workloadSidecarImage: one image for every serving workload's sidecar —
+  deployment replicas, pool activations, and sandboxes.
+*/}}
+{{- define "orchestrator.workloadSidecarImage" -}}
+{{- if .Values.workloadSidecarImage.ref -}}
+{{- .Values.workloadSidecarImage.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.sidecarImage.repository (default .Chart.AppVersion .Values.deployments.sidecarImage.tag) -}}
+{{- printf "%s:%s" .Values.workloadSidecarImage.repository (default .Chart.AppVersion .Values.workloadSidecarImage.tag) -}}
 {{- end -}}
 {{- end -}}
 

@@ -50,7 +50,7 @@ services:
       DOCKER_NETWORK: orchestrator
       # Deployments get hosts like web.localhost, served on the data port.
       DEPLOYMENTS_DOMAIN: localhost
-      DEPLOYMENT_SIDECAR_IMAGE: ${DEPLOYMENT_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/deployments-sidecar:latest}
+      WORKLOAD_SIDECAR_IMAGE: ${WORKLOAD_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/workload-sidecar:latest}
       ARTIFACT_ENDPOINT: http://deployments:8080
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

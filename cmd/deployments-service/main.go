@@ -45,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest"), metrics)
+	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest"), metrics)
 	if err != nil {
 		slog.Error("Failed to build orchestrator", "error", err)
 		os.Exit(1)
@@ -158,7 +158,7 @@ func main() {
 	}
 
 	// Data-plane listener (Docker): requests can legitimately run for minutes —
-	// the per-request timeout lives in the deployments-sidecar — so no
+	// the per-request timeout lives in the workload-sidecar — so no
 	// WriteTimeout here.
 	var extra []*http.Server
 	if deploymentsActivator != nil {
@@ -206,7 +206,7 @@ func main() {
 }
 
 func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Pool, metrics *observability.Metrics) (pool.Orchestrator, error) {
-	sidecarImage := config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+	sidecarImage := config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
 	shimImage := config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
 	switch backend {
 	case "docker":
@@ -250,7 +250,7 @@ func buildSandboxOrchestrator(ctx context.Context, backend string, pools []pool.
 	switch backend {
 	case "docker":
 		cfg := sandboxdocker.LoadConfigFromEnv()
-		cfg.SidecarImage = config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+		cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
 		cfg.Pools = pools
 		return sandboxdocker.NewOrchestrator(ctx, cfg)
 	case "kubernetes":
@@ -258,7 +258,7 @@ func buildSandboxOrchestrator(ctx context.Context, backend string, pools []pool.
 		if err != nil {
 			return nil, err
 		}
-		cfg.SidecarImage = config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+		cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
 		cfg.ShimImage = config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
 		cfg.Pools = pools
 		cfg.Metrics = metrics

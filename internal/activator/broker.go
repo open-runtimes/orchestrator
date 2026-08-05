@@ -117,7 +117,7 @@ func (b *broker) depths() map[string]int {
 
 // Sync holds for a target (bounded by hold) and proxies the request to it,
 // preserving host as the workload's virtual host. The per-request 504
-// timeout is enforced by the deployments-sidecar, not here.
+// timeout is enforced by the workload-sidecar, not here.
 func (b *broker) sync(w http.ResponseWriter, r *http.Request, key, host string, hold time.Duration, c capacity) {
 	target, err := b.await(r.Context(), key, hold, c)
 	if err != nil {

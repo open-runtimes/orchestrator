@@ -267,9 +267,6 @@
         "image": {
           "$ref": "#/$defs/pullableImage"
         },
-        "sidecarImage": {
-          "$ref": "#/$defs/image"
-        },
         "shimImage": {
           "$ref": "#/$defs/image"
         },
@@ -491,6 +488,9 @@
           "$ref": "#/$defs/pullableImage"
         }
       }
+    },
+    "workloadSidecarImage": {
+      "$ref": "#/$defs/pullableImage"
     }
   },
   "$defs": {

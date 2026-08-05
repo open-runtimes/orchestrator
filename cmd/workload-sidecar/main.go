@@ -1,4 +1,4 @@
-// deployments-sidecar is the reverse proxy fronting the user container in
+// workload-sidecar is the reverse proxy fronting the user container in
 // every deployment replica: readiness gating, graceful drain, per-request
 // timeout, and the hard concurrency cap. See docs/deployments.md.
 package main
@@ -30,7 +30,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "deployments-sidecar"))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "workload-sidecar"))
 
 	if err := run(); err != nil {
 		slog.Error("Sidecar failed", "error", err)

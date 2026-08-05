@@ -16,7 +16,7 @@ DEPLOYMENTS_ENABLED = config.parse().get('deployments', False)
 JOBS_SERVICE_IMAGE        = 'ko.local/jobs-service'
 JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
-DEPLOYMENTS_SIDECAR_IMAGE = 'ko.local/deployments-sidecar'
+WORKLOAD_SIDECAR_IMAGE = 'ko.local/workload-sidecar'
 DEPLOYMENTS_ACTIVATOR_IMAGE = 'ko.local/deployments-activator'
 SANDBOX_PROXY_IMAGE = 'ko.local/sandbox-proxy'
 POOL_SHIM_IMAGE = 'ko.local/pool-shim'
@@ -74,10 +74,10 @@ if DEPLOYMENTS_ENABLED:
         ],
     )
     custom_build(
-        DEPLOYMENTS_SIDECAR_IMAGE,
-        'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/deployments-sidecar && docker tag {0} $EXPECTED_REF'.format(DEPLOYMENTS_SIDECAR_IMAGE),
+        WORKLOAD_SIDECAR_IMAGE,
+        'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/workload-sidecar && docker tag {0} $EXPECTED_REF'.format(WORKLOAD_SIDECAR_IMAGE),
         deps=[
-            'cmd/deployments-sidecar',
+            'cmd/workload-sidecar',
             'internal/proxy',
             'go.mod',
             'go.sum',
@@ -118,7 +118,7 @@ if DEPLOYMENTS_ENABLED:
         'deployments.activator.enabled=true',
         'deployments.image.repository=' + DEPLOYMENTS_SERVICE_IMAGE,
         'deployments.image.pullPolicy=Never',
-        'deployments.sidecarImage.repository=' + DEPLOYMENTS_SIDECAR_IMAGE,
+        'workloadSidecarImage.repository=' + WORKLOAD_SIDECAR_IMAGE,
         'deployments.activator.image.repository=' + DEPLOYMENTS_ACTIVATOR_IMAGE,
         'deployments.activator.image.pullPolicy=Never',
         'deployments.shimImage.repository=' + POOL_SHIM_IMAGE,

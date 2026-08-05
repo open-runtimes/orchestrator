@@ -202,7 +202,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	}
 }
 
-// proxyContainer is the deployments-sidecar: a native sidecar (init container
+// proxyContainer is the workload-sidecar: a native sidecar (init container
 // with restartPolicy Always) reverse-proxying traffic to the worker. Its
 // kubelet readiness probe (GET /ready on the admin port) is what admits the
 // pod into the Service's EndpointSlice.

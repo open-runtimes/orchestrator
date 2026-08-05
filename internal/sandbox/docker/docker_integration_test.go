@@ -3,7 +3,7 @@
 // Package docker — real-daemon integration tests for the sandbox backend.
 //
 // These drive actual containers: a sandbox image serving the contract, the
-// deployments-sidecar fronting it, and the job-sidecar materializing artifacts.
+// workload-sidecar fronting it, and the job-sidecar materializing artifacts.
 // Requests reach the sandbox from inside the container network (see the note
 // above proxyAddr), so what is exercised is the whole Docker path minus Host
 // routing, which the edge's own tests cover.
@@ -48,10 +48,10 @@ func sandboxTestImage() string {
 }
 
 func sidecarTestImage() string {
-	if img := os.Getenv("DEPLOYMENT_SIDECAR_IMAGE"); img != "" {
+	if img := os.Getenv("WORKLOAD_SIDECAR_IMAGE"); img != "" {
 		return img
 	}
-	return "ko.local/deployments-sidecar:latest"
+	return "ko.local/workload-sidecar:latest"
 }
 
 func jobSidecarTestImage() string {

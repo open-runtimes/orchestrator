@@ -1,6 +1,6 @@
 // Package docker implements the deployment.Orchestrator interface using the
 // Docker API. Each deployment is a worker container fronted by a
-// deployments-sidecar proxy container, with an optional one-shot artifacts
+// workload-sidecar proxy container, with an optional one-shot artifacts
 // step, all sharing a workspace volume. The daemon is the source of truth:
 // the volume is the identity anchor and carries the canonical spec on its
 // labels, so a deployment scaled to zero (no containers) still exists — there
@@ -283,7 +283,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 	return resp.ID, nil
 }
 
-// startProxy creates and starts the deployments-sidecar proxy fronting the
+// startProxy creates and starts the workload-sidecar proxy fronting the
 // worker. It mirrors the volume's spec and host labels for observability; the
 // volume remains authoritative.
 func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, workerIP, spec string) error {
@@ -292,7 +292,7 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 	labels[labelHost] = strings.Join(req.Hosts, ",")
 
 	healthCheck := &container.HealthConfig{
-		Test:          []string{"CMD", "/ko-app/deployments-sidecar", "-check-ready"},
+		Test:          []string{"CMD", "/ko-app/workload-sidecar", "-check-ready"},
 		Interval:      500 * time.Millisecond,
 		Timeout:       5 * time.Second,
 		StartPeriod:   readyTimeout(req.ReadyTimeoutSeconds),

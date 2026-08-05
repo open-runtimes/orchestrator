@@ -76,7 +76,7 @@ type Naming struct {
 // the same ones the workload backends take.
 type Config struct {
 	Namespace              string
-	SidecarImage           string // deployments-sidecar (proxy) image
+	SidecarImage           string // workload-sidecar (proxy) image
 	ShimImage              string // pool-shim image for the shim-install init container
 	SidecarImagePullPolicy string
 	WorkerImagePullPolicy  string

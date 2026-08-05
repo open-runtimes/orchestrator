@@ -3,7 +3,7 @@
 // Package kubernetes — real-cluster integration tests for the pools backend.
 //
 // These tests expect a running kind cluster named "orchestrator-dev" with the
-// ko.local/deployments-sidecar and ko.local/pool-shim images loaded (same
+// ko.local/workload-sidecar and ko.local/pool-shim images loaded (same
 // setup as the deployments backend's k8s_integration tests, so they share a
 // CI job). Run via:
 //
@@ -40,7 +40,7 @@ import (
 
 const (
 	itNamespace    = "orchestrator-pools-integration"
-	itSidecarImage = "ko.local/deployments-sidecar:latest"
+	itSidecarImage = "ko.local/workload-sidecar:latest"
 	itShimImage    = "ko.local/pool-shim:latest"
 
 	// agnhost is a static binary that runs fine as uid 65532 with a read-only

@@ -135,11 +135,6 @@ deployments:
     repository: ghcr.io/open-runtimes/orchestrator/deployments-service
     tag: "" # defaults to the chart's appVersion
     pullPolicy: IfNotPresent
-  # Image for the deployments-sidecar (reverse proxy) in every workload pod.
-  sidecarImage:
-    ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/deployments-sidecar
-    tag: "" # defaults to the chart's appVersion
   # Credentials for s3:// download artifacts, scoped to the deployments/pools
   # service. Forwarded into the artifact-pre init container and warm-pool pods.
   s3:
@@ -281,6 +276,16 @@ deployments:
       memory: 64Mi
     limits:
       memory: 256Mi
+
+# Image for the workload-sidecar: the reverse proxy in front of every serving
+# workload — deployment replicas, pool activations, and sandboxes. One image for
+# all three, because the pod-local invariants it owns (readiness, drain,
+# per-request timeout, concurrency cap, request counting, and the claim protocol)
+# are the same wherever it runs. Jobs have their own, at jobs.sidecarImage.
+workloadSidecarImage:
+  ref: ""
+  repository: ghcr.io/open-runtimes/orchestrator/workload-sidecar
+  tag: "" # defaults to the chart's appVersion
 
 # Sandboxes (docs/sandboxes.md): live, isolated workspaces created from their own
 # warm pools and driven over HTTP at their own hostnames — a workload kind

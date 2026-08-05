@@ -56,7 +56,7 @@ func (m *Manager) PoolLabels(poolID string) map[string]string {
 //   - initContainer "agent-install" (when the consumer declares an Agent): the
 //     publishing image, its command replaced by a copy of the binary into the
 //     workspace — how a sandbox pool serves the contract from any image;
-//   - initContainer "proxy": the deployments-sidecar as a native sidecar
+//   - initContainer "proxy": the workload-sidecar as a native sidecar
 //     (restartPolicy: Always) in pool mode — armed with the claim token, its
 //     /ready probe is the warm-ready gate before a claim and the serving
 //     gate after;
@@ -138,7 +138,7 @@ func shimInstallContainer(cfg Config) corev1.Container {
 	}
 }
 
-// proxyContainer is the deployments-sidecar in pool mode: a native sidecar
+// proxyContainer is the workload-sidecar in pool mode: a native sidecar
 // listening from pod start, holding the claim endpoints. Its kubelet /ready
 // probe gates the pod's Ready condition — warm-ready while unclaimed.
 func proxyContainer(cfg Config, token string) corev1.Container {

@@ -24,7 +24,7 @@ const (
 
 // Config holds configuration for the Kubernetes pool orchestrator.
 type Config struct {
-	SidecarImage string      // deployments-sidecar (proxy) image (set by the caller)
+	SidecarImage string      // workload-sidecar (proxy) image (set by the caller)
 	ShimImage    string      // pool-shim image for the shim-install init container (set by the caller)
 	Pools        []pool.Pool // configured pools (set by the caller from POOLS_JSON)
 

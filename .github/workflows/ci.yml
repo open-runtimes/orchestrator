@@ -75,7 +75,7 @@ jobs:
           go build -o /dev/null ./cmd/jobs-service
           go build -o /dev/null ./cmd/job-sidecar
           go build -o /dev/null ./cmd/deployments-service
-          go build -o /dev/null ./cmd/deployments-sidecar
+          go build -o /dev/null ./cmd/workload-sidecar
           go build -o /dev/null ./cmd/deployments-activator
           go build -o /dev/null ./cmd/pool-shim
 
@@ -141,11 +141,11 @@ jobs:
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
 
-      - name: Build and push deployments-sidecar
+      - name: Build and push workload-sidecar
         env:
-          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-sidecar
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/workload-sidecar
         run: |
-          ko build ./cmd/deployments-sidecar \
+          ko build ./cmd/workload-sidecar \
             --bare \
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
@@ -218,7 +218,7 @@ jobs:
       - name: Build sidecar images
         run: |
           KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
-          KO_DOCKER_REPO=ko.local/deployments-sidecar ko build --local --bare ./cmd/deployments-sidecar
+          KO_DOCKER_REPO=ko.local/workload-sidecar ko build --local --bare ./cmd/workload-sidecar
           KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
 
       - name: Pull test images
@@ -278,10 +278,10 @@ jobs:
         run: |
           KO_DOCKER_REPO=ko.local/jobs-service ko build --local --bare ./cmd/jobs-service
           KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
-          KO_DOCKER_REPO=ko.local/deployments-sidecar ko build --local --bare ./cmd/deployments-sidecar
+          KO_DOCKER_REPO=ko.local/workload-sidecar ko build --local --bare ./cmd/workload-sidecar
           KO_DOCKER_REPO=ko.local/deployments-activator ko build --local --bare ./cmd/deployments-activator
           KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
-          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-shim:latest --name orchestrator-dev
+          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-shim:latest --name orchestrator-dev
 
       - name: Install Gateway API + Traefik
         run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-gateway.sh

@@ -1,6 +1,6 @@
 // Package docker implements the sandbox.Orchestrator interface using the Docker
 // API — the development backend. Each sandbox is a worker container running the
-// pool's image, fronted by a deployments-sidecar proxy container, with an
+// pool's image, fronted by a workload-sidecar proxy container, with an
 // optional one-shot artifacts step, all sharing a workspace volume. The daemon
 // is the source of truth: the volume is the identity anchor and carries the
 // spec and the capability token on its labels, so listing volumes reconstructs
@@ -402,7 +402,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Pool, req *sandb
 	return ip, nil
 }
 
-// startProxy fronts the worker with the deployments-sidecar in direct mode: it
+// startProxy fronts the worker with the workload-sidecar in direct mode: it
 // owns readiness, the per-request timeout, the request counter the idle sweep
 // reads, and the port hint for the sandbox's extra ports.
 func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Pool, req *sandbox.Request, workerIP string) error {
@@ -427,7 +427,7 @@ func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Pool, req *sandbo
 			Image: o.cfg.SidecarImage,
 			Env:   env,
 			Healthcheck: &container.HealthConfig{
-				Test:          []string{"CMD", "/ko-app/deployments-sidecar", "-check-ready"},
+				Test:          []string{"CMD", "/ko-app/workload-sidecar", "-check-ready"},
 				Interval:      500 * time.Millisecond,
 				Timeout:       5 * time.Second,
 				StartPeriod:   servingWait,

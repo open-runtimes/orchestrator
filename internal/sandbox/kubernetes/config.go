@@ -40,7 +40,7 @@ const (
 
 // Config holds configuration for the Kubernetes sandbox orchestrator.
 type Config struct {
-	SidecarImage string // deployments-sidecar (proxy) image (set by the caller)
+	SidecarImage string // workload-sidecar (proxy) image (set by the caller)
 	ShimImage    string // pool-shim image for the shim-install init container (set by the caller)
 	// AgentImage publishes the binary that serves the sandbox contract. It is
 	// copied out of this image into every warm pod's workspace, which is what

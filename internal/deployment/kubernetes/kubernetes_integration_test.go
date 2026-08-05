@@ -3,7 +3,7 @@
 // Package kubernetes — real-cluster integration tests.
 //
 // These tests expect a running kind cluster named "orchestrator-dev" with the
-// ko.local/deployments-sidecar image loaded (same setup as the jobs backend's
+// ko.local/workload-sidecar image loaded (same setup as the jobs backend's
 // k8s_integration tests, so they share a CI job). Run via:
 //
 //	go test -race -tags=k8s_integration -timeout=10m ./internal/deployment/kubernetes/...
@@ -35,7 +35,7 @@ import (
 
 const (
 	testNamespace   = "orchestrator-integration"
-	sidecarImage    = "ko.local/deployments-sidecar:latest"
+	sidecarImage    = "ko.local/workload-sidecar:latest"
 	jobSidecarImage = "ko.local/job-sidecar:latest"
 
 	// agnhost is a static binary that runs fine as uid 65532 with a read-only

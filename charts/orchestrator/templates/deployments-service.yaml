@@ -81,8 +81,8 @@ spec:
               value: {{ .Values.service.metricsPort | quote }}
             - name: DEPLOYMENTS_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
-            - name: DEPLOYMENT_SIDECAR_IMAGE
-              value: {{ include "orchestrator.deploymentsSidecarImage" . | quote }}
+            - name: WORKLOAD_SIDECAR_IMAGE
+              value: {{ include "orchestrator.workloadSidecarImage" . | quote }}
             - name: JOB_SIDECAR_IMAGE
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE

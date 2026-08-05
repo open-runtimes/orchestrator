@@ -1,5 +1,5 @@
 // pool-shim is the warm-pod entrypoint: it blocks on a workspace FIFO until
-// the deployments-sidecar signals an activation, then execs the payload —
+// the workload-sidecar signals an activation, then execs the payload —
 // replacing PID 1, so container exit == workload exit and the pod is
 // discarded (never reused) when the workload ends. See docs/pools.md.
 package main

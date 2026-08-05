@@ -30,7 +30,7 @@ const (
 
 // Config holds configuration for the Docker sandbox orchestrator.
 type Config struct {
-	SidecarImage    string // deployments-sidecar (proxy) image (set by the caller)
+	SidecarImage    string // workload-sidecar (proxy) image (set by the caller)
 	JobSidecarImage string // job-sidecar image for artifact materialization
 	// AgentImage publishes the binary that serves the sandbox contract; it is
 	// copied out of this image into each sandbox's workspace.

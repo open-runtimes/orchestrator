@@ -23,7 +23,7 @@ const (
 
 // Config holds configuration for the Kubernetes deployment orchestrator.
 type Config struct {
-	SidecarImage           string // deployments-sidecar (proxy) image (set by the caller, e.g. from DEPLOYMENT_SIDECAR_IMAGE)
+	SidecarImage           string // workload-sidecar (proxy) image (set by the caller, e.g. from WORKLOAD_SIDECAR_IMAGE)
 	JobSidecarImage        string // job-sidecar image for the artifact-pre init container
 	Kubeconfig             string
 	Context                string // kubeconfig context to pin; empty uses current-context

@@ -18,10 +18,10 @@ import (
 )
 
 func sidecarTestImage() string {
-	if img := os.Getenv("DEPLOYMENT_SIDECAR_IMAGE"); img != "" {
+	if img := os.Getenv("WORKLOAD_SIDECAR_IMAGE"); img != "" {
 		return img
 	}
-	return "ko.local/deployments-sidecar:latest"
+	return "ko.local/workload-sidecar:latest"
 }
 
 func jobSidecarTestImage() string {
