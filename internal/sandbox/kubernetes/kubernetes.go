@@ -193,12 +193,14 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	return o.awaitServing(ctx, p, req, pod)
 }
 
-// claimRequest maps the sandbox onto the sidecar claim protocol; a request
-// without a command falls back to the pool's, which is the usual case.
+// claimRequest maps the sandbox onto the sidecar claim protocol. The command
+// falls back from the request to the pool to the installed agent — so the usual
+// case is that nobody names one, and the image serves the contract by running
+// the agent the shim dropped in its workspace.
 func claimRequest(p *pool.Pool, req *sandbox.Request) *proxy.ClaimRequest {
 	return &proxy.ClaimRequest{
 		ActivationID:   req.ID,
-		Command:        cmp.Or(req.Command, p.Command),
+		Command:        cmp.Or(req.Command, p.Command, agentPath),
 		Environment:    req.Environment,
 		Artifacts:      req.Artifacts,
 		Port:           p.Port,

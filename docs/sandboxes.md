@@ -35,13 +35,23 @@ curl -X POST http://localhost:8080/v1/sandbox \
 
 **Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it.
 
-`command` is optional and defaults to the pool's: a sandbox pool's image already serves the sandbox contract, so there is usually nothing to late-bind but artifacts. `timeoutSeconds` bounds each request to the sandbox's URL — omitted takes 300, the maximum is 3600, and an explicit `0` means no bound at all (see [ports](#ports) for when you want that).
+`command` is optional: with none declared anywhere, the sandbox runs the agent installed in its workspace, so there is usually nothing to late-bind but artifacts. `timeoutSeconds` bounds each request to the sandbox's URL — omitted takes 300, the maximum is 3600, and an explicit `0` means no bound at all (see [ports](#ports) for when you want that).
 
 ## The sandbox contract
 
-**Exec and files are not part of this API.** They are an HTTP contract the sandbox *image* implements, and you reach them at the sandbox's own URL. The orchestrator creates, routes, and reaps sandboxes; it does not sit in the middle of your commands.
+**Exec and files are not part of this API.** They are an HTTP contract served *inside* the sandbox, and you reach them at the sandbox's own URL. The orchestrator creates, routes, and reaps sandboxes; it does not sit in the middle of your commands.
 
-[`open-runtimes/sandbox`](https://github.com/open-runtimes/sandbox) is the reference image (`ghcr.io/open-runtimes/sandbox`). Any image that answers these three routes on the pool's port is a valid sandbox image:
+**Your image does not have to implement it.** The [`open-runtimes/sandbox`](https://github.com/open-runtimes/sandbox) agent is a static binary, and the orchestrator copies it into every sandbox's workspace at pod creation — the same mechanism that installs the pool shim. A sandbox pool over `node:22-slim`, `python:3.12-slim`, or a distroless image serves the contract with nothing added to the image and no `command` declared:
+
+```yaml
+sandboxes:
+  pools:
+    - id: node
+      image: node:22-slim   # implements nothing; the agent supplies the contract
+      port: 3000
+```
+
+A pool or a create call may still set `command` — to run an image that serves the contract itself, or to wrap the agent — and it wins over the installed agent. These are the three routes it answers on the pool's port:
 
 | | |
 | --- | --- |
@@ -49,7 +59,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
 | `GET\|PUT\|DELETE /files/{path}` | whole-file read / write / remove, relative to the workspace |
 | `GET /healthz` | readiness — the pool's probe subject |
 
-That split is deliberate. It keeps the control plane off the data path, so a long exec is not killed by an orchestrator rolling restart and a large file upload is not a shared-fate bottleneck. It also means you can bring your own sandbox image — a computer-use image, a JVM with a warm classloader, an image that speaks a protocol we have never heard of — without changing anything here.
+That split is deliberate. It keeps the control plane off the data path, so a long exec is not killed by an orchestrator rolling restart and a large file upload is not a shared-fate bottleneck. And because the agent is installed rather than baked in, "bring your own image" costs nothing: a computer-use image, a JVM with a warm classloader, or an image that also speaks a protocol we have never heard of all work — the last of those by declaring its own `command`.
 
 ## Running commands
 
@@ -72,7 +82,7 @@ curl -X PUT  http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/fil
 curl         http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/files/out.json
 ```
 
-Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the pool machinery's own `.pool/`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
+Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the machinery's own `.pool/`, `.sandbox/`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
 
 For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready:
 
@@ -139,7 +149,7 @@ The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-in
 sandboxes:
   pools:
     - id: py
-      image: ghcr.io/open-runtimes/sandbox:0.1.0
+      image: python:3.12-slim
       volumes:
         - source: agent-scratch
           path: /data
@@ -183,10 +193,10 @@ curl http://localhost:8080/v1/sandbox-pool
 ```
 
 ```json
-{"pools": [{"id": "py", "image": "ghcr.io/open-runtimes/sandbox:0.1.0", "size": 4, "warm": 4, "claimed": 1}]}
+{"pools": [{"id": "py", "image": "python:3.12-slim", "size": 4, "warm": 4, "claimed": 1}]}
 ```
 
-`GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — plus `command` (the image's entrypoint, which the claim execs) and `maxIdleSeconds`. They are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
+`GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — plus an optional `command` (overriding the installed agent) and `maxIdleSeconds`. They are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
 
 ```yaml
 deployments:
@@ -195,9 +205,8 @@ sandboxes:
   domain: sandboxes.example.com     # needs a wildcard DNS record for *.sandboxes.example.com
   pools:
     - id: py
-      image: ghcr.io/open-runtimes/sandbox:0.1.0
-      command: /usr/local/bin/sandbox
-      port: 3000
+      image: python:3.12-slim         # any runtime image; the agent is installed
+      port: 3000                      # where the agent listens
       size: 4
       runtimeClass: gvisor
       maxIdleSeconds: 900
@@ -217,7 +226,7 @@ Sandboxes also run on the Docker development backend, so you can build against t
 # docker-compose / env for the deployments service
 ORCHESTRATOR_BACKEND: docker
 SANDBOX_DOMAIN: sandboxes.test
-SANDBOX_POOLS_JSON: '[{"id":"py","image":"ghcr.io/open-runtimes/sandbox:0.1.0","command":"/usr/local/bin/sandbox","port":3000,"maxIdleSeconds":900}]'
+SANDBOX_POOLS_JSON: '[{"id":"py","image":"node:22-slim","port":3000,"maxIdleSeconds":900}]'
 DOCKER_NETWORK: orchestrator   # recommended: keeps sandboxes off the default bridge
 ```
 
@@ -232,7 +241,20 @@ One environment note: the service reaches sandboxes by container address, so it 
 
 Not part of the API contract — the reasoning behind the shape above.
 
-### Why exec and files live in the image
+### Why the agent is installed rather than baked in
+
+The contract has to be served from inside the sandbox (see below), but requiring
+it of the *image* would have made every pool image a custom build. So the agent
+travels the same road as the pool shim: a static binary, vendored into the
+pool-shim image at build time (`hack/fetch-sandbox-agent.sh`, pinned and
+checksum-verified against the release), copied into the workspace by the
+shim-install init container, and exec'd as the sandbox's command.
+
+Vendored rather than downloaded per pod on purpose: a warm pod is created for
+every sandbox that will ever be claimed, so a fetch there would put GitHub's
+availability and rate limits on the sandbox creation path.
+
+### Why exec and files live inside the sandbox
 
 The alternatives are both worse. Through the control plane: `deployments-service` is stateless with N replicas and is rolling-restarted on every deploy, so a long exec dies every time we ship; every tenant's file uploads share those replicas; and streaming stdout gains a hop of buffering. Through our own sidecar: the sidecar and worker are different containers sharing only the workspace `emptyDir`, not a process or mount namespace — so the sidecar cannot run the worker image's interpreter or see a worker-only volume mount. Fixing that means either a resident supervisor in `cmd/pool-shim` (it `syscall.Exec`s the payload as PID 1 and dies with it, so this is an inversion plus a socket protocol) or backend-native exec (`pods/exec` + Docker exec: two exec implementations, two file-copy implementations, and `pods/exec` RBAC we would rather not grant).
 

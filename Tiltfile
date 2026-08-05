@@ -105,7 +105,7 @@ if DEPLOYMENTS_ENABLED:
     )
     custom_build(
         POOL_SHIM_IMAGE,
-        'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/pool-shim && docker tag {0} $EXPECTED_REF'.format(POOL_SHIM_IMAGE),
+        'bash hack/fetch-sandbox-agent.sh && KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/pool-shim && docker tag {0} $EXPECTED_REF'.format(POOL_SHIM_IMAGE),
         deps=[
             'cmd/pool-shim',
             'internal/proxy',

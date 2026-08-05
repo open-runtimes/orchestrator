@@ -72,3 +72,6 @@ bin/
 out/
 tmp/
 orchestrator-*.tgz
+
+# Vendored sandbox agent binaries (hack/fetch-sandbox-agent.sh)
+cmd/pool-shim/kodata/agent-linux-*

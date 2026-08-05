@@ -34,7 +34,7 @@ Job orchestration service for running containerized workloads with async callbac
 ## Key concepts
 
 - Jobs run in Docker containers or Kubernetes `batch/v1.Job` resources; artifacts are ordered by `depends` field
-- Sandboxes are live workspaces claimed from warm pools (K8s only); exec and files are the sandbox image's HTTP contract, not ours, and a sandbox's hostname carries an unguessable capability token
+- Sandboxes are live workspaces claimed from warm pools; exec and files are an HTTP contract served inside the sandbox by the open-runtimes/sandbox agent, which the shim copies into the workspace — so any runtime image works and a pool needs no `command`. A sandbox's hostname carries an unguessable capability token
 - K8s backend uses a native sidecar (K8s 1.29+) — kubelet sends SIGTERM to the sidecar when the worker exits
 - Callbacks use CloudEvents 1.0 with optional HMAC-SHA256 signing
 - Service survives restarts — in-flight jobs are resumed

@@ -142,9 +142,8 @@ sandboxes:
   domain: sandboxes.example.com   # needs a wildcard DNS record: *.sandboxes.example.com
   pools:
     - id: py
-      image: ghcr.io/open-runtimes/sandbox:0.1.0   # must serve the sandbox contract
-      command: /usr/local/bin/sandbox              # the image's entrypoint; the claim execs it
-      port: 3000
+      image: python:3.12-slim    # any runtime image: the agent is installed into it
+      port: 3000                 # where the agent listens; no command needed
       size: 4
       runtimeClass: gvisor       # untrusted code is the expected workload here
       maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod

@@ -62,6 +62,14 @@ tasks:
       - task: build-pool-shim
     silent: true
 
+  sandbox-agent:
+    desc: Vendor the pinned open-runtimes/sandbox agent into the pool-shim image
+    cmds:
+      - bash hack/fetch-sandbox-agent.sh
+    status:
+      - test -f cmd/pool-shim/kodata/agent-linux-amd64
+      - test -f cmd/pool-shim/kodata/agent-linux-arm64
+
   build-sandbox-proxy:
     desc: Build sandbox-proxy image
     deps: [tools]
@@ -73,8 +81,8 @@ tasks:
       - pkg/**/*.go
 
   build-pool-shim:
-    desc: Build pool-shim image
-    deps: [tools]
+    desc: Build pool-shim image (carries the vendored sandbox agent)
+    deps: [tools, sandbox-agent]
     cmds:
       - KO_DOCKER_REPO=ko.local/pool-shim {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/pool-shim
     sources:

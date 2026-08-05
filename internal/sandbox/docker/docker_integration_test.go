@@ -37,11 +37,14 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
+// sandboxTestImage is deliberately a PLAIN runtime image: it implements no
+// sandbox contract and contains no agent. Serving the contract is the installed
+// agent's job, and this is the test that proves it.
 func sandboxTestImage() string {
 	if img := os.Getenv("SANDBOX_IMAGE"); img != "" {
 		return img
 	}
-	return "ghcr.io/open-runtimes/sandbox:0.1.0"
+	return "node:22-slim"
 }
 
 func sidecarTestImage() string {
@@ -58,15 +61,29 @@ func jobSidecarTestImage() string {
 	return "ko.local/job-sidecar:latest"
 }
 
-// testPool mirrors what an operator declares for the reference image.
-func testPool() pool.Pool {
-	return pool.Pool{
-		ID:      "py",
-		Image:   sandboxTestImage(),
-		Command: "/usr/local/bin/sandbox",
-		Port:    3000,
-		Size:    1,
+// clientImage runs the tests' HTTP calls. It is a throwaway container on the
+// sandbox's network rather than an exec inside the worker, because the pool
+// image is arbitrary — node:22-slim has no wget, distroless has no shell — and
+// the point of the agent is that the image needs to contain nothing.
+func clientImage() string {
+	if img := os.Getenv("CLIENT_IMAGE"); img != "" {
+		return img
 	}
+	return "alpine:latest"
+}
+
+// shimTestImage carries the vendored agent (hack/fetch-sandbox-agent.sh).
+func shimTestImage() string {
+	if img := os.Getenv("POOL_SHIM_IMAGE"); img != "" {
+		return img
+	}
+	return "ko.local/pool-shim:latest"
+}
+
+// testPool mirrors what an operator declares for an ordinary runtime image: an
+// image and a port, no command — the agent supplies the contract.
+func testPool() pool.Pool {
+	return pool.Pool{ID: "py", Image: sandboxTestImage(), Port: 3000, Size: 1}
 }
 
 func newTestOrchestrator(t *testing.T, networkName string) *Orchestrator {
@@ -74,6 +91,7 @@ func newTestOrchestrator(t *testing.T, networkName string) *Orchestrator {
 	o, err := NewOrchestrator(t.Context(), Config{
 		SidecarImage:    sidecarTestImage(),
 		JobSidecarImage: jobSidecarTestImage(),
+		ShimImage:       shimTestImage(),
 		Pools:           []pool.Pool{testPool()},
 		Network:         networkName,
 		SandboxDomain:   "sandboxes.test",
@@ -210,7 +228,7 @@ func do(t *testing.T, o *Orchestrator, id, addr, method, path, body, port string
 			" | base64 -d; sleep 3; } | nc " + strings.ReplaceAll(addr, ":", " ")
 	}
 
-	out := execInWorker(t, o, id, cmd)
+	out := runClient(t, o, cmd)
 	status, rest := splitStatus(t, out)
 	return status, rest
 }
@@ -250,29 +268,42 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
-// execInWorker runs a shell command in the sandbox's worker container and
-// returns its combined output.
-func execInWorker(t *testing.T, o *Orchestrator, id, command string) string {
+// runClient runs a shell command in a throwaway container on the sandbox
+// network and returns its combined output.
+func runClient(t *testing.T, o *Orchestrator, command string) string {
 	t.Helper()
 	ctx := t.Context()
 
-	created, err := o.client.ContainerExecCreate(ctx, workerName(id), container.ExecOptions{
-		Cmd:          []string{"/bin/sh", "-c", command},
-		AttachStdout: true,
-		AttachStderr: true,
-	})
-	if err != nil {
-		t.Fatalf("exec create: %v", err)
+	if err := o.pullImageIfNeeded(ctx, clientImage()); err != nil {
+		t.Fatalf("pull client image: %v", err)
 	}
-	attached, err := o.client.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{})
+	created, err := o.client.ContainerCreate(ctx,
+		&container.Config{
+			Image:      clientImage(),
+			Entrypoint: []string{"/bin/sh", "-c"},
+			Cmd:        []string{command},
+		},
+		&container.HostConfig{}, o.networkingConfig(), nil, "")
 	if err != nil {
-		t.Fatalf("exec attach: %v", err)
+		t.Fatalf("create client: %v", err)
 	}
-	defer attached.Close()
+	defer o.removeContainer(context.WithoutCancel(ctx), created.ID)
+
+	if err := o.client.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	if _, err := o.waitForExit(ctx, created.ID); err != nil {
+		t.Fatalf("wait client: %v", err)
+	}
+	logs, err := o.client.ContainerLogs(ctx, created.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+	if err != nil {
+		t.Fatalf("client logs: %v", err)
+	}
+	defer logs.Close()
 
 	var out bytes.Buffer
-	if _, err := stdcopy.StdCopy(&out, &out, attached.Reader); err != nil {
-		t.Fatalf("exec read: %v", err)
+	if _, err := stdcopy.StdCopy(&out, &out, logs); err != nil {
+		t.Fatalf("read client logs: %v", err)
 	}
 	return out.String()
 }
@@ -399,22 +430,20 @@ func TestSandboxExtraPorts(t *testing.T) {
 
 	// Start one from an exec, as a caller would with a dev server: nothing was
 	// listening when the sandbox was created, and no restart is involved.
-	// nc -lk -e is a PERSISTENT listener: bound once and staying bound, unlike a
-	// shell loop around one-shot accepts, which leaves a gap between
-	// connections that a probe can land in.
-	execute(t, o, "it-ports", addr, `cat > reply.sh <<'EOS'
-printf "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\ndev server\n"
-EOS
-setsid nohup nc -lk -p 5173 -e /bin/sh reply.sh >/dev/null 2>&1 &
+	// A dev server on the extra port, started from an exec after the sandbox
+	// exists — the actual use case. Node is the pool image's own runtime; the
+	// sandbox needed no shell tooling of its own.
+	execute(t, o, "it-ports", addr,
+		`node -e 'require("http").createServer((_,res)=>res.end("dev server")).listen(5173)' >/dev/null 2>&1 &
 sleep 1`)
 
-	// Bound inside the container first — separating "the listener never came
-	// up" from "the port hint did not route", which are different bugs.
+	// Bound inside the container first — separating "the listener never came up"
+	// from "the port hint did not route", which are different bugs. /proc/net/tcp
+	// works in any Linux image (5173 == 0x1435), unlike netstat or ss.
 	if !testutil.WaitFor(t, func() bool {
-		return strings.Contains(execInWorker(t, o, "it-ports", "netstat -ltn 2>/dev/null || true"), ":5173")
+		return strings.Contains(execute(t, o, "it-ports", addr, "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null"), ":1435")
 	}, testutil.WithTimeout(20*time.Second), testutil.WithInterval(time.Second)) {
-		t.Fatalf("listener never bound in the sandbox: %s",
-			execInWorker(t, o, "it-ports", "ps -o pid,args 2>/dev/null; netstat -ltn 2>/dev/null || true"))
+		t.Fatal("listener never bound in the sandbox")
 	}
 
 	if code, body := do(t, o, "it-ports", addr, http.MethodGet, "/", "", "5173"); code != http.StatusOK || !strings.Contains(body, "dev server") {

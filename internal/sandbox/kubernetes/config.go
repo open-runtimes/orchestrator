@@ -23,6 +23,14 @@ const (
 	// hostPrefix leads every sandbox hostname, so the wildcard route and the
 	// token are never confused for each other: {hostPrefix}{token}.{domain}.
 	hostPrefix = "s-"
+
+	// agentPath is where the shim-install container drops the sandbox agent, and
+	// therefore the default command a sandbox execs. It lives under the
+	// workspace because that is the one volume every container in the pod
+	// shares.
+	agentPath = workspacePath + "/.sandbox/agent"
+	// workspacePath mirrors internal/warm's workspace mount.
+	workspacePath = "/workspace"
 )
 
 // Config holds configuration for the Kubernetes sandbox orchestrator.
@@ -171,6 +179,11 @@ func (c *Config) URLsFor(token string, primary int, ports []int) map[string]stri
 	return urls
 }
 
+// AgentCommand is the command a sandbox runs unless the pool or the request
+// names another: the agent the shim installs into the workspace, which serves
+// the sandbox contract on behalf of ANY image.
+func AgentCommand() string { return agentPath }
+
 // warmConfig projects the sandbox config onto the warm-pool manager's.
 func (c *Config) warmConfig() warm.Config {
 	return warm.Config{
@@ -187,5 +200,16 @@ func (c *Config) warmConfig() warm.Config {
 		OrphanTTL:              c.OrphanTTL,
 		Naming:                 naming(),
 		Metrics:                c.Metrics,
+
+		// Every sandbox pool gets the agent, so a pool's image needs to serve
+		// nothing itself; the agent is told which port to listen on and where the
+		// workspace is.
+		AgentPath: agentPath,
+		WorkloadEnv: func(p *pool.Pool) map[string]string {
+			return map[string]string{
+				"SANDBOX_PORT":      strconv.Itoa(p.Port),
+				"SANDBOX_WORKSPACE": workspacePath,
+			}
+		},
 	}
 }

@@ -137,9 +137,9 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 
 func (s *Service) validate(req *Request, p *pool.Pool) error {
-	if req.Command == "" && p.Command == "" {
-		return apperrors.Validation("command", fmt.Sprintf("command is required — pool %q declares none", p.ID))
-	}
+	// No command check: a sandbox whose pool names none runs the agent the
+	// backend installs into its workspace, which is the point — the image is
+	// just a runtime, and it serves the contract without implementing it.
 	if req.ID != "" {
 		if len(req.ID) > maxIDLength {
 			return apperrors.Validation("id", fmt.Sprintf("sandbox ID exceeds maximum length of %d", maxIDLength))

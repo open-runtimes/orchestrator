@@ -169,6 +169,9 @@ func (o *Orchestrator) materialize(ctx context.Context, p *pool.Pool, req *sandb
 	if err := o.pullImageIfNeeded(pullCtx, o.cfg.SidecarImage); err != nil {
 		return nil, apperrors.Internal("docker.pullSidecarImage", err)
 	}
+	if err := o.installAgent(ctx, pullCtx, req.ID); err != nil {
+		return nil, err
+	}
 
 	workerIP, err := o.startWorker(ctx, p, req)
 	if err != nil {
@@ -299,10 +302,51 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *sandbox.Request) e
 	return nil
 }
 
+// installAgent copies the sandbox agent out of the pool-shim image into the
+// sandbox's workspace volume, the same way the shim-install init container does
+// on Kubernetes. It is what lets a pool run an ordinary runtime image: the image
+// serves the sandbox contract by running the agent, without implementing
+// anything itself.
+func (o *Orchestrator) installAgent(ctx, pullCtx context.Context, id string) error {
+	if err := o.pullImageIfNeeded(pullCtx, o.cfg.ShimImage); err != nil {
+		return apperrors.Internal("docker.pullShimImage", err)
+	}
+	resp, err := o.client.ContainerCreate(ctx,
+		&container.Config{
+			Image:  o.cfg.ShimImage,
+			Cmd:    []string{"-install", workspacePath + "/.pool/shim", "-install-agent", agentPath},
+			User:   "0",
+			Labels: containerLabels(id, typeAgent),
+		},
+		&container.HostConfig{Mounts: []mount.Mount{o.workspaceMount(id)}},
+		nil, nil, agentName(id))
+	if err != nil {
+		return apperrors.Internal("docker.createAgentInstaller", err)
+	}
+	defer o.removeContainer(ctx, resp.ID)
+
+	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return apperrors.Internal("docker.startAgentInstaller", err)
+	}
+	code, err := o.waitForExit(ctx, resp.ID)
+	if err != nil {
+		return apperrors.Internal("docker.waitAgentInstaller", err)
+	}
+	if code != 0 {
+		return apperrors.Internal("docker.agentInstaller",
+			fmt.Errorf("agent install exited with code %d", code))
+	}
+	return nil
+}
+
 // startWorker runs the pool's image with the sandbox's command, returning the
 // container's address on the configured network.
 func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Pool, req *sandbox.Request) (string, error) {
-	env := make([]string, 0, len(p.Environment)+len(req.Environment))
+	// The agent's own settings first, so a pool or request can override them.
+	env := []string{
+		"SANDBOX_PORT=" + strconv.Itoa(p.Port),
+		"SANDBOX_WORKSPACE=" + workspacePath,
+	}
 	for k, v := range p.Environment {
 		env = append(env, k+"="+v)
 	}
@@ -310,10 +354,18 @@ func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Pool, req *sandb
 		env = append(env, k+"="+v)
 	}
 
+	// The command falls back from the request to the pool to the installed agent,
+	// so a plain runtime image serves the contract with nothing named anywhere.
+	// Exec'd directly rather than through a shell: an arbitrary image may not
+	// have one (distroless), and the agent needs no shell features.
+	cmd := []string{agentPath}
+	if command := cmp.Or(req.Command, p.Command); command != "" {
+		cmd = []string{"/bin/sh", "-c", command}
+	}
 	resp, err := o.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:      p.Image,
-			Cmd:        []string{"/bin/sh", "-c", cmp.Or(req.Command, p.Command)},
+			Cmd:        cmd,
 			Env:        env,
 			WorkingDir: workspacePath,
 			Labels:     containerLabels(req.ID, typeWorker),
@@ -557,7 +609,7 @@ func (o *Orchestrator) inspect(ctx context.Context, name string) (*container.Ins
 
 // cleanup removes a sandbox's containers and its workspace volume.
 func (o *Orchestrator) cleanup(ctx context.Context, id string) {
-	for _, name := range []string{proxyName(id), workerName(id), artifactsName(id)} {
+	for _, name := range []string{proxyName(id), workerName(id), artifactsName(id), agentName(id)} {
 		o.removeContainer(ctx, name)
 	}
 	if err := o.client.VolumeRemove(ctx, volumeName(id), true); err != nil && !cerrdefs.IsNotFound(err) {

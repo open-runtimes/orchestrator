@@ -52,7 +52,8 @@ func (m *Manager) PoolLabels(poolID string) map[string]string {
 // containers share an emptyDir workspace:
 //
 //   - initContainer "shim-install": copies the pool-shim binary into the
-//     workspace (the pool image is the user's runtime and has no shim), exits;
+//     workspace (the pool image is the user's runtime and has no shim) — plus,
+//     when the consumer asks for it, the sandbox agent — then exits;
 //   - initContainer "proxy": the deployments-sidecar as a native sidecar
 //     (restartPolicy: Always) in pool mode — armed with the claim token, its
 //     /ready probe is the warm-ready gate before a claim and the serving
@@ -99,11 +100,15 @@ func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 // shimInstallContainer copies the shim binary into the shared workspace
 // before anything else runs. Plain init container: runs to completion first.
 func shimInstallContainer(cfg Config) corev1.Container {
+	args := []string{"-install", shimPath}
+	if cfg.AgentPath != "" {
+		args = append(args, "-install-agent", cfg.AgentPath)
+	}
 	return corev1.Container{
 		Name:            ContainerShimInstall,
 		Image:           cfg.ShimImage,
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
-		Args:            []string{"-install", shimPath},
+		Args:            args,
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
 		SecurityContext: hardenedSecurityContext(cfg),
 	}
@@ -165,9 +170,17 @@ func proxyResources() corev1.ResourceRequirements {
 // workloadContainer is the pool image, entrypoint overridden to the installed
 // shim so the container idles until a claim execs the real payload.
 func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
-	env := make([]corev1.EnvVar, 0, len(p.Environment))
-	for _, k := range slices.Sorted(maps.Keys(p.Environment)) {
-		env = append(env, corev1.EnvVar{Name: k, Value: p.Environment[k]})
+	// The consumer's settings come first so the pool can override them: an
+	// operator who sets SANDBOX_PORT explicitly means it.
+	declared := map[string]string{}
+	if cfg.WorkloadEnv != nil {
+		maps.Copy(declared, cfg.WorkloadEnv(p))
+	}
+	maps.Copy(declared, p.Environment)
+
+	env := make([]corev1.EnvVar, 0, len(declared))
+	for _, k := range slices.Sorted(maps.Keys(declared)) {
+		env = append(env, corev1.EnvVar{Name: k, Value: declared[k]})
 	}
 
 	_, workerVolumeMounts := kube.PersistentVolumes(p.Volumes)

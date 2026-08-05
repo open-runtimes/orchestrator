@@ -6,7 +6,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"orchestrator/internal/config"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -24,8 +27,9 @@ import (
 const logFileName = ".pool-shim.log"
 
 func main() {
-	var installTo string
+	var installTo, agentTo string
 	flag.StringVar(&installTo, "install", "", "copy this binary to the given path and exit (the shim-install init container: the pool image is the user's runtime and has no shim)")
+	flag.StringVar(&agentTo, "install-agent", "", "also copy the vendored sandbox agent to the given path (sandbox pools: the workload image serves the sandbox contract by running this, whatever the image is)")
 	flag.Parse()
 
 	if installTo != "" {
@@ -37,6 +41,13 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("Shim installed", "path", installTo)
+		if agentTo != "" {
+			if err := installAgent(agentTo); err != nil {
+				slog.Error("Sandbox agent install failed", "path", agentTo, "error", err)
+				os.Exit(1)
+			}
+			slog.Info("Sandbox agent installed", "path", agentTo)
+		}
 		return
 	}
 
@@ -67,24 +78,50 @@ func install(path string) error {
 	if err != nil {
 		return err
 	}
-	src, err := os.Open(self)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
+	return copyExecutable(self, path)
+}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+// installAgent copies the vendored open-runtimes/sandbox agent for this
+// architecture into the workspace, so a sandbox pool's workload image serves the
+// sandbox contract by running it — no matter what that image is, and without the
+// image implementing anything.
+//
+// The binary is static (verified against glibc, musl, and distroless bases), and
+// it is vendored into this image at build time by hack/fetch-sandbox-agent.sh
+// rather than fetched per pod: a warm pod is created for every sandbox that will
+// ever be claimed, and a download here would put GitHub on the creation path.
+func installAgent(path string) error {
+	dataPath := os.Getenv("KO_DATA_PATH")
+	if dataPath == "" {
+		return errors.New("KO_DATA_PATH is unset: this image carries no vendored sandbox agent")
 	}
-	dst, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	agent := filepath.Join(dataPath, "agent-linux-"+runtime.GOARCH)
+	if _, err := os.Stat(agent); err != nil {
+		return fmt.Errorf("vendored sandbox agent for linux/%s: %w", runtime.GOARCH, err)
+	}
+	return copyExecutable(agent, path)
+}
+
+// copyExecutable copies src to dst with mode 0755, creating parents.
+func copyExecutable(src, dst string) error {
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = dst.Close()
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return dst.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func run(workspace string) error {

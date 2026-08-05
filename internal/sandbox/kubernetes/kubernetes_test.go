@@ -66,11 +66,10 @@ func (f *fakeSidecar) Requests(_ context.Context, podIP string) (int64, error) {
 	return f.requests[podIP], nil
 }
 
+// testPool is a pool over a plain runtime image: it names no command, so the
+// sandbox runs the agent the shim installs — the ordinary case.
 func testPool(id string) pool.Pool {
-	return pool.Pool{
-		ID: id, Image: "ghcr.io/open-runtimes/sandbox:latest",
-		Command: "/usr/local/bin/sandbox", Port: 3000, Size: 1, Burst: pool.BurstReject,
-	}
+	return pool.Pool{ID: id, Image: "node:22-slim", Port: 3000, Size: 1, Burst: pool.BurstReject}
 }
 
 func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake.Clientset, *fakeSidecar) {
@@ -177,8 +176,9 @@ func TestCreate_ClaimsAndStampsTheToken(t *testing.T) {
 	if pod.Labels[LabelToken] != "9f3c1a04b7e28d65f1024c8ba3e7d95f" {
 		t.Errorf("token label (the edge's routing key): got %v", pod.Labels)
 	}
-	// The pool's command is what the claim execs when the request omits one.
-	if sidecar.last.Command != "/usr/local/bin/sandbox" || sidecar.last.Port != 3000 {
+	// With no command named anywhere, the claim execs the installed agent — this
+	// is what lets an ordinary runtime image serve the sandbox contract.
+	if sidecar.last.Command != AgentCommand() || sidecar.last.Port != 3000 {
 		t.Errorf("claim request: got %+v", sidecar.last)
 	}
 }
@@ -366,5 +366,33 @@ func TestCreate_PortsGetTheirOwnHostnames(t *testing.T) {
 	}
 	if reread.URLs["5173"] != want["5173"] {
 		t.Errorf("reconstructed urls: got %v", reread.URLs)
+	}
+}
+
+// A pool or request may still name a command — an image that serves the contract
+// itself, or a wrapper around the agent — and it wins over the installed agent.
+func TestCreate_CommandOverridesTheAgent(t *testing.T) {
+	t.Parallel()
+	p := testPool("py")
+	p.Command = "/usr/local/bin/sandbox"
+	o, cs, sidecar := newTestOrchestrator(t, p)
+	addPod(t, cs, warmPodFixture(o, "py", "sbx-py-aaaaa", "10.0.0.1"))
+
+	if _, err := o.Create(t.Context(), request("agent")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sidecar.last.Command != "/usr/local/bin/sandbox" {
+		t.Errorf("pool command must win over the agent, got %q", sidecar.last.Command)
+	}
+
+	req := request("agent-2")
+	req.Command = "node server.js"
+	o2, cs2, sidecar2 := newTestOrchestrator(t, p)
+	addPod(t, cs2, warmPodFixture(o2, "py", "sbx-py-bbbbb", "10.0.0.2"))
+	if _, err := o2.Create(t.Context(), req); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sidecar2.last.Command != "node server.js" {
+		t.Errorf("request command must win over both, got %q", sidecar2.last.Command)
 	}
 }

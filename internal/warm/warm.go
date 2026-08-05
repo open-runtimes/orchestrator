@@ -78,6 +78,16 @@ type Config struct {
 	// Metrics receives pool capacity and claim telemetry; may be nil.
 	Metrics *observability.Metrics
 
+	// AgentPath, when set, has the shim-install container also drop the vendored
+	// sandbox agent there — so a pool's image serves the sandbox contract by
+	// running it, whatever the image is. Empty for deployment pools, which
+	// late-bind their own command.
+	AgentPath string
+	// WorkloadEnv contributes environment to the workload container, on top of
+	// the pool's own — the agent's SANDBOX_* settings, for consumers that
+	// install it.
+	WorkloadEnv func(p *pool.Pool) map[string]string
+
 	// Client is the sidecar-facing surface. Nil uses the real HTTP one; unit
 	// tests inject a fake, since fake-clientset pods have no reachable IPs.
 	Client Client

@@ -14,6 +14,10 @@ const (
 	// {hostPrefix}{token}.{domain}, and {hostPrefix}{token}-{port}.{domain}.
 	hostPrefix = "s-"
 
+	// agentPath is where the agent-install container drops the sandbox agent,
+	// and therefore the default command a sandbox runs.
+	agentPath = workspacePath + "/.sandbox/agent"
+
 	// reapTick is how often the idle sweep runs. Docker has no leader election
 	// and one service process, so the loop simply runs.
 	reapTick = 2 * time.Second
@@ -23,6 +27,7 @@ const (
 type Config struct {
 	SidecarImage    string      // deployments-sidecar (proxy) image (set by the caller)
 	JobSidecarImage string      // job-sidecar image for artifact materialization
+	ShimImage       string      // pool-shim image; carries the vendored sandbox agent
 	Pools           []pool.Pool // configured sandbox pools (set by the caller from SANDBOX_POOLS_JSON)
 
 	Network          string   // Docker network to attach sandbox containers to

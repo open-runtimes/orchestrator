@@ -251,6 +251,7 @@ func buildSandboxOrchestrator(ctx context.Context, backend string, pools []pool.
 	case "docker":
 		cfg := sandboxdocker.LoadConfigFromEnv()
 		cfg.SidecarImage = config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+		cfg.ShimImage = config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
 		cfg.Pools = pools
 		return sandboxdocker.NewOrchestrator(ctx, cfg)
 	case "kubernetes":

@@ -86,7 +86,7 @@ func TestCreate_UnknownPoolNotFound(t *testing.T) {
 	}
 }
 
-func TestCreate_CommandFallsBackToThePool(t *testing.T) {
+func TestCreate_LeavesTheCommandToTheBackend(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()
 
@@ -97,12 +97,12 @@ func TestCreate_CommandFallsBackToThePool(t *testing.T) {
 		t.Errorf("the service must leave the fallback to the backend, got %q", orch.last.Command)
 	}
 
-	// A pool with no command of its own and no request command is a 400, not a
-	// sandbox that starts and immediately exits.
-	bare, _ := testService(pool.Pool{ID: "py", Image: "img", Port: 3000})
-	_, err := bare.Create(context.Background(), &Request{Pool: "py"})
-	if !errors.Is(err, apperrors.ErrValidation) {
-		t.Fatalf("want a validation error, got %v", err)
+	// A pool that names no command is the ordinary case, not an error: its image
+	// is just a runtime, and the backend runs the agent it installed into the
+	// workspace.
+	bare, _ := testService(pool.Pool{ID: "py", Image: "node:22-slim", Port: 3000})
+	if _, err := bare.Create(context.Background(), &Request{Pool: "py"}); err != nil {
+		t.Fatalf("a pool without a command must be accepted: %v", err)
 	}
 }
 

@@ -27,6 +27,7 @@ const (
 	typeWorker    = "worker"
 	typeProxy     = "proxy"
 	typeArtifacts = "artifacts"
+	typeAgent     = "agent-install"
 )
 
 // workspacePath is where the workspace volume mounts in every container of a
@@ -36,6 +37,7 @@ const workspacePath = "/workspace"
 func workerName(id string) string    { return "sbx-" + id + "-worker" }
 func proxyName(id string) string     { return "sbx-" + id + "-proxy" }
 func artifactsName(id string) string { return "sbx-" + id + "-artifacts" }
+func agentName(id string) string     { return "sbx-" + id + "-agent" }
 func volumeName(id string) string    { return "sbx-" + id + "-workspace" }
 
 // containerLabels returns the base labels for one of a sandbox's containers.

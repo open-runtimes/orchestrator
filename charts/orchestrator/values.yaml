@@ -290,16 +290,17 @@ deployments:
 # `deployments.enabled` must also be true; the chart fails the install rather
 # than rendering a sandbox proxy with nothing serving /v1/sandbox.
 sandboxes:
-  # Sandbox pools. Same schema as deployments.pools, and the image must serve
-  # the sandbox contract (ghcr.io/open-runtimes/sandbox is the reference
-  # one), so `command` and `port` name its entrypoint and listen port.
+  # Sandbox pools. Same schema as deployments.pools. The image needs to serve
+  # nothing: the open-runtimes/sandbox agent is copied into every sandbox's
+  # workspace at pod creation and run there, so any runtime image works and
+  # `port` is simply where the agent listens. Declare `command` only to override
+  # it (an image that serves the contract itself, say).
   # Untrusted, model-generated code is the expected workload here, so set
   # runtimeClass: gvisor (or kata) and map it with KUBE_RUNTIME_CLASSES.
   # maxIdleSeconds caps how long an abandoned sandbox may hold a warm pod.
   #
   #   - id: py
-  #     image: ghcr.io/open-runtimes/sandbox:0.1.0
-  #     command: /usr/local/bin/sandbox
+  #     image: python:3.12-slim
   #     port: 3000
   #     size: 4
   #     runtimeClass: gvisor
