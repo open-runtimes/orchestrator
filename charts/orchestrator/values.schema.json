@@ -202,35 +202,36 @@
         "pools": {
           "type": "array",
           "description": "pkg/pool.Pool entries. id, image and port are required; the service rejects the rest at startup.",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["id", "image", "port"],
-            "properties": {
-              "id": { "type": "string", "minLength": 1 },
-              "image": { "type": "string", "minLength": 1 },
-              "port": { "$ref": "#/$defs/port" },
-              "size": { "type": "integer", "minimum": 0 },
-              "cpu": { "type": "number", "minimum": 0 },
-              "memory": { "type": "integer", "minimum": 0 },
-              "sandbox": { "enum": ["", "runc", "gvisor", "kata"] },
-              "burst": { "enum": ["cold", "reject"] },
-              "environment": { "$ref": "#/$defs/stringMap" },
-              "meta": { "$ref": "#/$defs/stringMap" },
-              "probes": { "$ref": "#/$defs/probes" },
-              "volumes": {
-                "type": "array",
-                "items": {
+          "items": { "$ref": "#/$defs/pool" }
+        },
+        "sandboxes": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Sandboxes (docs/sandboxes.md): live workspaces claimed from their own warm pools and reached at s-{token}.{domain}. domain is required once pools or the edge are configured.",
+          "properties": {
+            "pools": {
+              "type": "array",
+              "description": "pkg/pool.Pool entries, same schema as deployments.pools. The image must serve the sandbox contract, so command and port name its entrypoint and listen port.",
+              "items": { "$ref": "#/$defs/pool" }
+            },
+            "domain": { "type": "string" },
+            "scheme": { "enum": ["http", "https"] },
+            "leaseName": { "type": "string" },
+            "edge": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "replicaCount": { "type": "integer", "minimum": 0 },
+                "autoscaling": { "$ref": "#/$defs/autoscaling" },
+                "port": { "$ref": "#/$defs/port" },
+                "holdSeconds": { "type": "integer", "minimum": 1 },
+                "route": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["source", "path"],
-                  "properties": {
-                    "source": { "type": "string", "minLength": 1 },
-                    "path": { "type": "string", "minLength": 1 },
-                    "subPath": { "type": "string" },
-                    "readonly": { "type": "boolean" }
-                  }
-                }
+                  "properties": { "enabled": { "type": "boolean" } }
+                },
+                "resources": { "$ref": "#/$defs/resources" }
               }
             }
           }
@@ -239,6 +240,39 @@
     }
   },
   "$defs": {
+    "pool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "image", "port"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "image": { "type": "string", "minLength": 1 },
+        "command": { "type": "string" },
+        "port": { "$ref": "#/$defs/port" },
+        "size": { "type": "integer", "minimum": 0 },
+        "cpu": { "type": "number", "minimum": 0 },
+        "memory": { "type": "integer", "minimum": 0 },
+        "runtimeClass": { "enum": ["", "runc", "gvisor", "kata"] },
+        "burst": { "enum": ["cold", "reject"] },
+        "maxIdleSeconds": { "type": "integer", "minimum": 0 },
+        "environment": { "$ref": "#/$defs/stringMap" },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source", "path"],
+            "properties": {
+              "source": { "type": "string", "minLength": 1 },
+              "path": { "type": "string", "minLength": 1 },
+              "subPath": { "type": "string" },
+              "readonly": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+
     "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
     "imagePullSecrets": {
       "type": "array",
@@ -253,27 +287,6 @@
     "stringMap": {
       "type": "object",
       "additionalProperties": { "type": "string" }
-    },
-    "probes": {
-      "description": "pkg/deployment.Probes. Closed: POOLS_JSON is decoded by encoding/json, which drops unknown fields silently, so a misspelling here would leave the pool running with no probe rather than failing.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "readiness": { "$ref": "#/$defs/probe" },
-        "liveness": { "$ref": "#/$defs/probe" },
-        "startup": { "$ref": "#/$defs/probe" }
-      }
-    },
-    "probe": {
-      "description": "pkg/deployment.Probe. An empty path means a TCP connect rather than an HTTP GET.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "path": { "type": "string" },
-        "periodMillis": { "type": "integer", "minimum": 1 },
-        "timeoutMillis": { "type": "integer", "minimum": 1 },
-        "failureThreshold": { "type": "integer", "minimum": 1 }
-      }
     },
     "quantity": {
       "description": "Kubernetes quantity — a string like \"100m\"/\"200Gi\", or a bare number.",

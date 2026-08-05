@@ -29,6 +29,9 @@ spec:
         {{- include "orchestrator.sandboxEdgeSelectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+      {{- with include "orchestrator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
       securityContext:
         {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
       topologySpreadConstraints:
