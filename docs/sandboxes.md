@@ -246,13 +246,21 @@ Not part of the API contract — the reasoning behind the shape above.
 The contract has to be served from inside the sandbox (see below), but requiring
 it of the *image* would have made every pool image a custom build. So the agent
 travels the same road as the pool shim: a static binary, vendored into the
-pool-shim image at build time (`hack/fetch-sandbox-agent.sh`, pinned and
-checksum-verified against the release), copied into the workspace by the
-shim-install init container, and exec'd as the sandbox's command.
+pool-shim image at build time (`hack/fetch-sandbox-agent.sh`), copied into the
+workspace by the shim-install init container, and exec'd as the sandbox's
+command.
 
 Vendored rather than downloaded per pod on purpose: a warm pod is created for
 every sandbox that will ever be claimed, so a fetch there would put GitHub's
 availability and rate limits on the sandbox creation path.
+
+The version **and both SHA-256 digests** are pinned in that script, and the
+digests are deliberately not read from the release's own `checksums.txt` — that
+file can be replaced along with the asset it describes, so it proves the download
+survived transit and nothing more. A re-cut release therefore fails the build
+rather than silently changing the binary that runs inside every sandbox.
+Upgrading is one commit that changes the version and both digests, so review sees
+exactly which bytes were accepted.
 
 ### Why exec and files live inside the sandbox
 
