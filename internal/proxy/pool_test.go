@@ -231,7 +231,7 @@ func TestPoolClaimHTTP(t *testing.T) {
 		ActivationID:   "act-http",
 		Command:        "serve",
 		Port:           port,
-		TimeoutSeconds: 1,
+		TimeoutSeconds: ptrTo(1),
 	})
 	if status != http.StatusOK {
 		t.Fatalf("HTTP claim: got %d, want 200", status)
@@ -389,4 +389,42 @@ func getWithPort(t *testing.T, p *Proxy, port string) (int, string) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
+// A claim's timeout is installed as given — including a 0, which asks for no
+// bound at all. Anything else cuts the long-lived sessions (WebSocket
+// terminals, language servers) that request it, at whatever default the pod
+// happened to be configured with.
+func TestPoolClaim_TimeoutSeconds(t *testing.T) {
+	for name, tc := range map[string]struct {
+		claim *int
+		want  time.Duration
+	}{
+		"stated":    {claim: ptrTo(30), want: 30 * time.Second},
+		"unbounded": {claim: ptrTo(0), want: 0},
+		"unstated":  {claim: nil, want: 300 * time.Second}, // the pod's own default
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := poolConfig(t)
+			cfg.Timeout = 300 * time.Second
+			execCh := shimReader(t, cfg.Workspace)
+			p := startProxy(t, cfg)
+
+			if status := postActivate(t, p, testClaimToken, ClaimRequest{
+				ActivationID:   "act-" + name,
+				Command:        "serve",
+				Port:           backendOnLoopback(t, "ok"),
+				TimeoutSeconds: tc.claim,
+			}); status != http.StatusOK {
+				t.Fatalf("claim: got %d, want 200", status)
+			}
+			<-execCh
+
+			if got := p.bind.Load().timeout; got != tc.want {
+				t.Errorf("per-request timeout: want %v, got %v", tc.want, got)
+			}
+		})
+	}
 }

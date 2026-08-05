@@ -31,10 +31,14 @@ type Request struct {
 	// terminal socket alongside the contract. Unlike volumes and the isolation
 	// tier, ports are NOT fixed by the warm pod: a container may bind any port
 	// at any time, so this stays a per-sandbox field.
-	Ports              []int        `json:"ports,omitempty"`
-	Artifacts          artifact.Set `json:"artifacts,omitempty"` // materialized into the workspace before ready
-	TimeoutSeconds     int          `json:"timeoutSeconds,omitempty"`
-	IdleTimeoutSeconds int          `json:"idleTimeoutSeconds,omitempty"` // tear down after this long with no traffic; 0 = until DELETE
+	Ports     []int        `json:"ports,omitempty"`
+	Artifacts artifact.Set `json:"artifacts,omitempty"` // materialized into the workspace before ready
+	// TimeoutSeconds bounds each request to the sandbox's URL. Omitted takes
+	// the default (300); 0 means NO bound, for sessions meant to outlive one —
+	// a WebSocket terminal, a language server, a long stream. A plain int could
+	// not carry that: omitted and "0" are the same value on the wire.
+	TimeoutSeconds     *int `json:"timeoutSeconds,omitempty"`
+	IdleTimeoutSeconds int  `json:"idleTimeoutSeconds,omitempty"` // tear down after this long with no traffic; 0 = until DELETE
 
 	// Pool names the sandbox pool to claim from.
 	Pool string `json:"pool"`

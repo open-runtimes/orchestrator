@@ -229,7 +229,7 @@ func claimRequest(p *pool.Pool, act *pool.Activation) *proxy.ClaimRequest {
 		Environment:    act.Environment,
 		Artifacts:      act.Artifacts,
 		Port:           p.Port,
-		TimeoutSeconds: act.TimeoutSeconds,
+		TimeoutSeconds: &act.TimeoutSeconds,
 	}
 }
 

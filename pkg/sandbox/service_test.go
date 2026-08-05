@@ -150,11 +150,24 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 	if _, err := svc.Create(context.Background(), &Request{Pool: "py"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if orch.last.TimeoutSeconds != defaultTimeout {
-		t.Errorf("timeoutSeconds default: got %d", orch.last.TimeoutSeconds)
+	if orch.last.TimeoutSeconds == nil || *orch.last.TimeoutSeconds != defaultTimeout {
+		t.Errorf("omitted timeoutSeconds must take the default: got %v", orch.last.TimeoutSeconds)
 	}
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: maxTimeoutSecs + 1}); !errors.Is(err, apperrors.ErrValidation) {
+	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: ptrTo(maxTimeoutSecs + 1)}); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error over the timeout ceiling")
+	}
+	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: ptrTo(-1)}); !errors.Is(err, apperrors.ErrValidation) {
+		t.Error("want a validation error for a negative timeout")
+	}
+
+	// An explicit 0 is the documented escape hatch for long-lived sessions
+	// (WebSocket terminals, language servers). It must survive validation, or
+	// the connection it was asked for is cut at the default five minutes.
+	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: ptrTo(0)}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if orch.last.TimeoutSeconds == nil || *orch.last.TimeoutSeconds != 0 {
+		t.Errorf("explicit 0 must reach the backend unchanged: got %v", orch.last.TimeoutSeconds)
 	}
 }
 

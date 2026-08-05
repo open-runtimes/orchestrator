@@ -142,8 +142,10 @@ func podGone(t *testing.T, cs *fake.Clientset, name string) bool {
 	return apierrors.IsNotFound(err)
 }
 
+func ptrTo[T any](v T) *T { return &v }
+
 func request(id string) *sandbox.Request {
-	return &sandbox.Request{ID: id, Pool: "py", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: 300}
+	return &sandbox.Request{ID: id, Pool: "py", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300)}
 }
 
 func TestCreate_ClaimsAndStampsTheToken(t *testing.T) {

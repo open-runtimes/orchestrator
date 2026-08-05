@@ -148,11 +148,15 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 			return apperrors.Validation("id", "sandbox ID must be an RFC-1123 label (lowercase alphanumeric, interior hyphens)")
 		}
 	}
-	if req.TimeoutSeconds < 0 || req.TimeoutSeconds > maxTimeoutSecs {
-		return apperrors.Validation("timeoutSeconds", fmt.Sprintf("timeout must be between 0 and %d seconds", maxTimeoutSecs))
-	}
-	if req.TimeoutSeconds == 0 {
-		req.TimeoutSeconds = defaultTimeout
+	// An omitted timeout takes the default; an explicit 0 is left alone, because
+	// it means "no bound" — overwriting it would cut the long-lived sessions
+	// (terminals, language servers) that ask for it.
+	switch {
+	case req.TimeoutSeconds == nil:
+		req.TimeoutSeconds = ptrTo(defaultTimeout)
+	case *req.TimeoutSeconds < 0 || *req.TimeoutSeconds > maxTimeoutSecs:
+		return apperrors.Validation("timeoutSeconds",
+			fmt.Sprintf("timeout must be between 0 (no bound) and %d seconds", maxTimeoutSecs))
 	}
 	if req.IdleTimeoutSeconds < 0 {
 		return apperrors.Validation("idleTimeoutSeconds", "idle timeout must be non-negative")
@@ -181,6 +185,8 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 	}
 	return nil
 }
+
+func ptrTo[T any](v T) *T { return &v }
 
 // validatePorts checks the extra ports a sandbox asks for. The sidecar's own
 // data and admin ports are refused: they are the machinery's, and exposing the

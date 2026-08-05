@@ -46,8 +46,14 @@ type ClaimRequest struct {
 	// Ports are additional ports the workload serves, reachable via HeaderPort.
 	// Only Port is probed for readiness: a secondary port may come up late (a
 	// dev server started from an exec) without ever failing the sandbox.
-	Ports          []int `json:"ports,omitempty"`
-	TimeoutSeconds int   `json:"timeoutSeconds,omitempty"`
+	Ports []int `json:"ports,omitempty"`
+	// TimeoutSeconds bounds each proxied request. Nil leaves the sidecar's own
+	// configured default in place; a value of 0 is an EXPLICIT "no bound", for
+	// sessions that are meant to outlive any timeout — a WebSocket terminal, a
+	// language server, a long stream. The pointer is what separates "the caller
+	// did not say" from "the caller said unbounded"; artifact materialization
+	// keeps the sidecar's budget either way.
+	TimeoutSeconds *int `json:"timeoutSeconds,omitempty"`
 }
 
 // ClaimState is the sidecar's authoritative claim record.

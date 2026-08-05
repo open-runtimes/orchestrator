@@ -102,9 +102,11 @@ func writeClaimState(w http.ResponseWriter, status int, s ClaimState) {
 // workspace, one ShimExec line down the FIFO, then the late-bound data
 // plane. Any error poisons the pod (the caller publishes it).
 func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
-	timeoutSeconds := req.TimeoutSeconds
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = int(p.cfg.Timeout / time.Second)
+	// Artifacts keep a bound even when the requests they serve do not: an
+	// unbounded claim means long-lived SESSIONS, not an unbounded download.
+	timeoutSeconds := int(p.cfg.Timeout / time.Second)
+	if req.TimeoutSeconds != nil && *req.TimeoutSeconds > 0 {
+		timeoutSeconds = *req.TimeoutSeconds
 	}
 
 	// Same materialization path as the job sidecar's pre phase: pre-job
@@ -135,8 +137,10 @@ func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
 func (p *Proxy) arm(req ClaimRequest) {
 	cfg := p.cfg
 	cfg.Target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(req.Port))
-	if req.TimeoutSeconds > 0 {
-		cfg.Timeout = time.Duration(req.TimeoutSeconds) * time.Second
+	// A claim that states its timeout wins, including a 0 that asks for no
+	// bound at all — the reason this is a pointer.
+	if req.TimeoutSeconds != nil {
+		cfg.Timeout = time.Duration(*req.TimeoutSeconds) * time.Second
 	}
 	b := newBinding(cfg)
 	// Secondary ports are addressable but never probed — see ClaimRequest.Ports.

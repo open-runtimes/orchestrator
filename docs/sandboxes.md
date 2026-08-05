@@ -35,7 +35,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
 
 **Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it.
 
-`command` is optional and defaults to the pool's: a sandbox pool's image already serves the sandbox contract, so there is usually nothing to late-bind but artifacts. `timeoutSeconds` bounds each request to the sandbox's URL (default 300, max 3600).
+`command` is optional and defaults to the pool's: a sandbox pool's image already serves the sandbox contract, so there is usually nothing to late-bind but artifacts. `timeoutSeconds` bounds each request to the sandbox's URL — omitted takes 300, the maximum is 3600, and an explicit `0` means no bound at all (see [ports](#ports) for when you want that).
 
 ## The sandbox contract
 
@@ -123,7 +123,7 @@ Two rules the platform enforces:
 
 Readiness is the primary port's alone: a secondary port that never comes up does not fail the sandbox, and traffic to it counts as activity for the [idle timeout](#lifecycle) like any other request. `8000` and `8001` belong to the sidecar and are refused.
 
-WebSocket traffic (terminals, LSP) upgrades cleanly through the edge — but set `timeoutSeconds: 0` for those sandboxes, or the per-request bound will cut long-lived connections.
+WebSocket traffic (terminals, LSP) upgrades cleanly through the edge. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox; artifact materialization keeps its own budget regardless, so an unbounded sandbox is not an unbounded download.
 
 ## Persistence
 
