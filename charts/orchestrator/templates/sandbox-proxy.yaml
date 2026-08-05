@@ -1,34 +1,32 @@
-{{- if and .Values.deployments.enabled .Values.deployments.sandboxes.edge.enabled }}
+{{- if and .Values.deployments.enabled .Values.deployments.sandboxes.proxy.enabled }}
 {{- /*
-The sandbox edge: the deployments-activator image in EDGE_MODE=sandbox. One
-wildcard HTTPRoute for *.{domain} sends every sandbox here, and it resolves the
-sandbox from the capability token in the request's Host. Separate replica set
-from the deployments activator on purpose — this one is permanently on the data
-path, and a sandbox file upload should not share a failure domain with a
-deployment cold start.
+The sandbox proxy: one wildcard HTTPRoute for *.{domain} sends every sandbox
+here, and it resolves the sandbox from the capability token in the request's
+Host. Its own component rather than a mode of the activator — permanently on the
+data path, pods-read-only RBAC, and nothing to raise (cmd/sandbox-proxy).
 */}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 spec:
-  {{- if not .Values.deployments.sandboxes.edge.autoscaling.enabled }}
-  replicas: {{ .Values.deployments.sandboxes.edge.replicaCount }}
+  {{- if not .Values.deployments.sandboxes.proxy.autoscaling.enabled }}
+  replicas: {{ .Values.deployments.sandboxes.proxy.replicaCount }}
   {{- end }}
   strategy:
     {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
   selector:
     matchLabels:
-      {{- include "orchestrator.sandboxEdgeSelectorLabels" . | nindent 6 }}
+      {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "orchestrator.sandboxEdgeSelectorLabels" . | nindent 8 }}
+        {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+      serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
       {{- with include "orchestrator.imagePullSecrets" . }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -40,14 +38,14 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              {{- include "orchestrator.sandboxEdgeSelectorLabels" . | nindent 14 }}
+              {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 14 }}
       volumes:
         - name: tmp
           emptyDir: {}
       containers:
-        - name: sandbox-edge
-          image: {{ include "orchestrator.activatorImage" . | quote }}
-          imagePullPolicy: {{ .Values.deployments.activator.image.pullPolicy }}
+        - name: sandbox-proxy
+          image: {{ include "orchestrator.sandboxProxyImage" . | quote }}
+          imagePullPolicy: {{ .Values.deployments.sandboxes.proxy.image.pullPolicy }}
           securityContext:
             {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
@@ -55,24 +53,22 @@ spec:
               mountPath: /tmp
           ports:
             - name: data
-              containerPort: {{ .Values.deployments.sandboxes.edge.port }}
+              containerPort: {{ .Values.deployments.sandboxes.proxy.port }}
             - name: mgmt
               containerPort: {{ .Values.service.apiPort }}
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
           env:
-            - name: EDGE_MODE
-              value: sandbox
             - name: ACTIVATOR_PORT
-              value: {{ .Values.deployments.sandboxes.edge.port | quote }}
+              value: {{ .Values.deployments.sandboxes.proxy.port | quote }}
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
             - name: SANDBOX_DOMAIN
-              value: {{ required "deployments.sandboxes.domain is required when the sandbox edge is enabled" .Values.deployments.sandboxes.domain | quote }}
+              value: {{ required "deployments.sandboxes.domain is required when the sandbox proxy is enabled" .Values.deployments.sandboxes.domain | quote }}
             - name: SANDBOX_HOLD_SECONDS
-              value: {{ .Values.deployments.sandboxes.edge.holdSeconds | quote }}
+              value: {{ .Values.deployments.sandboxes.proxy.holdSeconds | quote }}
             - name: PORT
               value: {{ .Values.service.apiPort | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
@@ -95,44 +91,45 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.deployments.sandboxes.edge.resources | nindent 12 }}
+            {{- toYaml .Values.deployments.sandboxes.proxy.resources | nindent 12 }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: sandbox-edge
+  name: sandbox-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
-    {{- include "orchestrator.sandboxEdgeSelectorLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 4 }}
   ports:
     - name: data
-      port: {{ .Values.deployments.sandboxes.edge.port }}
+      port: {{ .Values.deployments.sandboxes.proxy.port }}
       targetPort: data
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 ---
 {{- /*
-The edge reads pods only: it resolves a token to the pod carrying it. No
-secrets (sandbox traffic is sync — there is no callback config to read), and
-nothing writable.
+Pods, read-only: all it does is resolve a token to the pod carrying it. No
+secrets (sandbox traffic is sync — there is no callback config to read), no
+scale writes, nothing mutable. This is half the reason it is not a mode of the
+activator, which needs both.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
   namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -141,19 +138,19 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
   namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
 subjects:
   - kind: ServiceAccount
-    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
     namespace: {{ .Release.Namespace }}
-{{- if and .Values.deployments.sandboxes.edge.route.enabled .Values.deployments.gateway.enabled }}
+{{- if and .Values.deployments.sandboxes.proxy.route.enabled .Values.deployments.gateway.enabled }}
 ---
 {{- /*
 One wildcard route for every sandbox that will ever exist. Nothing is
@@ -166,7 +163,7 @@ metadata:
   name: {{ include "orchestrator.deploymentsName" . }}-sandboxes
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 spec:
   parentRefs:
     - name: {{ .Values.deployments.gateway.name }}
@@ -175,49 +172,49 @@ spec:
     - {{ printf "*.%s" .Values.deployments.sandboxes.domain | quote }}
   rules:
     - backendRefs:
-        - name: sandbox-edge
-          port: {{ .Values.deployments.sandboxes.edge.port }}
+        - name: sandbox-proxy
+          port: {{ .Values.deployments.sandboxes.proxy.port }}
 {{- end }}
 {{- /*
 Replica-aware PDB — see the jobs PDB note; singletons never get one.
 */}}
-{{- if or (gt (int .Values.deployments.sandboxes.edge.replicaCount) 1) (and .Values.deployments.sandboxes.edge.autoscaling.enabled (gt (int .Values.deployments.sandboxes.edge.autoscaling.minReplicas) 1)) }}
+{{- if or (gt (int .Values.deployments.sandboxes.proxy.replicaCount) 1) (and .Values.deployments.sandboxes.proxy.autoscaling.enabled (gt (int .Values.deployments.sandboxes.proxy.autoscaling.minReplicas) 1)) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      {{- include "orchestrator.sandboxEdgeSelectorLabels" . | nindent 6 }}
+      {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 6 }}
 {{- end }}
-{{- if .Values.deployments.sandboxes.edge.autoscaling.enabled }}
+{{- if .Values.deployments.sandboxes.proxy.autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.sandboxEdgeLabels" . | nindent 4 }}
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-edge
-  minReplicas: {{ .Values.deployments.sandboxes.edge.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.deployments.sandboxes.edge.autoscaling.maxReplicas }}
+    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  minReplicas: {{ .Values.deployments.sandboxes.proxy.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.deployments.sandboxes.proxy.autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.deployments.sandboxes.edge.autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ .Values.deployments.sandboxes.proxy.autoscaling.targetCPUUtilizationPercentage }}
 {{- end }}
 {{- end }}

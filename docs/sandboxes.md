@@ -118,12 +118,12 @@ Read the addresses out of `urls`; don't build them. Ports are **not** a pool dim
 
 Two rules the platform enforces:
 
-- **Only declared ports are reachable.** The port travels in the hostname; the edge turns it into a hint the sidecar checks against the claim, and the dial happens on loopback inside that sandbox's own pod. A port you did not declare is `404`, and a hint a client sets by hand is discarded.
+- **Only declared ports are reachable.** The port travels in the hostname; the proxy turns it into a hint the sidecar checks against the claim, and the dial happens on loopback inside that sandbox's own pod. A port you did not declare is `404`, and a hint a client sets by hand is discarded.
 - **The port shares the token's DNS label** (`s-{token}-5173`), rather than nesting as `s-5173.{token}`. A wildcard certificate covers exactly one label, so the flat form is reachable under one `*.{domain}` cert while the nested form would need a certificate per sandbox.
 
 Readiness is the primary port's alone: a secondary port that never comes up does not fail the sandbox, and traffic to it counts as activity for the [idle timeout](#lifecycle) like any other request. `8000` and `8001` belong to the sidecar and are refused.
 
-WebSocket traffic (terminals, LSP) upgrades cleanly through the edge. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox; artifact materialization keeps its own budget regardless, so an unbounded sandbox is not an unbounded download.
+WebSocket traffic (terminals, LSP) upgrades cleanly through the proxy. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox; artifact materialization keeps its own budget regardless, so an unbounded sandbox is not an unbounded download.
 
 ## Persistence
 
@@ -201,15 +201,17 @@ deployments:
         size: 4
         runtimeClass: gvisor
         maxIdleSeconds: 900
-    edge:
+    proxy:
       enabled: true
 ```
 
-The **sandbox edge** is the component every sandbox request passes through: one wildcard `HTTPRoute` for `*.{domain}` sends traffic to it, and it resolves the sandbox from the capability token in the request's `Host`. It runs the deployments-activator image in `EDGE_MODE=sandbox` with its own replica set — permanently on the data path, unlike the deployments activator, so sandbox file transfers do not share a failure domain with deployment cold starts.
+The **sandbox proxy** is the component every sandbox request passes through: one wildcard `HTTPRoute` for `*.{domain}` sends traffic to it, and it resolves the sandbox from the capability token in the request's `Host`.
+
+It is deliberately its own component rather than a mode of the [deployments activator](deployments.md), because the two differ everywhere it matters: the proxy is permanently on the request path (so it scales with sandbox traffic, including file transfers, not with cold starts), it reads pods and nothing else — no Secrets, no scale writes — and it never raises anything, since a sandbox is a claimed pod. Separate components keep those blast radii, RBAC grants, and scaling knobs separate.
 
 ### The Docker backend
 
-Sandboxes also run on the Docker development backend, so you can build against the API without a cluster. Each sandbox is a container running the pool's image, fronted by a sidecar, sharing a workspace volume; the edge runs in the deployments service itself and serves sandboxes on its data port, so URLs carry that port (`http://s-{token}.sandboxes.test:8081`).
+Sandboxes also run on the Docker development backend, so you can build against the API without a cluster. Each sandbox is a container running the pool's image, fronted by a sidecar, sharing a workspace volume; the sandbox proxy runs inside the deployments service itself and serves sandboxes on its data port, so URLs carry that port (`http://s-{token}.sandboxes.test:8081`).
 
 ```yaml
 # docker-compose / env for the deployments service
@@ -243,7 +245,7 @@ Activations get a Service and HTTPRoute each, which is fine at tens-to-hundreds 
 1. **Churn.** Thousands of sandboxes with minute-scale lifetimes means a gateway config recompute and xDS push per create and per delete.
 2. **Programming latency.** A new HTTPRoute is not live until the gateway programs it, often seconds. We would return a URL that 503s for longer than the sub-second claim took — negating the entire reason to use a warm pool.
 
-So sandboxes get one wildcard HTTPRoute backed by the sandbox edge, which resolves the sandbox by Host. No per-sandbox Service, route, or endpoint flip; nothing to churn; creates as fast as the claim.
+So sandboxes get one wildcard HTTPRoute backed by the sandbox proxy, which resolves the sandbox by Host. No per-sandbox Service, route, or endpoint flip; nothing to churn; creates as fast as the claim.
 
 ### The URL is a capability
 
@@ -259,9 +261,9 @@ POST /v1/sandbox  {"id": "my-agent", ...}
 s-9f3c…95f.sandboxes.example.com    # unguessable, the capability
 ```
 
-The token is also the routing key: warm pods are labelled with it on claim, so the edge's lookup stays as cheap as keying on the id would have been. It lives only as that label — never in an annotation, a log line, or an event payload — so `DELETE` invalidates it along with the pod, and a leaked URL is dead on teardown.
+The token is also the routing key: warm pods are labelled with it on claim, so the proxy's lookup stays as cheap as keying on the id would have been. It lives only as that label — never in an annotation, a log line, or an event payload — so `DELETE` invalidates it along with the pod, and a leaked URL is dead on teardown.
 
-Edge authentication — a per-sandbox bearer token the edge requires — remains the stronger answer and stays open. It decouples addressability from authorization outright, and the edge is the right place for it since it is already the only thing on the path. Worth doing if sandboxes ever hold tenant data.
+Proxy authentication — a per-sandbox bearer token the proxy requires — remains the stronger answer and stays open. It decouples addressability from authorization outright, and the proxy is the right place for it since it is already the only thing on the path. Worth doing if sandboxes ever hold tenant data.
 
 ### Deliberately out of scope
 

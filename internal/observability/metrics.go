@@ -347,23 +347,23 @@ func (m *Metrics) RecordRolloutCut(ctx context.Context, durationSeconds float64)
 }
 
 // RecordActivatorHold records a completed capacity hold.
-func (m *Metrics) RecordActivatorHold(ctx context.Context, edge, outcome string, durationSeconds float64) {
-	m.ActivatorHoldDuration.Record(ctx, durationSeconds, metric.WithAttributes(edgeAttr(edge), outcomeAttr(outcome)))
+func (m *Metrics) RecordActivatorHold(ctx context.Context, component, outcome string, durationSeconds float64) {
+	m.ActivatorHoldDuration.Record(ctx, durationSeconds, metric.WithAttributes(componentAttr(component), outcomeAttr(outcome)))
 }
 
 // RecordActivatorQueueDelta adjusts the held-request gauge (+1 / -1).
-func (m *Metrics) RecordActivatorQueueDelta(ctx context.Context, edge string, delta int64) {
-	m.ActivatorQueued.Add(ctx, delta, metric.WithAttributes(edgeAttr(edge)))
+func (m *Metrics) RecordActivatorQueueDelta(ctx context.Context, component string, delta int64) {
+	m.ActivatorQueued.Add(ctx, delta, metric.WithAttributes(componentAttr(component)))
 }
 
 // RecordActivatorRaise records a cold scale-up request.
-func (m *Metrics) RecordActivatorRaise(ctx context.Context, edge string) {
-	m.ActivatorRaises.Add(ctx, 1, metric.WithAttributes(edgeAttr(edge)))
+func (m *Metrics) RecordActivatorRaise(ctx context.Context, component string) {
+	m.ActivatorRaises.Add(ctx, 1, metric.WithAttributes(componentAttr(component)))
 }
 
 // RecordActivatorAsync records an async request's final result.
-func (m *Metrics) RecordActivatorAsync(ctx context.Context, edge, result string) {
-	m.ActivatorAsync.Add(ctx, 1, metric.WithAttributes(edgeAttr(edge), resultAttr(result)))
+func (m *Metrics) RecordActivatorAsync(ctx context.Context, component, result string) {
+	m.ActivatorAsync.Add(ctx, 1, metric.WithAttributes(componentAttr(component), resultAttr(result)))
 }
 
 // RecordAutoscalerDesired records the autoscaler's decision for a deployment.

@@ -16,9 +16,9 @@ metadata:
 {{- if .Values.deployments.workloadNamespace.networkPolicy.enabled }}
 ---
 # Workload isolation: default-deny ingress to managed pods, admitting only
-# the data path (gateway), the buffering edge (activator), the sandbox edge,
-# and the control plane (deployments-service: claim POSTs, /stats scrapes,
-# direct probes).
+# the data path (gateway), the activator (deployment cold/async buffering), the
+# sandbox proxy, and the control plane (deployments-service: claim POSTs, /stats
+# scrapes, direct probes).
 # Egress blocks the cloud metadata endpoint — the highest-value single rule
 # (docs/operations.md). Requires an enforcing CNI.
 apiVersion: networking.k8s.io/v1
@@ -50,14 +50,14 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/component: deployments
-        {{- if .Values.deployments.sandboxes.edge.enabled }}
-        # The sandbox edge is permanently on the data path for sandbox pods.
+        {{- if .Values.deployments.sandboxes.proxy.enabled }}
+        # The sandbox proxy is permanently on the data path for sandbox pods.
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
-              app.kubernetes.io/component: sandbox-edge
+              app.kubernetes.io/component: sandbox-proxy
         {{- end }}
   egress:
     # DNS anywhere in-cluster (kube-dns lives in kube-system).

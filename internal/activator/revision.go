@@ -90,7 +90,7 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 	}
 	return &RevisionActivator{
 		client: client,
-		broker: newBroker(queue, rec, edgeDeployment),
+		broker: newBroker(queue, rec, componentActivator),
 		cfg:    cfg,
 	}
 }

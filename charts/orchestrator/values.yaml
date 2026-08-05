@@ -265,11 +265,11 @@ deployments:
     scheme: http
     # Empty = "<deployments name>-sandboxes-leader".
     leaseName: ""
-    # The sandbox edge: same binary and image as the deployments activator,
-    # its own replica set. It is permanently on the data path (every request to
-    # every sandbox), so sandbox file transfers do not share a failure domain
-    # with deployment cold starts.
-    edge:
+    # The sandbox proxy: the data plane every sandbox request passes through.
+    # Its own component rather than a mode of the activator — it is permanently
+    # on the request path (so it scales with sandbox traffic, not with cold
+    # starts), it reads pods only, and it has nothing to raise.
+    proxy:
       enabled: false
       replicaCount: 1
       autoscaling:
@@ -277,15 +277,20 @@ deployments:
         minReplicas: 2
         maxReplicas: 10
         targetCPUUtilizationPercentage: 80
+      image:
+        ref: ""
+        repository: ghcr.io/open-runtimes/orchestrator/sandbox-proxy
+        tag: "" # defaults to the chart's appVersion
+        pullPolicy: IfNotPresent
       port: 8081
       # How long a request waits for a still-creating sandbox to answer. Seconds,
       # not the deployments start timeout: a sandbox has no scale-from-zero, so
       # if its pod is gone, waiting cannot help.
       holdSeconds: 5
-      # A wildcard HTTPRoute for *.{domain} backed by the edge — the whole
-      # routing story for every sandbox. Per-sandbox routes are deliberately
-      # not used: gateway programming takes seconds, which would negate the
-      # sub-second claim a create is built on.
+      # A wildcard HTTPRoute for *.{domain} backed by the sandbox proxy — the
+      # whole routing story for every sandbox. Per-sandbox routes are
+      # deliberately not used: gateway programming takes seconds, which would
+      # negate the sub-second claim a create is built on.
       route:
         enabled: true
       # No CPU limit by design (same rule as the activator).
@@ -301,11 +306,11 @@ deployments:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/pool-shim
     tag: "" # defaults to the chart's appVersion
-  # The buffering edge for cold/async traffic (deployments-activator).
+  # The activator: holds cold-start and async requests in front of deployments
+  # and raises cold revisions from zero. Opt-in like every component; without
+  # it, scale-to-zero deployments 503 when cold and async requests have nowhere
+  # to buffer. Sandboxes have their own data plane — see sandboxes.proxy.
   activator:
-    # The buffering edge for cold-start and async traffic. Opt-in like every
-    # component; without it, scale-to-zero deployments 503 when cold and
-    # async requests have nowhere to buffer.
     enabled: false
     replicaCount: 1
     # HPA for the buffering edge (stateless; no leader election needed).

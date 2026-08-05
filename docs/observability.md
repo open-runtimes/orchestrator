@@ -89,12 +89,12 @@ Both the deployments service and the standalone activator (K8s) expose the same 
 
 | Signal | Metrics |
 |--------|---------|
-| Latency | `deployment_rollout_duration_seconds` (revision minted → traffic cut), `activator_hold_duration_seconds{edge,outcome=served\|timeout}` (the client-visible cold-start cost) |
-| Traffic | `deployments_applied_total{created}`, `deployment_rollout_cuts_total`, `activator_raises_total{edge}`, `activator_async_total{edge,result=delivered\|failed}`, `autoscaler_scale_events_total{direction=up\|down}` |
+| Latency | `deployment_rollout_duration_seconds` (revision minted → traffic cut), `activator_hold_duration_seconds{component,outcome=served\|timeout}` (the client-visible cold-start cost) |
+| Traffic | `deployments_applied_total{created}`, `deployment_rollout_cuts_total`, `activator_raises_total{component}`, `activator_async_total{component,result=delivered\|failed}`, `autoscaler_scale_events_total{direction=up\|down}` |
 | Errors | `autoscaler_scrape_errors_total` (failed concurrency scrapes while replicas are serving) |
-| Saturation | `deployments_active`, `activator_queued{edge}` (requests held for capacity), `autoscaler_desired_replicas{deployment}` |
+| Saturation | `deployments_active`, `activator_queued{component}` (requests held for capacity), `autoscaler_desired_replicas{deployment}` |
 
-Rollout metrics come from the leader's reconciler; leadership and K8s API metrics apply to the deployments service and activator exactly as to jobs. The `edge` label separates the data-plane edges — `deployment` for cold-start and async buffering, `sandbox` for the wildcard sandbox edge — so a sandbox hold never reads as a deployment cold start.
+Rollout metrics come from the leader's reconciler; leadership and K8s API metrics apply to the deployments service and activator exactly as to jobs. The broker behind these series runs in two components, and the `component` label says which — `deployments-activator` or `sandbox-proxy`, matching their `app.kubernetes.io/component` labels, so a PromQL series and a pod selector read the same. A sandbox hold never reads as a deployment cold start, and `activator_raises_total` is only ever the activator's: the sandbox proxy has nothing to raise.
 
 **Pool Metrics:**
 

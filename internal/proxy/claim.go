@@ -29,7 +29,7 @@ const (
 	ShimFIFOName = ".pool-exec.fifo"
 
 	// HeaderPort names which of the claim's ports a request is for. Set by the
-	// sandbox edge from the request's hostname and NEVER trusted from a client
+	// sandbox proxy from the request's hostname and NEVER trusted from a client
 	// — the edge strips any inbound copy. The port is dialed on loopback inside
 	// the claimed pod, so it can only ever reach that pod's own listeners, and
 	// only ports the claim declared.

@@ -100,7 +100,7 @@
 | **Warm** | The state of a Revision with at least one ready replica serving directly | Active, hot |
 | **Cold** | The state of a Revision scaled to zero replicas | Idle, off |
 | **Endpoint flip** | The swap of a Revision's endpoints between its ready pods (warm) and Activator pods (cold) | Slice swap, SKS flip |
-| **Activator** | The buffering edge that holds cold and async requests, raises cold Revisions, and forwards | Buffer, edge proxy |
+| **Activator** | The component in front of DEPLOYMENTS that holds cold and async requests, raises cold Revisions, and forwards | Buffer, edge, proxy |
 | **Raise** | The Activator's scale-up of a cold Revision from zero so a held request can be served | Wake, cold scale-up |
 | **Cold start** | The end-to-end latency of a request that arrives while its Revision is cold | Spin-up time |
 | **Async request** | A request marked `Prefer: respond-async`, accepted immediately and answered via the Callback | Background request |
@@ -138,7 +138,7 @@
 | **Release namespace** | The namespace holding the control plane: services, Activator, gateway wiring | System namespace |
 | **Sandbox** | A live, isolated workspace claimed from a warm pool and driven over HTTP at its own hostname; exec and files are the image's contract, not ours | Container, session, REPL |
 | **Capability token** | The unguessable leading DNS label of a sandbox's hostname — reaching the URL is authorization to run code in it | Sandbox id, slug |
-| **Sandbox edge** | The wildcard data-plane edge that resolves a sandbox from the request's Host | Router, proxy |
+| **Sandbox proxy** | The component in front of SANDBOXES: one wildcard route for all of them, resolved by the capability token in the request's Host. Not an Activator — it holds and forwards but never raises, because a Sandbox has no zero to rise from | Sandbox activator, sandbox edge, router |
 | **Runtime class** | A workload's isolation tier — runc, gvisor, or kata — mapped to a Kubernetes RuntimeClass | Sandbox, runtime |
 | **Overcommit** | The divisor deriving a workload's CPU request from its declared limit | Oversubscription ratio |
 

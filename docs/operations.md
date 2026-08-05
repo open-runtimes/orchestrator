@@ -24,7 +24,7 @@ Every component is opt-in — a default install renders nothing.
 | --- | --- | --- |
 | **jobs** | `jobs.enabled` | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
 | **deployments** | `deployments.enabled` | `/v1/deployments` and `/v1/deployment-pools` — long-lived HTTP workloads and warm pools |
-| **activator** | `deployments.activator.enabled` | The buffering edge for cold and async traffic — required for scale-to-zero and `Prefer: respond-async` |
+| **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
 
 Both derive all state from the cluster: restarts and replica failovers lose nothing, and there is no database.
 
@@ -84,7 +84,7 @@ Unlike `deployments.gateway` (a pointer the deployments-service's own reconciler
 deployments:
   enabled: true
   activator:
-    enabled: true # the cold/async buffering edge
+    enabled: true # holds cold and async requests
   domain: apps.example.com        # auto-assigned hosts become {id}.apps.example.com
   gateway:
     name: orchestrator            # the Gateway resource HTTPRoutes attach to
@@ -149,11 +149,11 @@ deployments:
         size: 4
         runtimeClass: gvisor       # untrusted code is the expected workload here
         maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod
-    edge:
-      enabled: true                # the wildcard edge every sandbox request passes through
+    proxy:
+      enabled: true                # the wildcard data plane every sandbox request passes through
 ```
 
-Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production, the edge is the deployments-activator image in `EDGE_MODE=sandbox`, with its own Deployment and one wildcard `HTTPRoute` for `*.{domain}`. It is permanently on the data path, so scale it for sandbox traffic (`edge.autoscaling`) rather than for cold starts.
+Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production the sandbox proxy is its own Deployment behind one wildcard `HTTPRoute` for `*.{domain}` — not a mode of the activator: it is permanently on the request path, reads pods only, and raises nothing. Scale it for sandbox traffic (`sandboxes.proxy.autoscaling`) rather than for cold starts.
 
 **A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandboxes.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
 
@@ -180,7 +180,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `jobs.workloadNodeSelector` | `{}` | Same, independently for job pods |
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
-| `deployments.activator.replicaCount` | `1` | Buffering-edge replicas |
+| `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
 | `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
 | `extraEnv` | `[]` | Extra environment for the services (e.g. `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |

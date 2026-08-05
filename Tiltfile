@@ -18,6 +18,7 @@ JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
 DEPLOYMENTS_SIDECAR_IMAGE = 'ko.local/deployments-sidecar'
 DEPLOYMENTS_ACTIVATOR_IMAGE = 'ko.local/deployments-activator'
+SANDBOX_PROXY_IMAGE = 'ko.local/sandbox-proxy'
 POOL_SHIM_IMAGE = 'ko.local/pool-shim'
 
 # --- Image builds ------------------------------------------------------------
@@ -93,6 +94,16 @@ if DEPLOYMENTS_ENABLED:
         ],
     )
     custom_build(
+        SANDBOX_PROXY_IMAGE,
+        'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/sandbox-proxy && docker tag {0} $EXPECTED_REF'.format(SANDBOX_PROXY_IMAGE),
+        deps=[
+            'cmd/sandbox-proxy',
+            'internal',
+            'go.mod',
+            'go.sum',
+        ],
+    )
+    custom_build(
         POOL_SHIM_IMAGE,
         'KO_DOCKER_REPO={0} ./bin/ko build --bare --platform=linux/amd64 ./cmd/pool-shim && docker tag {0} $EXPECTED_REF'.format(POOL_SHIM_IMAGE),
         deps=[
@@ -111,6 +122,8 @@ if DEPLOYMENTS_ENABLED:
         'deployments.activator.image.repository=' + DEPLOYMENTS_ACTIVATOR_IMAGE,
         'deployments.activator.image.pullPolicy=Never',
         'deployments.shimImage.repository=' + POOL_SHIM_IMAGE,
+        'deployments.sandboxes.proxy.image.repository=' + SANDBOX_PROXY_IMAGE,
+        'deployments.sandboxes.proxy.image.pullPolicy=Never',
     ]
 
 k8s_yaml(helm(

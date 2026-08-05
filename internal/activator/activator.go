@@ -50,7 +50,7 @@ type resolveEntry struct {
 func New(resolver Resolver, queue dispatcher.Queue, rec Recorder) *Activator {
 	return &Activator{
 		resolver: resolver,
-		broker:   newBroker(queue, rec, edgeDeployment),
+		broker:   newBroker(queue, rec, componentActivator),
 		cache:    make(map[string]resolveEntry),
 	}
 }

@@ -14,9 +14,9 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// edgeOpts is what a test needs to wire the edge: the pod ports its fake
-// backend listens on, and how long the broker may hold a request.
-type edgeOpts struct {
+// sandboxOpts is what a test needs to wire the sandbox proxy: the pod ports its
+// fake backend listens on, and how long the broker may hold a request.
+type sandboxOpts struct {
 	proxyPort int32
 	adminPort int32
 	hold      time.Duration
@@ -28,10 +28,9 @@ const (
 	testToken         = "9f3c1a04b7e28d65f1024c8ba3e7d95f"
 )
 
-// newTestSandboxActivator wires the edge over the Kubernetes target resolver,
-// the way the sandbox-edge binary does. ports carries the pod ports the fake
-// backends listen on.
-func newTestSandboxActivator(t *testing.T, opts edgeOpts, objs ...runtime.Object) *SandboxActivator {
+// newTestSandboxProxy wires the sandbox proxy over the Kubernetes target
+// resolver, the way cmd/sandbox-proxy does.
+func newTestSandboxProxy(t *testing.T, opts sandboxOpts, objs ...runtime.Object) *SandboxProxy {
 	t.Helper()
 	targets := NewPodTargets(fake.NewClientset(objs...), PodTargetsConfig{
 		Namespace:  testRevisionNamespace,
@@ -43,7 +42,7 @@ func newTestSandboxActivator(t *testing.T, opts edgeOpts, objs ...runtime.Object
 	if err := targets.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	return NewSandboxActivator(targets, SandboxConfig{Domain: testSandboxDomain, Hold: opts.hold}, nil)
+	return NewSandboxProxy(targets, SandboxConfig{Domain: testSandboxDomain, Hold: opts.hold}, nil)
 }
 
 func sandboxPod(token, name, ip string, ready bool) *corev1.Pod {
@@ -79,7 +78,7 @@ func TestSandboxEdge_ForwardsByHostToken(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"exitCode":0}`)
 	}))
-	act := newTestSandboxActivator(t, edgeOpts{proxyPort: port, adminPort: port, hold: time.Second},
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
 		sandboxPod(testToken, "sbx-1", ip, true))
 
 	rec := httptest.NewRecorder()
@@ -96,7 +95,7 @@ func TestSandboxEdge_ForwardsByHostToken(t *testing.T) {
 // A guessed or stale token reaches nothing, and the wait is bounded by Hold —
 // there is no scale-from-zero to wait for.
 func TestSandboxEdge_UnknownToken503(t *testing.T) {
-	act := newTestSandboxActivator(t, edgeOpts{hold: 50 * time.Millisecond})
+	act := newTestSandboxProxy(t, sandboxOpts{hold: 50 * time.Millisecond})
 
 	rec := httptest.NewRecorder()
 	act.ServeHTTP(rec, sandboxRequest(t, "s-deadbeef."+testSandboxDomain))
@@ -107,7 +106,7 @@ func TestSandboxEdge_UnknownToken503(t *testing.T) {
 }
 
 func TestSandboxEdge_ForeignHost404(t *testing.T) {
-	act := newTestSandboxActivator(t, edgeOpts{hold: time.Second})
+	act := newTestSandboxProxy(t, sandboxOpts{hold: time.Second})
 
 	for _, host := range []string{"app.example.com", "sandboxes.example.test", "s-abc.other.example"} {
 		rec := httptest.NewRecorder()
@@ -128,7 +127,7 @@ func TestSandboxEdge_CreatingPodReachedByDirectProbe(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, "served")
 	}))
-	act := newTestSandboxActivator(t, edgeOpts{proxyPort: port, adminPort: port, hold: 2 * time.Second},
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: 2 * time.Second},
 		sandboxPod(testToken, "sbx-1", ip, false)) // Running, not yet Ready
 
 	rec := httptest.NewRecorder()
@@ -145,7 +144,7 @@ func TestSandboxEdge_HostNormalization(t *testing.T) {
 	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	act := newTestSandboxActivator(t, edgeOpts{proxyPort: port, adminPort: port, hold: time.Second},
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
 		sandboxPod(testToken, "sbx-1", ip, true))
 
 	for _, host := range []string{
@@ -160,17 +159,17 @@ func TestSandboxEdge_HostNormalization(t *testing.T) {
 	}
 }
 
-// Every path belongs to the sandbox. The edge must not answer any of them
+// Every path belongs to the sandbox. The proxy must not answer any of them
 // itself — mounting its own /healthz on the data listener once shadowed the
-// contract's /healthz for every sandbox behind it (the edge's own probes live
-// on the management listener instead).
+// contract's /healthz for every sandbox behind it (its own probes live on the
+// management listener instead).
 func TestSandboxEdge_ClaimsNoPathOfItsOwn(t *testing.T) {
 	var seen []string
 	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.URL.Path)
 		_, _ = io.WriteString(w, "sandbox")
 	}))
-	act := newTestSandboxActivator(t, edgeOpts{proxyPort: port, adminPort: port, hold: time.Second},
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
 		sandboxPod(testToken, "sbx-1", ip, true))
 
 	for _, path := range []string{"/healthz", "/execute", "/files/main.py", "/stats", "/ready", "/"} {
@@ -180,7 +179,7 @@ func TestSandboxEdge_ClaimsNoPathOfItsOwn(t *testing.T) {
 		rec := httptest.NewRecorder()
 		act.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK || rec.Body.String() != "sandbox" {
-			t.Errorf("%s: the edge answered instead of the sandbox (status %d, body %q)", path, rec.Code, rec.Body.String())
+			t.Errorf("%s: the proxy answered instead of the sandbox (status %d, body %q)", path, rec.Code, rec.Body.String())
 		}
 	}
 	if len(seen) != 6 {
@@ -197,7 +196,7 @@ func TestSandboxEdge_PortLabelBecomesThePortHint(t *testing.T) {
 		hints = append(hints, r.Header.Get(proxy.HeaderPort))
 		w.WriteHeader(http.StatusOK)
 	}))
-	act := newTestSandboxActivator(t, edgeOpts{proxyPort: port, adminPort: port, hold: time.Second},
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
 		sandboxPod(testToken, "sbx-1", ip, true))
 
 	for _, tc := range []struct{ host, want string }{
@@ -223,7 +222,7 @@ func TestSandboxEdge_StripsClientSuppliedPortHint(t *testing.T) {
 		hints = append(hints, r.Header.Get(proxy.HeaderPort))
 		w.WriteHeader(http.StatusOK)
 	}))
-	act := newTestSandboxActivator(t, edgeOpts{proxyPort: port, adminPort: port, hold: time.Second},
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
 		sandboxPod(testToken, "sbx-1", ip, true))
 
 	req := sandboxRequest(t, "s-"+testToken+"."+testSandboxDomain)
@@ -242,7 +241,7 @@ func TestSandboxEdge_NonNumericSuffixIsPartOfTheToken(t *testing.T) {
 	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	act := newTestSandboxActivator(t, edgeOpts{proxyPort: port, adminPort: port, hold: time.Second},
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
 		sandboxPod("abc-def", "sbx-1", ip, true))
 
 	rec := httptest.NewRecorder()

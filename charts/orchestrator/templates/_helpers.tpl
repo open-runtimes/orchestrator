@@ -98,6 +98,14 @@ imagePullSecrets:
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.sandboxProxyImage" -}}
+{{- if .Values.deployments.sandboxes.proxy.image.ref -}}
+{{- .Values.deployments.sandboxes.proxy.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.deployments.sandboxes.proxy.image.repository (default .Chart.AppVersion .Values.deployments.sandboxes.proxy.image.tag) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.activatorLabels" -}}
 {{ include "orchestrator.labels" . }}
 app.kubernetes.io/component: deployments-activator
@@ -298,13 +306,13 @@ rollingUpdate:
   maxSurge: 1
 {{- end }}
 
-{{- define "orchestrator.sandboxEdgeLabels" -}}
+{{- define "orchestrator.sandboxProxyLabels" -}}
 {{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: sandbox-edge
+app.kubernetes.io/component: sandbox-proxy
 {{- end -}}
 
-{{- define "orchestrator.sandboxEdgeSelectorLabels" -}}
+{{- define "orchestrator.sandboxProxySelectorLabels" -}}
 app.kubernetes.io/name: {{ include "orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: sandbox-edge
+app.kubernetes.io/component: sandbox-proxy
 {{- end -}}

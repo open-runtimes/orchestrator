@@ -33,16 +33,18 @@ const (
 	raiseDebounce = 2 * time.Second
 )
 
-// Edge names: which data-plane edge a broker belongs to.
+// Components that run a broker. The values match each one's
+// app.kubernetes.io/component label, so a PromQL series and a pod selector read
+// the same.
 const (
-	edgeDeployment = "deployment"
-	edgeSandbox    = "sandbox"
+	componentActivator    = "deployments-activator"
+	componentSandboxProxy = "sandbox-proxy"
 )
 
-// capacity is what a data-plane edge knows about reaching one workload: how
-// to find a serving endpoint, and how to ask for one when there is none.
-// Bound per request by the edge (to a deployment spec on Docker, a revision
-// on Kubernetes); the broker owns everything either side of it.
+// capacity is what the caller knows about reaching one workload: how to find a
+// serving endpoint, and how to ask for one when there is none. Bound per request
+// (to a deployment spec on Docker, a revision on Kubernetes, a sandbox token);
+// the broker owns everything either side of it.
 type capacity interface {
 	// Target returns a reachable endpoint, or nil when none is ready yet.
 	Target(ctx context.Context) (*url.URL, error)
@@ -54,13 +56,14 @@ type capacity interface {
 // Recorder receives the activator's domain metrics. Satisfied by
 // *observability.Metrics; nil disables recording.
 type Recorder interface {
-	RecordActivatorHold(ctx context.Context, edge, outcome string, durationSeconds float64)
-	RecordActivatorQueueDelta(ctx context.Context, edge string, delta int64)
-	RecordActivatorRaise(ctx context.Context, edge string)
-	RecordActivatorAsync(ctx context.Context, edge, result string)
+	RecordActivatorHold(ctx context.Context, component, outcome string, durationSeconds float64)
+	RecordActivatorQueueDelta(ctx context.Context, component string, delta int64)
+	RecordActivatorRaise(ctx context.Context, component string)
+	RecordActivatorAsync(ctx context.Context, component, result string)
 }
 
-// broker is the hold-raise-forward pipeline shared by both data-plane edges:
+// broker is the hold-raise-forward pipeline shared by the components in front of
+// workloads:
 // it holds requests until the edge's capacity yields a target (raising cold
 // workloads, debounced), proxies sync requests, and runs the async accept →
 // forward → response-callback flow. Delivery is at-most-once: nothing is
@@ -69,10 +72,9 @@ type broker struct {
 	queue  dispatcher.Queue
 	source string // CloudEvents source
 	rec    Recorder
-	// edge names which data-plane edge owns this broker, so one metric series
-	// can carry all of them without conflating a sandbox hold with a
-	// deployment cold start.
-	edge string
+	// component names who is running this broker, so one metric series can carry
+	// both without conflating a sandbox hold with a deployment cold start.
+	component string
 
 	mu        sync.Mutex
 	lastRaise map[string]time.Time // key → last cold scale-up
@@ -81,12 +83,12 @@ type broker struct {
 
 // newBroker creates a broker. queue delivers async response callbacks; rec
 // (nilable) receives the domain metrics.
-func newBroker(queue dispatcher.Queue, rec Recorder, edge string) *broker {
+func newBroker(queue dispatcher.Queue, rec Recorder, component string) *broker {
 	return &broker{
 		queue:     queue,
 		source:    "orchestrator/deployments",
 		rec:       rec,
-		edge:      edge,
+		component: component,
 		lastRaise: make(map[string]time.Time),
 		queued:    make(map[string]int),
 	}
@@ -253,7 +255,7 @@ func (b *broker) dispatchResponse(spec *deployment.Request, invocationID string,
 		if errMsg != "" {
 			result = "failed"
 		}
-		b.rec.RecordActivatorAsync(context.Background(), b.edge, result)
+		b.rec.RecordActivatorAsync(context.Background(), b.component, result)
 	}
 	event := cloudevent.New("orchestrator.deployment.response", b.source, spec.ID, invocationID, data)
 	if err := b.queue.Dispatch(&dispatcher.Event{
@@ -277,7 +279,7 @@ func (b *broker) await(ctx context.Context, key string, hold time.Duration, c ca
 	b.queued[key]++
 	b.mu.Unlock()
 	if b.rec != nil {
-		b.rec.RecordActivatorQueueDelta(ctx, b.edge, 1)
+		b.rec.RecordActivatorQueueDelta(ctx, b.component, 1)
 	}
 	defer func() {
 		b.mu.Lock()
@@ -286,12 +288,12 @@ func (b *broker) await(ctx context.Context, key string, hold time.Duration, c ca
 		}
 		b.mu.Unlock()
 		if b.rec != nil {
-			b.rec.RecordActivatorQueueDelta(ctx, b.edge, -1)
+			b.rec.RecordActivatorQueueDelta(ctx, b.component, -1)
 			outcome := "served"
 			if err != nil {
 				outcome = "timeout"
 			}
-			b.rec.RecordActivatorHold(ctx, b.edge, outcome, time.Since(start).Seconds())
+			b.rec.RecordActivatorHold(ctx, b.component, outcome, time.Since(start).Seconds())
 		}
 	}()
 
@@ -325,7 +327,7 @@ func (b *broker) raise(ctx context.Context, key string, c capacity) {
 	b.mu.Unlock()
 
 	if b.rec != nil {
-		b.rec.RecordActivatorRaise(ctx, b.edge)
+		b.rec.RecordActivatorRaise(ctx, b.component)
 	}
 	if err := c.Raise(ctx); err != nil {
 		slog.Warn("Cold-start scale-up failed", "key", key, "error", err)

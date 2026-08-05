@@ -19,7 +19,7 @@ const (
 	attrVerb       = "verb"
 	attrResource   = "resource"
 	attrCreated    = "created"
-	attrEdge       = "edge" // which activator edge: deployment | sandbox
+	attrComponent  = "component" // which component held the request
 	attrOutcome    = "outcome"
 	attrResult     = "result"
 	attrDirection  = "direction"
@@ -68,8 +68,8 @@ func createdAttr(created bool) attribute.KeyValue {
 	return attribute.Bool(attrCreated, created)
 }
 
-func edgeAttr(edge string) attribute.KeyValue {
-	return attribute.String(attrEdge, edge)
+func componentAttr(component string) attribute.KeyValue {
+	return attribute.String(attrComponent, component)
 }
 
 func outcomeAttr(outcome string) attribute.KeyValue {

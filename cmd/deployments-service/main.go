@@ -79,12 +79,12 @@ func main() {
 	// the in-process activator on Docker.
 	concurrency := autoscaler.NewSidecarConcurrency(orchestrator, proxy.DefaultAdminPort)
 	var queue autoscaler.QueueSource
-	var deploymentsEdge *activator.Activator
+	var deploymentsActivator *activator.Activator
 	if backend == "kubernetes" {
 		queue = autoscaler.NewActivatorQueue(config.GetEnv("ACTIVATOR_STATS_URL", "http://deployments-activator:8081/stats"))
 	} else {
-		deploymentsEdge = activator.New(svc, eventDispatcher, metrics)
-		queue = autoscaler.QueuedDepthFunc(deploymentsEdge.QueuedDepth)
+		deploymentsActivator = activator.New(svc, eventDispatcher, metrics)
+		queue = autoscaler.QueuedDepthFunc(deploymentsActivator.QueuedDepth)
 	}
 
 	scaler := autoscaler.New(orchestrator, concurrency, queue, autoscaler.LoadConfigFromEnv(), metrics)
@@ -131,7 +131,7 @@ func main() {
 		os.Exit(1)
 	}
 	var sandboxSvc *sandbox.Service
-	var sandboxEdge *activator.SandboxActivator
+	var sandboxProxy *activator.SandboxProxy
 	if len(sandboxPools) > 0 {
 		sandboxOrchestrator, err := buildSandboxOrchestrator(ctx, backend, sandboxPools, metrics)
 		if err != nil {
@@ -146,11 +146,11 @@ func main() {
 		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.DefaultRegistry())
 		slog.Info("Sandbox pools configured", "count", len(sandboxPools))
 
-		// On Docker the sandbox edge runs in-process, resolving tokens straight
-		// from the daemon; on Kubernetes it is its own Deployment behind the
-		// wildcard route (cmd/deployments-activator, EDGE_MODE=sandbox).
+		// On Docker the sandbox data plane runs in-process, resolving tokens
+		// straight from the daemon; on Kubernetes it is its own Deployment behind
+		// the wildcard route (cmd/sandbox-proxy).
 		if targets, ok := sandboxOrchestrator.(activator.SandboxTargets); ok {
-			sandboxEdge = activator.NewSandboxActivator(targets, activator.SandboxConfig{
+			sandboxProxy = activator.NewSandboxProxy(targets, activator.SandboxConfig{
 				Domain: config.GetEnv("SANDBOX_DOMAIN", "localhost"),
 				Hold:   time.Duration(config.GetIntEnv("SANDBOX_HOLD_SECONDS", 5)) * time.Second,
 			}, metrics)
@@ -161,10 +161,10 @@ func main() {
 	// the per-request timeout lives in the deployments-sidecar — so no
 	// WriteTimeout here.
 	var extra []*http.Server
-	if deploymentsEdge != nil {
+	if deploymentsActivator != nil {
 		extra = append(extra, &http.Server{
 			Addr:              ":" + dataPort,
-			Handler:           dataHandler(deploymentsEdge, sandboxEdge),
+			Handler:           dataHandler(deploymentsActivator, sandboxProxy),
 			ReadHeaderTimeout: 10 * time.Second,
 		})
 	}
@@ -229,11 +229,11 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 // buildSandboxOrchestrator builds the sandbox backend. The Docker one is for
 // development: no warm pool (creates are cold) and no isolation tiers, since
 // gvisor and kata are RuntimeClasses. See docs/sandboxes.md.
-// dataHandler picks the edge for a request. Both data planes share the one
-// Docker listener, so the Host decides: a sandbox is addressed at
+// dataHandler picks which activator serves a request. Both data planes share the
+// one Docker listener, so the Host decides: a sandbox is addressed at
 // s-{token}.{sandbox domain}, everything else is a deployment host. Give
 // sandboxes their own domain if any deployment id could start with "s-".
-func dataHandler(deployments http.Handler, sandboxes *activator.SandboxActivator) http.Handler {
+func dataHandler(deployments http.Handler, sandboxes *activator.SandboxProxy) http.Handler {
 	if sandboxes == nil {
 		return deployments
 	}

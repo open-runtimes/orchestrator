@@ -22,7 +22,8 @@ Job orchestration service for running containerized workloads with async callbac
 - `cmd/job-sidecar` — sidecar for artifact processing and job lifecycle
 - `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane
 - `cmd/deployments-sidecar` — reverse proxy in every deployment replica (readiness, drain, concurrency cap)
-- `cmd/deployments-activator` — K8s data-plane edge; `EDGE_MODE=deployment` buffers cold/async traffic (gateway routes here with X-Revision), `EDGE_MODE=sandbox` is the wildcard sandbox edge (resolves the sandbox from the Host)
+- `cmd/deployments-activator` — K8s buffering data plane for deployments: holds cold/async traffic (gateway routes here with X-Revision) and raises cold revisions
+- `cmd/sandbox-proxy` — K8s data plane for sandboxes: one wildcard route, resolved by the capability token in the Host. Its own component, not an activator mode — always on the path, pods-read-only, nothing to raise
 - `cmd/pool-shim` — warm-pod entrypoint: blocks on a FIFO, execs the activation payload as PID 1
 - `internal/` — core packages: api, job, artifact, dispatcher, kube (shared K8s client/leader election), warm (warm-pool engine: pods, claim, replenish, GC — shared by pools and sandboxes), claim (the claim protocol), orchestrator/{docker,kubernetes}, sandbox/kubernetes, sidecar, config
 - `pkg/` — reusable utilities: backoff, circuitbreaker, cloudevent, lifecycle (shared workload FSM/store), server
