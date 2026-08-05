@@ -66,7 +66,15 @@ type binding struct {
 }
 
 func newBinding(cfg Config) *binding {
+	var extra map[int]string
+	if len(cfg.ExtraPorts) > 0 {
+		extra = make(map[int]string, len(cfg.ExtraPorts))
+		for _, port := range cfg.ExtraPorts {
+			extra[port] = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(port))
+		}
+	}
 	return &binding{
+		extra: extra,
 		reverse: &httputil.ReverseProxy{
 			Rewrite: func(r *httputil.ProxyRequest) {
 				// handleData resolved (and validated) which port this request is

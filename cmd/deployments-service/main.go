@@ -20,6 +20,7 @@ import (
 	"orchestrator/internal/observability"
 	poolkubernetes "orchestrator/internal/pool/kubernetes"
 	"orchestrator/internal/proxy"
+	sandboxdocker "orchestrator/internal/sandbox/docker"
 	sandboxkubernetes "orchestrator/internal/sandbox/kubernetes"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
@@ -78,20 +79,12 @@ func main() {
 	// the in-process activator on Docker.
 	concurrency := autoscaler.NewSidecarConcurrency(orchestrator, proxy.DefaultAdminPort)
 	var queue autoscaler.QueueSource
-	var extra []*http.Server
+	var deploymentsEdge *activator.Activator
 	if backend == "kubernetes" {
 		queue = autoscaler.NewActivatorQueue(config.GetEnv("ACTIVATOR_STATS_URL", "http://deployments-activator:8081/stats"))
 	} else {
-		act := activator.New(svc, eventDispatcher, metrics)
-		queue = autoscaler.QueuedDepthFunc(act.QueuedDepth)
-		// Data-plane listener: requests can legitimately run for minutes
-		// (the per-request timeout lives in the deployments-sidecar), so no
-		// WriteTimeout here.
-		extra = append(extra, &http.Server{
-			Addr:              ":" + dataPort,
-			Handler:           act,
-			ReadHeaderTimeout: 10 * time.Second,
-		})
+		deploymentsEdge = activator.New(svc, eventDispatcher, metrics)
+		queue = autoscaler.QueuedDepthFunc(deploymentsEdge.QueuedDepth)
 	}
 
 	scaler := autoscaler.New(orchestrator, concurrency, queue, autoscaler.LoadConfigFromEnv(), metrics)
@@ -138,6 +131,7 @@ func main() {
 		os.Exit(1)
 	}
 	var sandboxSvc *sandbox.Service
+	var sandboxEdge *activator.SandboxActivator
 	if len(sandboxPools) > 0 {
 		sandboxOrchestrator, err := buildSandboxOrchestrator(ctx, backend, sandboxPools, metrics)
 		if err != nil {
@@ -151,6 +145,28 @@ func main() {
 		}
 		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.DefaultRegistry())
 		slog.Info("Sandbox pools configured", "count", len(sandboxPools))
+
+		// On Docker the sandbox edge runs in-process, resolving tokens straight
+		// from the daemon; on Kubernetes it is its own Deployment behind the
+		// wildcard route (cmd/deployments-activator, EDGE_MODE=sandbox).
+		if targets, ok := sandboxOrchestrator.(activator.SandboxTargets); ok {
+			sandboxEdge = activator.NewSandboxActivator(targets, activator.SandboxConfig{
+				Domain: config.GetEnv("SANDBOX_DOMAIN", "localhost"),
+				Hold:   time.Duration(config.GetIntEnv("SANDBOX_HOLD_SECONDS", 5)) * time.Second,
+			}, metrics)
+		}
+	}
+
+	// Data-plane listener (Docker): requests can legitimately run for minutes —
+	// the per-request timeout lives in the deployments-sidecar — so no
+	// WriteTimeout here.
+	var extra []*http.Server
+	if deploymentsEdge != nil {
+		extra = append(extra, &http.Server{
+			Addr:              ":" + dataPort,
+			Handler:           dataHandler(deploymentsEdge, sandboxEdge),
+			ReadHeaderTimeout: 10 * time.Second,
+		})
 	}
 
 	healthChecker := health.NewChecker(orchestrator)
@@ -210,13 +226,33 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 	}
 }
 
-// buildSandboxOrchestrator builds the sandbox backend. Sandboxes are
-// Kubernetes-only: they are reached through a wildcard gateway route, and their
-// isolation tiers are RuntimeClasses.
+// buildSandboxOrchestrator builds the sandbox backend. The Docker one is for
+// development: no warm pool (creates are cold) and no isolation tiers, since
+// gvisor and kata are RuntimeClasses. See docs/sandboxes.md.
+// dataHandler picks the edge for a request. Both data planes share the one
+// Docker listener, so the Host decides: a sandbox is addressed at
+// s-{token}.{sandbox domain}, everything else is a deployment host. Give
+// sandboxes their own domain if any deployment id could start with "s-".
+func dataHandler(deployments http.Handler, sandboxes *activator.SandboxActivator) http.Handler {
+	if sandboxes == nil {
+		return deployments
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sandboxes.Matches(r.Host) {
+			sandboxes.ServeHTTP(w, r)
+			return
+		}
+		deployments.ServeHTTP(w, r)
+	})
+}
+
 func buildSandboxOrchestrator(ctx context.Context, backend string, pools []pool.Pool, metrics *observability.Metrics) (sandbox.Orchestrator, error) {
 	switch backend {
 	case "docker":
-		return nil, errors.New("sandboxes require the Kubernetes backend")
+		cfg := sandboxdocker.LoadConfigFromEnv()
+		cfg.SidecarImage = config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+		cfg.Pools = pools
+		return sandboxdocker.NewOrchestrator(ctx, cfg)
 	case "kubernetes":
 		cfg, err := sandboxkubernetes.LoadConfigFromEnv()
 		if err != nil {

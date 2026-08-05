@@ -42,17 +42,29 @@ const (
 
 // SandboxConfig configures the SandboxActivator.
 type SandboxConfig struct {
-	Namespace string
 	// Domain is the wildcard sandbox domain; hosts are s-{token}.{Domain}, or
 	// s-{token}-{port}.{Domain} for a sandbox's extra ports.
 	Domain string
+	Hold   time.Duration
+}
+
+// SandboxTargets resolves a capability token to the address serving that
+// sandbox, or nil when nothing serves it (yet, or ever). The seam is what makes
+// this edge backend-neutral: Kubernetes answers from a pod informer, Docker
+// from the daemon.
+type SandboxTargets interface {
+	Target(ctx context.Context, token string) (*url.URL, error)
+}
+
+// PodTargetsConfig configures the Kubernetes SandboxTargets.
+type PodTargetsConfig struct {
+	Namespace string
 	// ManagedBy and TokenLabel are the sandbox backend's label contract
 	// (internal/sandbox/kubernetes).
 	ManagedBy  string
 	TokenLabel string
 	ProxyPort  int32 // sandbox pod data port (proxy.DefaultProxyPort)
 	AdminPort  int32 // sandbox pod admin port for direct probing (proxy.DefaultAdminPort)
-	Hold       time.Duration
 }
 
 // SandboxActivator is the sandbox data-plane edge: it resolves the capability
@@ -63,49 +75,75 @@ type SandboxConfig struct {
 // execution belongs to the image's own /execute contract, not to us. Staying
 // sync also keeps file transfers streaming rather than buffered.
 type SandboxActivator struct {
-	client kubernetes.Interface
-	broker *broker
-	cfg    SandboxConfig
-
-	pods corelisters.PodLister
+	targets SandboxTargets
+	broker  *broker
+	cfg     SandboxConfig
 }
 
-// NewSandboxActivator creates a SandboxActivator. rec (nilable) receives the
-// hold metrics. Call Start before serving.
-func NewSandboxActivator(client kubernetes.Interface, cfg SandboxConfig, rec Recorder) *SandboxActivator {
+// NewSandboxActivator creates a SandboxActivator over a target resolver. rec
+// (nilable) receives the hold metrics.
+func NewSandboxActivator(targets SandboxTargets, cfg SandboxConfig, rec Recorder) *SandboxActivator {
+	if cfg.Hold <= 0 {
+		cfg.Hold = defaultSandboxHold
+	}
+	return &SandboxActivator{
+		targets: targets,
+		broker:  newBroker(nil, rec, edgeSandbox),
+		cfg:     cfg,
+	}
+}
+
+// PodTargets resolves sandbox tokens from a Kubernetes pod informer.
+type PodTargets struct {
+	client kubernetes.Interface
+	cfg    PodTargetsConfig
+	pods   corelisters.PodLister
+}
+
+// NewPodTargets creates the Kubernetes target resolver. Call Start before
+// serving.
+func NewPodTargets(client kubernetes.Interface, cfg PodTargetsConfig) *PodTargets {
 	if cfg.ProxyPort == 0 {
 		cfg.ProxyPort = proxy.DefaultProxyPort
 	}
 	if cfg.AdminPort == 0 {
 		cfg.AdminPort = proxy.DefaultAdminPort
 	}
-	if cfg.Hold <= 0 {
-		cfg.Hold = defaultSandboxHold
-	}
-	return &SandboxActivator{
-		client: client,
-		broker: newBroker(nil, rec, edgeSandbox),
-		cfg:    cfg,
-	}
+	return &PodTargets{client: client, cfg: cfg}
 }
 
 // Start runs the sandbox pod informer on ctx and blocks until its cache syncs;
 // the informer keeps running until ctx cancels.
-func (a *SandboxActivator) Start(ctx context.Context) error {
-	factory := informers.NewSharedInformerFactoryWithOptions(a.client, sandboxInformerResync,
-		informers.WithNamespace(a.cfg.Namespace),
+func (t *PodTargets) Start(ctx context.Context) error {
+	factory := informers.NewSharedInformerFactoryWithOptions(t.client, sandboxInformerResync,
+		informers.WithNamespace(t.cfg.Namespace),
 		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
-			opts.LabelSelector = revisionLabelManagedBy + "=" + a.cfg.ManagedBy + "," + a.cfg.TokenLabel
+			opts.LabelSelector = revisionLabelManagedBy + "=" + t.cfg.ManagedBy + "," + t.cfg.TokenLabel
 		}),
 	)
 	pods := factory.Core().V1().Pods()
-	a.pods = pods.Lister()
+	t.pods = pods.Lister()
 
 	factory.Start(ctx.Done())
 	if !cache.WaitForCacheSync(ctx.Done(), pods.Informer().HasSynced) {
 		return errors.New("informer caches failed to sync")
 	}
 	return nil
+}
+
+// Target returns the data port of the pod carrying this token — a ready one, or
+// during creation the first whose sidecar answers a direct /ready probe (ahead
+// of kubelet readiness propagation, which is most of a sub-second claim).
+func (t *PodTargets) Target(ctx context.Context, token string) (*url.URL, error) {
+	selector := labels.SelectorFromSet(labels.Set{t.cfg.TokenLabel: token})
+	pods, err := t.pods.Pods(t.cfg.Namespace).List(selector)
+	if err != nil {
+		return nil, err
+	}
+	if target := readyPodTarget(pods, t.cfg.ProxyPort); target != nil {
+		return target, nil
+	}
+	return probeCandidates(ctx, pods, t.cfg.ProxyPort, t.cfg.AdminPort), nil
 }
 
 // ServeHTTP implements the sandbox data plane. The token is read from the Host
@@ -126,7 +164,14 @@ func (a *SandboxActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if port != "" {
 		r.Header.Set(proxy.HeaderPort, port)
 	}
-	a.broker.sync(w, r, token, r.Host, a.cfg.Hold, sandboxCapacity{a: a, token: token})
+	a.broker.sync(w, r, token, r.Host, a.cfg.Hold, sandboxCapacity{targets: a.targets, token: token})
+}
+
+// Matches reports whether this host addresses a sandbox. Used where one
+// listener serves both data planes (the Docker backend) to pick the edge.
+func (a *SandboxActivator) Matches(host string) bool {
+	token, _ := a.resolve(hostOnly(host))
+	return token != ""
 }
 
 // resolve splits a sandbox host into its capability token and (optionally) the
@@ -154,26 +199,16 @@ func isPort(s string) bool {
 	return err == nil && n > 0 && n <= 65535
 }
 
-// sandboxCapacity adapts one sandbox to the broker's seam: the target is the
-// pod labelled with this token, and there is nothing to raise — a sandbox is a
-// claimed pod, so if the pod is gone the sandbox is gone.
+// sandboxCapacity adapts one sandbox to the broker's seam: the target is
+// whatever serves this token, and there is nothing to raise — a sandbox is a
+// claimed workload, so if it is gone, it is gone.
 type sandboxCapacity struct {
-	a     *SandboxActivator
-	token string
+	targets SandboxTargets
+	token   string
 }
 
 func (c sandboxCapacity) Target(ctx context.Context) (*url.URL, error) {
-	selector := labels.SelectorFromSet(labels.Set{c.a.cfg.TokenLabel: c.token})
-	pods, err := c.a.pods.Pods(c.a.cfg.Namespace).List(selector)
-	if err != nil {
-		return nil, err
-	}
-	if target := readyPodTarget(pods, c.a.cfg.ProxyPort); target != nil {
-		return target, nil
-	}
-	// Still creating: the pod exists and its sidecar may already be serving
-	// ahead of kubelet readiness propagation.
-	return probeCandidates(ctx, pods, c.a.cfg.ProxyPort, c.a.cfg.AdminPort), nil
+	return c.targets.Target(ctx, c.token)
 }
 
 func (c sandboxCapacity) Raise(context.Context) error { return nil }

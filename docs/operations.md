@@ -153,7 +153,7 @@ deployments:
       enabled: true                # the wildcard edge every sandbox request passes through
 ```
 
-The edge is the deployments-activator image in `EDGE_MODE=sandbox`, with its own Deployment and one wildcard `HTTPRoute` for `*.{domain}`. It is permanently on the data path, so scale it for sandbox traffic (`edge.autoscaling`) rather than for cold starts.
+Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production, the edge is the deployments-activator image in `EDGE_MODE=sandbox`, with its own Deployment and one wildcard `HTTPRoute` for `*.{domain}`. It is permanently on the data path, so scale it for sandbox traffic (`edge.autoscaling`) rather than for cold starts.
 
 **A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandboxes.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
 

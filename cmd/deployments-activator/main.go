@@ -65,17 +65,20 @@ func runSandbox(ctx context.Context) error {
 		return err
 	}
 
-	edge := activator.NewSandboxActivator(client, activator.SandboxConfig{
+	targets := activator.NewPodTargets(client, activator.PodTargetsConfig{
 		Namespace:  config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
-		Domain:     config.GetEnv("SANDBOX_DOMAIN", "localhost"),
 		ManagedBy:  sandboxkubernetes.ManagedByValue,
 		TokenLabel: sandboxkubernetes.LabelToken,
-		Hold:       time.Duration(config.GetIntEnv("SANDBOX_HOLD_SECONDS", 5)) * time.Second,
-	}, metrics)
-	if err := edge.Start(ctx); err != nil {
+	})
+	if err := targets.Start(ctx); err != nil {
 		return err
 	}
 	slog.Info("Informer caches synced")
+
+	edge := activator.NewSandboxActivator(targets, activator.SandboxConfig{
+		Domain: config.GetEnv("SANDBOX_DOMAIN", "localhost"),
+		Hold:   time.Duration(config.GetIntEnv("SANDBOX_HOLD_SECONDS", 5)) * time.Second,
+	}, metrics)
 
 	// The data listener serves the edge and NOTHING else. Every path belongs to
 	// the sandbox: mounting our own /healthz here would shadow the contract's

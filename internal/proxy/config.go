@@ -7,6 +7,8 @@ package proxy
 
 import (
 	"orchestrator/internal/config"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,7 +23,8 @@ const (
 // Environment variable names — the contract stamped by backends into proxy
 // containers.
 const (
-	EnvTarget                    = "PROXY_TARGET" // host:port of the user container
+	EnvTarget                    = "PROXY_TARGET"      // host:port of the user container
+	EnvExtraPorts                = "PROXY_EXTRA_PORTS" // comma-separated secondary ports, reachable via HeaderPort
 	EnvProxyPort                 = "PROXY_PORT"
 	EnvAdminPort                 = "PROXY_ADMIN_PORT"
 	EnvTimeoutSeconds            = "PROXY_TIMEOUT_SECONDS" // per-request total → 504
@@ -41,9 +44,13 @@ const (
 
 // Config configures the proxy.
 type Config struct {
-	Target    string // host:port of the user container
-	ProxyPort int
-	AdminPort int
+	Target string // host:port of the user container
+	// ExtraPorts are secondary ports on the target host, addressable via
+	// HeaderPort. Direct mode takes them from the environment; pool mode takes
+	// them from the claim.
+	ExtraPorts []int
+	ProxyPort  int
+	AdminPort  int
 
 	Timeout  time.Duration // per-request total → 504
 	MaxDrain time.Duration // cap on drain wait at shutdown
@@ -88,7 +95,24 @@ func LoadConfigFromEnv() Config {
 
 		ClaimToken: config.GetEnv(EnvClaimToken, ""),
 		TargetHost: config.GetEnv(EnvTargetHost, "127.0.0.1"),
+		ExtraPorts: parsePorts(config.GetEnv(EnvExtraPorts, "")),
 		Workspace:  config.GetEnv("SHARED_VOLUME_PATH", "/workspace"), // same contract as the shim and job sidecar
 		S3:         config.LoadS3Credentials(),
 	}
+}
+
+// parsePorts reads a comma-separated port list, skipping anything unparseable —
+// a malformed entry must not take the sidecar down, it just is not routable.
+func parsePorts(raw string) []int {
+	var ports []int
+	for entry := range strings.SplitSeq(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if port, err := strconv.Atoi(entry); err == nil && port > 0 && port <= 65535 {
+			ports = append(ports, port)
+		}
+	}
+	return ports
 }

@@ -142,14 +142,9 @@ func (p *Proxy) arm(req ClaimRequest) {
 	if req.TimeoutSeconds != nil {
 		cfg.Timeout = time.Duration(*req.TimeoutSeconds) * time.Second
 	}
-	b := newBinding(cfg)
 	// Secondary ports are addressable but never probed — see ClaimRequest.Ports.
-	if len(req.Ports) > 0 {
-		b.extra = make(map[int]string, len(req.Ports))
-		for _, port := range req.Ports {
-			b.extra[port] = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(port))
-		}
-	}
+	cfg.ExtraPorts = req.Ports
+	b := newBinding(cfg)
 	p.bind.Store(b)
 	go b.prober.run(p.runCtx)
 }

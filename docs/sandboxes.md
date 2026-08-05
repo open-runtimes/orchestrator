@@ -187,7 +187,7 @@ curl http://localhost:8080/v1/sandbox-pool
 {"pools": [{"id": "py", "image": "ghcr.io/open-runtimes/sandbox:0.1.0", "size": 4, "warm": 4, "claimed": 1}]}
 ```
 
-`GET /v1/sandbox-pool/{id}` returns one pool. They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — plus `command` (the image's entrypoint, which the claim execs) and `maxIdleSeconds`. They are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
+`GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — plus `command` (the image's entrypoint, which the claim execs) and `maxIdleSeconds`. They are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
 
 ```yaml
 deployments:
@@ -207,7 +207,24 @@ deployments:
 
 The **sandbox edge** is the component every sandbox request passes through: one wildcard `HTTPRoute` for `*.{domain}` sends traffic to it, and it resolves the sandbox from the capability token in the request's `Host`. It runs the deployments-activator image in `EDGE_MODE=sandbox` with its own replica set — permanently on the data path, unlike the deployments activator, so sandbox file transfers do not share a failure domain with deployment cold starts.
 
-Sandboxes require the Kubernetes backend; the Docker development backend serves deployments and jobs only.
+### The Docker backend
+
+Sandboxes also run on the Docker development backend, so you can build against the API without a cluster. Each sandbox is a container running the pool's image, fronted by a sidecar, sharing a workspace volume; the edge runs in the deployments service itself and serves sandboxes on its data port, so URLs carry that port (`http://s-{token}.sandboxes.test:8081`).
+
+```yaml
+# docker-compose / env for the deployments service
+ORCHESTRATOR_BACKEND: docker
+SANDBOX_DOMAIN: sandboxes.test
+SANDBOX_POOLS_JSON: '[{"id":"py","image":"ghcr.io/open-runtimes/sandbox:0.1.0","command":"/usr/local/bin/sandbox","port":3000,"maxIdleSeconds":900}]'
+DOCKER_NETWORK: orchestrator   # recommended: keeps sandboxes off the default bridge
+```
+
+Everything in this guide works there — the contract, artifacts, extra ports, idle teardown, `status`/`list` reconstruction after a restart — with two honest exceptions:
+
+- **No warm pool.** `size` is ignored and `warm` is always `0`: a create pays a full container start (seconds), where Kubernetes claims an already-running pod in well under one.
+- **No isolation tiers.** `gvisor` and `kata` are RuntimeClasses, which Docker has no equivalent of. A sandbox here has ordinary container isolation, so **do not run untrusted code on it** — that is what the Kubernetes backend and a gVisor pool are for.
+
+One environment note: the service reaches sandboxes by container address, so it must run where those are routable — beside the daemon, or on a host whose engine routes to containers (OrbStack does, Docker Desktop does not). This is the same constraint the Docker deployments backend already has.
 
 ## Design notes
 
