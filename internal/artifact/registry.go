@@ -176,10 +176,13 @@ func DefaultRegistry() *Registry {
 	return defaultReg
 }
 
-// ServingRegistry returns the Registry for deployment revisions, which cannot
-// mount: their sidecar starts with the container, so there is no barrier before
-// the workload to establish a mount at and nothing to undo it after. A type
-// needing that is a validation error here rather than a silent no-op.
+// ServingRegistry returns the Registry for deployment revisions, which do not
+// support mounting. Not for want of a place to do it — their sidecar is a native
+// sidecar, starting after the artifacts and before the worker, the same shape a
+// warm pod has. It is that a revision's artifacts are materialized by a separate
+// init container which then exits, taking any mount with it, and the resident
+// sidecar is never told what they were. Until something wires that, a type
+// needing it is a validation error here rather than a silent no-op.
 func ServingRegistry() *Registry {
 	servingRegistryOnce.Do(func() { servingReg = buildRegistry(false, builtinTypes()) })
 	return servingReg
