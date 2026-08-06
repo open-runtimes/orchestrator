@@ -9,6 +9,7 @@ One thing to know before anything else: **exec and files are not part of this AP
 - [Endpoints](#endpoints)
 - [The sandbox contract](#the-sandbox-contract)
 - [Artifacts](#artifacts)
+  - [Mounting a filesystem image](#mounting-a-filesystem-image)
 - [Ports](#ports)
 - [Persistence](#persistence)
 - [Isolation](#isolation)
@@ -53,7 +54,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
 
 `201 Created`, and the URL is live when you receive it — there is no per-sandbox gateway route to wait on. The call is synchronous because a claim is sub-second; there is no async variant and no callback.
 
-**Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it.
+**Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it immediately: the proxy stops routing to a pod the moment it is marked for deletion, so the URL fails while the pod is still terminating, and dies with the token when it goes.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -150,7 +151,41 @@ curl -X POST http://localhost:8080/v1/sandbox \
   }'
 ```
 
-Every artifact type works except [`mount`](jobs.md#mount-artifact), which needs a post-phase sidecar only a job runs; submitting one is a `400` rather than a silent no-op. Artifacts also run in the **pre phase only** — a post-phase artifact (one depending on the `"job"` sentinel) never runs, because a sandbox has no teardown phase to run it in. Supporting both, for restore-and-snapshot workspaces, is [a proposal](design/sandbox-mounts-and-shutdown-artifacts.md). Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
+Artifacts run in the **pre phase only**: a post-phase artifact (one depending on the `"job"` sentinel) never runs, because a sandbox has no teardown phase to run it in. Snapshot-on-shutdown is [a proposal](design/sandbox-mounts-and-shutdown-artifacts.md), not a feature.
+
+### Mounting a filesystem image
+
+A [`mount`](jobs.md#mount-artifact) puts a squashfs or erofs image into the workspace without extracting it — read-only, or `writable` with a tmpfs overlay whose size you cap. For a large read-mostly tree that is the difference between an `O(1)` mount and copying every byte in.
+
+It needs a pool that declares the capability:
+
+```yaml
+sandboxes:
+  pools:
+    - id: restore
+      image: python:3.12-slim
+      port: 3000
+      mounts: true
+```
+
+```jsonc
+{
+  "pool": "restore",
+  "artifacts": [
+    {"id": "img",  "type": "download", "in": "s3://acme/base.erofs", "out": "base.erofs"},
+    {"id": "tree", "type": "mount", "in": "base.erofs", "out": "work",
+     "writable": true, "size": 512, "depends": "img"}
+  ]
+}
+```
+
+The mount is established after the image is materialized and **before** the workload is signalled, so it is in place when your command first runs. A mount that fails poisons the pod: the sandbox is `failed` with the reason and nothing starts.
+
+**Why it is a pool dimension.** Mounting needs `CAP_SYS_ADMIN` and a loop device, and the mount has to cross from the sidecar that makes it into the container that reads it — so the sidecar runs **privileged as root** and the workspace carries mount propagation. Those are properties of a pod, and a warm pod is built long before your claim arrives. A `mount` against a pool without `mounts: true` is a `400` naming the setting.
+
+[Pool activations](pools.md#artifacts) follow the same rules over the same machinery, and [deployment revisions](deployments.md#the-request-spec) and [jobs](jobs.md#mount-artifact) mount too — they infer the capability per request, because their pods are built for one request rather than standing warm.
+
+**What that costs.** A privileged container sits in every pod of that pool, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work on pools without `mounts`, and treat a mounting pool as trusted infrastructure. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
 
 If materialization fails, the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
 
@@ -252,6 +287,7 @@ As with activations, a used pod is **never reused** — teardown discards it and
 | `timeoutSeconds` | `0` (unbounded) to `3600`; default `300` |
 | `idleTimeoutSeconds` | `0` (until `DELETE`) up to the pool's `maxIdleSeconds` |
 | Reserved ports | `8000`, `8001` (the sidecar), and the pool's own port |
+| `mount` artifacts | Only on a pool with `mounts: true`; never on the Docker backend |
 | `/execute` output | 1 MiB per stream, then `truncated` (reference agent) |
 
 Concurrent sandboxes are bounded by your pools' `size` and [burst policy](pools.md#burst-policy), not by a limit here: a create against an exhausted pool either cold-starts a pod or is rejected with `429`, depending on the pool's `burst`.
@@ -387,6 +423,7 @@ DOCKER_NETWORK: orchestrator   # recommended: keeps sandboxes off the default br
 Everything in this guide works there — the contract, artifacts, extra ports, idle teardown, `status`/`list` reconstruction after a restart — with two honest exceptions:
 
 - **No warm pool.** `size` is ignored and `warm` is always `0`: a create pays a full container start (seconds), where Kubernetes claims an already-running pod in well under one.
+- **No mounts.** The `mount` artifact needs a mount shared from the sidecar into the workload, which pod containers get through propagation on a shared volume and sibling Docker containers do not. A mount is a `400` here even on a pool with `mounts: true`.
 - **No isolation tiers.** `gvisor` and `kata` are RuntimeClasses, which Docker has no equivalent of. A sandbox here has ordinary container isolation, so **do not run untrusted code on it** — that is what the Kubernetes backend and a gVisor pool are for.
 
 One environment note: the service reaches sandboxes by container address, so it must run where those are routable — beside the daemon, or on a host whose engine routes to containers (OrbStack does, Docker Desktop does not). This is the same constraint the Docker deployments backend already has.

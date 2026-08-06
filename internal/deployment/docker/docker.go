@@ -65,6 +65,13 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // stays idle; any change tears down the containers and volume and recreates
 // everything, re-running artifacts.
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
+	// Mounts are a Kubernetes capability: a pod's containers share a mount
+	// through propagation on a shared volume, which sibling Docker containers do
+	// not. Say so rather than serving a revision without its mount.
+	if artifact.HasMount(req.Artifacts) {
+		return false, apperrors.Validation("artifacts",
+			"the Docker backend cannot mount: sibling containers do not share a mount namespace")
+	}
 	if req.RuntimeClass != "" && req.RuntimeClass != deployment.RuntimeClassRunc {
 		return false, apperrors.Validation("runtimeClass", "runtimeClass tiers require the Kubernetes backend")
 	}

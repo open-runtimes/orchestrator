@@ -5,6 +5,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/volume"
+	"orchestrator/internal/workload"
 	"reflect"
 	"slices"
 	"strings"
@@ -518,6 +519,92 @@ func envHas(env []corev1.EnvVar, name, value string) bool {
 
 func envValue(env []corev1.EnvVar, name string) string {
 	for _, e := range env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+// A revision that asks to mount gets what a mount needs and nothing else does:
+// the privilege is per-request, so an ordinary revision keeps its hardened
+// sidecar. The workload is held by a startup probe until the mounts are in
+// place, which is what makes the sidecar's mount visible to it in time.
+func TestBuildDeployment_MountCapabilityIsPerRequest(t *testing.T) {
+	t.Parallel()
+	base := func(arts ...artifact.Artifact) *deployment.Request {
+		return &deployment.Request{ID: "web", Image: "app:v1", Port: 8080, Artifacts: arts}
+	}
+
+	plain := buildDeployment(base(), Config{RunAsUser: 65532}, "web-00001").Spec.Template.Spec
+	sidecar := containerNamed(t, plain, ContainerProxy)
+	if sidecar.SecurityContext.Privileged != nil && *sidecar.SecurityContext.Privileged {
+		t.Error("a revision that does not mount must not get a privileged sidecar")
+	}
+	if sidecar.StartupProbe != nil {
+		t.Error("nothing to wait for: no startup probe without mounts")
+	}
+	if workspaceMountOf(t, sidecar).MountPropagation != nil {
+		t.Error("no propagation without mounts")
+	}
+	if envOf(sidecar, workload.EnvArtifacts) != "" || envOf(sidecar, workload.EnvMounts) != "" {
+		t.Error("the sidecar has no business knowing about artifacts it will not mount")
+	}
+
+	mounting := buildDeployment(base(
+		&artifact.Download{ID: "img", In: "https://acme.test/x.erofs", Out: "x.erofs"},
+		&artifact.Mount{ID: "tree", In: "x.erofs", Out: "work", Depends: "img"},
+	), Config{RunAsUser: 65532}, "web-00001").Spec.Template.Spec
+	sidecar = containerNamed(t, mounting, ContainerProxy)
+	worker := containerNamed(t, mounting, ContainerWorker)
+
+	if sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
+		t.Error("mounting needs CAP_SYS_ADMIN: the sidecar must be privileged")
+	}
+	if p := workspaceMountOf(t, sidecar).MountPropagation; p == nil || *p != corev1.MountPropagationBidirectional {
+		t.Errorf("sidecar propagation: got %v", p)
+	}
+	if p := workspaceMountOf(t, worker).MountPropagation; p == nil || *p != corev1.MountPropagationHostToContainer {
+		t.Errorf("worker propagation: got %v", p)
+	}
+	// The kubelet holds the main containers until a native sidecar's startup
+	// probe passes, which is the only barrier available here.
+	if sidecar.StartupProbe == nil || sidecar.StartupProbe.HTTPGet == nil ||
+		sidecar.StartupProbe.HTTPGet.Path != workload.MountsReadyPath {
+		t.Errorf("the workload must be gated on mounts being ready, got %+v", sidecar.StartupProbe)
+	}
+	if envOf(sidecar, workload.EnvMounts) != "true" {
+		t.Error("the sidecar must be told it may mount")
+	}
+	if !strings.Contains(envOf(sidecar, workload.EnvArtifacts), `"mount"`) {
+		t.Error("the sidecar must be told what to mount")
+	}
+}
+
+func containerNamed(t *testing.T, spec corev1.PodSpec, name string) corev1.Container {
+	t.Helper()
+	for _, c := range append(spec.InitContainers, spec.Containers...) {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no container %q", name)
+	return corev1.Container{}
+}
+
+func workspaceMountOf(t *testing.T, c corev1.Container) corev1.VolumeMount {
+	t.Helper()
+	for _, m := range c.VolumeMounts {
+		if m.Name == VolumeWorkspace {
+			return m
+		}
+	}
+	t.Fatalf("container %q does not mount the workspace", c.Name)
+	return corev1.VolumeMount{}
+}
+
+func envOf(c corev1.Container, name string) string {
+	for _, e := range c.Env {
 		if e.Name == name {
 			return e.Value
 		}

@@ -69,7 +69,7 @@ func main() {
 		}
 		return "http://" + host + ":" + dataPort
 	}
-	svc := deployment.NewService(orchestrator, metrics, artifact.ServingRegistry(), domain, urlFor)
+	svc := deployment.NewService(orchestrator, metrics, artifact.MountingRegistry(), domain, urlFor)
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 
@@ -119,7 +119,7 @@ func main() {
 			slog.Error("Failed to start pool orchestrator", "error", err)
 			os.Exit(1)
 		}
-		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.ServingRegistry())
+		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.MountingRegistry())
 		slog.Info("Pools configured", "count", len(pools))
 	}
 
@@ -143,7 +143,7 @@ func main() {
 			slog.Error("Failed to start sandbox orchestrator", "error", err)
 			os.Exit(1)
 		}
-		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.ServingRegistry())
+		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.MountingRegistry())
 		slog.Info("Sandbox pools configured", "count", len(sandboxPools))
 
 		// On Docker the sandbox data plane runs in-process, resolving tokens

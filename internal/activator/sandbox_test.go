@@ -272,3 +272,25 @@ func TestSandboxEdge_NonNumericSuffixIsPartOfTheToken(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 }
+
+// A deleted sandbox must stop answering at its URL immediately, not when its pod
+// finally goes. The token is the credential, so DELETE is the revocation — and a
+// pod terminating for its grace period is still Running with a Ready sidecar,
+// which the direct-probe path would happily route to.
+func TestSandboxEdge_DeletedSandboxIsUnreachableWhileTerminating(t *testing.T) {
+	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	pod := sandboxPod(testToken, "sbx-1", ip, true)
+	now := metav1.Now()
+	pod.DeletionTimestamp = &now
+
+	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: 200 * time.Millisecond}, pod)
+
+	rec := httptest.NewRecorder()
+	act.ServeHTTP(rec, sandboxRequest(t, "s-"+testToken+"."+testSandboxDomain))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("a terminating sandbox must not serve: got %d, want 503", rec.Code)
+	}
+}

@@ -102,7 +102,7 @@ func (r *Registry) Validate(i int, a Artifact) error {
 	}
 	if td.NeedsPostPhase && !r.postPhase {
 		return apperrors.Validation(field+".type", fmt.Sprintf(
-			"artifact type %q is only supported for jobs: it needs the post-phase sidecar that establishes it before the workload starts and undoes it afterwards",
+			"artifact type %q cannot run here: it must be established before the workload starts and undone after it, and this workload has nothing to do that",
 			a.ArtifactType()))
 	}
 	if td.Validate == nil {
@@ -160,10 +160,12 @@ func builtinTypes() []TypeDef {
 }
 
 var (
-	defaultRegistryOnce sync.Once
-	defaultReg          *Registry
-	servingRegistryOnce sync.Once
-	servingReg          *Registry
+	defaultRegistryOnce  sync.Once
+	defaultReg           *Registry
+	servingRegistryOnce  sync.Once
+	servingReg           *Registry
+	mountingRegistryOnce sync.Once
+	mountingReg          *Registry
 )
 
 // DefaultRegistry returns the Registry for jobs: every built-in type, including
@@ -174,11 +176,24 @@ func DefaultRegistry() *Registry {
 	return defaultReg
 }
 
-// ServingRegistry returns the Registry for serving workloads — deployments, pool
-// activations and sandboxes. They materialize artifacts in a pre phase only and
-// then keep serving, with no post phase to establish a mount or undo it, so a
-// type needing one is a validation error here rather than a silent no-op.
+// ServingRegistry returns the Registry for deployment revisions, which do not
+// support mounting. Not for want of a place to do it — their sidecar is a native
+// sidecar, starting after the artifacts and before the worker, the same shape a
+// warm pod has. It is that a revision's artifacts are materialized by a separate
+// init container which then exits, taking any mount with it, and the resident
+// sidecar is never told what they were. Until something wires that, a type
+// needing it is a validation error here rather than a silent no-op.
 func ServingRegistry() *Registry {
 	servingRegistryOnce.Do(func() { servingReg = buildRegistry(false, builtinTypes()) })
 	return servingReg
+}
+
+// MountingRegistry returns the Registry for the warm-pool consumers — sandboxes
+// and pool activations — whose resident sidecar CAN establish a mount and
+// release it on shutdown, but only in a pod whose pool declared the capability.
+// That is per-pool and this is per-type, so the type is permitted here and the
+// pool gate lives in each service.
+func MountingRegistry() *Registry {
+	mountingRegistryOnce.Do(func() { mountingReg = buildRegistry(true, builtinTypes()) })
+	return mountingReg
 }

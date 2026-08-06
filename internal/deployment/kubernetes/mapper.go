@@ -185,7 +185,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
 	// needs to unmarshal them back into concrete types.
 	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
-		env = append(env, corev1.EnvVar{Name: "ARTIFACTS_JSON", Value: string(artifactsJSON)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
 	}
 	for _, kv := range config.LoadS3Credentials().ToEnv() {
 		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
@@ -227,11 +227,53 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 			PeriodSeconds:    1,
 			FailureThreshold: 3,
 		},
+		StartupProbe:    mountsReadyProbe(req),
 		RestartPolicy:   &alwaysRestart,
 		Resources:       kube.SidecarResources(),
-		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
-		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
+		VolumeMounts:    []corev1.VolumeMount{workspaceMount(req, workspace, corev1.MountPropagationBidirectional)},
+		SecurityContext: sidecarSecurityContext(req, cfg),
 	}
+}
+
+// mountsReadyProbe holds the workload until the sidecar has established its
+// mounts. A native sidecar's startup probe is what the kubelet waits on before
+// starting the main containers, so this is the barrier — nothing for a request
+// with no mounts, which starts as before.
+func mountsReadyProbe(req *deployment.Request) *corev1.Probe {
+	if !artifact.HasMount(req.Artifacts) {
+		return nil
+	}
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: workload.MountsReadyPath,
+				Port: intstr.FromInt32(workload.DefaultAdminPort),
+			},
+		},
+		PeriodSeconds:    1,
+		FailureThreshold: 300, // mounting waits for its image; the phase before it produced one
+	}
+}
+
+// sidecarSecurityContext hardens the sidecar, unless this revision mounts — then
+// it needs CAP_SYS_ADMIN and root, which is the cost of the capability and the
+// reason it is per-request rather than always on.
+func sidecarSecurityContext(req *deployment.Request, cfg Config) *corev1.SecurityContext {
+	if artifact.HasMount(req.Artifacts) {
+		return kube.MountingSecurityContext()
+	}
+	return kube.HardenedSecurityContext(cfg.RunAsUser)
+}
+
+// workspaceMount carries propagation only for a revision that mounts: the mount
+// is made in the sidecar and read in the worker, which takes Bidirectional out
+// of one and HostToContainer into the other.
+func workspaceMount(req *deployment.Request, workspace string, propagation corev1.MountPropagationMode) corev1.VolumeMount {
+	m := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: workspace}
+	if artifact.HasMount(req.Artifacts) {
+		m.MountPropagation = &propagation
+	}
+	return m
 }
 
 // proxyEnv stamps the internal/proxy env contract into the proxy container.
@@ -245,6 +287,16 @@ func proxyEnv(req *deployment.Request) []corev1.EnvVar {
 	if req.Concurrency > 0 {
 		env = append(env, corev1.EnvVar{Name: workload.EnvConcurrency, Value: strconv.Itoa(req.Concurrency)})
 	}
+	// Before the readiness early-return below: a revision that mounts must be
+	// told so whether or not it configures probes, or its sidecar never mounts,
+	// its startup probe never passes, and the workload never starts.
+	if artifact.HasMount(req.Artifacts) {
+		env = append(env, corev1.EnvVar{Name: workload.EnvMounts, Value: "true"})
+		if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
+			env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
+		}
+	}
+
 	if req.Probes == nil || req.Probes.Readiness == nil {
 		return env
 	}
@@ -291,7 +343,7 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		Env:             env,
 		WorkingDir:      workspace,
 		VolumeMounts: append([]corev1.VolumeMount{
-			{Name: VolumeWorkspace, MountPath: workspace},
+			workspaceMount(req, workspace, corev1.MountPropagationHostToContainer),
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
 		Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),

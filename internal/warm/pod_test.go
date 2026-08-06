@@ -242,3 +242,84 @@ func TestBuildPod_AgentInstall(t *testing.T) {
 		t.Errorf("without an Agent: want 2 init containers, got %d", len(plain.Spec.InitContainers))
 	}
 }
+
+// Mounting is a pod property: the sidecar that performs it runs privileged and
+// the shared workspace propagates, so the mount reaches the already-running
+// workload. Both are off unless the pool asked, because the cost is a privileged
+// container in every pod of that pool.
+func TestBuildPod_MountCapabilityIsOffUnlessThePoolAsks(t *testing.T) {
+	t.Parallel()
+	plain := podFor(t, pool.Pool{ID: "web", Image: "runtime:latest", Size: 1, Port: 3000})
+	sidecar := containerNamed(t, plain, ContainerProxy)
+	worker := containerNamed(t, plain, ContainerWorkload)
+
+	if sidecar.SecurityContext.Privileged != nil && *sidecar.SecurityContext.Privileged {
+		t.Error("a pool that does not mount must not get a privileged sidecar")
+	}
+	if workspaceMountOf(t, sidecar).MountPropagation != nil || workspaceMountOf(t, worker).MountPropagation != nil {
+		t.Error("no propagation without the capability")
+	}
+	if hasEnv(sidecar, workload.EnvMounts) {
+		t.Error("the sidecar must not be told it can mount")
+	}
+
+	mounting := podFor(t, pool.Pool{ID: "sqfs", Image: "runtime:latest", Size: 1, Port: 3000, Mounts: true})
+	sidecar = containerNamed(t, mounting, ContainerProxy)
+	worker = containerNamed(t, mounting, ContainerWorkload)
+
+	if sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
+		t.Error("mounting needs CAP_SYS_ADMIN: the sidecar must be privileged")
+	}
+	if sidecar.SecurityContext.RunAsUser == nil || *sidecar.SecurityContext.RunAsUser != 0 {
+		t.Error("opening a loop device needs root")
+	}
+	// Bidirectional out of the sidecar, HostToContainer into the worker: that
+	// pairing is what carries the mount across the container boundary.
+	if p := workspaceMountOf(t, sidecar).MountPropagation; p == nil || *p != corev1.MountPropagationBidirectional {
+		t.Errorf("sidecar propagation: got %v", p)
+	}
+	if p := workspaceMountOf(t, worker).MountPropagation; p == nil || *p != corev1.MountPropagationHostToContainer {
+		t.Errorf("worker propagation: got %v", p)
+	}
+	if !hasEnv(sidecar, workload.EnvMounts) {
+		t.Error("the sidecar must know it can mount, so a claim fails in the API and not with EPERM")
+	}
+}
+
+func podFor(t *testing.T, p pool.Pool) *corev1.Pod {
+	t.Helper()
+	m := New(nil, []pool.Pool{p}, Config{Namespace: testNS, SidecarImage: "sidecar:latest",
+		ShimImage: "shim:latest", RunAsUser: 65532, Naming: testNaming})
+	return m.buildPod(&m.pools[0], "pool-"+p.ID+"-aaaaa", "tok")
+}
+
+func containerNamed(t *testing.T, pod *corev1.Pod, name string) corev1.Container {
+	t.Helper()
+	for _, c := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("no container %q", name)
+	return corev1.Container{}
+}
+
+func workspaceMountOf(t *testing.T, c corev1.Container) corev1.VolumeMount {
+	t.Helper()
+	for _, m := range c.VolumeMounts {
+		if m.Name == VolumeWorkspace {
+			return m
+		}
+	}
+	t.Fatalf("container %q does not mount the workspace", c.Name)
+	return corev1.VolumeMount{}
+}
+
+func hasEnv(c corev1.Container, name string) bool {
+	for _, e := range c.Env {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}

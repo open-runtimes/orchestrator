@@ -1,6 +1,6 @@
 # Sandbox mounts and shutdown artifacts
 
-**Status: proposal.** Nothing here is implemented. The [sandbox guide](../sandboxes.md) describes what exists today; this describes what it would take to support two things it currently refuses, and what I would want settled before writing either.
+**Status: partly implemented.** Mounts on sandbox pools have shipped — see [Mounting a filesystem image](../sandboxes.md#mounting-a-filesystem-image) for what exists. Shutdown artifacts have not; the sections on them stand as the proposal. The [sandbox guide](../sandboxes.md) describes what exists today; this describes what it would take to support two things it currently refuses, and what I would want settled before writing either.
 
 ## What is being asked for
 

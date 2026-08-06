@@ -37,7 +37,7 @@ func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 		pools = []pool.Pool{{ID: "py", Image: "img", Command: "/usr/local/bin/sandbox", Port: 3000, Size: 1}}
 	}
 	orch := &fakeOrchestrator{}
-	return NewService(orch, nil, pools, artifact.ServingRegistry()), orch
+	return NewService(orch, nil, pools, artifact.MountingRegistry()), orch
 }
 
 func TestCreate_MintsAnUnguessableTokenIndependentOfTheID(t *testing.T) {
@@ -190,6 +190,39 @@ func TestCreate_RejectsAMountItCannotHonour(t *testing.T) {
 	}
 	if got := apperrors.HTTPStatus(err); got != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 (%v)", got, err)
+	}
+}
+
+// Mounting changes the pod, and warm pods are built before any claim — so the
+// pool decides, and a request against a pool without the capability is refused
+// before a pod is claimed for it.
+func TestCreate_MountNeedsThePoolCapability(t *testing.T) {
+	t.Parallel()
+	mount := func() artifact.Set {
+		return artifact.Set{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}}
+	}
+
+	plain, _ := testService()
+	_, err := plain.Create(t.Context(), &Request{ID: "sbx", Pool: "py", Artifacts: mount()})
+	if err == nil {
+		t.Fatal("want a rejection from a pool that cannot mount")
+	}
+	if got := apperrors.HTTPStatus(err); got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (%v)", got, err)
+	}
+	if !strings.Contains(err.Error(), "mounts on the pool") {
+		t.Errorf("the error should name the pool setting, got %q", err)
+	}
+
+	// Declared: accepted, and the backend gets the mount to perform.
+	capable, orch := testService(pool.Pool{
+		ID: "sqfs", Image: "img", Port: 3000, Size: 1, Mounts: true,
+	})
+	if _, err := capable.Create(t.Context(), &Request{ID: "sbx", Pool: "sqfs", Artifacts: mount()}); err != nil {
+		t.Fatalf("a pool that declares mounts should accept one: %v", err)
+	}
+	if len(orch.last.Artifacts) != 1 {
+		t.Errorf("the mount must reach the backend, got %v", orch.last.Artifacts)
 	}
 }
 

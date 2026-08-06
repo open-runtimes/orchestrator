@@ -166,6 +166,15 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 	if len(req.Artifacts) > maxArtifacts {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
 	}
+	// Mounting is a property of the pod, fixed when the warm pod was created:
+	// the sidecar performing it runs privileged and the workspace propagates. So
+	// the pool decides whether its sandboxes may mount, and this is where a
+	// request that cannot be honoured is refused — before a pod is claimed for
+	// it.
+	if !p.Mounts && artifact.HasMount(req.Artifacts) {
+		return apperrors.Validation("artifacts", fmt.Sprintf(
+			"pool %q does not allow mounts: set mounts on the pool to give its pods the capability", p.ID))
+	}
 	for i, a := range req.Artifacts {
 		if err := s.artifacts.Validate(i, a); err != nil {
 			return err

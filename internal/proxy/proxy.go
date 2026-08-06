@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"orchestrator/internal/artifact"
+	"orchestrator/internal/sidecar"
 	"orchestrator/internal/workload"
 	"strconv"
 	"sync"
@@ -32,6 +35,14 @@ type Proxy struct {
 	inFlight atomic.Int64  // requests currently being proxied
 	requests atomic.Int64  // cumulative accepted requests — the scrape-based idle signal
 	draining atomic.Bool
+	// closing is set once teardown begins and never cleared. It keeps a claim
+	// from being accepted into a pod that is going away — which would hand its
+	// caller a workload about to vanish, and could leave a mount behind that
+	// release had already looked for.
+	closing atomic.Bool
+	// mountsReady gates the workload: the kubelet holds it until this sidecar's
+	// startup probe passes, which it does once the mounts are established.
+	mountsReady atomic.Bool
 
 	// integral accumulates concurrency-seconds (∫ inFlight dt) as a monotonic
 	// counter: instantaneous in-flight sampling under-reads fast handlers, so
@@ -41,7 +52,14 @@ type Proxy struct {
 	integral   float64
 	integralAt time.Time
 
+	// mounts holds the claim's runner when it established image mounts, so
+	// shutdown can release them. Nil when nothing was mounted.
+	mounts atomic.Pointer[sidecar.Runner]
+
 	deregisterDelay time.Duration // drainDeregisterDelay; shortened in tests
+	// mounter performs the claim's image mounts. Nil uses the real one; unit
+	// tests inject a fake, since mounting needs a privileged pod.
+	mounter sidecar.Mounter
 
 	runCtx context.Context // Start's ctx; late-armed probers run under it
 
@@ -145,7 +163,17 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 	<-ctx.Done()
 	p.drain()
+	p.release()
 	return nil
+}
+
+// release unmounts whatever the claim mounted, after in-flight requests have
+// finished with it. The workspace propagates bidirectionally, so a mount left
+// behind survives the pod and leaks on the node — this is not optional.
+func (p *Proxy) release() {
+	if r := p.mounts.Load(); r != nil {
+		r.Release()
+	}
 }
 
 // Start binds both listeners (port 0 = ephemeral) and serves in the
@@ -169,6 +197,40 @@ func (p *Proxy) Start(ctx context.Context) error {
 	}
 	go func() { _ = p.data.Serve(dataLn) }()
 	go func() { _ = p.admin.Serve(adminLn) }()
+
+	// Mount before reporting mounts-ready, and only then does the kubelet start
+	// the workload — the admin listener is already answering, so the startup
+	// probe sees 503 until this returns. Pool mode mounts on the claim instead,
+	// which is its own barrier.
+	return p.mount(ctx)
+}
+
+// mount establishes a direct-mode workload's image mounts. Failing here fails
+// Start: the workload must not run without them, and the pod's restart is the
+// retry.
+func (p *Proxy) mount(ctx context.Context) error {
+	if !p.cfg.Mounts || p.cfg.ArtifactsJSON == "" {
+		p.mountsReady.Store(true)
+		return nil
+	}
+	artifacts, err := artifact.DefaultRegistry().Unmarshal([]byte(p.cfg.ArtifactsJSON))
+	if err != nil {
+		return fmt.Errorf("decode artifacts: %w", err)
+	}
+	timeoutSeconds := int(p.cfg.Timeout / time.Second)
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = int(p.cfg.MaxDrain / time.Second)
+	}
+	opts := []sidecar.Option{sidecar.WithS3Credentials(p.cfg.S3)}
+	if p.mounter != nil {
+		opts = append(opts, sidecar.WithMounter(p.mounter))
+	}
+	runner := sidecar.NewRunner("direct", p.cfg.Workspace, timeoutSeconds, artifact.DefaultRegistry(), opts...)
+	if err := runner.Mount(ctx, artifacts); err != nil {
+		return err
+	}
+	p.mounts.Store(runner)
+	p.mountsReady.Store(true)
 	return nil
 }
 
@@ -263,11 +325,23 @@ func (p *Proxy) adminMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ready", p.handleReady)
 	mux.HandleFunc("GET /stats", p.handleStats)
+	mux.HandleFunc("GET "+workload.MountsReadyPath, p.handleMountsReady)
 	if p.pool != nil {
 		mux.HandleFunc("POST "+workload.ClaimPath, p.handleActivate)
 		mux.HandleFunc("GET "+workload.ClaimStatePath, p.handleClaimState)
 	}
 	return mux
+}
+
+// handleMountsReady is the workload's start gate: until the mounts this sidecar
+// owns are established, the kubelet must not start the container that reads
+// them. A pod with nothing to mount answers 200 immediately.
+func (p *Proxy) handleMountsReady(w http.ResponseWriter, _ *http.Request) {
+	if !p.mountsReady.Load() {
+		http.Error(w, "mounts not established", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleReady is the combined readiness signal probed by kubelet, Docker
@@ -357,6 +431,7 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 // min(requestBound, MaxDrain) — requests still running at the deadline are
 // dropped.
 func (p *Proxy) drain() {
+	p.closing.Store(true)
 	p.draining.Store(true)
 	time.Sleep(p.deregisterDelay)
 

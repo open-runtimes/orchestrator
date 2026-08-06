@@ -55,10 +55,11 @@ func (s *Service) Pool(ctx context.Context, poolID string) (*Status, error) {
 // Activate validates the activation (applying defaults) and late-binds it
 // onto a warm pod, blocking until the workload is serving.
 func (s *Service) Activate(ctx context.Context, poolID string, act *Activation) (*ActivationStatus, error) {
-	if _, ok := s.pools[poolID]; !ok {
+	p, ok := s.pools[poolID]
+	if !ok {
 		return nil, apperrors.NotFound("pool", poolID)
 	}
-	if err := s.validate(act); err != nil {
+	if err := s.validate(p, act); err != nil {
 		return nil, err
 	}
 	if act.ID == "" {
@@ -111,7 +112,7 @@ func (s *Service) Deactivate(ctx context.Context, poolID, activationID string) e
 	return nil
 }
 
-func (s *Service) validate(act *Activation) error {
+func (s *Service) validate(p *Pool, act *Activation) error {
 	if act.Command == "" {
 		return apperrors.Validation("command", "command is required")
 	}
@@ -134,6 +135,13 @@ func (s *Service) validate(act *Activation) error {
 	}
 	if len(act.Artifacts) > maxArtifacts {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
+	}
+	// Mounting is a property of the pod, fixed when the warm pod was created, so
+	// the pool decides — the same rule sandboxes follow, over the same warm
+	// machinery.
+	if !p.Mounts && artifact.HasMount(act.Artifacts) {
+		return apperrors.Validation("artifacts", fmt.Sprintf(
+			"pool %q does not allow mounts: set mounts on the pool to give its pods the capability", p.ID))
 	}
 	for i, a := range act.Artifacts {
 		if err := s.artifacts.Validate(i, a); err != nil {

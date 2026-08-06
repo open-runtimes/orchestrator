@@ -155,6 +155,16 @@ sandboxes:
 
 Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production the sandbox proxy is its own Deployment behind one wildcard `HTTPRoute` for `*.{domain}` — not a mode of the activator: it is permanently on the request path, reads pods only, and raises nothing. Scale it for sandbox traffic (`sandboxes.proxy.autoscaling`) rather than for cold starts.
 
+**Mounting costs a privileged container, wherever it happens.** A loop mount needs `CAP_SYS_ADMIN` and root, so the sidecar performing it runs privileged and the shared workspace carries mount propagation. It is granted only where a mount was actually asked for:
+
+| Workload | Privileged when |
+| --- | --- |
+| [Job](jobs.md#mount-artifact) | the request has a `mount` artifact — that pod only |
+| [Deployment revision](deployments.md#the-request-spec) | the request has a `mount` artifact — every replica of that revision |
+| [Sandbox](sandboxes.md#mounting-a-filesystem-image) / [activation](pools.md#artifacts) | the **pool** sets `mounts: true` — every pod in the pool, since warm pods predate the claim |
+
+The last row is the one to watch: standing capacity means the privileged container is there before any request arrives, so treat a mounting pool as trusted infrastructure and keep untrusted workloads on pools without the capability.
+
 **A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandboxes.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
 
 ## Configuration reference

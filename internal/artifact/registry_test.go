@@ -23,7 +23,7 @@ func TestServingRegistry_RejectsAMountInsteadOfDroppingIt(t *testing.T) {
 	if got := apperrors.HTTPStatus(err); got != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d (%v)", got, http.StatusBadRequest, err)
 	}
-	if !strings.Contains(err.Error(), "post-phase") {
+	if !strings.Contains(err.Error(), "before the workload starts") {
 		t.Errorf("the error should say what is missing, got %q", err)
 	}
 

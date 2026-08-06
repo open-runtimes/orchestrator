@@ -95,7 +95,23 @@ Unknown fields are rejected with `400` naming the field, so a typo (`"replcias"`
 
 Probes: the **readiness** probe is run by the orchestrator's sidecar and honors sub-second periods — it gates whether a replica receives traffic. Liveness and startup probes are kubelet-run at whole-second granularity. Omitting `path` makes a probe a TCP connect check.
 
-Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving. Every type except [`mount`](jobs.md#mount) is available: a mount needs a post phase, and a serving workload has none.
+Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving, materialized by an `artifact-pre` init container.
+
+A [`mount`](jobs.md#mount-artifact) works too — a squashfs or erofs image mounted into the workspace rather than extracted into it, optionally writable over a tmpfs overlay. It is handled by the revision's sidecar rather than that init container, because a mount has to be held for as long as the workload reads from it and an init container exits:
+
+```jsonc
+{
+  "id": "api", "image": "app:v1", "port": 8080,
+  "artifacts": [
+    {"id": "img",  "type": "download", "in": "s3://acme/assets.erofs", "out": "assets.erofs"},
+    {"id": "tree", "type": "mount", "in": "assets.erofs", "out": "assets", "depends": "img"}
+  ]
+}
+```
+
+**Declaring a mount changes the pod**, and only for revisions that declare one: the sidecar runs **privileged as root** (a loop mount needs `CAP_SYS_ADMIN`), the workspace carries mount propagation so the mount reaches the worker, and the worker is held by a startup probe until the mount is in place. That privileged container is in **every replica** of such a revision, so keep it to revisions that need it — and do not lean on container isolation in a revision that also runs code you do not trust. A revision with no mount artifact is unchanged: hardened sidecar, no propagation, no gate.
+
+The Docker backend cannot mount — sibling containers do not share a mount namespace the way a pod's containers do — and rejects the request rather than serving a revision without it.
 
 ## Status and lifecycle
 

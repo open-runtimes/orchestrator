@@ -63,6 +63,13 @@ func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid claim token", http.StatusUnauthorized)
 		return
 	}
+	// This pod is being torn down. A claim accepted now would hand its caller a
+	// workload that is about to vanish, so it is refused the way a racing loser
+	// is: 409, and the backend tries another warm pod.
+	if p.closing.Load() {
+		writeClaimState(w, http.StatusConflict, workload.ClaimState{Failed: true, Error: "pod is shutting down"})
+		return
+	}
 	// Exactly-one: the first request flips the flag and wins; every later
 	// request — even while the winner is still materializing artifacts, and
 	// forever once claimed or poisoned — gets 409 and retries another pod.
@@ -111,21 +118,40 @@ func (p *Proxy) activate(ctx context.Context, req workload.ClaimRequest) error {
 		timeoutSeconds = *req.TimeoutSeconds
 	}
 
-	// This sidecar runs a pre phase and nothing else, so an artifact needing the
-	// post phase cannot be honoured here. The API rejects those at validation;
-	// refusing the claim as well means a workload never starts believing it got
-	// something it did not.
-	if artifact.HasMount(req.Artifacts) {
-		return errors.New("mount artifacts need a job's post-phase sidecar; this workload has none")
+	// A mount needs a privileged sidecar and a propagating workspace, which are
+	// pod properties fixed when the warm pod was created. The API rejects a
+	// mount against a pool without the capability; refusing it here too means a
+	// workload never starts believing it got something it did not.
+	if artifact.HasMount(req.Artifacts) && !p.cfg.Mounts {
+		return errors.New("this pool cannot mount: set mounts on the pool to give its pods the capability")
 	}
 
 	// Same materialization path as the job sidecar's pre phase: pre-job
 	// artifacts in dependency order against the shared workspace. No report
 	// sink — the claim response is the result.
-	runner := sidecar.NewRunner(req.ActivationID, p.pool.workspace, timeoutSeconds, artifact.ServingRegistry(),
-		sidecar.WithS3Credentials(p.cfg.S3))
+	opts := []sidecar.Option{sidecar.WithS3Credentials(p.cfg.S3)}
+	if p.mounter != nil {
+		opts = append(opts, sidecar.WithMounter(p.mounter))
+	}
+	runner := sidecar.NewRunner(req.ActivationID, p.pool.workspace, timeoutSeconds, artifact.DefaultRegistry(), opts...)
 	if err := runner.RunPre(ctx, req.Artifacts); err != nil {
 		return err
+	}
+
+	// Mounts come after the images they mount are materialized and before the
+	// workload is signalled, so the exec'd payload finds them in place. The
+	// runner is kept for shutdown: bidirectional propagation means an
+	// unreleased mount outlives this pod on its node.
+	if err := runner.Mount(ctx, req.Artifacts); err != nil {
+		return err
+	}
+	p.mounts.Store(runner)
+	// Teardown may have begun while this claim was materializing, and release
+	// runs exactly once. If it already ran, undo what we just did rather than
+	// leave a propagated mount on the node.
+	if p.closing.Load() {
+		runner.Release()
+		return errors.New("pod began shutting down while the claim was materializing")
 	}
 
 	if err := p.pool.signalShim(ctx, workload.ShimExec{

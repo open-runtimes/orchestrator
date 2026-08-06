@@ -227,6 +227,40 @@ func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) erro
 	return nil
 }
 
+// Mount establishes the image mounts among artifacts, for a consumer that runs
+// no post phase but holds its workload for as long as the pod lives: a claimed
+// warm pod. Call it after the pre phase has materialized the images and BEFORE
+// the workload is signalled, so the mount is already there when it execs.
+//
+// Release must run on shutdown. The workspace carries bidirectional
+// propagation, so a mount left behind outlives the pod on its node.
+func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error {
+	mounts, _ := splitMounts(artifacts)
+	if len(mounts) == 0 {
+		return nil
+	}
+	logger := slog.With("jobId", r.jobID, "mounts", len(mounts))
+	logger.Info("Establishing image mounts")
+
+	// Bounded, like every other phase: the image was materialized by the pre
+	// phase that just ran, so a missing one is never going to arrive. Without a
+	// deadline the wait would hang the claim request — and hold the pod claimed
+	// — rather than failing it.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
+	defer cancel()
+
+	if err := r.establishMounts(ctx, mounts); err != nil {
+		r.unmountAll() // roll back whatever was established before the failure
+		return err
+	}
+	logger.Info("Image mounts established")
+	return nil
+}
+
+// Release unmounts everything Mount established, innermost first. Safe to call
+// when nothing was mounted.
+func (r *Runner) Release() { r.unmountAll() }
+
 // RunPost waits for the worker to finish, then processes post-job artifacts.
 // Used by the Kubernetes backend as a native sidecar container — kubelet sends
 // SIGTERM when the worker main container exits, which unblocks waitFn.
