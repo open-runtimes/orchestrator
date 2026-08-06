@@ -52,6 +52,13 @@ type Pool struct {
 	// claim runs.
 	Mounts bool `json:"mounts,omitempty"`
 
+	// TerminationGracePeriodSeconds bounds teardown: the sidecar drains, runs the
+	// claim's post-phase artifacts, and releases its mounts inside it. Kubernetes
+	// defaults to 30 seconds, which is not enough to archive and upload a
+	// workspace of any size — so a pool whose claims snapshot on shutdown must
+	// raise it.
+	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
+
 	// MaxIdleSeconds caps a claim's requested idle timeout (0 = uncapped).
 	// Sandbox pools want one: an abandoned sandbox holds a warm pod hostage.
 	MaxIdleSeconds int `json:"maxIdleSeconds,omitempty"`

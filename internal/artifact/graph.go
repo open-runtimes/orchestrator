@@ -5,14 +5,15 @@ import (
 	"log/slog"
 )
 
-// Partition splits artifacts into pre-job and post-job phases.
-// An artifact is post-job if it depends on JobDependency directly or transitively.
-// Order within each slice is preserved from the input.
+// Partition splits artifacts into the pre- and post-workload phases.
+// An artifact is post-phase if it depends on a post-phase sentinel (see
+// PostPhase) directly or transitively. Order within each slice is preserved from
+// the input.
 func Partition(artifacts []Artifact) (preJob, postJob []Artifact) {
 	dependsOnJob := make(map[string]bool)
 
 	for _, a := range artifacts {
-		if a.DependsOn() == JobDependency {
+		if PostPhase(a.DependsOn()) {
 			dependsOnJob[a.ArtifactID()] = true
 		}
 	}

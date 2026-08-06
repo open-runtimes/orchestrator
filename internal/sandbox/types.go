@@ -64,6 +64,11 @@ type Request struct {
 	// kata). Unlike a pool's, this is per-sandbox: the pod is built for this
 	// request, so nothing was fixed before it arrived.
 	RuntimeClass string `json:"runtimeClass,omitempty"`
+	// TerminationGracePeriodSeconds bounds teardown for a poolless sandbox: the
+	// drain, the post-phase artifacts, and the unmount happen inside it. Raise it
+	// if this sandbox snapshots itself on the way out.
+	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
+
 	// Volumes attach existing storage to a poolless sandbox. Also per-sandbox
 	// for the same reason — a pool cannot do this because its pods are already
 	// running when you claim one.
@@ -80,6 +85,10 @@ const (
 	StateReady    = "ready"    // the contract is served at its URL
 	StateFailed   = "failed"   // artifacts failed, or the image never became ready
 	StateDeleting = "deleting" // teardown in progress
+	// StateFinalizing is teardown that is still doing something the caller asked
+	// for: the post-phase artifacts (snapshot, upload) run while the pod
+	// terminates. A sandbox with none goes straight to deleting.
+	StateFinalizing = "finalizing"
 )
 
 // MetricKind labels this consumer's warm-pool telemetry, distinguishing
@@ -94,13 +103,17 @@ type Status struct {
 	ID string `json:"id"`
 	// PoolID names the pool it was claimed from, absent for a poolless sandbox.
 	PoolID string `json:"poolId,omitempty"`
-	State  string `json:"status"` // creating|ready|failed|deleting
+	State  string `json:"status"` // creating|ready|failed|finalizing|deleting
 	URL    string `json:"url,omitempty"`
 	// URLs addresses every port the sandbox serves, keyed by port number
 	// (including the pool's own). Present so callers never build a hostname
 	// themselves — the token in it is not derivable from the id.
 	URLs  map[string]string `json:"urls,omitempty"`
 	Error string            `json:"error,omitempty"`
+	// Finalizes reports that this sandbox has post-phase artifacts, so its
+	// teardown runs them and a DELETE is accepted rather than complete. Not on
+	// the wire — once teardown starts, the state says it.
+	Finalizes bool `json:"-"`
 }
 
 // ListResponse is the response for listing live sandboxes.

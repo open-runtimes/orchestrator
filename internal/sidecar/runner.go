@@ -261,6 +261,34 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 // when nothing was mounted.
 func (r *Runner) Release() { r.unmountAll() }
 
+// Finalize runs the post-phase artifacts — archive the workspace, upload it,
+// whatever the caller asked to happen after the work — for a consumer whose
+// workload does not run to completion. A job's post sidecar waits for its worker
+// to exit; a sandbox or an activation is told to stop instead, so the caller of
+// this decides when "after" is.
+//
+// Call it before Release: a post-phase artifact may read from a mount, and
+// unmounting first would archive an empty directory.
+//
+// The budget is the caller's context, which is what makes this bounded in
+// practice: a pod's termination grace period. Whatever has not finished when
+// that expires does not happen — see docs/sandboxes.md on why this is
+// best-effort.
+func (r *Runner) Finalize(ctx context.Context, artifacts []artifact.Artifact) error {
+	_, post := artifact.Partition(artifacts)
+	if len(post) == 0 {
+		return nil
+	}
+	logger := slog.With("jobId", r.jobID, "postPhase", len(post))
+	logger.Info("Running post-phase artifacts")
+	if err := r.processArtifacts(ctx, post, true); err != nil {
+		logger.Error("Post-phase artifacts failed", "error", err)
+		return err
+	}
+	logger.Info("Post-phase artifacts completed")
+	return nil
+}
+
 // RunPost waits for the worker to finish, then processes post-job artifacts.
 // Used by the Kubernetes backend as a native sidecar container — kubelet sends
 // SIGTERM when the worker main container exits, which unblocks waitFn.

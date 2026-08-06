@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/pool"
@@ -218,17 +219,18 @@ func (o *Orchestrator) List(ctx context.Context) ([]sandbox.Status, error) {
 func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 	obs := o.warm.Observe(pod)
 	token := pod.Labels[LabelToken]
-	status := sandbox.Status{
-		ID:     obs.ClaimID,
-		PoolID: obs.PoolID,
-		URL:    o.addr.URL(token),
-		State:  sandboxState(obs.Phase),
-		Error:  obs.Error,
-	}
 	// The extra ports come off the stored spec, the primary off the pool — so a
 	// reconstructed sandbox advertises exactly the addresses it was created with.
 	var spec sandbox.Request
 	o.warm.Spec(pod, &spec)
+	status := sandbox.Status{
+		ID:        obs.ClaimID,
+		PoolID:    obs.PoolID,
+		URL:       o.addr.URL(token),
+		State:     sandboxState(obs.Phase, artifact.HasPostPhase(spec.Artifacts)),
+		Error:     obs.Error,
+		Finalizes: artifact.HasPostPhase(spec.Artifacts),
+	}
 	if p := o.warm.Pool(status.PoolID); p != nil {
 		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
 	}
@@ -236,13 +238,18 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 }
 
 // sandboxState names a phase in the sandbox vocabulary.
-func sandboxState(phase warm.Phase) string {
+func sandboxState(phase warm.Phase, finalizing bool) string {
 	switch phase {
 	case warm.PhaseServing:
 		return sandbox.StateReady
 	case warm.PhaseFailed:
 		return sandbox.StateFailed
 	case warm.PhaseTerminating:
+		// Terminating with work left to do that the caller asked for is worth
+		// distinguishing: it is why the delete was 202 rather than 204.
+		if finalizing {
+			return sandbox.StateFinalizing
+		}
 		return sandbox.StateDeleting
 	case warm.PhaseStarting:
 	}

@@ -74,10 +74,11 @@ func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 			Labels: m.PoolLabels(p.ID),
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy:                corev1.RestartPolicyNever,
-			AutomountServiceAccountToken: &autoMount,
-			Tolerations:                  cfg.Tolerations,
-			NodeSelector:                 cfg.NodeSelector,
+			RestartPolicy:                 corev1.RestartPolicyNever,
+			TerminationGracePeriodSeconds: gracePeriod(p),
+			AutomountServiceAccountToken:  &autoMount,
+			Tolerations:                   cfg.Tolerations,
+			NodeSelector:                  cfg.NodeSelector,
 			Volumes: append([]corev1.Volume{
 				{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -188,6 +189,17 @@ func sidecarSecurityContext(p *pool.Pool, cfg Config) *corev1.SecurityContext {
 		return kube.MountingSecurityContext()
 	}
 	return kube.HardenedSecurityContext(cfg.RunAsUser)
+}
+
+// gracePeriod is how long teardown may take: the drain, the post-phase
+// artifacts, and the unmount all happen inside it. Nil leaves Kubernetes' own
+// default, which is fine for a claim with nothing to do on the way out.
+func gracePeriod(p *pool.Pool) *int64 {
+	if p.TerminationGracePeriodSeconds <= 0 {
+		return nil
+	}
+	grace := int64(p.TerminationGracePeriodSeconds)
+	return &grace
 }
 
 // workspaceMount mounts the shared workspace, carrying propagation only for a

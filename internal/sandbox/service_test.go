@@ -13,7 +13,8 @@ import (
 
 // fakeOrchestrator records what the service asked for and reports ready.
 type fakeOrchestrator struct {
-	last *Request
+	last   *Request
+	status *Status
 }
 
 func (f *fakeOrchestrator) Start(context.Context) error { return nil }
@@ -26,11 +27,16 @@ func (f *fakeOrchestrator) Create(_ context.Context, req *Request) (*Status, err
 	return &Status{ID: req.ID, PoolID: req.Pool, State: StateReady, URL: "http://s-" + req.Token + ".example.test"}, nil
 }
 
-func (f *fakeOrchestrator) Status(context.Context, string) (*Status, error) { return &Status{}, nil }
-func (f *fakeOrchestrator) List(context.Context) ([]Status, error)          { return nil, nil }
-func (f *fakeOrchestrator) Delete(context.Context, string) error            { return nil }
-func (f *fakeOrchestrator) Ready(context.Context) error                     { return nil }
-func (f *fakeOrchestrator) Close() error                                    { return nil }
+func (f *fakeOrchestrator) Status(_ context.Context, id string) (*Status, error) {
+	if f.status != nil {
+		return f.status, nil
+	}
+	return &Status{ID: id, State: StateReady}, nil
+}
+func (f *fakeOrchestrator) List(context.Context) ([]Status, error) { return nil, nil }
+func (f *fakeOrchestrator) Delete(context.Context, string) error   { return nil }
+func (f *fakeOrchestrator) Ready(context.Context) error            { return nil }
+func (f *fakeOrchestrator) Close() error                           { return nil }
 
 func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 	if len(pools) == 0 {
@@ -326,5 +332,31 @@ func TestInlinePool_IsAPoolOfOneKeyedByTheSandbox(t *testing.T) {
 	}})
 	if !mounting.Mounts {
 		t.Error("a poolless sandbox that mounts must get the capability")
+	}
+}
+
+// A teardown that still has work the caller asked for is accepted, not complete:
+// 202, and the status says finalizing until the pod goes. A teardown with nothing
+// post-phase stays 204, so the common case still means gone.
+func TestDelete_AcceptedWhenTeardownFinalizes(t *testing.T) {
+	t.Parallel()
+	svc, orch := testService()
+
+	orch.status = &Status{ID: "plain", State: StateReady}
+	finalizing, err := svc.Delete(t.Context(), "plain")
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if finalizing {
+		t.Error("nothing post-phase: the delete is complete, not accepted")
+	}
+
+	orch.status = &Status{ID: "snap", State: StateReady, Finalizes: true}
+	finalizing, err = svc.Delete(t.Context(), "snap")
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !finalizing {
+		t.Error("a snapshot on the way out makes the delete something to wait on")
 	}
 }

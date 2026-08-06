@@ -72,9 +72,17 @@ func (h *sandboxesHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+// remove tears a sandbox down. 202 when its teardown has post-phase artifacts to
+// run — the caller can watch for `finalizing` to clear — and 204 when there was
+// nothing to wait for, so the common case still means "gone".
 func (h *sandboxesHandler) remove(w http.ResponseWriter, r *http.Request) {
-	if err := h.svc.Delete(r.Context(), r.PathValue("id")); err != nil {
+	finalizing, err := h.svc.Delete(r.Context(), r.PathValue("id"))
+	if err != nil {
 		handleServiceError(w, r, err)
+		return
+	}
+	if finalizing {
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
