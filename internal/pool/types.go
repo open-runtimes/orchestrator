@@ -7,8 +7,10 @@
 package pool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/deployment"
@@ -168,4 +170,31 @@ type Status struct {
 	Size    int    `json:"size"`
 	Warm    int    `json:"warm"`    // unclaimed, warm-ready pods
 	Claimed int    `json:"claimed"` // pods bound to an activation
+}
+
+// Lister is the part of a warm-pool backend that reports its pools. Both
+// consumers — activations and sandboxes — answer "what is this pool doing" the
+// same way, so the lookup below is theirs rather than either one's.
+type Lister interface {
+	Pools(ctx context.Context) ([]Status, error)
+}
+
+// StatusFor returns one declared pool's live status. A pool the operator did not
+// declare is NotFound, and so is one that is declared but that the backend does
+// not report: a caller cannot use either, and telling them apart would leak how
+// the backend is configured.
+func StatusFor(ctx context.Context, backend Lister, declared map[string]*Pool, id string) (*Status, error) {
+	if _, ok := declared[id]; !ok {
+		return nil, apperrors.NotFound("pool", id)
+	}
+	statuses, err := backend.Pools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range statuses {
+		if statuses[i].ID == id {
+			return &statuses[i], nil
+		}
+	}
+	return nil, apperrors.NotFound("pool", id)
 }

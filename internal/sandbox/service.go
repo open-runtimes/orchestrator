@@ -58,19 +58,7 @@ func (s *Service) Pools(ctx context.Context) ([]pool.Status, error) {
 
 // Pool returns one sandbox pool's status.
 func (s *Service) Pool(ctx context.Context, poolID string) (*pool.Status, error) {
-	if _, ok := s.pools[poolID]; !ok {
-		return nil, apperrors.NotFound("pool", poolID)
-	}
-	statuses, err := s.orchestrator.Pools(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range statuses {
-		if statuses[i].ID == poolID {
-			return &statuses[i], nil
-		}
-	}
-	return nil, apperrors.NotFound("pool", poolID)
+	return pool.StatusFor(ctx, s.orchestrator, s.pools, poolID)
 }
 
 // Create validates the request (applying defaults and the pool's idle

@@ -49,19 +49,7 @@ func (s *Service) Pools(ctx context.Context) ([]Status, error) {
 
 // Pool returns one pool's status.
 func (s *Service) Pool(ctx context.Context, poolID string) (*Status, error) {
-	if _, ok := s.pools[poolID]; !ok {
-		return nil, apperrors.NotFound("pool", poolID)
-	}
-	statuses, err := s.orchestrator.Pools(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range statuses {
-		if statuses[i].ID == poolID {
-			return &statuses[i], nil
-		}
-	}
-	return nil, apperrors.NotFound("pool", poolID)
+	return StatusFor(ctx, s.orchestrator, s.pools, poolID)
 }
 
 // Activate validates the activation (applying defaults) and late-binds it
