@@ -289,6 +289,87 @@ does not migrate a workspace between nodes.
    that usually does not fire is worse than not having one, because it reads
    like a guarantee.
 
+## Mounting the bucket instead
+
+The most interesting objection to all of the above: if the folder is meant to
+live in S3, why copy it there at teardown rather than putting it there in the
+first place? A FUSE mount over a bucket makes the workspace *be* the durable
+store, and the whole problem this document opened with — a dying pod owing work
+— stops existing. No trigger, no grace period, no finalizer, no PVC lifecycle,
+no node pinning, and restore is a mount rather than a download.
+
+That is a real answer, and for some data it is the right one. It is not a
+general replacement for the workspace, for one reason.
+
+### S3 is not a filesystem
+
+The gap is not performance, it is semantics:
+
+| POSIX expects | S3 gives |
+| --- | --- |
+| atomic `rename()` | copy + delete, O(size), non-atomic |
+| in-place partial writes | rewrite the whole object |
+| `stat` at memory speed | a network round trip |
+| locking, `fsync` ordering | neither |
+| directories | a shared key prefix |
+
+An agent workspace is exactly the workload that leans on all five: `git`,
+`pip install`, `npm i`, a compiler writing temp files, sqlite. Those are
+thousands of small files and renames — the pattern that turns a bucket mount
+from "slower" into "pathological", and in the rename case into "silently not
+atomic". Meanwhile the shape a bucket mount is *good* at — large objects, read
+mostly, written whole — is precisely the shape our existing `mount` artifact
+already serves from an erofs or squashfs image, at local-disk speed.
+
+JuiceFS and friends close the semantic gap by keeping metadata in a real
+database and chunking data into the bucket. That works, and it is a stateful
+service with its own HA story to run and back up. It is a platform decision, not
+a sandbox feature.
+
+### Where it would fit here
+
+Two implementations, and the difference matters more than it looks:
+
+**In the sidecar, as another artifact type.** `{"type": "bucket", "in":
+"s3://acme/sessions/42/", "out": "data"}`, mounted by the sidecar and reaching
+the workload through the propagation we already ship and have
+[measured](../sandboxes.md#mounting-a-filesystem-image). The credentials stay on
+the sidecar's side of the container boundary, which is the same argument that
+put the upload there. Release already tears mounts down. It is a genuinely small
+extension: a FUSE binary in the sidecar image, `/dev/fuse`, and a daemon that
+outlives the claim — which the sidecar already does.
+
+**As a CSI driver** (`mountpoint-s3`, `juicefs`, `csi-s3`). The mount happens in
+the node plugin and is bind-mounted in, so **the sandbox pod needs no privilege
+at all** — better than what we do for loop mounts today, not worse. The cost is
+a cluster dependency the operator installs and we do not control.
+
+### The catch that decides it
+
+FUSE needs `/dev/fuse`, and sandbox pools are the place we tell people to run
+[gVisor](../sandboxes.md#isolation) because untrusted code is the expected
+workload. gVisor's FUSE support is partial and not something to assume — the
+same tension as loop mounts, but worse, because here it would gate the *whole*
+persistence story rather than one artifact type. **This needs the same spike the
+mount question got**, and the answer changes which implementation is viable: if
+gVisor cannot host the mount, the CSI route (mount outside the sandbox, bind in)
+may still work where an in-sidecar daemon cannot.
+
+### What I would actually do with it
+
+Not as the workspace. As a second path, next to it:
+
+- the **workspace** stays local and POSIX — fast, cheap, ephemeral, where builds
+  and package managers run;
+- a **bucket mount** appears at its own path for the data that wants to be
+  durable, so results are in S3 as they are written and nothing has to happen at
+  teardown.
+
+That composes with everything already shipped, needs no lifecycle machinery, and
+is honest about which half of the workload it serves. It also leaves the
+[explicit snapshot](#sequencing) as the answer for "capture this whole workspace,
+including the parts a bucket cannot represent".
+
 ## Alternatives, and when they are better
 
 | Instead of this | When it wins |
