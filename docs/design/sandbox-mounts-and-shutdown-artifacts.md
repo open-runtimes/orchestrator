@@ -370,6 +370,74 @@ is honest about which half of the workload it serves. It also leaves the
 [explicit snapshot](#sequencing) as the answer for "capture this whole workspace,
 including the parts a bucket cannot represent".
 
+## Write-back caching, and the reason it changes the argument
+
+The objection to a bucket mount is that every operation is a network round trip
+against something that is not a filesystem. A cache in front of it answers most
+of that: reads and writes hit local disk, and a background loop pushes to the
+bucket. The family exists and is well travelled:
+
+| | metadata | semantics | dependency |
+| --- | --- | --- | --- |
+| **JuiceFS** | its own database (Redis/Postgres/TiKV) | full POSIX — atomic rename, locking, random writes | a metadata service to run, scale and back up |
+| **rclone `--vfs-cache-mode full`** | none | good enough for whole-file work; rename is still remote | none |
+| **s3fs `use_cache`** | none | whole-file cache, upload on close | none |
+| **Alluxio** | its own | POSIX-ish, built for analytics | a cluster |
+
+JuiceFS is the productised version of exactly what the question describes, and
+it is the only one in that list that makes a workspace behave like a disk. The
+price is a stateful service whose loss loses the filesystem — the metadata is
+not reconstructible from the bucket.
+
+### It does not remove the teardown problem. It makes it survivable.
+
+This is the part worth being precise about, because it reframes everything
+above. "Syncs in the background" means that at any instant some writes exist
+only in the local cache. If the pod dies — node loss, eviction, a SIGKILL after
+the grace period — those writes are gone. So a flush at teardown is still
+wanted.
+
+But the flush is a completely different proposition from the archive-and-upload
+this document started with:
+
+- it is proportional to **what changed recently**, not to the whole workspace, so
+  it finishes in seconds rather than needing a grace period sized to a tarball;
+- failing to run costs **the last few seconds of work**, not the entire session.
+
+That second point is what changes the design. The SIGTERM trigger was
+unacceptable because missing it lost everything since create — the difference
+between a persistent folder and no persistent folder. With continuous
+background sync, missing it loses a bounded tail. A best-effort hook is a
+reasonable thing to build on top of a durable-by-default store; it is not a
+reasonable thing to build a durable store *out of*.
+
+So the sequencing inverts. Rather than making teardown reliable enough to carry
+persistence, make persistence continuous and let teardown be the optimisation it
+should have been.
+
+### What this would look like here
+
+The cheapest version reuses machinery that already shipped. A writable
+`mount` today is an erofs or squashfs image with a **tmpfs** overlay on top; the
+overlay's upper directory is precisely the set of changes. Point that upper at
+local disk instead of tmpfs and sync it, and you have delta-only persistence
+without a FUSE daemon, a metadata service, or a bucket mount at all:
+
+- restore: download the image, mount it read-only, overlay on top — **already
+  works**, and it is one download plus an O(1) mount;
+- persist: sync the upper directory, which is small by construction;
+- flush at teardown: the same sync, bounded by what changed since the last one.
+
+The wrinkle noted earlier — that `archive` over a mount point captures the merged
+view rather than the delta — is the same observation from the other side. Making
+the upper directory addressable is what turns a full snapshot into an
+incremental one, and it is a smaller change than any of the alternatives in this
+document.
+
+The FUSE catch still applies to JuiceFS and rclone (both need `/dev/fuse`, and
+gVisor's support is partial), which is another reason the overlay route is worth
+pricing first: it needs no FUSE at all.
+
 ## Alternatives, and when they are better
 
 | Instead of this | When it wins |
