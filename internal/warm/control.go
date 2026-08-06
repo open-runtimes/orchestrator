@@ -41,9 +41,9 @@ func (m *Manager) Controller(hooks Hooks) *Controller {
 	return &Controller{m: m, hooks: hooks, Now: time.Now, orphanSince: make(map[string]time.Time)}
 }
 
-// RunControl is the leader-elected control loop entrypoint: one Controller per
+// runControl is the leader-elected control loop entrypoint: one Controller per
 // leadership term, ticking until the term (or process) ends.
-func (m *Manager) RunControl(ctx context.Context, hooks Hooks) {
+func (m *Manager) runControl(ctx context.Context, hooks Hooks) {
 	c := m.Controller(hooks)
 	ticker := time.NewTicker(controlTick)
 	defer ticker.Stop()

@@ -11,16 +11,14 @@ import (
 
 // IdleReaper is the end-of-life rule every warm consumer wants: with an idle
 // window declared, no request-count movement across it tears the claim down.
-// The window comes from the consumer's own stored spec, the teardown from its
-// own delete path; the counting is the sidecar's, so it is the same for all of
-// them.
+// The window comes off the claim's own stored spec and the counting is the
+// sidecar's, so only the teardown is the consumer's.
 //
 // Its marks are leader-local — a failover restarts the clock, delaying a
 // teardown by at most one window.
 type IdleReaper struct {
 	m        *Manager
-	window   func(pod *corev1.Pod) time.Duration
-	teardown func(ctx context.Context, poolID, claimID string) error
+	teardown Teardown
 	marks    map[string]idleMark // claim id → last request-count movement
 }
 
@@ -30,11 +28,20 @@ type idleMark struct {
 	at       time.Time
 }
 
-// NewIdleReaper builds the idle rule. window reads the claim's idle window off
-// its pod (0 disables teardown for that claim); teardown removes the claim.
-func NewIdleReaper(m *Manager, window func(pod *corev1.Pod) time.Duration,
-	teardown func(ctx context.Context, poolID, claimID string) error) *IdleReaper {
-	return &IdleReaper{m: m, window: window, teardown: teardown, marks: make(map[string]idleMark)}
+// NewIdleReaper builds the idle rule around a consumer's teardown.
+func NewIdleReaper(m *Manager, teardown Teardown) *IdleReaper {
+	return &IdleReaper{m: m, teardown: teardown, marks: make(map[string]idleMark)}
+}
+
+// window reads a claim's idle window off its pod. Every claimed spec carries
+// idleTimeoutSeconds, whatever else it holds; 0 means the claim lives until its
+// caller deletes it.
+func (r *IdleReaper) window(pod *corev1.Pod) time.Duration {
+	var spec struct {
+		IdleTimeoutSeconds int `json:"idleTimeoutSeconds"`
+	}
+	r.m.Spec(pod, &spec)
+	return time.Duration(spec.IdleTimeoutSeconds) * time.Second
 }
 
 // Hooks installs the rule in a control loop.

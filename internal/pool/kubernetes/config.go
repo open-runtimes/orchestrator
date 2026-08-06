@@ -165,5 +165,6 @@ func (c *Config) warmConfig() warm.Config {
 		OrphanTTL:              c.OrphanTTL,
 		Naming:                 naming(),
 		Metrics:                c.Metrics,
+		LeaderElection:         c.LeaderElection,
 	}
 }

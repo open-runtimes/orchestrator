@@ -5,10 +5,14 @@
 // spec as an annotation, so status, listing, and a service restart all
 // reconstruct by listing pods.
 //
-// Everything here is consumer-neutral. Deployment-pool activations and
-// sandboxes both sit on it and differ only in what they do with the pod once
-// they hold it: an activation publishes a Service and route, a sandbox is
-// reached through the wildcard edge.
+// Everything here is consumer-neutral, and that includes the sequence, not
+// just the primitives: claiming, binding, waiting for the workload to answer,
+// deriving a claimed pod's phase, reaping it when it goes idle, and running the
+// leader-elected control loop. Deployment-pool activations and sandboxes both
+// sit on it and differ only in how the pod is addressed once they hold it — an
+// activation publishes a Service and route, a sandbox is reached through the
+// wildcard edge by its capability token — and in the vocabulary they publish
+// its phases in.
 package warm
 
 import (
@@ -41,10 +45,11 @@ const (
 	ContainerProxy        = "proxy"
 	ContainerWorkload     = "workload"
 
-	defaultPoll     = 500 * time.Millisecond
-	defaultColdWait = 120 * time.Second // burst-cold: bound on a new pod turning warm-ready
-	defaultOrphan   = 60 * time.Second
-	controlTick     = 2 * time.Second
+	defaultPoll      = 500 * time.Millisecond
+	defaultColdWait  = 120 * time.Second // burst-cold: bound on a new pod turning warm-ready
+	defaultServeWait = 60 * time.Second  // bound on a claimed pod answering
+	defaultOrphan    = 60 * time.Second
+	controlTick      = 2 * time.Second
 )
 
 // Agent describes a binary to install into every warm pod's workspace, copied
@@ -88,6 +93,9 @@ type Config struct {
 	OrphanTTL              time.Duration     // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 	Naming                 Naming
 
+	// LeaderElection gates the control loop (replenishment + GC) to one replica.
+	LeaderElection kube.LeaderElectionConfig
+
 	// Metrics receives pool capacity and claim telemetry; may be nil.
 	Metrics *observability.Metrics
 
@@ -105,9 +113,12 @@ type Config struct {
 	// tests inject a fake, since fake-clientset pods have no reachable IPs.
 	Client Client
 
-	// Poll and ColdWait are shrunk by unit tests.
+	// Poll, ColdWait and ServeWait are shrunk by unit tests.
 	Poll     time.Duration
 	ColdWait time.Duration
+	// ServeWait bounds the wait for a claimed pod to answer — artifact
+	// materialization plus image startup.
+	ServeWait time.Duration
 }
 
 // Manager owns one consumer's warm pools.
@@ -117,6 +128,9 @@ type Manager struct {
 	pools  []pool.Pool
 	byID   map[string]*pool.Pool
 	sc     Client
+
+	// stop halts the control loop Run launched.
+	stop context.CancelFunc
 
 	// installKey is the HMAC key claim tokens derive from (token.go),
 	// get-or-created as the claim-key Secret and cached here.
@@ -132,6 +146,9 @@ func New(client kubernetes.Interface, pools []pool.Pool, cfg Config) *Manager {
 	if cfg.ColdWait <= 0 {
 		cfg.ColdWait = defaultColdWait
 	}
+	if cfg.ServeWait <= 0 {
+		cfg.ServeWait = defaultServeWait
+	}
 	if cfg.OrphanTTL <= 0 {
 		cfg.OrphanTTL = defaultOrphan
 	}
@@ -145,19 +162,12 @@ func New(client kubernetes.Interface, pools []pool.Pool, cfg Config) *Manager {
 	return &Manager{client: client, cfg: cfg, pools: pools, byID: pool.ByID(pools), sc: sc}
 }
 
-// Pools returns the configured pools in config order.
-func (m *Manager) Pools() []pool.Pool { return m.pools }
-
 // Pool returns one pool declaration, or nil.
 func (m *Manager) Pool(id string) *pool.Pool { return m.byID[id] }
 
-// Sidecar exposes the sidecar probes (readiness, claim state, request counts)
-// consumers derive status from.
-func (m *Manager) Sidecar() Client { return m.sc }
-
-// Start verifies every pool's RuntimeClass and materializes the claim key,
+// Verify checks every pool's RuntimeClass and materializes the claim key,
 // failing loudly rather than stranding warm pods Pending or unclaimable.
-func (m *Manager) Start(ctx context.Context) error {
+func (m *Manager) Verify(ctx context.Context) error {
 	for i := range m.pools {
 		f := &m.pools[i]
 		rc := kube.RuntimeClassFor(m.cfg.RuntimeClasses, f.RuntimeClass)
@@ -181,25 +191,36 @@ func (m *Manager) Pods(ctx context.Context, poolID string) ([]corev1.Pod, error)
 	return m.list(ctx, m.selector(poolID))
 }
 
-// ClaimedPods lists the pod(s) bound to one claim.
-func (m *Manager) ClaimedPods(ctx context.Context, poolID, claimID string) ([]corev1.Pod, error) {
-	return m.list(ctx, m.selector(poolID)+","+m.cfg.Naming.Claim+"="+claimID)
+// Claimed lists the claimed pods this consumer owns. Both filters are
+// optional: an empty poolID matches any pool — for consumers whose claim ids
+// are unique across pools, so their API paths need no pool — and an empty
+// claimID matches every claim. One query therefore serves the status, list,
+// and teardown paths.
+func (m *Manager) Claimed(ctx context.Context, poolID, claimID string) ([]corev1.Pod, error) {
+	selector := m.managed()
+	if poolID != "" {
+		selector += "," + m.cfg.Naming.Pool + "=" + poolID
+	}
+	if claimID != "" {
+		// An id implies the label exists, so no separate existence term.
+		return m.list(ctx, selector+","+m.cfg.Naming.Claim+"="+claimID)
+	}
+	return m.list(ctx, selector+","+m.cfg.Naming.Claim)
 }
 
-// AllClaimed lists every claimed pod in a pool — the List surface.
-func (m *Manager) AllClaimed(ctx context.Context, poolID string) ([]corev1.Pod, error) {
-	return m.list(ctx, m.selector(poolID)+","+m.cfg.Naming.Claim)
-}
-
-// Claimed finds the pod(s) bound to a claim in any pool — for consumers whose
-// claim ids are unique across pools, so their API paths need no pool.
-func (m *Manager) Claimed(ctx context.Context, claimID string) ([]corev1.Pod, error) {
-	return m.list(ctx, m.managed()+","+m.cfg.Naming.Claim+"="+claimID)
-}
-
-// EveryClaimed lists every claimed pod across all this consumer's pools.
-func (m *Manager) EveryClaimed(ctx context.Context) ([]corev1.Pod, error) {
-	return m.list(ctx, m.managed()+","+m.cfg.Naming.Claim)
+// PoolStatuses reports the configured pools with live warm/claimed counts.
+func (m *Manager) PoolStatuses(ctx context.Context) ([]pool.Status, error) {
+	statuses := make([]pool.Status, 0, len(m.pools))
+	for i := range m.pools {
+		p := &m.pools[i]
+		pods, err := m.Pods(ctx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		w, c := m.counts(pods)
+		statuses = append(statuses, pool.Status{ID: p.ID, Image: p.Image, Size: p.Size, Warm: w, Claimed: c})
+	}
+	return statuses, nil
 }
 
 func (m *Manager) list(ctx context.Context, selector string) ([]corev1.Pod, error) {
@@ -230,9 +251,9 @@ func (m *Manager) Spec(pod *corev1.Pod, v any) {
 	_ = json.Unmarshal([]byte(pod.Annotations[m.cfg.Naming.Spec]), v)
 }
 
-// Counts splits a pool's pods into claimed and warm-READY (the claimable
+// counts splits a pool's pods into claimed and warm-READY (the claimable
 // set); pods still starting are neither.
-func (m *Manager) Counts(pods []corev1.Pod) (warm, claimed int) {
+func (m *Manager) counts(pods []corev1.Pod) (warm, claimed int) {
 	for i := range pods {
 		switch {
 		case m.ClaimID(&pods[i]) != "":

@@ -106,11 +106,10 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 		w.Client = claims
 		w.Poll = time.Millisecond
 		w.ColdWait = time.Second
+		w.ServeWait = 50 * time.Millisecond
 	})
 	// Normally get-or-created from the pool-claim-key Secret on Start.
 	seedClaimKey(t, cs)
-	o.poll = time.Millisecond
-	o.serveWait = 50 * time.Millisecond
 	return o, cs, claims
 }
 

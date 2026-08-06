@@ -45,7 +45,7 @@ func TestStart_MissingRuntimeClassFails(t *testing.T) {
 	}, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create RuntimeClass: %v", err)
 	}
-	if err := o.warm.Start(ctx); err != nil {
+	if err := o.warm.Verify(ctx); err != nil {
 		t.Errorf("want ok, got %v", err)
 	}
 }

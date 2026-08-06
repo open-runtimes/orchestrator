@@ -1,35 +1,28 @@
 // Package kubernetes implements the pool.Orchestrator interface using the
-// Kubernetes API. The warm pods, the claim protocol, and the replenishment
-// loop belong to internal/warm; what this package adds is what an ACTIVATION
-// is on top of a claimed pod — a per-activation Service and HTTPRoute, a
-// serving-ready wait, and an idle-teardown rule. Kubernetes stays the source
-// of truth: a claimed pod carries its activation ID as a label and its spec as
-// an annotation, so Status, List, and a service restart reconstruct everything
-// by listing pods. See docs/pools.md.
+// Kubernetes API. The warm pods, the claim protocol, the serving wait, the
+// phase rule, and the control loop all belong to internal/warm; what this
+// package adds is what an ACTIVATION is on top of a claimed pod — a
+// per-activation Service and HTTPRoute, and the vocabulary its phases are
+// published in. Kubernetes stays the source of truth: a claimed pod carries
+// its activation ID as a label and its spec as an annotation, so Status, List,
+// and a service restart reconstruct everything by listing pods.
+// See docs/pools.md.
 package kubernetes
 
 import (
 	"cmp"
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/proxy"
 	"orchestrator/internal/warm"
 	"orchestrator/pkg/pool"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	gatewayclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
-)
-
-const (
-	defaultPoll = 500 * time.Millisecond
-	servingWait = 60 * time.Second // HTTP: bound on the claimed workload turning serving-ready
 )
 
 // Label and annotation contract for pool objects.
@@ -67,11 +60,6 @@ type Orchestrator struct {
 	gateway gatewayclient.Interface
 	warm    *warm.Manager
 	cfg     Config
-	stop    context.CancelFunc
-
-	// Polling knobs, shrunk by unit tests.
-	poll      time.Duration
-	serveWait time.Duration
 }
 
 // NewOrchestrator creates a Kubernetes pool orchestrator.
@@ -98,70 +86,25 @@ func wireOrchestrator(cs kubernetes.Interface, gw gatewayclient.Interface, cfg C
 		tune(&warmCfg)
 	}
 	return &Orchestrator{
-		client:    cs,
-		gateway:   gw,
-		warm:      warm.New(cs, cfg.Pools, warmCfg),
-		cfg:       cfg,
-		poll:      defaultPoll,
-		serveWait: servingWait,
+		client:  cs,
+		gateway: gw,
+		warm:    warm.New(cs, cfg.Pools, warmCfg),
+		cfg:     cfg,
 	}
 }
 
-// Start surveys the pre-existing warm/claimed pods (the backend state a
-// restart reconstructs), then launches the leader-elected control loop:
-// replenishment, poison/orphan GC, and idle teardown.
+// Start brings the warm layer up: pool verification, the restart survey, and
+// the leader-elected control loop, whose idle rule deactivates an activation
+// that goes quiet for its window.
 func (o *Orchestrator) Start(ctx context.Context) error {
-	if err := o.warm.Start(ctx); err != nil {
-		return err
-	}
-	statuses, err := o.Pools(ctx)
-	if err != nil {
-		return err
-	}
-	for _, s := range statuses {
-		slog.Info("Pool reconciled", "pool", s.ID, "size", s.Size, "warm", s.Warm, "claimed", s.Claimed)
-	}
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	o.stop = cancel
-	hooks := o.idleRule().Hooks()
-	go kube.RunLeaderElected(runCtx, o.client, o.cfg.Namespace, o.cfg.LeaderElection,
-		func(loopCtx context.Context) { o.warm.RunControl(loopCtx, hooks) }, o.onLeadership)
-	return nil
-}
-
-// idleRule is the activation end-of-life rule: IdleTimeoutSeconds with no
-// request-count movement across it deactivates.
-func (o *Orchestrator) idleRule() *warm.IdleReaper {
-	return warm.NewIdleReaper(o.warm, func(pod *corev1.Pod) time.Duration {
-		var act pool.Activation
-		o.warm.Spec(pod, &act)
-		return time.Duration(act.IdleTimeoutSeconds) * time.Second
-	}, o.Deactivate)
-}
-
-// onLeadership records leadership transitions when metrics are wired.
-func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leading bool) {
-	if o.cfg.Metrics != nil {
-		o.cfg.Metrics.RecordLeadership(ctx, identity, leading)
-	}
+	return o.warm.Run(ctx, o.Deactivate)
 }
 
 // Pools reports the configured pools with live warm/claimed counts. Warm
 // counts only warm-READY pods (kubelet-probed sidecar /ready), matching the
 // claimable set; pods still starting are neither warm nor claimed.
 func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
-	pools := o.warm.Pools()
-	statuses := make([]pool.Status, 0, len(pools))
-	for i := range pools {
-		p := &pools[i]
-		pods, err := o.warm.Pods(ctx, p.ID)
-		if err != nil {
-			return nil, err
-		}
-		w, c := o.warm.Counts(pods)
-		statuses = append(statuses, pool.Status{ID: p.ID, Image: p.Image, Size: p.Size, Warm: w, Claimed: c})
-	}
-	return statuses, nil
+	return o.warm.PoolStatuses(ctx)
 }
 
 // Activate claims a warm pod and late-binds the activation onto it: claim
@@ -180,7 +123,7 @@ func (o *Orchestrator) Activate(ctx context.Context, poolID string, act *pool.Ac
 		}
 		act.ID = id
 	}
-	if existing, err := o.warm.ClaimedPods(ctx, poolID, act.ID); err != nil {
+	if existing, err := o.warm.Claimed(ctx, poolID, act.ID); err != nil {
 		return nil, err
 	} else if len(existing) > 0 {
 		return nil, apperrors.Conflict("activation", act.ID, "activation "+act.ID+" already exists")
@@ -246,18 +189,16 @@ func (o *Orchestrator) exposeHTTP(ctx context.Context, p *pool.Pool, act *pool.A
 		return nil, err
 	}
 	status := &pool.ActivationStatus{ID: act.ID, PoolID: p.ID, PodID: pod.Name, URL: "http://" + host}
-	deadline := time.Now().Add(o.serveWait)
-	for !o.warm.Sidecar().Ready(ctx, pod.Status.PodIP) {
-		if time.Now().After(deadline) {
-			_ = o.deleteActivationObjects(ctx, act.ID)
-			_ = o.warm.Delete(ctx, pod.Name)
-			status.State = pool.StateFailed
-			status.Error = fmt.Sprintf("workload not serving within %s", o.serveWait)
-			return status, nil
-		}
-		if err := o.sleep(ctx); err != nil {
-			return nil, err
-		}
+	unserved, err := o.warm.Await(ctx, pod)
+	if err != nil {
+		return nil, err
+	}
+	if unserved != "" {
+		// warm deleted the pod; the route and Service are ours to remove.
+		_ = o.deleteActivationObjects(ctx, act.ID)
+		status.State = pool.StateFailed
+		status.Error = unserved
+		return status, nil
 	}
 	status.State = pool.StateReady
 	return status, nil
@@ -269,7 +210,7 @@ func (o *Orchestrator) Status(ctx context.Context, poolID, activationID string) 
 	if p == nil {
 		return nil, apperrors.NotFound("pool", poolID)
 	}
-	pods, err := o.warm.ClaimedPods(ctx, poolID, activationID)
+	pods, err := o.warm.Claimed(ctx, poolID, activationID)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +227,7 @@ func (o *Orchestrator) List(ctx context.Context, poolID string) ([]pool.Activati
 	if p == nil {
 		return nil, apperrors.NotFound("pool", poolID)
 	}
-	pods, err := o.warm.AllClaimed(ctx, poolID)
+	pods, err := o.warm.Claimed(ctx, poolID, "")
 	if err != nil {
 		return nil, err
 	}
@@ -298,39 +239,34 @@ func (o *Orchestrator) List(ctx context.Context, poolID string) ([]pool.Activati
 }
 
 // statusFromPod reconstructs an activation's status from its claimed pod: the
-// label carries the ID, the annotation the original spec, the container state
-// the phase — activating until serving-ready, then ready. A workload exit or
-// infra failure → failed; deletion in flight → deactivating.
+// label carries the ID, the annotation the original spec, and warm derives the
+// phase — all this package adds is the activation's URL and its own vocabulary.
 func (o *Orchestrator) statusFromPod(p *pool.Pool, pod *corev1.Pod) pool.ActivationStatus {
-	status := pool.ActivationStatus{
-		ID:     o.warm.ClaimID(pod),
-		PoolID: p.ID,
-		PodID:  pod.Name,
-	}
+	obs := o.warm.Observe(pod)
 	var act pool.Activation
 	o.warm.Spec(pod, &act)
-	status.URL = "http://" + activationHost(act.Host, status.ID, o.cfg.PoolDomain)
+	return pool.ActivationStatus{
+		ID:     obs.ClaimID,
+		PoolID: p.ID,
+		PodID:  obs.PodName,
+		URL:    "http://" + activationHost(act.Host, obs.ClaimID, o.cfg.PoolDomain),
+		State:  activationState(obs.Phase),
+		Error:  obs.Error,
+	}
+}
 
-	if pod.DeletionTimestamp != nil {
-		status.State = pool.StateDeactivating
-		return status
+// activationState names a phase in the activation vocabulary.
+func activationState(phase warm.Phase) string {
+	switch phase {
+	case warm.PhaseServing:
+		return pool.StateReady
+	case warm.PhaseFailed:
+		return pool.StateFailed
+	case warm.PhaseTerminating:
+		return pool.StateDeactivating
+	case warm.PhaseStarting:
 	}
-	if t := warm.WorkloadTerminated(pod); t != nil {
-		// The workload has no business exiting — that is a failure.
-		status.State = pool.StateFailed
-		status.Error = fmt.Sprintf("workload exited with code %d", t.ExitCode)
-		return status
-	}
-	switch {
-	case pod.Status.Phase == corev1.PodFailed:
-		status.State = pool.StateFailed
-		status.Error = cmp.Or(pod.Status.Message, pod.Status.Reason)
-	case warm.PodReady(pod):
-		status.State = pool.StateReady
-	default:
-		status.State = pool.StateActivating
-	}
-	return status
+	return pool.StateActivating
 }
 
 // Deactivate tears the activation down: its route and Service, then the pod —
@@ -340,7 +276,7 @@ func (o *Orchestrator) Deactivate(ctx context.Context, poolID, activationID stri
 	if o.warm.Pool(poolID) == nil {
 		return apperrors.NotFound("pool", poolID)
 	}
-	pods, err := o.warm.ClaimedPods(ctx, poolID, activationID)
+	pods, err := o.warm.Claimed(ctx, poolID, activationID)
 	if err != nil {
 		return err
 	}
@@ -361,23 +297,10 @@ func (o *Orchestrator) Deactivate(ctx context.Context, poolID, activationID stri
 // Ready checks that the K8s API server is reachable.
 func (o *Orchestrator) Ready(ctx context.Context) error { return o.warm.Ready(ctx) }
 
-// Close stops the control loop. Warm and claimed pods are NOT touched —
-// Kubernetes keeps them independently and a restart reconciles.
+// Close stops the control loop, leaving the pods to Kubernetes.
 func (o *Orchestrator) Close() error {
-	if o.stop != nil {
-		o.stop()
-	}
+	o.warm.Stop()
 	return nil
-}
-
-// sleep waits one poll interval, aborting with the context.
-func (o *Orchestrator) sleep(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(o.poll):
-		return nil
-	}
 }
 
 // Verify Orchestrator implements pool.Orchestrator.

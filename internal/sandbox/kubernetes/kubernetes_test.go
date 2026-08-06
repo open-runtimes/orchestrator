@@ -89,9 +89,8 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 		w.Client = sidecar
 		w.Poll = time.Millisecond
 		w.ColdWait = time.Second
+		w.ServeWait = 50 * time.Millisecond
 	})
-	o.poll = time.Millisecond
-	o.serveWait = 50 * time.Millisecond
 	return o, cs, sidecar
 }
 
@@ -305,7 +304,9 @@ func TestDelete_IdleSandboxTornDownByTheControlLoop(t *testing.T) {
 	}
 	sidecar.requests["10.0.0.1"] = 3
 
-	c := o.warm.Controller(o.idleRule().Hooks())
+	c := o.warm.Controller(warm.NewIdleReaper(o.warm, func(ctx context.Context, _, id string) error {
+		return o.Delete(ctx, id)
+	}).Hooks())
 	t0 := time.Now()
 	c.Now = func() time.Time { return t0 }
 	c.Tick(t.Context()) // baseline

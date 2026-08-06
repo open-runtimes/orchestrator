@@ -223,7 +223,7 @@ func TestCounts_WarmExcludesClaimedAndUnready(t *testing.T) {
 	starting := warmPodFixture(m, "std", "pod-c", "")
 	starting.Status.Conditions = nil
 
-	warm, claimed := m.Counts([]corev1.Pod{*warmReady, *claimedPod, *starting})
+	warm, claimed := m.counts([]corev1.Pod{*warmReady, *claimedPod, *starting})
 	if warm != 1 || claimed != 1 {
 		t.Errorf("want 1 warm + 1 claimed (a starting pod is neither), got %d/%d", warm, claimed)
 	}

@@ -213,6 +213,7 @@ func (c *Config) warmConfig() warm.Config {
 		OrphanTTL:              c.OrphanTTL,
 		Naming:                 naming(),
 		Metrics:                c.Metrics,
+		LeaderElection:         c.LeaderElection,
 
 		// Every sandbox pool gets the agent, so a pool's image needs to serve
 		// nothing itself; the agent is told which port to listen on and where the

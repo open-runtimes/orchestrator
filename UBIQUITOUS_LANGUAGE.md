@@ -125,6 +125,7 @@
 | **Claim** | The atomic, token-authenticated take of one warm pod; the sidecar's accepted POST *is* the claim | Reservation, checkout |
 | **Claim token** | The per-pod credential (HMAC of the pod name under the install key) that authorizes a claim | Secret, password |
 | **Inventory** | What a Pool backend supplies to the shared claim module: how to list, create, and address warm units | Backend, provider |
+| **Phase** | The claim-neutral lifecycle of a claimed pod (starting, serving, failed, terminating) that each warm consumer names in its own vocabulary — an Activation is "activating" where a Sandbox is "creating" | Status, state (unqualified) |
 | **Activation** | The materialization of artifacts and exec of a payload inside a claimed warm pod | Cold start, launch |
 | **Poison** | The marking of a claimed pod as unusable after a failed activation so it is never reissued | Taint, quarantine |
 | **Replenish** | The pool's creation of new warm pods to restore its declared size after claims | Refill, top-up |
