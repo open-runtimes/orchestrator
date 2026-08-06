@@ -149,7 +149,7 @@ tasks:
     cmds:
       - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/sandbox-proxy:latest ko.local/pool-shim:latest --name {{.KIND_CLUSTER}}
       - bash hack/install-gateway.sh
-      - go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/... ./internal/deployment/kubernetes/...
+      - go test -race -tags=k8s_integration -timeout=10m ./internal/job/kubernetes/... ./internal/deployment/kubernetes/...
 
   test-e2e:
     desc: Run e2e tests (full system)

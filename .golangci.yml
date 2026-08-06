@@ -252,7 +252,7 @@ linters:
       # Cleanup functions intentionally ignore errors
       - linters:
           - errcheck
-        path: internal/orchestrator/docker/
+        path: internal/job/docker/
         text: "Error return value of .*(ContainerStop|ContainerRemove|NetworkRemove|VolumeRemove).*is not checked"
     presets:
       - comments

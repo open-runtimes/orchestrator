@@ -81,7 +81,7 @@ it cannot drift. Register new saturation metrics with
 `Metrics.ObserveInt64`, and reach for `UpDownCounter` only when the increment
 and decrement are provably in the same function (e.g. a `defer`).
 
-See: `internal/observability/metrics.go`, `internal/orchestrator/kubernetes/transport.go`
+See: `internal/observability/metrics.go`, `internal/job/kubernetes/transport.go`
 
 **Deployments Metrics:**
 
