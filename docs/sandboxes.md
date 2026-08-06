@@ -183,6 +183,8 @@ The mount is established after the image is materialized and **before** the work
 
 **Why it is a pool dimension.** Mounting needs `CAP_SYS_ADMIN` and a loop device, and the mount has to cross from the sidecar that makes it into the container that reads it — so the sidecar runs **privileged as root** and the workspace carries mount propagation. Those are properties of a pod, and a warm pod is built long before your claim arrives. A `mount` against a pool without `mounts: true` is a `400` naming the setting.
 
+[Pool activations](pools.md#artifacts) follow the same rules over the same machinery. Deployment revisions cannot mount at all: their sidecar starts with the container, so there is no barrier before the workload to mount at, and nothing to undo it after.
+
 **What that costs.** A privileged container sits in every pod of that pool, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work on pools without `mounts`, and treat a mounting pool as trusted infrastructure. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
 
 If materialization fails, the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.

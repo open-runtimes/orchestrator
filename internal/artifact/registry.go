@@ -176,19 +176,20 @@ func DefaultRegistry() *Registry {
 	return defaultReg
 }
 
-// ServingRegistry returns the Registry for serving workloads that cannot mount:
-// deployments and pool activations. They materialize artifacts in a pre phase
-// only, with nothing to establish a mount or undo it, so a type needing that is
-// a validation error here rather than a silent no-op.
+// ServingRegistry returns the Registry for deployment revisions, which cannot
+// mount: their sidecar starts with the container, so there is no barrier before
+// the workload to establish a mount at and nothing to undo it after. A type
+// needing that is a validation error here rather than a silent no-op.
 func ServingRegistry() *Registry {
 	servingRegistryOnce.Do(func() { servingReg = buildRegistry(false, builtinTypes()) })
 	return servingReg
 }
 
-// MountingRegistry returns the Registry for sandboxes, whose resident sidecar
-// CAN establish a mount and release it on shutdown — but only in a pod whose
-// pool declared the capability. That is per-pool and this is per-type, so the
-// type is permitted here and the pool gate lives in the sandbox service.
+// MountingRegistry returns the Registry for the warm-pool consumers — sandboxes
+// and pool activations — whose resident sidecar CAN establish a mount and
+// release it on shutdown, but only in a pod whose pool declared the capability.
+// That is per-pool and this is per-type, so the type is permitted here and the
+// pool gate lives in each service.
 func MountingRegistry() *Registry {
 	mountingRegistryOnce.Do(func() { mountingReg = buildRegistry(true, builtinTypes()) })
 	return mountingReg

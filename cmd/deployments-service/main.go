@@ -119,7 +119,7 @@ func main() {
 			slog.Error("Failed to start pool orchestrator", "error", err)
 			os.Exit(1)
 		}
-		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.ServingRegistry())
+		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.MountingRegistry())
 		slog.Info("Pools configured", "count", len(pools))
 	}
 

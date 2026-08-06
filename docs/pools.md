@@ -45,7 +45,7 @@ Run-to-completion workloads belong to the [jobs API](jobs.md), not pools.
 
 ## Artifacts
 
-Activations accept the same [artifact schema as jobs](jobs.md#artifacts), materialized into the pod's `/workspace` before your command runs — every type except [`mount`](jobs.md#mount), which needs a post phase an activation does not have:
+Activations accept the same [artifact schema as jobs](jobs.md#artifacts), materialized into the pod's `/workspace` before your command runs:
 
 ```bash
 curl -X POST http://localhost:8080/v1/deployment-pools/py/activations \
@@ -60,6 +60,17 @@ curl -X POST http://localhost:8080/v1/deployment-pools/py/activations \
 ```
 
 If artifact materialization fails, the activation is reported `failed` with the reason, and the pod is **poisoned** — discarded and replaced, never handed to another activation.
+
+A [`mount`](jobs.md#mount-artifact) also works, on a pool that declares the capability:
+
+```yaml
+pools:
+  - id: restore
+    image: node:22-slim
+    mounts: true      # privileged sidecar + a propagating workspace
+```
+
+It is a pool dimension rather than a per-activation field because it changes the pod, and warm pods are built before any claim arrives. The mount is established after its image is materialized and before your command is signalled. The cost is a privileged container in every pod of that pool — [the sandbox guide](sandboxes.md#mounting-a-filesystem-image) explains the mechanism and the trade in full, and activations follow exactly the same rules over the same warm machinery.
 
 ## Async activations
 
