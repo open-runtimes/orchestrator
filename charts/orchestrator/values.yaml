@@ -318,7 +318,8 @@ sandboxes:
   # Image publishing the agent that serves the sandbox contract. It is used as an
   # init container whose command is replaced by a copy of the binary into the
   # sandbox's workspace — so pool images stay ordinary runtime images, and this
-  # tag (or a digest in `ref`) is the agent version pin.
+  # tag (or a digest in `ref`) is the agent version pin, and it matches the
+  # in-code default (pkg/sandbox.AgentImage) — bump both together.
   agentImage:
     ref: ""
     repository: ghcr.io/open-runtimes/sandbox

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/observability"
 	"regexp"
 	"strings"
@@ -127,7 +128,7 @@ func applyDefaults(req *Request) {
 		req.Memory = 512
 	}
 	if req.Workspace == "" {
-		req.Workspace = "/workspace"
+		req.Workspace = config.DefaultWorkspace
 	}
 }
 

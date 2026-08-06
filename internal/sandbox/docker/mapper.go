@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/config"
 	"orchestrator/pkg/sandbox"
 	"strconv"
 	"strings"
@@ -32,7 +33,7 @@ const (
 
 // workspacePath is where the workspace volume mounts in every container of a
 // sandbox — the sandbox image's own default, and the shim's on Kubernetes.
-const workspacePath = "/workspace"
+const workspacePath = config.DefaultWorkspace
 
 func workerName(id string) string    { return "sbx-" + id + "-worker" }
 func proxyName(id string) string     { return "sbx-" + id + "-proxy" }

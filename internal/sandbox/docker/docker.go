@@ -264,7 +264,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *sandbox.Request) e
 	}
 	env := []string{
 		"JOB_ID=sbx-" + req.ID,
-		"SHARED_VOLUME_PATH=" + workspacePath,
+		config.EnvSharedVolume + "=" + workspacePath,
 		"ARTIFACTS_JSON=" + string(artifactsJSON),
 	}
 	if o.cfg.ArtifactEndpoint != "" {
@@ -316,7 +316,7 @@ func (o *Orchestrator) installAgent(ctx, pullCtx context.Context, id string) err
 		&container.Config{
 			Image:      o.cfg.AgentImage,
 			Entrypoint: []string{"cp"},
-			Cmd:        []string{agentSource, agentPath},
+			Cmd:        []string{sandbox.AgentSource, agentPath},
 			// Root, like the artifacts step: a Docker volume takes its ownership
 			// from whichever image mounts it first, so the copy cannot assume the
 			// agent image's own user can write there. The binary lands 0755, so

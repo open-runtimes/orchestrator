@@ -474,7 +474,7 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 	env := []string{
 		"JOB_ID=" + req.ID,
 		fmt.Sprintf("TIMEOUT_SECONDS=%d", req.TimeoutSeconds),
-		"SHARED_VOLUME_PATH=" + req.Workspace,
+		config.EnvSharedVolume + "=" + req.Workspace,
 	}
 
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar

@@ -318,6 +318,38 @@ func TestDelete_IdleSandboxTornDownByTheControlLoop(t *testing.T) {
 	}
 }
 
+// Two containers agree through the shared workspace: the agent-install init
+// container copies the binary somewhere, and the claim execs it there. That has
+// to be one value — a mismatch is not a compile error, it is a sandbox that
+// starts and cannot exec — so the copy destination, the default command and the
+// published source all come from pkg/sandbox.
+func TestAgentContract_TheCopyDestinationIsWhatTheSandboxRuns(t *testing.T) {
+	t.Parallel()
+	cfg := Config{SandboxDomain: "sandboxes.test"}
+	cfg.applyDefaults()
+	agent := cfg.warmConfig().Agent
+
+	// Nobody names a command: the pool image serves nothing, the agent does.
+	req := claimRequest(&pool.Pool{ID: "py", Port: 3000}, &sandbox.Request{ID: "sbx"})
+	if req.Command != agent.Dest {
+		t.Errorf("the sandbox runs %q but the agent is copied to %q", req.Command, agent.Dest)
+	}
+	if AgentCommand() != agent.Dest {
+		t.Errorf("AgentCommand is %q, the copy destination is %q", AgentCommand(), agent.Dest)
+	}
+	if agent.Source != sandbox.AgentSource {
+		t.Errorf("copy source: want %q, got %q", sandbox.AgentSource, agent.Source)
+	}
+	// The default is pinned by tag: the tag is the version.
+	if agent.Image != sandbox.AgentImage {
+		t.Errorf("agent image: want %q, got %q", sandbox.AgentImage, agent.Image)
+	}
+	// The destination is inside the workspace both containers mount.
+	if !strings.HasPrefix(agent.Dest, workspacePath+"/") {
+		t.Errorf("%q is not in the shared workspace %q", agent.Dest, workspacePath)
+	}
+}
+
 // The grammar itself is pkg/sandbox's (host_test.go); what this backend owns is
 // that a gateway fronts port 80, so its URLs are bare.
 func TestAddressing_GatewayFrontedURLsAreBare(t *testing.T) {

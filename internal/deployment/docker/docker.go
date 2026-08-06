@@ -202,7 +202,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 	workspace := workspaceOf(req)
 	env := []string{
 		"JOB_ID=dep-" + req.ID,
-		"SHARED_VOLUME_PATH=" + workspace,
+		config.EnvSharedVolume + "=" + workspace,
 		"ARTIFACTS_JSON=" + string(artifactsJSON),
 	}
 	if o.cfg.ArtifactEndpoint != "" {

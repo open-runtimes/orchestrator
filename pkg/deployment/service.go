@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/observability"
 	"path"
 	"regexp"
@@ -41,7 +42,7 @@ const (
 	DefaultTimeoutSeconds      = 300
 	DefaultStartTimeoutSeconds = 300
 	DefaultReadyTimeoutSeconds = 600
-	DefaultWorkspace           = "/workspace"
+	DefaultWorkspace           = config.DefaultWorkspace
 )
 
 // idPattern is an RFC-1123 label: lowercase alphanumeric with interior hyphens.

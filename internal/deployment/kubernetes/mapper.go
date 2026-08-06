@@ -36,7 +36,7 @@ const (
 	VolumeTmp       = "tmp"
 	// workspacePath is the default shared-volume mount path when a request
 	// does not set req.Workspace.
-	workspacePath = "/workspace"
+	workspacePath = config.DefaultWorkspace
 
 	portNameProxy = "proxy"
 	portNameAdmin = "admin"
@@ -181,7 +181,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	workspace := workspaceOf(req)
 	env := []corev1.EnvVar{
 		{Name: "JOB_ID", Value: objectNameFor(req.ID)},
-		{Name: "SHARED_VOLUME_PATH", Value: workspace},
+		{Name: config.EnvSharedVolume, Value: workspace},
 	}
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
 	// needs to unmarshal them back into concrete types.

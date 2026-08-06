@@ -11,14 +11,9 @@ import (
 const (
 	defaultSandboxDomain = "localhost"
 
-	// agentPath is where the agent-install container drops the sandbox agent, and
-	// therefore the default command a sandbox runs. At the workspace root, so the
-	// copy needs no mkdir and the publishing image needs no shell.
-	agentPath = workspacePath + "/.sandbox-agent"
-	// agentSource is the binary's path inside the agent image.
-	agentSource = "/usr/local/bin/sandbox"
-	// defaultAgentImage publishes the reference agent, pinned by tag.
-	defaultAgentImage = "ghcr.io/open-runtimes/sandbox:0.1.0"
+	// agentPath is where the agent-install container drops the sandbox agent,
+	// and therefore the default command a sandbox runs (pkg/sandbox).
+	agentPath = workspacePath + "/" + sandbox.AgentName
 
 	// reapTick is how often the idle sweep runs. Docker has no leader election
 	// and one service process, so the loop simply runs.
@@ -54,7 +49,7 @@ func LoadConfigFromEnv() Config {
 		extraHosts = strings.Split(hosts, ",")
 	}
 	return Config{
-		AgentImage:       config.GetEnv("SANDBOX_AGENT_IMAGE", defaultAgentImage),
+		AgentImage:       config.GetEnv("SANDBOX_AGENT_IMAGE", sandbox.AgentImage),
 		JobSidecarImage:  config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Network:          config.GetEnv("DOCKER_NETWORK", ""),
 		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8080"),
@@ -67,7 +62,7 @@ func LoadConfigFromEnv() Config {
 
 func (c *Config) applyDefaults() {
 	if c.AgentImage == "" {
-		c.AgentImage = defaultAgentImage
+		c.AgentImage = sandbox.AgentImage
 	}
 	if c.SandboxDomain == "" {
 		c.SandboxDomain = defaultSandboxDomain

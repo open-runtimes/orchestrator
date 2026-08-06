@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/config"
 	"orchestrator/internal/proxy"
 	"orchestrator/pkg/deployment"
 	"strconv"
@@ -33,7 +34,7 @@ const (
 
 // workspacePath is the default shared-volume mount path when a request does
 // not set req.Workspace.
-const workspacePath = "/workspace"
+const workspacePath = config.DefaultWorkspace
 
 // workspaceOf is the request's workspace (working directory and shared-volume
 // mount path), falling back to the default for specs stored before the field

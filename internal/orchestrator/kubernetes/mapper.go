@@ -106,7 +106,7 @@ func jobNameFor(jobID string) string {
 func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *batchv1.Job {
 	workspace := req.Workspace
 	if workspace == "" {
-		workspace = "/workspace"
+		workspace = config.DefaultWorkspace
 	}
 
 	hasMounts := artifact.HasMount(req.Artifacts)
@@ -282,7 +282,7 @@ func workerEnv(req *job.Request) []corev1.EnvVar {
 func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: "JOB_ID", Value: req.ID},
-		{Name: "SHARED_VOLUME_PATH", Value: workspace},
+		{Name: config.EnvSharedVolume, Value: workspace},
 		{Name: "TIMEOUT_SECONDS", Value: strconv.Itoa(req.TimeoutSeconds)},
 	}
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar

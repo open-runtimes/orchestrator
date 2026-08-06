@@ -19,14 +19,14 @@ import (
 const (
 	VolumeWorkspace = "workspace"
 	VolumeTmp       = "tmp"
-	workspacePath   = "/workspace"
+	workspacePath   = config.DefaultWorkspace
 	shimPath        = workspacePath + "/.pool/shim"
 
 	portNameProxy = "proxy"
 	portNameAdmin = "admin"
 
 	// envSharedVolume is where the sidecar and shim expect the workspace.
-	envSharedVolume = "SHARED_VOLUME_PATH"
+	envSharedVolume = config.EnvSharedVolume
 )
 
 // RandHex returns n random bytes hex-encoded (2n characters, RFC-1123 safe).

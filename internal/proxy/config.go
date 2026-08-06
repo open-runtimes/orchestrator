@@ -96,7 +96,7 @@ func LoadConfigFromEnv() Config {
 		ClaimToken: config.GetEnv(EnvClaimToken, ""),
 		TargetHost: config.GetEnv(EnvTargetHost, "127.0.0.1"),
 		ExtraPorts: parsePorts(config.GetEnv(EnvExtraPorts, "")),
-		Workspace:  config.GetEnv("SHARED_VOLUME_PATH", "/workspace"), // same contract as the shim and job sidecar
+		Workspace:  config.Workspace(),
 		S3:         config.LoadS3Credentials(),
 	}
 }

@@ -40,7 +40,7 @@ func main() {
 		return
 	}
 
-	workspace := config.GetEnv("SHARED_VOLUME_PATH", "/workspace")
+	workspace := config.Workspace()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(logSink(workspace), nil)).With("service", "pool-shim"))
 
 	if err := run(workspace); err != nil {

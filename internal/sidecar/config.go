@@ -28,7 +28,7 @@ func LoadConfigFromEnv() *Config {
 		ArtifactToken:    config.GetEnv("ARTIFACT_TOKEN", ""),
 		ArtifactTimeout:  config.GetDurationEnv("ARTIFACT_TIMEOUT", 30*time.Second),
 		TimeoutSeconds:   config.GetIntEnv("TIMEOUT_SECONDS", 1800),
-		SharedVolumePath: config.GetEnv("SHARED_VOLUME_PATH", "/workspace"),
+		SharedVolumePath: config.Workspace(),
 		Meta:             config.GetEnv("JOB_META", "{}"),
 		CallbackURL:      config.GetEnv("CALLBACK_URL", ""),
 		CallbackKey:      config.GetEnv("CALLBACK_KEY", ""),

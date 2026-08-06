@@ -21,18 +21,11 @@ const (
 
 	defaultOrphanTTL = 60 * time.Second
 
-	// agentPath is where the agent-install container drops the sandbox agent, and
-	// therefore the default command a sandbox execs. It lives at the workspace
-	// root — the one volume every container in the pod shares — so the copy
-	// needs no mkdir and the publishing image needs no shell.
-	agentPath = workspacePath + "/.sandbox-agent"
-	// agentSource is the binary's path inside the agent image.
-	agentSource = "/usr/local/bin/sandbox"
-	// defaultAgentImage publishes the reference agent. Pinned: an image tag is
-	// the version, and an operator may pin harder with a digest.
-	defaultAgentImage = "ghcr.io/open-runtimes/sandbox:0.1.0"
 	// workspacePath mirrors internal/warm's workspace mount.
-	workspacePath = "/workspace"
+	workspacePath = config.DefaultWorkspace
+	// agentPath is where the agent-install container drops the sandbox agent,
+	// and therefore the default command a sandbox execs (pkg/sandbox).
+	agentPath = workspacePath + "/" + sandbox.AgentName
 )
 
 // Config holds configuration for the Kubernetes sandbox orchestrator.
@@ -111,7 +104,7 @@ func LoadConfigFromEnv() (Config, error) {
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
 
-		AgentImage:    config.GetEnv("SANDBOX_AGENT_IMAGE", defaultAgentImage),
+		AgentImage:    config.GetEnv("SANDBOX_AGENT_IMAGE", sandbox.AgentImage),
 		SandboxDomain: config.GetEnv("SANDBOX_DOMAIN", defaultSandboxDomain),
 		Scheme:        config.GetEnv("SANDBOX_SCHEME", "http"),
 		OrphanTTL:     config.GetDurationEnv("SANDBOX_ORPHAN_TTL", defaultOrphanTTL),
@@ -135,7 +128,7 @@ func (c *Config) applyDefaults() {
 		c.RunAsUser = defaultRunAsUser
 	}
 	if c.AgentImage == "" {
-		c.AgentImage = defaultAgentImage
+		c.AgentImage = sandbox.AgentImage
 	}
 	if c.SandboxDomain == "" {
 		c.SandboxDomain = defaultSandboxDomain
@@ -186,7 +179,7 @@ func (c *Config) warmConfig() warm.Config {
 		// Every sandbox pool gets the agent, so a pool's image needs to serve
 		// nothing itself; the agent is told which port to listen on and where the
 		// workspace is.
-		Agent: warm.Agent{Image: c.AgentImage, Source: agentSource, Dest: agentPath},
+		Agent: warm.Agent{Image: c.AgentImage, Source: sandbox.AgentSource, Dest: agentPath},
 		WorkloadEnv: func(p *pool.Pool) map[string]string {
 			return map[string]string{
 				"SANDBOX_PORT":      strconv.Itoa(p.Port),
