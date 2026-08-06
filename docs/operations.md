@@ -135,7 +135,7 @@ Each pool keeps `size` pods warm at all times; claimed pods are replaced off the
 
 ## Sandboxes
 
-[Sandboxes](sandboxes.md) are live workspaces created from their own warm pools, reached at their own hostnames. Three pieces of operator config:
+[Sandboxes](sandboxes.md) are live workspaces reached at their own hostnames. A caller either claims one from a warm pool you declare, or [creates one without a pool](sandboxes.md#a-sandbox-with-no-pool) by naming an image — so `sandboxes.pools` is optional, and a domain plus the proxy is enough to serve the API. Pools buy sub-second creates; poolless costs a cold start and needs no capacity planning. Operator config:
 
 ```yaml
 sandboxes:

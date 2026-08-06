@@ -65,6 +65,9 @@ func (c *Controller) Tick(ctx context.Context) {
 	for i := range c.m.pools {
 		c.reconcile(ctx, &c.m.pools[i], seenPods, seenClaims)
 	}
+	if c.m.cfg.ReapUnpooled {
+		c.reapUnpooled(ctx, seenPods, seenClaims)
+	}
 	for name := range c.orphanSince {
 		if !seenPods[name] {
 			delete(c.orphanSince, name)
@@ -72,6 +75,42 @@ func (c *Controller) Tick(ctx context.Context) {
 	}
 	if c.hooks.Forget != nil {
 		c.hooks.Forget(seenClaims)
+	}
+}
+
+// reapUnpooled applies the end-of-life rule to claims whose pool is not in the
+// config — a workload that brought its own pool of one, so no declared pool's
+// reconcile will ever see it. Without this an abandoned one would hold its pod
+// forever, which is exactly what an idle timeout exists to prevent.
+//
+// It only reaps. There is nothing to replenish (a pool of one is spent) and
+// nothing to count.
+func (c *Controller) reapUnpooled(ctx context.Context, seenPods, seenClaims map[string]bool) {
+	if c.hooks.Reap == nil {
+		return
+	}
+	pods, err := c.m.Claimed(ctx, "", "")
+	if err != nil {
+		slog.Warn("Unpooled reconcile list failed", "error", err)
+		return
+	}
+	now := c.Now()
+	for i := range pods {
+		pod := &pods[i]
+		poolID := c.m.PoolID(pod)
+		if _, declared := c.m.byID[poolID]; declared {
+			continue // a configured pool's reconcile already handled it
+		}
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		claimID := c.m.ClaimID(pod)
+		if claimID == "" {
+			continue
+		}
+		seenPods[pod.Name] = true
+		seenClaims[claimID] = true
+		c.hooks.Reap(ctx, &pool.Pool{ID: poolID}, pod, claimID, now)
 	}
 }
 

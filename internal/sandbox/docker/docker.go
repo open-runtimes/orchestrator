@@ -113,7 +113,13 @@ func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
 // sandbox, its artifacts, the worker, and the proxy — then waits for the
 // proxy's health check to report the contract serving.
 func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandbox.Status, error) {
+	// A declared pool, or the pool of one the request describes. Docker creates
+	// the container either way — it has no warm capacity — so poolless costs it
+	// nothing extra.
 	p := o.pools[req.Pool]
+	if req.Pool == "" {
+		p = sandbox.InlinePool(req)
+	}
 	if p == nil {
 		return nil, apperrors.NotFound("pool", req.Pool)
 	}

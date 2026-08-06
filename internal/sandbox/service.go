@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -23,6 +24,9 @@ const (
 	maxArtifacts   = 64
 	defaultTimeout = 300
 	maxPorts       = 16
+	// inlinePrefix names generated ids for poolless sandboxes, where there is no
+	// pool name to take one from.
+	inlinePrefix = "sbx"
 
 	// tokenBytes sizes the capability token in the hostname. 128 bits, because
 	// reaching the URL is sufficient to execute code inside the sandbox — the
@@ -65,19 +69,30 @@ func (s *Service) Pool(ctx context.Context, poolID string) (*pool.Status, error)
 // ceiling), mints the capability token its hostname carries, and claims a warm
 // pod — blocking until the sandbox's contract is served.
 func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
+	if err := s.validateSource(req); err != nil {
+		return nil, err
+	}
+	// The id comes first: a poolless sandbox's pool is keyed by it, which is what
+	// keeps the pod created for this request from being offered to another.
+	if req.ID == "" {
+		id, err := generateID(cmp.Or(req.Pool, inlinePrefix))
+		if err != nil {
+			return nil, apperrors.Internal("sandbox.generateID", err)
+		}
+		req.ID = id
+	}
+	// Either a declared pool, or the shape this request asked for. Everything
+	// downstream takes a pool, so a poolless sandbox brings its own — a pool of
+	// one, created on demand and never offered to anybody else.
 	p, ok := s.pools[req.Pool]
+	if req.Pool == "" {
+		p, ok = InlinePool(req), true
+	}
 	if !ok {
 		return nil, apperrors.NotFound("pool", req.Pool)
 	}
 	if err := s.validate(req, p); err != nil {
 		return nil, err
-	}
-	if req.ID == "" {
-		id, err := generateID(req.Pool)
-		if err != nil {
-			return nil, apperrors.Internal("sandbox.generateID", err)
-		}
-		req.ID = id
 	}
 	token, err := mintToken()
 	if err != nil {
@@ -122,6 +137,57 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	}
 	slog.Info("Sandbox deleted", "sandboxId", id)
 	return nil
+}
+
+// validateSource enforces the one choice a create has to make: claim from a
+// pool, or describe a pod for this sandbox alone. Both would be ambiguous —
+// which image wins — and neither leaves nothing to run.
+func (s *Service) validateSource(req *Request) error {
+	switch {
+	case req.Pool != "" && req.Image != "":
+		return apperrors.Validation("pool", "give either pool (claim from warm capacity) or image (create a pod for this sandbox), not both")
+	case req.Pool == "" && req.Image == "":
+		return apperrors.Validation("pool", "pool or image is required")
+	case req.Pool != "":
+		return nil
+	}
+	if req.Port <= 0 || req.Port > 65535 {
+		return apperrors.Validation("port", "port is required with image, and must be 1-65535")
+	}
+	if req.CPU < 0 {
+		return apperrors.Validation("cpu", "cpu must not be negative")
+	}
+	if req.Memory < 0 {
+		return apperrors.Validation("memory", "memory must not be negative")
+	}
+	for i := range req.Volumes {
+		if err := req.Volumes[i].Validate(fmt.Sprintf("volumes[%d]", i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// InlinePool is the pool of one a poolless sandbox brings with it: sized zero so
+// nothing replenishes it, cold so the claim creates the pod it needs, and keyed
+// by the sandbox's own id so that pod is never offered to another sandbox.
+//
+// Mounting is inferred from the artifacts, as it is for a job or a revision: the
+// pod is built for this request, so the capability need not be declared ahead of
+// it.
+func InlinePool(req *Request) *pool.Pool {
+	return &pool.Pool{
+		ID:           req.ID,
+		Image:        req.Image,
+		Port:         req.Port,
+		CPU:          req.CPU,
+		Memory:       req.Memory,
+		RuntimeClass: req.RuntimeClass,
+		Volumes:      req.Volumes,
+		Mounts:       artifact.HasMount(req.Artifacts),
+		Size:         0,
+		Burst:        pool.BurstCold,
+	}
 }
 
 func (s *Service) validate(req *Request, p *pool.Pool) error {

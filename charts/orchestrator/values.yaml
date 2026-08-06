@@ -304,6 +304,11 @@ sandboxes:
   # runtimeClass: gvisor (or kata) and map it with KUBE_RUNTIME_CLASSES.
   # maxIdleSeconds caps how long an abandoned sandbox may hold a warm pod.
   #
+  # Pools are optional: a caller may also create a sandbox with no pool at all,
+  # naming an image in the request (docs/sandboxes.md). That costs a cold start
+  # per sandbox and cannot be capped by maxIdleSeconds, so declare pools for any
+  # workload that creates sandboxes at a rate.
+  #
   # mounts lets this pool's sandboxes use the `mount` artifact (a squashfs or
   # erofs image mounted into the workspace, optionally with a tmpfs overlay).
   # It is a pool dimension because it changes the pod: the sidecar performing
