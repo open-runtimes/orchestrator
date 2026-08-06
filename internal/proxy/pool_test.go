@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -278,6 +279,28 @@ func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 	}
 	if status := postActivate(t, p, testClaimToken, ClaimRequest{ActivationID: "act-retry", Command: "true"}); status != http.StatusConflict {
 		t.Fatalf("claim after poison: got %d, want 409", status)
+	}
+}
+
+// A mount needs a post-phase sidecar to establish it and undo it, and this
+// sidecar runs a pre phase only. The claim must be refused rather than
+// materializing everything else and starting a workload whose mount is silently
+// absent. (The API rejects these at validation; this is the boundary refusing
+// them too.)
+func TestPoolClaim_RefusesAMountItCannotEstablish(t *testing.T) {
+	p := startProxy(t, poolConfig(t))
+
+	status := postActivate(t, p, testClaimToken, ClaimRequest{
+		ActivationID: "act-mount",
+		Command:      "true",
+		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+	})
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("claim with a mount: got %d, want 422", status)
+	}
+	s := claimState(t, p)
+	if !s.Failed || !strings.Contains(s.Error, "post-phase") {
+		t.Fatalf("state should name what is missing, got %+v", s)
 	}
 }
 

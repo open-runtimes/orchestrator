@@ -84,7 +84,7 @@ curl         http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/fil
 
 Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the machinery's own `.pool/`, `.sandbox-agent`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
 
-For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready:
+For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready. Every type except [`mount`](jobs.md#mount) is available, which needs a post phase a sandbox does not have:
 
 ```bash
 curl -X POST http://localhost:8080/v1/sandbox \

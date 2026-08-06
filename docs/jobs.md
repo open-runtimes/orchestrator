@@ -271,6 +271,8 @@ Set `writable: true` to give the worker a writable copy-on-write view: the read-
 - `writable` - Overlay a tmpfs-backed writable layer on the image (optional, default read-only)
 - `size` - Cap the writable overlay's tmpfs in MiB (optional, writable only; 0/omitted = kernel default of half of RAM)
 
+> **Jobs only.** A mount has to be established before the worker starts and undone after it exits, which takes the post-phase sidecar only a job runs. Deployments, pool activations and sandboxes materialize artifacts in a pre phase and then keep serving, so a `mount` submitted to one of those is rejected with a 400 rather than accepted and ignored.
+
 > **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the matching kernel module on nodes (`squashfs` or `erofs`, plus `overlay` for writable mounts), and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
 
 ### Upload Artifact

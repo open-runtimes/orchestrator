@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/pkg/pool"
@@ -36,7 +37,7 @@ func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 		pools = []pool.Pool{{ID: "py", Image: "img", Command: "/usr/local/bin/sandbox", Port: 3000, Size: 1}}
 	}
 	orch := &fakeOrchestrator{}
-	return NewService(orch, nil, pools, artifact.DefaultRegistry()), orch
+	return NewService(orch, nil, pools, artifact.ServingRegistry()), orch
 }
 
 func TestCreate_MintsAnUnguessableTokenIndependentOfTheID(t *testing.T) {
@@ -173,6 +174,25 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 
 // Ports are per-sandbox (a container may bind any port at any time), but not
 // unconstrained: the sidecar's own ports and the pool's primary are refused.
+// A mount needs a job's post-phase sidecar. A sandbox has none, so asking for
+// one is a 400 — it used to be accepted and silently dropped, and the caller got
+// a ready sandbox with nothing mounted.
+func TestCreate_RejectsAMountItCannotHonour(t *testing.T) {
+	t.Parallel()
+	svc, _ := testService()
+
+	req := &Request{ID: "sbx", Pool: "py", Artifacts: artifact.Set{
+		&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"},
+	}}
+	_, err := svc.Create(t.Context(), req)
+	if err == nil {
+		t.Fatal("want a rejection")
+	}
+	if got := apperrors.HTTPStatus(err); got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (%v)", got, err)
+	}
+}
+
 func TestCreate_ValidatesPorts(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()

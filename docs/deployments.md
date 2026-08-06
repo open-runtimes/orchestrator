@@ -95,7 +95,7 @@ Unknown fields are rejected with `400` naming the field, so a typo (`"replcias"`
 
 Probes: the **readiness** probe is run by the orchestrator's sidecar and honors sub-second periods — it gates whether a replica receives traffic. Liveness and startup probes are kubelet-run at whole-second granularity. Omitting `path` makes a probe a TCP connect check.
 
-Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving.
+Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving. Every type except [`mount`](jobs.md#mount) is available: a mount needs a post phase, and a serving workload has none.
 
 ## Status and lifecycle
 

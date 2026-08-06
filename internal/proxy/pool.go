@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -109,10 +110,18 @@ func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
 		timeoutSeconds = *req.TimeoutSeconds
 	}
 
+	// This sidecar runs a pre phase and nothing else, so an artifact needing the
+	// post phase cannot be honoured here. The API rejects those at validation;
+	// refusing the claim as well means a workload never starts believing it got
+	// something it did not.
+	if artifact.HasMount(req.Artifacts) {
+		return errors.New("mount artifacts need a job's post-phase sidecar; this workload has none")
+	}
+
 	// Same materialization path as the job sidecar's pre phase: pre-job
 	// artifacts in dependency order against the shared workspace. No report
 	// sink — the claim response is the result.
-	runner := sidecar.NewRunner(req.ActivationID, p.pool.workspace, timeoutSeconds, artifact.DefaultRegistry(),
+	runner := sidecar.NewRunner(req.ActivationID, p.pool.workspace, timeoutSeconds, artifact.ServingRegistry(),
 		sidecar.WithS3Credentials(p.cfg.S3))
 	if err := runner.RunPre(ctx, req.Artifacts); err != nil {
 		return err
