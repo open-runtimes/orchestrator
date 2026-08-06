@@ -96,6 +96,7 @@ Both the deployments service and the standalone activator (K8s) expose the same 
 
 Rollout metrics come from the leader's reconciler; leadership and K8s API metrics apply to the deployments service and activator exactly as to jobs. The broker behind these series runs in two components, and the `component` label says which — `deployments-activator` or `sandbox-proxy`, matching their `app.kubernetes.io/component` labels, so a PromQL series and a pod selector read the same. A sandbox hold never reads as a deployment cold start, and `activator_raises_total` is only ever the activator's: the sandbox proxy has nothing to raise.
 
+<a id="pools"></a>
 **Pool Metrics:**
 
 Warm pools serve two consumers — deployment-pool activations and [sandboxes](sandboxes.md) — and both are claim-and-late-bind, so they share one set of series. The `kind` label (`pool` | `sandbox`) says which, and pool ids may repeat across the two config lists without colliding.
