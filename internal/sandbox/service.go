@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/observability"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
@@ -153,6 +154,14 @@ func (s *Service) validateSource(req *Request) error {
 	}
 	if req.Port <= 0 || req.Port > 65535 {
 		return apperrors.Validation("port", "port is required with image, and must be 1-65535")
+	}
+	// An unknown tier would resolve to no RuntimeClassName at all, which means a
+	// sandbox that asked to be isolated would quietly run with the platform
+	// default. For untrusted code that is the worst possible failure mode, so it
+	// is a rejection.
+	if !deployment.ValidRuntimeClass(req.RuntimeClass) {
+		return apperrors.Validation("runtimeClass",
+			fmt.Sprintf("unknown isolation tier %q (want runc, gvisor or kata)", req.RuntimeClass))
 	}
 	if req.CPU < 0 {
 		return apperrors.Validation("cpu", "cpu must not be negative")
