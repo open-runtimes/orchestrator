@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/moby"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/sandbox"
 	"orchestrator/internal/testutil"
@@ -274,7 +275,7 @@ func runClient(t *testing.T, o *Orchestrator, command string) string {
 	t.Helper()
 	ctx := t.Context()
 
-	if err := o.pullImageIfNeeded(ctx, clientImage()); err != nil {
+	if err := moby.PullImage(ctx, o.client, clientImage()); err != nil {
 		t.Fatalf("pull client image: %v", err)
 	}
 	created, err := o.client.ContainerCreate(ctx,
@@ -283,7 +284,7 @@ func runClient(t *testing.T, o *Orchestrator, command string) string {
 			Entrypoint: []string{"/bin/sh", "-c"},
 			Cmd:        []string{command},
 		},
-		&container.HostConfig{}, o.networkingConfig(), nil, "")
+		&container.HostConfig{}, moby.NetworkingConfig(o.cfg.Network), nil, "")
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}

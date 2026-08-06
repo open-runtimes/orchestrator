@@ -29,9 +29,9 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	"orchestrator/internal/moby"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/sandbox"
-	volspec "orchestrator/internal/volume"
 	"orchestrator/internal/workload"
 	"slices"
 	"strconv"
@@ -40,9 +40,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
@@ -154,7 +152,7 @@ func (o *Orchestrator) materialize(ctx context.Context, p *pool.Pool, req *sandb
 	// Detached context so an HTTP request timeout doesn't cancel image pulls.
 	pullCtx := context.WithoutCancel(ctx)
 	if len(req.Artifacts) > 0 {
-		if err := o.pullImageIfNeeded(pullCtx, o.cfg.JobSidecarImage); err != nil {
+		if err := moby.PullImage(pullCtx, o.client, o.cfg.JobSidecarImage); err != nil {
 			return nil, apperrors.Internal("docker.pullJobSidecarImage", err)
 		}
 		if err := o.runArtifacts(ctx, req); err != nil {
@@ -165,10 +163,10 @@ func (o *Orchestrator) materialize(ctx context.Context, p *pool.Pool, req *sandb
 			return &sandbox.Status{ID: req.ID, PoolID: req.Pool, State: sandbox.StateFailed, Error: err.Error()}, nil
 		}
 	}
-	if err := o.pullImageIfNeeded(pullCtx, p.Image); err != nil {
+	if err := moby.PullImage(pullCtx, o.client, p.Image); err != nil {
 		return nil, apperrors.Internal("docker.pullImage", err)
 	}
-	if err := o.pullImageIfNeeded(pullCtx, o.cfg.SidecarImage); err != nil {
+	if err := moby.PullImage(pullCtx, o.client, o.cfg.SidecarImage); err != nil {
 		return nil, apperrors.Internal("docker.pullSidecarImage", err)
 	}
 	if err := o.installAgent(ctx, pullCtx, req.ID); err != nil {
@@ -286,7 +284,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *sandbox.Request) e
 			Mounts:     []mount.Mount{o.workspaceMount(req.ID)},
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
-		o.networkingConfig(), nil, artifactsName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, artifactsName(req.ID))
 	if err != nil {
 		return apperrors.Internal("docker.createArtifactsContainer", err)
 	}
@@ -309,7 +307,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *sandbox.Request) e
 // container on Kubernetes, and what lets a pool run an ordinary runtime image
 // that serves the contract without implementing it.
 func (o *Orchestrator) installAgent(ctx, pullCtx context.Context, id string) error {
-	if err := o.pullImageIfNeeded(pullCtx, o.cfg.AgentImage); err != nil {
+	if err := moby.PullImage(pullCtx, o.client, o.cfg.AgentImage); err != nil {
 		return apperrors.Internal("docker.pullAgentImage", err)
 	}
 	resp, err := o.client.ContainerCreate(ctx,
@@ -379,14 +377,14 @@ func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Pool, req *sandb
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
 		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID)}, volumeMounts(p.Volumes)...),
+			Mounts: append([]mount.Mount{o.workspaceMount(req.ID)}, moby.Mounts(p.Volumes)...),
 			Resources: container.Resources{
 				NanoCPUs: int64(p.CPU * 1e9),
 				Memory:   int64(p.Memory) * 1024 * 1024,
 			},
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
-		o.networkingConfig(), nil, workerName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, workerName(req.ID))
 	if err != nil {
 		return "", apperrors.Internal("docker.createWorker", err)
 	}
@@ -438,7 +436,7 @@ func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Pool, req *sandbo
 			Labels: labels,
 		},
 		&container.HostConfig{ExtraHosts: o.cfg.ExtraHosts},
-		o.networkingConfig(), nil, proxyName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, proxyName(req.ID))
 	if err != nil {
 		return apperrors.Internal("docker.createProxy", err)
 	}
@@ -644,46 +642,8 @@ func (o *Orchestrator) waitForExit(ctx context.Context, containerID string) (int
 	}
 }
 
-// pullImageIfNeeded pulls the image unless the daemon already has it, so a
-// locally built image (ko.local/...) is never fetched from a registry.
-func (o *Orchestrator) pullImageIfNeeded(ctx context.Context, ref string) error {
-	if _, err := o.client.ImageInspect(ctx, ref); err == nil {
-		return nil
-	}
-	reader, err := o.client.ImagePull(ctx, ref, image.PullOptions{})
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-	_, err = io.Copy(io.Discard, reader)
-	return err
-}
-
 func (o *Orchestrator) workspaceMount(id string) mount.Mount {
 	return mount.Mount{Type: mount.TypeVolume, Source: volumeName(id), Target: workspacePath}
-}
-
-// volumeMounts maps the pool's declared volumes onto the worker.
-func volumeMounts(volumes []volspec.Volume) []mount.Mount {
-	mounts := make([]mount.Mount, 0, len(volumes))
-	for _, v := range volumes {
-		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeVolume,
-			Source:   v.Source,
-			Target:   v.Path,
-			ReadOnly: v.ReadOnly,
-		})
-	}
-	return mounts
-}
-
-func (o *Orchestrator) networkingConfig() *network.NetworkingConfig {
-	if o.cfg.Network == "" {
-		return nil
-	}
-	return &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{o.cfg.Network: {}},
-	}
 }
 
 // containerIP returns the container's address on the configured network, or —

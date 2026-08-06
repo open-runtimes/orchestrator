@@ -2,12 +2,9 @@ package docker
 
 import (
 	"orchestrator/internal/job"
-	vol "orchestrator/internal/volume"
 	"reflect"
 	"runtime"
 	"testing"
-
-	"github.com/docker/docker/api/types/mount"
 )
 
 func TestClampCPU(t *testing.T) {
@@ -24,26 +21,6 @@ func TestClampCPU(t *testing.T) {
 	// A request above the host's cores is clamped down so Docker won't reject it.
 	if got := clampCPU(cores + 4); got != cores {
 		t.Errorf("clampCPU(%v) = %v, want %v", cores+4, got, cores)
-	}
-}
-
-func TestVolumeMounts(t *testing.T) {
-	t.Parallel()
-	mounts := volumeMounts([]vol.Volume{
-		{Source: "data", Path: "/data", ReadOnly: true},
-		{Source: "cache", Path: "/cache", SubPath: "sub"},
-	})
-	if len(mounts) != 2 {
-		t.Fatalf("got %d mounts, want 2", len(mounts))
-	}
-	if mounts[0].Type != mount.TypeVolume || mounts[0].Source != "data" || mounts[0].Target != "/data" || !mounts[0].ReadOnly {
-		t.Errorf("mount[0] = %+v", mounts[0])
-	}
-	if mounts[0].VolumeOptions != nil {
-		t.Error("mount[0] should have no VolumeOptions without a subPath")
-	}
-	if mounts[1].VolumeOptions == nil || mounts[1].VolumeOptions.Subpath != "sub" {
-		t.Errorf("mount[1] subPath = %+v, want sub", mounts[1].VolumeOptions)
 	}
 }
 

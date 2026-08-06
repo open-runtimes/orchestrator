@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/url"
@@ -20,7 +19,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
-	volspec "orchestrator/internal/volume"
+	"orchestrator/internal/moby"
 	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
@@ -29,9 +28,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
@@ -150,7 +147,7 @@ func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec
 
 	if len(req.Artifacts) > 0 {
 		// Detached context so an HTTP request timeout doesn't cancel image pulls.
-		if err := o.pullImageIfNeeded(context.WithoutCancel(ctx), o.cfg.JobSidecarImage); err != nil {
+		if err := moby.PullImage(context.WithoutCancel(ctx), o.client, o.cfg.JobSidecarImage); err != nil {
 			return apperrors.Internal("docker.pullJobSidecarImage", err)
 		}
 		if err := o.runArtifacts(ctx, req); err != nil {
@@ -167,10 +164,10 @@ func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec
 func (o *Orchestrator) createContainers(ctx context.Context, req *deployment.Request, spec string) error {
 	// Detached context so an HTTP request timeout doesn't cancel image pulls.
 	pullCtx := context.WithoutCancel(ctx)
-	if err := o.pullImageIfNeeded(pullCtx, req.Image); err != nil {
+	if err := moby.PullImage(pullCtx, o.client, req.Image); err != nil {
 		return apperrors.Internal("docker.pullImage", err)
 	}
-	if err := o.pullImageIfNeeded(pullCtx, o.cfg.SidecarImage); err != nil {
+	if err := moby.PullImage(pullCtx, o.client, o.cfg.SidecarImage); err != nil {
 		return apperrors.Internal("docker.pullSidecarImage", err)
 	}
 
@@ -224,7 +221,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 			Mounts:     []mount.Mount{o.workspaceMount(req.ID, workspace)},
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
-		o.networkingConfig(), nil, artifactsName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, artifactsName(req.ID))
 	if err != nil {
 		return apperrors.Internal("docker.createArtifactsContainer", err)
 	}
@@ -267,13 +264,13 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
 		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, volumeMounts(req.Volumes)...),
+			Mounts: append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, moby.Mounts(req.Volumes)...),
 			Resources: container.Resources{
 				NanoCPUs: int64(req.CPU * 1e9),
 				Memory:   int64(req.Memory) * 1024 * 1024,
 			},
 		},
-		o.networkingConfig(), nil, workerName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, workerName(req.ID))
 	if err != nil {
 		return "", apperrors.Internal("docker.createWorker", err)
 	}
@@ -307,7 +304,7 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 			Labels:      labels,
 		},
 		&container.HostConfig{ExtraHosts: o.cfg.ExtraHosts},
-		o.networkingConfig(), nil, proxyName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, proxyName(req.ID))
 	if err != nil {
 		return apperrors.Internal("docker.createProxy", err)
 	}
@@ -506,45 +503,6 @@ func (o *Orchestrator) containersFor(ctx context.Context, id string) ([]containe
 // targeting the request's workspace path.
 func (o *Orchestrator) workspaceMount(id, path string) mount.Mount {
 	return mount.Mount{Type: mount.TypeVolume, Source: volumeName(id), Target: path}
-}
-
-// volumeMounts attaches existing Docker named volumes to the worker container.
-func volumeMounts(vols []volspec.Volume) []mount.Mount {
-	mounts := make([]mount.Mount, 0, len(vols))
-	for _, v := range vols {
-		m := mount.Mount{Type: mount.TypeVolume, Source: v.Source, Target: v.Path, ReadOnly: v.ReadOnly}
-		if v.SubPath != "" {
-			m.VolumeOptions = &mount.VolumeOptions{Subpath: v.SubPath}
-		}
-		mounts = append(mounts, m)
-	}
-	return mounts
-}
-
-func (o *Orchestrator) networkingConfig() *network.NetworkingConfig {
-	if o.cfg.Network == "" {
-		return nil
-	}
-	return &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			o.cfg.Network: {},
-		},
-	}
-}
-
-func (o *Orchestrator) pullImageIfNeeded(ctx context.Context, imageName string) error {
-	if _, err := o.client.ImageInspect(ctx, imageName); err == nil {
-		return nil
-	}
-
-	reader, err := o.client.ImagePull(ctx, imageName, image.PullOptions{})
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-
-	_, err = io.Copy(io.Discard, reader)
-	return err
 }
 
 // waitForExit blocks until the container stops and returns its exit code.
