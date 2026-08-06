@@ -1,8 +1,13 @@
 // Package lifecycle provides the backend-agnostic state machine for
-// run-to-completion workloads: the sealed Signal set a watcher emits, the
-// Entry snapshot with its FSM, and the MemoryStore that is the single source
-// of truth for lifecycle state and runtime handles. It is shared by the jobs
-// service and the deployments/pools serving plane.
+// run-to-completion workloads: the sealed Signal set a watcher emits, the Entry
+// snapshot with its FSM, the rules that name a state (StateForExit), and the
+// MemoryStore for backends that hold state in memory.
+//
+// Its consumer is the jobs service, through pkg/job. Serving workloads —
+// deployments, pool activations, sandboxes — do not run to completion and have
+// their own vocabulary; they derive status from the backend rather than from a
+// store here. Keep this package free of anything shaped like either one: what
+// belongs here is what a workload does between starting and exiting.
 package lifecycle
 
 import "time"

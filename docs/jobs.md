@@ -62,6 +62,8 @@ GET /v1/jobs/{jobId}
 
 Status values: `accepted`, `running`, `completed`, `failed`, `cancelled`
 
+The worker's exit decides the terminal status — code 0 is `completed`, anything else `failed` — and it decides it as soon as the worker exits, while post-job artifacts may still be uploading. Both backends answer the same way, and so does the callback for that exit. Status never moves backwards.
+
 ### List Jobs
 
 ```

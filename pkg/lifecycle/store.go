@@ -105,11 +105,7 @@ func (c *MemoryStore[T]) Apply(id string, s Signal) error {
 	case Exited:
 		code := ev.ExitCode
 		exitCode = &code
-		if ev.ExitCode == 0 {
-			targetState = StateCompleted
-		} else {
-			targetState = StateFailed
-		}
+		targetState = StateForExit(ev.ExitCode)
 	case Failed:
 		targetState = StateFailed
 		code := -1

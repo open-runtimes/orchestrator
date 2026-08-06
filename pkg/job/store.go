@@ -2,9 +2,15 @@ package job
 
 import "orchestrator/pkg/lifecycle"
 
-// The lifecycle state machine (Entry, Signal, MemoryStore and friends) lives
-// in pkg/lifecycle so it can be shared with the deployments/pools serving
-// plane. These aliases keep pkg/job the vocabulary for job backends.
+// The run-to-completion state machine (Entry, Signal, MemoryStore and friends)
+// lives in pkg/lifecycle, backend-agnostic and free of anything job-shaped.
+// These aliases keep pkg/job the vocabulary a job backend reads.
+//
+// Both jobs backends share the vocabulary and the state rules; only the Docker
+// one keeps a MemoryStore. Kubernetes derives state from the cluster instead,
+// so a status read is correct on any replica whether or not it holds
+// leadership — which is why StateForExit is a rule both can apply rather than
+// state one of them owns.
 type (
 	Entry              = lifecycle.Entry
 	Signal             = lifecycle.Signal
@@ -21,6 +27,11 @@ type (
 
 // ExitReasonOOM marks a workload killed by the kernel OOM killer.
 const ExitReasonOOM = lifecycle.ExitReasonOOM
+
+// StateForExit names the state a job is in once its worker has exited. Every
+// path that reports state answers with it, so an API read cannot contradict the
+// callback for the same exit — see lifecycle.StateForExit.
+func StateForExit(code int) string { return lifecycle.StateForExit(code) }
 
 // NewMemoryStore creates a MemoryStore whose errors name the "job" resource.
 func NewMemoryStore[T any]() *MemoryStore[T] {

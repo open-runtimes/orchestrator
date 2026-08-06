@@ -217,6 +217,81 @@ func TestStatus_DerivesFailedWithPodReason(t *testing.T) {
 	}
 }
 
+// A Job counts its Pod done only when EVERY container has stopped, and the
+// native sidecar keeps running to process post-job artifacts. In that window the
+// worker has exited but the Job is neither Succeeded nor Failed — the status
+// must report the exit rather than falling back to accepted, which moved the
+// state backwards from running and contradicted the callback already sent.
+func TestStatus_ReportsTheWorkerExitWhileTheSidecarFinishes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		exitCode  int32
+		reason    string
+		wantState string
+		wantError string
+	}{
+		{"clean exit", 0, "Completed", job.StateCompleted, ""},
+		{"failed exit", 2, "Error", job.StateFailed, "Error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cs := fake.NewClientset(
+				&batchv1.Job{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "job-mid",
+						Namespace: "orchestrator",
+						Labels: map[string]string{
+							LabelManagedBy: ManagedByValue,
+							LabelJobID:     "mid",
+						},
+					},
+					// The sidecar is still going: nothing succeeded or failed yet.
+					Status: batchv1.JobStatus{Active: 1},
+				},
+				&corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "job-mid-xyz",
+						Namespace: "orchestrator",
+						Labels:    map[string]string{LabelJobID: "mid"},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{{
+							Name: ContainerWorker,
+							State: corev1.ContainerState{
+								Terminated: &corev1.ContainerStateTerminated{
+									ExitCode: tt.exitCode,
+									Reason:   tt.reason,
+								},
+							},
+						}},
+					},
+				},
+			)
+			o := orchestratorWithClient(cs)
+			defer o.Close()
+
+			status, err := o.Status(context.Background(), "mid")
+			if err != nil {
+				t.Fatalf("Status: %v", err)
+			}
+			if status.State != tt.wantState {
+				t.Errorf("state: want %s, got %s", tt.wantState, status.State)
+			}
+			// The same exit code the callback carried.
+			if status.ExitCode == nil || *status.ExitCode != int(tt.exitCode) {
+				t.Errorf("exit code: want %d, got %v", tt.exitCode, status.ExitCode)
+			}
+			// "Completed" is the kubelet's word for a clean exit, not an error.
+			if status.Error != tt.wantError {
+				t.Errorf("error: want %q, got %q", tt.wantError, status.Error)
+			}
+		})
+	}
+}
+
 func TestStatus_CacheHit(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset(&batchv1.Job{

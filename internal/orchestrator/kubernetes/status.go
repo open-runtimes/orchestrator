@@ -68,7 +68,10 @@ func (c *statusCache) invalidate(jobID string) {
 // Mapping:
 //   - Job.Status.Succeeded > 0 → Completed, exit code 0
 //   - Job.Status.Failed > 0    → Failed, exit code + reason from Pod (when Pod still exists)
-//   - Job.Status.Active > 0, worker container Running → Running
+//   - worker container terminated → job.StateForExit, the same rule the store
+//     applies to an Exited signal, so an API read and the callback describing
+//     that exit agree, and so does the Docker backend
+//   - worker container Running → Running
 //   - otherwise                → Accepted (pending scheduler / init / worker start)
 func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace string, j *batchv1.Job) (job.StatusResponse, error) {
 	jobID := j.Labels[LabelJobID]
@@ -90,12 +93,25 @@ func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace st
 		return resp, nil
 	}
 
-	// Non-terminal. Differentiate Running from Accepted by looking at the Pod.
+	// The Job is not Succeeded or Failed yet, but the worker may already have
+	// exited: a Job counts its Pod as done only once EVERY container has
+	// stopped, and the native sidecar keeps running to process post-job
+	// artifacts. So ask the Pod what the worker did.
 	pod := fetchPodForJob(ctx, client, namespace, jobID)
 	if pod != nil {
-		if worker := findWorkerStatus(pod); worker != nil && worker.State.Running != nil {
-			resp.State = job.StateRunning
-			return resp, nil
+		if worker := findWorkerStatus(pod); worker != nil {
+			switch {
+			case worker.State.Terminated != nil:
+				// The exit is the answer. Reporting Accepted here would move the
+				// state backwards from Running, and contradict both the callback
+				// already emitted for this exit and the Docker backend.
+				resp.State = job.StateForExit(int(worker.State.Terminated.ExitCode))
+				annotateTermination(worker, &resp)
+				return resp, nil
+			case worker.State.Running != nil:
+				resp.State = job.StateRunning
+				return resp, nil
+			}
 		}
 	}
 	resp.State = job.StateAccepted
@@ -117,13 +133,24 @@ func annotateFailure(ctx context.Context, client kubernetes.Interface, namespace
 		}
 		return
 	}
-	code := int(worker.State.Terminated.ExitCode)
+	annotateTermination(worker, resp)
+}
+
+// annotateTermination copies a terminated worker's exit code, and what the
+// kubelet said about it, onto the response.
+func annotateTermination(worker *corev1.ContainerStatus, resp *job.StatusResponse) {
+	term := worker.State.Terminated
+	code := int(term.ExitCode)
 	resp.ExitCode = &code
+	if code == 0 {
+		// A clean exit carries Reason "Completed", which is not an error.
+		return
+	}
 	switch {
-	case worker.State.Terminated.Message != "":
-		resp.Error = worker.State.Terminated.Message
-	case worker.State.Terminated.Reason != "":
-		resp.Error = worker.State.Terminated.Reason
+	case term.Message != "":
+		resp.Error = term.Message
+	case term.Reason != "":
+		resp.Error = term.Reason
 	}
 }
 
