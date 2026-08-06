@@ -1,6 +1,6 @@
 # Sandbox mounts and shutdown artifacts
 
-**Status: partly implemented.** Mounts on sandbox pools have shipped — see [Mounting a filesystem image](../sandboxes.md#mounting-a-filesystem-image) for what exists. Shutdown artifacts have not; the sections on them stand as the proposal. The [sandbox guide](../sandboxes.md) describes what exists today; this describes what it would take to support two things it currently refuses, and what I would want settled before writing either.
+**Status: partly implemented.** Mounts have shipped for all four workload kinds — see [Mounting a filesystem image](../sandboxes.md#mounting-a-filesystem-image) for what exists. Shutdown artifacts have not; the sections on them stand as the proposal. The [sandbox guide](../sandboxes.md) describes what exists today; this describes what it would take to support two things it currently refuses, and what I would want settled before writing either.
 
 ## What is being asked for
 
@@ -144,6 +144,150 @@ POST /v1/sandbox
 ```
 
 One wrinkle worth knowing before building on it: `archive` over the mount point captures the **merged** overlay view, so a snapshot costs time proportional to the whole tree, not to what changed. The overlay's upper directory is where the changes actually are, and it is not exposed as a path today. Snapshotting only the delta would be a further change.
+
+## The opt-in durable workspace
+
+The trigger problem above is not a bug to fix in place. It is what you get for
+asking a dying pod to do work. Two measurements on kind decide the alternative:
+
+```
+pod Succeeded, object NOT deleted
+  /var/lib/kubelet/pods/<uid>/volumes/kubernetes.io~empty-dir/       still there
+  .../kubernetes.io~empty-dir/work/data.txt                          GONE
+```
+
+An `emptyDir` is reaped when the pod **terminates**, not when its object is
+deleted — so there is no window for anything to read it afterwards, and keeping
+the pod object alive does not create one. Reaching in would need a `hostPath`
+onto `/var/lib/kubelet`, which can read every pod's volumes and secrets on that
+node. That is not a trade worth making for a snapshot.
+
+A PersistentVolume does survive, and a node-local one solves the scheduling
+question by itself:
+
+```
+ws-writer     Succeeded  node=orchestrator-dev-control-plane   wrote, then deleted
+ws-finalizer  Succeeded  node=orchestrator-dev-control-plane   bound the same claim
+  finalizer sees: session-data
+
+pvc-68ca9af7…  class=standard  affinity=orchestrator-dev-control-plane
+```
+
+The PV carries `nodeAffinity`, so the scheduler *must* place the follow-up pod
+on the node holding the data. Nothing pins it by hand. With an RWX volume the
+node constraint disappears entirely, at the cost of an infra dependency and
+slower I/O than local disk.
+
+So: a sandbox may opt into a workspace that outlives it, and teardown becomes an
+ordinary Job that mounts what is left.
+
+### The surface
+
+```jsonc
+POST /v1/sandbox
+{
+  "image": "python:3.12-slim",
+  "port": 3000,
+  "workspace": {
+    "size": "2Gi",                  // required; capped by the operator
+    "storageClass": "local-path",   // optional; the operator's default otherwise
+    "claim": "sbx-agent-42-workspace", // optional: bind an existing one — the restore
+    "keep": false                   // optional: leave it behind when the sandbox goes
+  },
+  "artifacts": [
+    {"id": "snap",  "type": "archive", "in": ".", "out": "/tmp/s.erofs",
+     "format": "erofs", "depends": "workload"},
+    {"id": "store", "type": "upload", "in": "/tmp/s.erofs",
+     "out": "s3://acme/sessions/42.erofs", "depends": "snap"}
+  ]
+}
+```
+
+**Poolless only.** A warm pod's workspace is created with the pod, long before
+any claim, so a pool-backed durable workspace would either be shared across
+claims — one sandbox's data arriving in the next — or a PVC per warm pod sitting
+idle waiting for one. Same rule as `volumes` and `runtimeClass`, same reason,
+and here it is a correctness argument rather than a cost one.
+
+### The PVC is the record
+
+Today a sandbox's state is derived entirely from its pod: the pod IS the record.
+That is what makes finalization hard, because the record is the thing being
+destroyed. With a durable workspace the PVC outlives the pod, so it becomes the
+record — carrying the spec and the teardown intent as annotations, exactly as the
+pod carries them now.
+
+That ordering is what makes this survivable:
+
+1. **Create** — PVC first (labelled with the sandbox id, annotated with the
+   spec), then the pod that mounts it.
+2. **Delete** (or an idle reap) — annotate the PVC `finalize=pending`, **then**
+   delete the pod, then answer `202`. If the replica handling the request dies
+   between those steps, the intent is already durable.
+3. **The control loop** — the same leader-elected loop that reaps idle
+   sandboxes — sees a PVC with `finalize=pending` and no pod, and creates the
+   finalizer.
+4. **Success** → delete the PVC (unless `keep`), and the sandbox `404`s.
+   **Failure** → the sandbox reports `failed` with the reason, the PVC is
+   retained, and the finalizer can be re-run.
+5. **GC** — PVCs whose sandbox is gone and carry no intent; Jobs whose PVC is
+   gone. The same shape as the orphan-pod GC that already exists.
+
+### The finalizer is a job
+
+Not a bespoke controller: a `job.Request` whose artifacts are the sandbox's
+post-phase ones and whose volume is the sandbox's workspace. That buys, for
+free, everything the punted question needed — retries, a status to poll,
+callbacks that actually deliver the outcome, the artifact runner, and S3
+credentials that never enter the sandbox.
+
+It also means the failure mode is one an operator already knows how to read: a
+failed job, with logs and an event, rather than a line in a sidecar's log that
+vanished with its pod.
+
+### Status
+
+| condition | status |
+| --- | --- |
+| pod exists | `creating` / `ready` / `failed`, as now |
+| pod gone, PVC intent pending or running | `finalizing` |
+| pod gone, finalizer failed | `failed`, with the job's error, retained |
+| PVC gone | `404` |
+
+### What it costs, plainly
+
+- **Creates get slower.** Dynamic provisioning and attach, on top of the cold
+  start a poolless sandbox already pays. This is not the shape for creating
+  sandboxes at a rate; that is what pools are for, and pools cannot have this.
+- **A node-local PV pins the sandbox to a node.** RWX removes that and costs I/O.
+- **Quota becomes real.** A PVC per sandbox needs a size cap in validation and a
+  `ResourceQuota` in the namespace, or one caller fills a node.
+- **Two more things to garbage-collect**, and the sandbox stops being a single
+  object. The pod-is-the-record simplicity survives only for ephemeral sandboxes.
+- **A node-local PV is already a persistent folder.** If session-to-session
+  continuity on one node is all that is wanted, binding the same `claim` on the
+  next create is the whole feature and the archive/upload is unnecessary. The S3
+  round trip buys durability against losing that node, and portability off it —
+  which is a different requirement, worth naming before building either.
+
+### What it does not do
+
+Snapshot a *running* sandbox — that is the explicit endpoint below, and it stays
+the answer for ephemeral ones. It does not give pools durable workspaces, and it
+does not migrate a workspace between nodes.
+
+### Sequencing
+
+1. **`POST /v1/sandbox/{id}/snapshot`** — synchronous, while the sandbox is alive
+   and healthy, outcome in the status code. Small, works for every sandbox
+   including ephemeral ones, retryable by the caller, and it makes the
+   persistent-folder pattern deterministic rather than best-effort. Restore by
+   mount already works, so this closes the loop on its own.
+2. **The durable workspace and the finalizer job**, as above, for callers who
+   want teardown to snapshot itself without being asked.
+3. **Delete the SIGTERM path** once 1 and 2 exist. Keeping a best-effort trigger
+   that usually does not fire is worse than not having one, because it reads
+   like a guarantee.
 
 ## Alternatives, and when they are better
 
