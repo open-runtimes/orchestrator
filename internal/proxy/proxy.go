@@ -35,6 +35,11 @@ type Proxy struct {
 	inFlight atomic.Int64  // requests currently being proxied
 	requests atomic.Int64  // cumulative accepted requests — the scrape-based idle signal
 	draining atomic.Bool
+	// closing is set once teardown begins and never cleared. It keeps a claim
+	// from being accepted into a pod that is going away — which would hand its
+	// caller a workload about to vanish, and could leave a mount behind that
+	// release had already looked for.
+	closing atomic.Bool
 	// mountsReady gates the workload: the kubelet holds it until this sidecar's
 	// startup probe passes, which it does once the mounts are established.
 	mountsReady atomic.Bool
@@ -426,6 +431,7 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 // min(requestBound, MaxDrain) — requests still running at the deadline are
 // dropped.
 func (p *Proxy) drain() {
+	p.closing.Store(true)
 	p.draining.Store(true)
 	time.Sleep(p.deregisterDelay)
 

@@ -652,3 +652,36 @@ func getWithPort(t *testing.T, p *Proxy, port string) (int, string) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// A pod being torn down must not accept a claim. Accepting one would hand its
+// caller a workload about to vanish, and a mount established after release has
+// already looked would be left on the node — bidirectional propagation means it
+// outlives the pod.
+func TestPoolClaim_RefusedOnceShuttingDown(t *testing.T) {
+	cfg := poolConfig(t)
+	cfg.Mounts = true
+	mounter := &fakeMounter{}
+	writeWorkspaceFile(t, cfg.Workspace, "data.sqfs")
+	p := startProxy(t, cfg)
+	p.mounter = mounter
+
+	// The window that matters is the drain itself: readiness is failing and the
+	// admin listener is still up, which is exactly when a backend's in-flight
+	// claim arrives. (Once drain finishes the listener is closed and the claim
+	// cannot reach the pod at all.)
+	p.deregisterDelay = 750 * time.Millisecond
+	go p.drain()
+	waitFor(t, "teardown started", p.closing.Load)
+
+	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
+		ActivationID: "act-late",
+		Command:      "serve",
+		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("a claim during teardown: got %d, want 409", status)
+	}
+	if mounted, _ := mounter.counts(); mounted != 0 {
+		t.Errorf("nothing should have been mounted, got %d", mounted)
+	}
+}

@@ -63,6 +63,13 @@ func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid claim token", http.StatusUnauthorized)
 		return
 	}
+	// This pod is being torn down. A claim accepted now would hand its caller a
+	// workload that is about to vanish, so it is refused the way a racing loser
+	// is: 409, and the backend tries another warm pod.
+	if p.closing.Load() {
+		writeClaimState(w, http.StatusConflict, workload.ClaimState{Failed: true, Error: "pod is shutting down"})
+		return
+	}
 	// Exactly-one: the first request flips the flag and wins; every later
 	// request — even while the winner is still materializing artifacts, and
 	// forever once claimed or poisoned — gets 409 and retries another pod.
@@ -139,6 +146,13 @@ func (p *Proxy) activate(ctx context.Context, req workload.ClaimRequest) error {
 		return err
 	}
 	p.mounts.Store(runner)
+	// Teardown may have begun while this claim was materializing, and release
+	// runs exactly once. If it already ran, undo what we just did rather than
+	// leave a propagated mount on the node.
+	if p.closing.Load() {
+		runner.Release()
+		return errors.New("pod began shutting down while the claim was materializing")
+	}
 
 	if err := p.pool.signalShim(ctx, workload.ShimExec{
 		Command:     req.Command,
