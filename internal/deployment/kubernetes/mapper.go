@@ -14,7 +14,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -198,7 +197,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 		Args:            []string{"-mode=pre"},
 		Env:             env,
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }
 
@@ -229,22 +228,10 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 			FailureThreshold: 3,
 		},
 		RestartPolicy:   &alwaysRestart,
-		Resources:       proxyResources(),
+		Resources:       kube.SidecarResources(),
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
-}
-
-// proxyResources is the sidecar's small fixed overhead shape, counted into
-// the pod request per resource-model.md: modest requests, a memory ceiling,
-// and no cpu limit (same CFS-throttling rationale as the worker).
-func proxyResources() corev1.ResourceRequirements {
-	requests := corev1.ResourceList{}
-	requests[corev1.ResourceCPU] = resource.MustParse("25m")
-	requests[corev1.ResourceMemory] = resource.MustParse("32Mi")
-	limits := corev1.ResourceList{}
-	limits[corev1.ResourceMemory] = resource.MustParse("64Mi")
-	return corev1.ResourceRequirements{Requests: requests, Limits: limits}
 }
 
 // proxyEnv stamps the internal/proxy env contract into the proxy container.
@@ -310,7 +297,7 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
 		LivenessProbe:   kubeletProbe(probes.Liveness, req.Port),
 		StartupProbe:    kubeletProbe(probes.Startup, req.Port),
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }
 
@@ -373,24 +360,4 @@ func kubeletProbe(p *deployment.Probe, port int) *corev1.Probe {
 // ceilSeconds converts milliseconds to whole seconds, rounding up (min 1s).
 func ceilSeconds(millis int) int32 {
 	return int32((millis + 999) / 1000)
-}
-
-// hardenedSecurityContext is the workload hardening floor (docs/operations.md),
-// applied to every container: non-root, no privilege escalation, all
-// capabilities dropped, default seccomp, read-only rootfs (writes go to the
-// workspace and /tmp emptyDirs).
-func hardenedSecurityContext(cfg Config) *corev1.SecurityContext {
-	nonRoot := true
-	noEscalation := false
-	readOnlyRootFS := true
-	uid := cfg.RunAsUser
-	return &corev1.SecurityContext{
-		RunAsNonRoot:             &nonRoot,
-		RunAsUser:                &uid,
-		RunAsGroup:               &uid,
-		AllowPrivilegeEscalation: &noEscalation,
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		ReadOnlyRootFilesystem:   &readOnlyRootFS,
-	}
 }

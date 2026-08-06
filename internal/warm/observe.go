@@ -3,6 +3,7 @@ package warm
 import (
 	"cmp"
 	"fmt"
+	"orchestrator/internal/kube"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -47,7 +48,7 @@ func (m *Manager) Observe(pod *corev1.Pod) Observation {
 	case pod.Status.Phase == corev1.PodFailed:
 		obs.Phase = PhaseFailed
 		obs.Error = cmp.Or(pod.Status.Message, pod.Status.Reason)
-	case PodReady(pod):
+	case kube.PodReady(pod):
 		obs.Phase = PhaseServing
 	default:
 		obs.Phase = PhaseStarting

@@ -350,7 +350,7 @@ func (m *Manager) Claimable(pod *corev1.Pod) bool {
 	return m.ClaimID(pod) == "" &&
 		pod.DeletionTimestamp == nil &&
 		pod.Status.PodIP != "" &&
-		PodReady(pod)
+		kube.PodReady(pod)
 }
 
 // sleep waits one poll interval, aborting with the context.
@@ -361,16 +361,6 @@ func (m *Manager) sleep(ctx context.Context) error {
 	case <-time.After(m.cfg.Poll):
 		return nil
 	}
-}
-
-// PodReady reports the pod's Ready condition.
-func PodReady(pod *corev1.Pod) bool {
-	for _, c := range pod.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
-	}
-	return false
 }
 
 // WorkloadTerminated returns the workload container's terminated state, or nil

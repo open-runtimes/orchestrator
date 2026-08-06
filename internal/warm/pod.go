@@ -11,7 +11,6 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -121,7 +120,7 @@ func agentInstallContainer(cfg Config) corev1.Container {
 		ImagePullPolicy: corev1.PullPolicy(cfg.WorkerImagePullPolicy),
 		Command:         []string{"cp", cfg.Agent.Source, cfg.Agent.Dest},
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }
 
@@ -134,7 +133,7 @@ func shimInstallContainer(cfg Config) corev1.Container {
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
 		Args:            []string{"-install", shimPath},
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }
 
@@ -173,22 +172,10 @@ func proxyContainer(cfg Config, token string) corev1.Container {
 			FailureThreshold: 3,
 		},
 		RestartPolicy:   &alwaysRestart,
-		Resources:       proxyResources(),
+		Resources:       kube.SidecarResources(),
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
-}
-
-// proxyResources is the sidecar's small fixed overhead shape: modest
-// requests, a memory ceiling, and no cpu limit (CFS-throttling avoidance,
-// same rationale as the workload).
-func proxyResources() corev1.ResourceRequirements {
-	requests := corev1.ResourceList{}
-	requests[corev1.ResourceCPU] = resource.MustParse("25m")
-	requests[corev1.ResourceMemory] = resource.MustParse("32Mi")
-	limits := corev1.ResourceList{}
-	limits[corev1.ResourceMemory] = resource.MustParse("64Mi")
-	return corev1.ResourceRequirements{Requests: requests, Limits: limits}
 }
 
 // workloadContainer is the pool image, entrypoint overridden to the installed
@@ -220,26 +207,6 @@ func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
 		Resources:       cfg.Overcommit.WorkerResources(p.CPU, p.Memory),
-		SecurityContext: hardenedSecurityContext(cfg),
-	}
-}
-
-// hardenedSecurityContext is the workload hardening floor
-// (docs/operations.md), applied to every container: non-root, no
-// privilege escalation, all capabilities dropped, default seccomp, read-only
-// rootfs (writes go to the workspace and /tmp emptyDirs).
-func hardenedSecurityContext(cfg Config) *corev1.SecurityContext {
-	nonRoot := true
-	noEscalation := false
-	readOnlyRootFS := true
-	uid := cfg.RunAsUser
-	return &corev1.SecurityContext{
-		RunAsNonRoot:             &nonRoot,
-		RunAsUser:                &uid,
-		RunAsGroup:               &uid,
-		AllowPrivilegeEscalation: &noEscalation,
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		ReadOnlyRootFilesystem:   &readOnlyRootFS,
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }
