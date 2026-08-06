@@ -40,7 +40,7 @@ curl -H "Host: web.localhost" http://localhost:8081/
 | [Jobs](docs/jobs.md) | Run-to-completion workloads: the jobs API, artifacts (download, write, archive, mount, …), dependency ordering |
 | [Deployments](docs/deployments.md) | Long-lived HTTP services: revisions, canary traffic, autoscaling, scale-to-zero, async requests |
 | [Pools](docs/pools.md) | Pre-warmed capacity: configuring pools, activations, burst policy |
-| [Sandboxes](docs/sandboxes.md) | Live workspaces: create one, exec in it, read and write its files |
+| [Sandboxes](docs/sandboxes.md) | Live workspaces: the sandbox API, the in-sandbox exec/files contract, extra ports, sandbox pools, isolation tiers |
 | [Callbacks](docs/callbacks.md) | CloudEvents delivery: every event type, payload schemas, HMAC signature verification |
 | [Operations](docs/operations.md) | Deploying the orchestrator: Helm install, prerequisites, configuration reference, hardening |
 | [Observability](docs/observability.md) | Metrics, logging, and tracing |

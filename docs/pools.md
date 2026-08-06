@@ -75,6 +75,7 @@ curl -X POST http://localhost:8080/v1/deployment-pools/node/activations \
 
 Delivery is at-most-once; nothing is stored for polling while the activation is in flight.
 
+<a id="burst-policy"></a>
 ## When the pool is empty: burst policy
 
 Each pool declares what happens when an activation arrives and no warm pod is free:

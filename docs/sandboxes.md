@@ -4,17 +4,37 @@ A **sandbox** is a live, isolated workspace you drive from the outside: create o
 
 A sandbox is created from a **sandbox pool** — standing warm capacity, the same claim-and-late-bind machinery [pools](pools.md) use — so creation is sub-second rather than a cold container start.
 
-- [Creating a sandbox](#creating-a-sandbox)
+One thing to know before anything else: **exec and files are not part of this API.** They are an HTTP contract served *inside* the sandbox, reached at the sandbox's own URL. This API creates, inspects, and tears down sandboxes; it never sits between you and your commands. See [the sandbox contract](#the-sandbox-contract).
+
+- [Endpoints](#endpoints)
 - [The sandbox contract](#the-sandbox-contract)
-- [Running commands](#running-commands)
-- [Files](#files)
+- [Artifacts](#artifacts)
 - [Ports](#ports)
 - [Persistence](#persistence)
 - [Isolation](#isolation)
 - [Lifecycle](#lifecycle)
+- [Limits](#limits)
+- [Error responses](#error-responses)
+- [Complete example](#complete-example)
 - [Sandbox pools](#sandbox-pools)
+- [Design notes](#design-notes)
 
-## Creating a sandbox
+## Endpoints
+
+| | | |
+| --- | --- | --- |
+| `POST` | `/v1/sandbox` | Create a sandbox → `201` |
+| `GET` | `/v1/sandbox` | List live sandboxes → `200` |
+| `GET` | `/v1/sandbox/{id}` | One sandbox's status → `200` |
+| `DELETE` | `/v1/sandbox/{id}` | Tear it down → `204` |
+| `GET` | `/v1/sandbox-pool` | List sandbox pools with live counts → `200` |
+| `GET` | `/v1/sandbox-pool/{id}` | One pool → `200` |
+
+All of them require `Authorization: Bearer <API key>` when one is configured, and take `Content-Type: application/json` on writes. Unknown fields in a body are rejected rather than ignored, so a typo fails loudly instead of silently creating a sandbox with defaults.
+
+There is no exec or files endpoint here, and there never will be — see [the sandbox contract](#the-sandbox-contract).
+
+### Create a sandbox
 
 ```bash
 curl -X POST http://localhost:8080/v1/sandbox \
@@ -31,15 +51,43 @@ curl -X POST http://localhost:8080/v1/sandbox \
 }
 ```
 
-`201 Created`, and the URL is live — no per-sandbox gateway programming to wait on. The `id` is optional; pass one for a stable API path and idempotency (re-POSTing an existing id is `409`).
+`201 Created`, and the URL is live when you receive it — there is no per-sandbox gateway route to wait on. The call is synchronous because a claim is sub-second; there is no async variant and no callback.
 
 **Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it.
 
-`command` is optional: with none declared anywhere, the sandbox runs the agent installed in its workspace, so there is usually nothing to late-bind but artifacts. `timeoutSeconds` bounds each request to the sandbox's URL — omitted takes 300, the maximum is 3600, and an explicit `0` means no bound at all (see [ports](#ports) for when you want that).
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `pool` | string | — | **Required.** The sandbox pool to claim from. Unknown pool → `404`. |
+| `id` | string | generated | Caller-chosen for a stable API path and idempotency. RFC-1123 label: lowercase alphanumeric with interior hyphens, ≤63 characters. Re-POSTing a live id → `409`. Generated as `{pool}-{8 hex}` when omitted. **Not** the address — see [the URL is a capability](#the-url-is-a-capability). |
+| `command` | string | the pool's | What the claim execs. With none declared anywhere, the sandbox runs the [agent](#the-sandbox-contract) installed in its workspace — the usual case. |
+| `environment` | object | — | Environment variables for the workload. |
+| `ports` | int[] | — | Extra ports this sandbox serves, each addressable at its own hostname. See [ports](#ports). |
+| `artifacts` | array | — | Materialized into the workspace before the sandbox reports ready. Same schema as [job artifacts](jobs.md#artifacts), except [`mount`](jobs.md#mount-artifact). See [artifacts](#artifacts). |
+| `timeoutSeconds` | int | `300` | Bounds each request to the sandbox's URL. `0` means **no bound**, for sessions meant to outlive one. Max `3600`. |
+| `idleTimeoutSeconds` | int | the pool's `maxIdleSeconds` | Tear the sandbox down after this long with no traffic. `0` = live until `DELETE`, where the pool allows it. Capped by the pool's ceiling. |
+
+The response is a **sandbox status**, the same shape every read returns:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | string | The one you passed, or the generated one. |
+| `poolId` | string | The pool it was claimed from. |
+| `status` | string | `creating` \| `ready` \| `failed` \| `deleting` — see [lifecycle](#lifecycle). |
+| `url` | string | The sandbox's address on its pool's port. Absent when nothing is serving (a `failed` sandbox has no URL). |
+| `urls` | object | Every port it serves, keyed by port number as a string, including the pool's own. Read addresses from here rather than building them. |
+| `error` | string | Why it failed, when it did. |
+
+### Read, list, and delete
+
+```bash
+curl http://localhost:8080/v1/sandbox/py-3f9c1a02     # one sandbox's status
+curl http://localhost:8080/v1/sandbox                  # {"sandboxes": [ … ]}
+curl -X DELETE http://localhost:8080/v1/sandbox/py-3f9c1a02   # 204
+```
+
+State is reconstructed from the backend on every read — nothing about a sandbox lives in service memory — so a control-plane restart leaves live sandboxes serving and answering. A `DELETE` is idempotent from the caller's point of view only in that a gone sandbox is `404`; teardown itself is immediate.
 
 ## The sandbox contract
-
-**Exec and files are not part of this API.** They are an HTTP contract served *inside* the sandbox, and you reach them at the sandbox's own URL. The orchestrator creates, routes, and reaps sandboxes; it does not sit in the middle of your commands.
 
 **Your image does not have to implement it.** The [`open-runtimes/sandbox`](https://github.com/open-runtimes/sandbox) agent is a static binary, and the orchestrator copies it into every sandbox's workspace at pod creation — the same mechanism that installs the pool shim. A sandbox pool over `node:22-slim`, `python:3.12-slim`, or a distroless image serves the contract with nothing added to the image and no `command` declared:
 
@@ -61,7 +109,7 @@ A pool or a create call may still set `command` — to run an image that serves 
 
 That split is deliberate. It keeps the control plane off the data path, so a long exec is not killed by an orchestrator rolling restart and a large file upload is not a shared-fate bottleneck. And because the agent is installed rather than baked in, "bring your own image" costs nothing: a computer-use image, a JVM with a warm classloader, or an image that also speaks a protocol we have never heard of all work — the last of those by declaring its own `command`.
 
-## Running commands
+### Running commands
 
 ```bash
 curl -X POST http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/execute \
@@ -75,7 +123,9 @@ curl -X POST http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/exe
 
 For the reference image: commands run in the worker container — same image, same filesystem, same [isolation tier](#isolation) — with the workspace as the working directory. Output is capped at 1 MiB per stream, past which `truncated` is `true`; beyond that, write to a file and read it back.
 
-## Files
+Note the two timeouts. The one in the body is the agent's bound on the command; the sandbox's own `timeoutSeconds` bounds the HTTP request carrying it. A command that outlives the request bound is cut by the proxy whatever the agent was told.
+
+### Files
 
 ```bash
 curl -X PUT  http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/files/main.py --data-binary @main.py
@@ -84,7 +134,9 @@ curl         http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/fil
 
 Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the machinery's own `.pool/`, `.sandbox-agent`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
 
-For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready. Every type except [`mount`](jobs.md#mount) is available, which needs a post phase a sandbox does not have:
+## Artifacts
+
+For anything bulkier than a `PUT`, declare [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready:
 
 ```bash
 curl -X POST http://localhost:8080/v1/sandbox \
@@ -98,7 +150,9 @@ curl -X POST http://localhost:8080/v1/sandbox \
   }'
 ```
 
-If artifact materialization fails the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
+Every artifact type works except [`mount`](jobs.md#mount-artifact), which needs a post-phase sidecar only a job runs; submitting one is a `400` rather than a silent no-op. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
+
+If materialization fails, the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
 
 ## Ports
 
@@ -129,19 +183,25 @@ Read the addresses out of `urls`; don't build them. Ports are **not** a pool dim
 Two rules the platform enforces:
 
 - **Only declared ports are reachable.** The port travels in the hostname; the proxy turns it into a hint the sidecar checks against the claim, and the dial happens on loopback inside that sandbox's own pod. A port you did not declare is `404`, and a hint a client sets by hand is discarded.
-- **One module renders and reads the hostname** (`internal/sandbox`, `Addressing`). The backends format URLs with it and the sandbox proxy resolves them with it, so the writer cannot drift from the reader, and the `s-` prefix is an enforced invariant rather than a convention — a host that merely shares the domain is not a sandbox.
 - **The port shares the token's DNS label** (`s-{token}-5173`), rather than nesting as `s-5173.{token}`. A wildcard certificate covers exactly one label, so the flat form is reachable under one `*.{domain}` cert while the nested form would need a certificate per sandbox.
 
 Readiness is the primary port's alone: a secondary port that never comes up does not fail the sandbox, and traffic to it counts as activity for the [idle timeout](#lifecycle) like any other request. `8000` and `8001` belong to the sidecar and are refused.
 
-WebSocket traffic (terminals, LSP) upgrades cleanly through the proxy. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox; artifact materialization keeps its own budget regardless, so an unbounded sandbox is not an unbounded download. The same bound decides how long a rolling restart waits for that session before giving up on it, capped by the pod's `PROXY_MAX_DRAIN_SECONDS`.
+WebSocket traffic (terminals, LSP) upgrades cleanly through the proxy. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox. The same bound decides how long a rolling restart waits for that session before giving up on it, capped by the pod's `PROXY_MAX_DRAIN_SECONDS`.
 
 ## Persistence
 
 The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-ins buy durability:
 
-- **`artifacts`** — bulk in, per sandbox, at create time (above).
-- **`volumes`** — an existing K8s PVC, the same [schema](jobs.md#volumes) jobs and deployments use. Attach-only: the orchestrator never creates, sizes, or deletes the storage.
+- **`artifacts`** — bulk in, per sandbox, at create time ([above](#artifacts)).
+- **`volumes`** — an existing K8s PVC, the same schema jobs and deployments take. Attach-only: the orchestrator never creates, sizes, or deletes the storage.
+
+  | Field | Type | Notes |
+  | --- | --- | --- |
+  | `source` | string | **Required.** An existing PVC name (a Docker volume name on the Docker backend). |
+  | `path` | string | **Required.** Absolute mount path inside the container. |
+  | `subPath` | string | Mount only this subdirectory of the volume. |
+  | `readonly` | bool | Mount read-only. |
 
 **`volumes` is a pool dimension, not a per-sandbox field** — the same constraint as [`runtimeClass`](#isolation), and for the same reason. A warm pod is already running when you claim it, and its mounts were fixed when it was created; the claim protocol late-binds a command, environment, and artifacts, but it cannot attach storage to a live pod. So the volume is declared on the pool and mounted into every warm pod in that fleet:
 
@@ -154,6 +214,7 @@ sandboxes:
       volumes:
         - source: agent-scratch
           path: /data
+          subPath: tenant-a   # optional: mount a subdirectory of the volume
 ```
 
 Want per-sandbox storage? Declare a pool per storage shape. Accepting `volumes` on the create call would mean cold-starting a pod for it, which silently turns a sub-second create into a slow one — a bad thing to do quietly.
@@ -175,15 +236,105 @@ Untrusted, model-generated code is the expected workload here, so `gvisor` or `k
 | `failed` | Artifacts failed, or the image never became ready |
 | `deleting` | Teardown in progress |
 
-```
-GET    /v1/sandbox              # list live sandboxes
-GET    /v1/sandbox/{id}         # one sandbox's status
-DELETE /v1/sandbox/{id}         # tear down → 204
+A create returns once the sandbox is `ready` or `failed`; `creating` is what a concurrent read sees in between. There is no path back from `failed` — create another.
+
+`idleTimeoutSeconds` tears the sandbox down after that long with no traffic (`0` = live until `DELETE`, where the pool allows it). Traffic on any port counts. A pool's `maxIdleSeconds` caps it and fills it in when omitted: an abandoned sandbox holds a warm pod hostage, so requesting more than the ceiling is a `400`.
+
+As with activations, a used pod is **never reused** — teardown discards it and the pool replenishes with a fresh one.
+
+## Limits
+
+| | |
+| --- | --- |
+| `id` length | 63 characters (an RFC-1123 label) |
+| `ports` per sandbox | 16 |
+| `artifacts` per sandbox | 64 |
+| `timeoutSeconds` | `0` (unbounded) to `3600`; default `300` |
+| `idleTimeoutSeconds` | `0` (until `DELETE`) up to the pool's `maxIdleSeconds` |
+| Reserved ports | `8000`, `8001` (the sidecar), and the pool's own port |
+| `/execute` output | 1 MiB per stream, then `truncated` (reference agent) |
+
+Concurrent sandboxes are bounded by your pools' `size` and [burst policy](pools.md#burst-policy), not by a limit here: a create against an exhausted pool either cold-starts a pod or is rejected with `429`, depending on the pool's `burst`.
+
+## Error responses
+
+All errors return JSON:
+
+```json
+{
+  "error": "port 8000 is reserved by the sandbox sidecar"
+}
 ```
 
-`idleTimeoutSeconds` tears the sandbox down after that long with no traffic (`0` = live until `DELETE`, where the pool allows it). A pool's `maxIdleSeconds` caps it and fills it in when omitted: an abandoned sandbox holds a warm pod hostage, so requesting more than the ceiling is a `400`.
+| Status | Meaning |
+| --- | --- |
+| 400 | Invalid request — malformed JSON, unknown field, or failed validation; the message names the offending field |
+| 401 | Missing or invalid API key |
+| 404 | Sandbox not found, or the `pool` named does not exist |
+| 409 | A sandbox with this `id` is already live |
+| 415 | `Content-Type` is not `application/json` |
+| 429 | The pool had no warm pod and its burst policy is `reject` |
+| 500 | Internal error |
 
-As with activations, a used pod is **never reused** — teardown discards it and the pool replenishes with a fresh one. Nothing about a sandbox is held in service memory, so a restart of the control plane leaves live sandboxes serving and reconstructs their state by listing pods.
+A `failed` sandbox is **not** an error response: the create returns `201` with `"status": "failed"` and an `error` field, because the sandbox exists as a record you can read and delete. Errors above mean nothing was created.
+
+Inside the sandbox, the contract has its own responses — `400` for a path outside the workspace, `404` for a missing file, and the agent's own codes for `/execute`. Those come from the image, not from this API.
+
+## Complete example
+
+An agent workspace: code in via artifacts, a dev server on its own hostname, an unbounded session, then teardown.
+
+```bash
+# 1. Create. timeoutSeconds 0 because the agent holds a long-lived connection.
+curl -sX POST http://localhost:8080/v1/sandbox \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "agent-run-42",
+    "pool": "py",
+    "ports": [5173],
+    "timeoutSeconds": 0,
+    "idleTimeoutSeconds": 900,
+    "artifacts": [
+      {"id": "code", "type": "download", "in": "https://acme.test/app.tar.gz", "out": "app.tar.gz"},
+      {"id": "unpack", "type": "unarchive", "in": "app.tar.gz", "out": ".", "depends": "code"}
+    ]
+  }'
+```
+
+```json
+{
+  "id": "agent-run-42",
+  "poolId": "py",
+  "status": "ready",
+  "url": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
+  "urls": {
+    "3000": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
+    "5173": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f-5173.sandboxes.example.com"
+  }
+}
+```
+
+```bash
+SBX=http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com
+
+# 2. Run something. The code from the artifacts is already in the workspace.
+curl -sX POST $SBX/execute -H "Content-Type: application/json" \
+  -d '{"command": "python -m pytest -q", "timeoutSeconds": 120}'
+
+# 3. Write a file in, read a result out.
+curl -sX PUT $SBX/files/config.json --data-binary @config.json
+curl -s $SBX/files/report.xml -o report.xml
+
+# 4. Start the dev server; its hostname begins working when it binds.
+curl -sX POST $SBX/execute -H "Content-Type: application/json" \
+  -d '{"command": "nohup npm run dev -- --port 5173 &"}'
+curl -s http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f-5173.sandboxes.example.com/
+
+# 5. Done. This invalidates the URL along with the pod.
+curl -sX DELETE http://localhost:8080/v1/sandbox/agent-run-42
+```
+
+Had step 5 never come, `idleTimeoutSeconds: 900` would have collected it fifteen minutes after the last request on any port.
 
 ## Sandbox pools
 
@@ -218,6 +369,8 @@ sandboxes:
 The **sandbox proxy** is the component every sandbox request passes through: one wildcard `HTTPRoute` for `*.{domain}` sends traffic to it, and it resolves the sandbox from the capability token in the request's `Host`.
 
 It is deliberately its own component rather than a mode of the [deployments activator](deployments.md), because the two differ everywhere it matters: the proxy is permanently on the request path (so it scales with sandbox traffic, including file transfers, not with cold starts), it reads pods and nothing else — no Secrets, no scale writes — and it never raises anything, since a sandbox is a claimed pod. Separate components keep those blast radii, RBAC grants, and scaling knobs separate.
+
+See [operations](operations.md#sandboxes) for the full deployment picture, and [observability](observability.md#pools) for the `kind="sandbox"` warm-pool series.
 
 ### The Docker backend
 
@@ -296,6 +449,8 @@ s-9f3c…95f.sandboxes.example.com    # unguessable, the capability
 
 The token is also the routing key: warm pods are labelled with it on claim, so the proxy's lookup stays as cheap as keying on the id would have been. It lives only as that label — never in an annotation, a log line, or an event payload — so `DELETE` invalidates it along with the pod, and a leaked URL is dead on teardown.
 
+One module renders that hostname and reads it back (`internal/sandbox`, `Addressing`), so the writer cannot drift from the reader, and the `s-` prefix is an enforced invariant rather than a convention: a host that merely shares the domain is not a sandbox and is not resolved as one.
+
 Proxy authentication — a per-sandbox bearer token the proxy requires — remains the stronger answer and stays open. It decouples addressability from authorization outright, and the proxy is the right place for it since it is already the only thing on the path. Worth doing if sandboxes ever hold tenant data.
 
 ### Deliberately out of scope
@@ -305,3 +460,5 @@ Proxy authentication — a per-sandbox bearer token the proxy requires — remai
 **Per-sandbox managed storage.** Same reasoning, plus the warm-pod constraint: pool `volumes` attach storage whose lifecycle someone else owns, which is exactly why they are cheap, and a live pod's mounts cannot be changed at claim time regardless.
 
 **A sandbox network policy.** Untrusted code with default-open egress is the real exposure. The workload-namespace policy blocks the cloud metadata endpoint and default-denies ingress, but a sandbox-specific default-deny egress is a platform concern spanning pools and deployments too — its own change, not this one.
+
+**Callbacks.** A sandbox has no lifecycle event worth delivering asynchronously: creation is synchronous and sub-second, and what happens *inside* it is between you and the contract. [Jobs and deployments](callbacks.md) emit events because their work outlives the request that started it.
