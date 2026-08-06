@@ -8,6 +8,12 @@ const (
 	DefaultAdminPort = 8001 // admin: /ready (kubelet + activator probes), /stats (autoscaler scrape)
 )
 
+// MountsReadyPath reports whether the sidecar has established the workload's
+// image mounts: 200 once it has, 503 until then. A direct-mode workload's
+// startup probe gates on it, so the kubelet does not start the container that
+// reads those mounts until they are in place.
+const MountsReadyPath = "/mounts-ready"
+
 // Environment variable names — the contract stamped by backends into sidecar
 // containers.
 const (
@@ -23,6 +29,11 @@ const (
 	EnvReadinessPeriodMillis     = "PROXY_READINESS_PERIOD_MS"
 	EnvReadinessTimeoutMillis    = "PROXY_READINESS_TIMEOUT_MS"
 	EnvReadinessFailureThreshold = "PROXY_READINESS_FAILURE_THRESHOLD"
+
+	// EnvArtifacts carries the workload's artifacts as JSON. The phase that
+	// materializes them reads it; a sidecar that must also MOUNT one reads it to
+	// know what to mount.
+	EnvArtifacts = "ARTIFACTS_JSON"
 
 	// EnvMounts tells a pool-mode sidecar its pod can establish image mounts:
 	// it runs privileged and the workspace carries propagation. Set only for

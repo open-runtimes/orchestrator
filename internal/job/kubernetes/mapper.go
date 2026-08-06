@@ -6,6 +6,7 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/job"
 	"orchestrator/internal/kube"
+	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
 
@@ -288,7 +289,7 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
 	// needs to unmarshal them back into concrete types.
 	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
-		env = append(env, corev1.EnvVar{Name: "ARTIFACTS_JSON", Value: string(artifactsJSON)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
 	}
 	if artifactEndpoint != "" {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACT_ENDPOINT", Value: artifactEndpoint})

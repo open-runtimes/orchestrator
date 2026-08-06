@@ -10,6 +10,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/sidecar"
+	"orchestrator/internal/workload"
 	"os"
 	"os/signal"
 	"strings"
@@ -57,7 +58,7 @@ func run(mode string) error {
 	}
 
 	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(os.Getenv("ARTIFACTS_JSON")))
+	artifacts, err := reg.Unmarshal([]byte(os.Getenv(workload.EnvArtifacts)))
 	if err != nil {
 		return err
 	}

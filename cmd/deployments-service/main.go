@@ -69,7 +69,7 @@ func main() {
 		}
 		return "http://" + host + ":" + dataPort
 	}
-	svc := deployment.NewService(orchestrator, metrics, artifact.ServingRegistry(), domain, urlFor)
+	svc := deployment.NewService(orchestrator, metrics, artifact.MountingRegistry(), domain, urlFor)
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 

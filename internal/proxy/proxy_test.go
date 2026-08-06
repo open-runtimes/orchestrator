@@ -7,6 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"orchestrator/internal/artifact"
+	"orchestrator/internal/workload"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -312,5 +316,69 @@ func TestParsePorts(t *testing.T) {
 	got := parsePorts("5173, 9229 ,,notaport,0,70000")
 	if len(got) != 2 || got[0] != 5173 || got[1] != 9229 {
 		t.Errorf("parsePorts: got %v — junk must be skipped, not fatal", got)
+	}
+}
+
+// Direct mode mounts at startup, and the workload is held until it has: the
+// kubelet waits on the startup probe, which is /mounts-ready. A pod with nothing
+// to mount answers immediately, so an ordinary revision is unaffected.
+func TestDirectMode_MountsBeforeReportingReady(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "x.erofs"), []byte("image"), 0o600); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	arts, err := artifact.MarshalArtifacts([]artifact.Artifact{
+		&artifact.Mount{ID: "tree", In: "x.erofs", Out: "work"},
+	})
+	if err != nil {
+		t.Fatalf("marshal artifacts: %v", err)
+	}
+
+	cfg := testConfig(backend.Listener.Addr().String())
+	cfg.Mounts = true
+	cfg.Workspace = workspace
+	cfg.ArtifactsJSON = string(arts)
+
+	mounter := &fakeMounter{}
+	p := New(cfg)
+	p.mounter = mounter
+	p.deregisterDelay = time.Millisecond
+	if err := p.Start(t.Context()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.data.Close(); _ = p.admin.Close() })
+
+	// Start returns only once the mounts are established, so the gate is open.
+	if status, _ := get(t, localURL(t, p.AdminAddr(), workload.MountsReadyPath)); status != http.StatusOK {
+		t.Errorf("/mounts-ready after Start: got %d, want 200", status)
+	}
+	if mounted, _ := mounter.counts(); mounted != 1 {
+		t.Errorf("want the image mounted, got %d mounts", mounted)
+	}
+
+	// And shutdown releases it: bidirectional propagation means a mount left
+	// behind outlives the pod on its node.
+	p.drain()
+	p.release()
+	if mounted, released := mounter.counts(); released != mounted {
+		t.Errorf("shutdown left mounts behind: %d mounted, %d released", mounted, released)
+	}
+}
+
+// A workload with nothing to mount must not be gated on anything.
+func TestDirectMode_NothingToMountIsReadyImmediately(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	p := startProxy(t, testConfig(backend.Listener.Addr().String()))
+	if status, _ := get(t, localURL(t, p.AdminAddr(), workload.MountsReadyPath)); status != http.StatusOK {
+		t.Errorf("/mounts-ready with no mounts: got %d, want 200", status)
 	}
 }

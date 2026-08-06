@@ -29,8 +29,13 @@ type Config struct {
 
 	// Mounts reports that this pod can establish image mounts: the sidecar runs
 	// privileged and the workspace carries propagation. Set by the backend for
-	// pools that declared the capability.
+	// pools that declared the capability, and for a direct-mode workload whose
+	// request carries a mount artifact.
 	Mounts bool
+	// ArtifactsJSON is the direct-mode workload's artifacts. Only the mounts in
+	// it concern this sidecar — the rest were materialized by the phase that ran
+	// before it. Empty in pool mode, where the claim carries them instead.
+	ArtifactsJSON string
 
 	Timeout  time.Duration // per-request total → 504
 	MaxDrain time.Duration // cap on drain wait at shutdown
@@ -62,9 +67,10 @@ func LoadConfigFromEnv() Config {
 		ProxyPort: config.GetIntEnv(workload.EnvProxyPort, workload.DefaultProxyPort),
 		AdminPort: config.GetIntEnv(workload.EnvAdminPort, workload.DefaultAdminPort),
 
-		Mounts:   config.GetEnv(workload.EnvMounts, "") == "true",
-		Timeout:  time.Duration(config.GetIntEnv(workload.EnvTimeoutSeconds, 300)) * time.Second,
-		MaxDrain: time.Duration(config.GetIntEnv(workload.EnvMaxDrainSeconds, 90)) * time.Second,
+		Mounts:        config.GetEnv(workload.EnvMounts, "") == "true",
+		ArtifactsJSON: config.GetEnv(workload.EnvArtifacts, ""),
+		Timeout:       time.Duration(config.GetIntEnv(workload.EnvTimeoutSeconds, 300)) * time.Second,
+		MaxDrain:      time.Duration(config.GetIntEnv(workload.EnvMaxDrainSeconds, 90)) * time.Second,
 
 		Concurrency: config.GetIntEnv(workload.EnvConcurrency, 0),
 		QueueSize:   config.GetIntEnv(workload.EnvQueueSize, 100),
