@@ -6,8 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"orchestrator/internal/proxy"
-	"strconv"
-	"strings"
+	"orchestrator/pkg/sandbox"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,9 +31,6 @@ import (
 // from the activator is the broker's hold-and-forward loop, which covers the one
 // legitimate wait — the tail of the sandbox's own creation.
 const (
-	// sandboxHostPrefix leads every sandbox hostname (internal/sandbox).
-	sandboxHostPrefix = "s-"
-
 	// defaultSandboxHold bounds the wait for a claimed sandbox's pod to answer.
 	// Seconds, not the deployments StartTimeout: with no scale-from-zero, the
 	// only legitimate wait is the tail of the sandbox's own creation (the pod
@@ -82,6 +78,7 @@ type PodTargetsConfig struct {
 type SandboxProxy struct {
 	targets SandboxTargets
 	broker  *broker
+	addr    sandbox.Addressing
 	cfg     SandboxConfig
 }
 
@@ -94,6 +91,7 @@ func NewSandboxProxy(targets SandboxTargets, cfg SandboxConfig, rec Recorder) *S
 	return &SandboxProxy{
 		targets: targets,
 		broker:  newBroker(nil, rec, componentSandboxProxy),
+		addr:    sandbox.Addressing{Domain: cfg.Domain},
 		cfg:     cfg,
 	}
 }
@@ -155,8 +153,8 @@ func (t *PodTargets) Target(ctx context.Context, token string) (*url.URL, error)
 // and never logged or echoed: it is the credential, so an error body says only
 // that nothing answers there.
 func (a *SandboxProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	token, port := a.resolve(hostOnly(r.Host))
-	if token == "" {
+	token, port, ok := a.addr.Resolve(r.Host)
+	if !ok {
 		http.Error(w, "not a sandbox host", http.StatusNotFound)
 		return
 	}
@@ -173,35 +171,12 @@ func (a *SandboxProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Matches reports whether this host addresses a sandbox. Used where one listener
-// serves both data planes (the Docker backend) to pick between them.
+// serves both data planes (the Docker backend) to pick between them — so a host
+// that merely shares the domain must NOT match, which is why the grammar
+// requires the sandbox prefix rather than trimming it.
 func (a *SandboxProxy) Matches(host string) bool {
-	token, _ := a.resolve(hostOnly(host))
-	return token != ""
-}
-
-// resolve splits a sandbox host into its capability token and (optionally) the
-// port it addresses: s-{token}.{domain} is the pool's own port, and
-// s-{token}-{port}.{domain} is one of the sandbox's declared extras. Both live
-// in ONE DNS label because a wildcard certificate covers exactly one (RFC
-// 6125) — nesting the port as its own label would need a cert per sandbox.
-// Returns ("", "") when the host is not one of ours.
-func (a *SandboxProxy) resolve(host string) (token, port string) {
-	label, domain, ok := strings.Cut(host, ".")
-	if !ok || !strings.EqualFold(domain, a.cfg.Domain) {
-		return "", ""
-	}
-	label = strings.TrimPrefix(label, sandboxHostPrefix)
-	if base, suffix, ok := strings.Cut(label, "-"); ok && isPort(suffix) {
-		return base, suffix
-	}
-	return label, ""
-}
-
-// isPort reports whether s is a plausible port number, so a hyphen inside a
-// token (or a trailing word) is not mistaken for one.
-func isPort(s string) bool {
-	n, err := strconv.Atoi(s)
-	return err == nil && n > 0 && n <= 65535
+	_, _, ok := a.addr.Resolve(host)
+	return ok
 }
 
 // sandboxCapacity adapts one sandbox to the broker's seam: the target is

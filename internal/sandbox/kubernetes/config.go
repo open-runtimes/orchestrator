@@ -6,6 +6,7 @@ import (
 	"orchestrator/internal/observability"
 	"orchestrator/internal/warm"
 	"orchestrator/pkg/pool"
+	"orchestrator/pkg/sandbox"
 	"strconv"
 	"time"
 
@@ -19,10 +20,6 @@ const (
 	defaultLeaderLeaseName = "deployments-service-sandboxes-leader"
 
 	defaultOrphanTTL = 60 * time.Second
-
-	// hostPrefix leads every sandbox hostname, so the wildcard route and the
-	// token are never confused for each other: {hostPrefix}{token}.{domain}.
-	hostPrefix = "s-"
 
 	// agentPath is where the agent-install container drops the sandbox agent, and
 	// therefore the default command a sandbox execs. It lives at the workspace
@@ -157,39 +154,10 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// URLFor builds a sandbox's URL from its capability token. The token — not the
-// caller-chosen id — is the address, so a guessed id reaches nothing.
-func (c *Config) URLFor(token string) string {
-	if token == "" {
-		return ""
-	}
-	return c.Scheme + "://" + hostPrefix + token + "." + c.SandboxDomain
-}
-
-// PortURLFor addresses one of a sandbox's secondary ports. The port rides in
-// the SAME DNS label as the token rather than a label of its own: a wildcard
-// certificate covers exactly one label (RFC 6125), so s-{token}-{port} is
-// reachable under one *.{domain} cert while s-{port}.{token}.{domain} would
-// need a certificate per sandbox.
-func (c *Config) PortURLFor(token string, port int) string {
-	if token == "" {
-		return ""
-	}
-	return c.Scheme + "://" + hostPrefix + token + "-" + strconv.Itoa(port) + "." + c.SandboxDomain
-}
-
-// URLsFor addresses every port a sandbox serves, keyed by port number: the
-// pool's own primary plus each extra port the request declared.
-func (c *Config) URLsFor(token string, primary int, ports []int) map[string]string {
-	if token == "" {
-		return nil
-	}
-	urls := make(map[string]string, len(ports)+1)
-	urls[strconv.Itoa(primary)] = c.URLFor(token)
-	for _, port := range ports {
-		urls[strconv.Itoa(port)] = c.PortURLFor(token, port)
-	}
-	return urls
+// addressing is the sandbox host grammar (pkg/sandbox), which both renders
+// these URLs and is what the sandbox proxy reads them back with.
+func (c *Config) addressing() sandbox.Addressing {
+	return sandbox.Addressing{Domain: c.SandboxDomain, Scheme: c.Scheme}
 }
 
 // AgentCommand is the command a sandbox runs unless the pool or the request

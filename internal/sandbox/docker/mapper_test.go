@@ -5,31 +5,26 @@ import (
 	"testing"
 )
 
-func TestURLs_TokenAddressesEveryPort(t *testing.T) {
+// The grammar itself is pkg/sandbox's (host_test.go); what this backend owns is
+// that the data listener IS the edge, so its port rides in the URL — unlike
+// Kubernetes, where a gateway fronts port 80.
+func TestAddressing_DataPortRidesInTheURL(t *testing.T) {
 	t.Parallel()
 	cfg := Config{SandboxDomain: "sandboxes.test", Scheme: "http", DataPort: "8081"}
-
-	// The data listener is the edge on Docker, so its port is part of the URL —
-	// unlike Kubernetes, where a gateway fronts port 80.
-	if got, want := cfg.URLFor("abc"), "http://s-abc.sandboxes.test:8081"; got != want {
-		t.Errorf("URLFor: want %s, got %s", want, got)
+	addr := cfg.addressing()
+	if got, want := addr.URL("abc"), "http://s-abc.sandboxes.test:8081"; got != want {
+		t.Errorf("URL: want %s, got %s", want, got)
 	}
-	if got, want := cfg.PortURLFor("abc", 5173), "http://s-abc-5173.sandboxes.test:8081"; got != want {
-		t.Errorf("PortURLFor: want %s, got %s", want, got)
-	}
-	urls := cfg.URLsFor("abc", 3000, []int{5173})
-	if urls["3000"] != cfg.URLFor("abc") || urls["5173"] != cfg.PortURLFor("abc", 5173) {
-		t.Errorf("URLsFor: got %v", urls)
-	}
-	if cfg.URLFor("") != "" {
-		t.Error("a sandbox with no token has no URL")
+	if got, want := addr.PortURL("abc", 5173), "http://s-abc-5173.sandboxes.test:8081"; got != want {
+		t.Errorf("PortURL: want %s, got %s", want, got)
 	}
 
-	// Port 80 (or none) leaves the URL bare, so a fronted deployment reads
-	// the same as on Kubernetes.
-	bare := Config{SandboxDomain: "sandboxes.test", Scheme: "https", DataPort: "80"}
-	if got, want := bare.URLFor("abc"), "https://s-abc.sandboxes.test"; got != want {
-		t.Errorf("bare URLFor: want %s, got %s", want, got)
+	// Port 80 leaves the URL bare, so a fronted sandbox reads as it does on
+	// Kubernetes.
+	bareCfg := Config{SandboxDomain: "sandboxes.test", Scheme: "https", DataPort: "80"}
+	bare := bareCfg.addressing()
+	if got, want := bare.URL("abc"), "https://s-abc.sandboxes.test"; got != want {
+		t.Errorf("bare URL: want %s, got %s", want, got)
 	}
 }
 

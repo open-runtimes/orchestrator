@@ -138,6 +138,28 @@ func TestSandboxEdge_CreatingPodReachedByDirectProbe(t *testing.T) {
 	}
 }
 
+// On the Docker backend both data planes share one listener, so Matches decides
+// which of them serves a request — and both domains default to the same value.
+// A host that merely shares the sandbox domain has to fall through to the
+// deployments plane instead of being read as a capability token.
+func TestSandboxEdge_DeclinesANeighbouringHost(t *testing.T) {
+	act := newTestSandboxProxy(t, sandboxOpts{hold: time.Second})
+
+	for _, host := range []string{"myapp." + testSandboxDomain, "myapp.other.test"} {
+		if act.Matches(host) {
+			t.Errorf("%q matched — the deployments plane would never see it", host)
+		}
+		rec := httptest.NewRecorder()
+		act.ServeHTTP(rec, sandboxRequest(t, host))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%q: status = %d, want 404", host, rec.Code)
+		}
+	}
+	if !act.Matches("s-" + testToken + "." + testSandboxDomain) {
+		t.Error("a sandbox host must still match")
+	}
+}
+
 // Host matching is case-insensitive (DNS is), and a port on the Host header
 // must not defeat it.
 func TestSandboxEdge_HostNormalization(t *testing.T) {

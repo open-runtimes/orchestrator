@@ -230,9 +230,10 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 // development: no warm pool (creates are cold) and no isolation tiers, since
 // gvisor and kata are RuntimeClasses. See docs/sandboxes.md.
 // dataHandler picks which activator serves a request. Both data planes share the
-// one Docker listener, so the Host decides: a sandbox is addressed at
-// s-{token}.{sandbox domain}, everything else is a deployment host. Give
-// sandboxes their own domain if any deployment id could start with "s-".
+// one Docker listener, so the Host decides, and pkg/sandbox owns that decision:
+// a sandbox host is s-{token}.{sandbox domain}, and the "s-" prefix is required,
+// so every other host under the domain falls through to deployments. Give
+// sandboxes their own domain if a deployment host could itself start with "s-".
 func dataHandler(deployments http.Handler, sandboxes *activator.SandboxProxy) http.Handler {
 	if sandboxes == nil {
 		return deployments

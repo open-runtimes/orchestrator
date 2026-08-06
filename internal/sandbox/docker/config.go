@@ -3,16 +3,13 @@ package docker
 import (
 	"orchestrator/internal/config"
 	"orchestrator/pkg/pool"
-	"strconv"
+	"orchestrator/pkg/sandbox"
 	"strings"
 	"time"
 )
 
 const (
 	defaultSandboxDomain = "localhost"
-	// hostPrefix leads every sandbox hostname, matching the Kubernetes backend:
-	// {hostPrefix}{token}.{domain}, and {hostPrefix}{token}-{port}.{domain}.
-	hostPrefix = "s-"
 
 	// agentPath is where the agent-install container drops the sandbox agent, and
 	// therefore the default command a sandbox runs. At the workspace root, so the
@@ -80,42 +77,9 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// URLFor builds a sandbox's URL from its capability token. Unlike Kubernetes,
+// addressing is the sandbox host grammar (pkg/sandbox). Unlike Kubernetes,
 // where a gateway fronts port 80, the Docker edge is the service's own data
 // listener — so the port belongs in the URL.
-func (c *Config) URLFor(token string) string {
-	if token == "" {
-		return ""
-	}
-	return c.Scheme + "://" + hostPrefix + token + "." + c.SandboxDomain + c.portSuffix()
-}
-
-// PortURLFor addresses one of a sandbox's extra ports. The port shares the
-// token's DNS label, as on Kubernetes, so the two backends hand out the same
-// hostname shape.
-func (c *Config) PortURLFor(token string, port int) string {
-	if token == "" {
-		return ""
-	}
-	return c.Scheme + "://" + hostPrefix + token + "-" + strconv.Itoa(port) + "." + c.SandboxDomain + c.portSuffix()
-}
-
-// URLsFor addresses every port a sandbox serves, keyed by port number.
-func (c *Config) URLsFor(token string, primary int, ports []int) map[string]string {
-	if token == "" {
-		return nil
-	}
-	urls := make(map[string]string, len(ports)+1)
-	urls[strconv.Itoa(primary)] = c.URLFor(token)
-	for _, port := range ports {
-		urls[strconv.Itoa(port)] = c.PortURLFor(token, port)
-	}
-	return urls
-}
-
-func (c *Config) portSuffix() string {
-	if c.DataPort == "" || c.DataPort == "80" {
-		return ""
-	}
-	return ":" + c.DataPort
+func (c *Config) addressing() sandbox.Addressing {
+	return sandbox.Addressing{Domain: c.SandboxDomain, Scheme: c.Scheme, Port: c.DataPort}
 }

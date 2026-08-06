@@ -58,6 +58,7 @@ type Orchestrator struct {
 	client kubernetes.Interface
 	warm   *warm.Manager
 	cfg    Config
+	addr   sandbox.Addressing
 }
 
 // NewOrchestrator creates a Kubernetes sandbox orchestrator.
@@ -83,6 +84,7 @@ func wireOrchestrator(cs kubernetes.Interface, cfg Config, tune func(*warm.Confi
 		client: cs,
 		warm:   warm.New(cs, cfg.Pools, warmCfg),
 		cfg:    cfg,
+		addr:   cfg.addressing(),
 	}
 }
 
@@ -156,8 +158,8 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Pool, req *sand
 	status := &sandbox.Status{
 		ID:     req.ID,
 		PoolID: req.Pool,
-		URL:    o.cfg.URLFor(req.Token),
-		URLs:   o.cfg.URLsFor(req.Token, p.Port, req.Ports),
+		URL:    o.addr.URL(req.Token),
+		URLs:   o.addr.URLs(req.Token, p.Port, req.Ports),
 	}
 	unserved, err := o.warm.Await(ctx, pod)
 	if err != nil {
@@ -209,7 +211,7 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 	status := sandbox.Status{
 		ID:     obs.ClaimID,
 		PoolID: obs.PoolID,
-		URL:    o.cfg.URLFor(token),
+		URL:    o.addr.URL(token),
 		State:  sandboxState(obs.Phase),
 		Error:  obs.Error,
 	}
@@ -218,7 +220,7 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 	var spec sandbox.Request
 	o.warm.Spec(pod, &spec)
 	if p := o.warm.Pool(status.PoolID); p != nil {
-		status.URLs = o.cfg.URLsFor(token, p.Port, spec.Ports)
+		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
 	}
 	return status
 }

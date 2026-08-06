@@ -51,6 +51,7 @@ import (
 type Orchestrator struct {
 	client *client.Client
 	cfg    Config
+	addr   sandbox.Addressing
 	pools  map[string]*pool.Pool
 	stop   context.CancelFunc
 
@@ -69,6 +70,7 @@ func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 	return &Orchestrator{
 		client: dockerClient,
 		cfg:    cfg,
+		addr:   cfg.addressing(),
 		pools:  pool.ByID(cfg.Pools),
 		now:    time.Now,
 		tick:   reapTick,
@@ -190,8 +192,8 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Pool, req *sand
 	status := &sandbox.Status{
 		ID:     req.ID,
 		PoolID: req.Pool,
-		URL:    o.cfg.URLFor(req.Token),
-		URLs:   o.cfg.URLsFor(req.Token, p.Port, req.Ports),
+		URL:    o.addr.URL(req.Token),
+		URLs:   o.addr.URLs(req.Token, p.Port, req.Ports),
 	}
 	deadline := o.now().Add(servingWait)
 	for {
@@ -490,8 +492,8 @@ func (o *Orchestrator) statusFrom(ctx context.Context, labels map[string]string)
 		if err != nil {
 			return status, err
 		}
-		status.URL = o.cfg.URLFor(token)
-		status.URLs = o.cfg.URLsFor(token, p.Port, spec.Ports)
+		status.URL = o.addr.URL(token)
+		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
 	}
 	state, err := o.serving(ctx, id)
 	if err != nil {

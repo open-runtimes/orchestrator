@@ -318,14 +318,13 @@ func TestDelete_IdleSandboxTornDownByTheControlLoop(t *testing.T) {
 	}
 }
 
-func TestURLFor_TokenOnly(t *testing.T) {
+// The grammar itself is pkg/sandbox's (host_test.go); what this backend owns is
+// that a gateway fronts port 80, so its URLs are bare.
+func TestAddressing_GatewayFrontedURLsAreBare(t *testing.T) {
 	t.Parallel()
 	cfg := Config{SandboxDomain: "sandboxes.example.com", Scheme: "https"}
-	if got := cfg.URLFor("abc"); got != "https://s-abc.sandboxes.example.com" {
-		t.Errorf("URLFor: got %s", got)
-	}
-	if got := cfg.URLFor(""); got != "" {
-		t.Errorf("a sandbox with no token has no URL, got %s", got)
+	if got := cfg.addressing().URL("abc"); got != "https://s-abc.sandboxes.example.com" {
+		t.Errorf("URL: got %s", got)
 	}
 }
 
