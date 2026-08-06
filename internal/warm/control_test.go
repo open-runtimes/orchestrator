@@ -1,7 +1,10 @@
 package warm
 
 import (
+	"context"
+	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
+	"slices"
 	"testing"
 	"time"
 
@@ -91,5 +94,77 @@ func TestOrphanGC_DiscardsAfterTTL(t *testing.T) {
 	c.Tick(t.Context())
 	if !podGone(t, cs, "pod-a") {
 		t.Error("want the orphan discarded after the TTL — never resold")
+	}
+}
+
+// A claim whose pool is not configured — a workload that brought its own pool of
+// one — is still reaped when it goes idle. No declared pool's reconcile would
+// ever see it, so without this it would hold its pod forever.
+func TestTick_ReapsClaimsWithNoConfiguredPool(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset()
+	m := New(cs, []pool.Pool{{ID: "declared", Image: "img", Size: 1}}, Config{
+		Namespace: testNS, Naming: testNaming, ReapUnpooled: true, Client: newFakeSidecar(),
+	})
+
+	// One pod in a declared pool, one belonging to a pool that is not configured.
+	for _, tc := range []struct{ name, poolID, claimID string }{
+		{"pool-declared-aaaaa", "declared", "act-1"},
+		{"pool-solo-bbbbb", "solo", "sbx-1"},
+	} {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name:      tc.name,
+			Namespace: testNS,
+			Labels: map[string]string{
+				LabelManagedBy:   testNaming.ManagedBy,
+				testNaming.Pool:  tc.poolID,
+				testNaming.Claim: tc.claimID,
+			},
+		}}
+		if _, err := cs.CoreV1().Pods(testNS).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create pod: %v", err)
+		}
+	}
+
+	var reaped []string
+	c := m.Controller(Hooks{Reap: func(_ context.Context, _ *pool.Pool, _ *corev1.Pod, claimID string, _ time.Time) {
+		reaped = append(reaped, claimID)
+	}})
+	c.Tick(context.Background())
+
+	slices.Sort(reaped)
+	if len(reaped) != 2 || reaped[0] != "act-1" || reaped[1] != "sbx-1" {
+		t.Errorf("both claims must be offered to the reaper, got %v", reaped)
+	}
+}
+
+// A consumer that only claims from declared pools leaves the sweep off, so
+// removing a pool from the config cannot start reaping its live claims.
+func TestTick_LeavesUnpooledClaimsAloneWhenNotOptedIn(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset()
+	m := New(cs, nil, Config{Namespace: testNS, Naming: testNaming, Client: newFakeSidecar()})
+
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      "pool-gone-aaaaa",
+		Namespace: testNS,
+		Labels: map[string]string{
+			LabelManagedBy:   testNaming.ManagedBy,
+			testNaming.Pool:  "removed-from-config",
+			testNaming.Claim: "act-1",
+		},
+	}}
+	if _, err := cs.CoreV1().Pods(testNS).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	var reaped []string
+	c := m.Controller(Hooks{Reap: func(_ context.Context, _ *pool.Pool, _ *corev1.Pod, claimID string, _ time.Time) {
+		reaped = append(reaped, claimID)
+	}})
+	c.Tick(context.Background())
+
+	if len(reaped) != 0 {
+		t.Errorf("nothing should have been reaped, got %v", reaped)
 	}
 }

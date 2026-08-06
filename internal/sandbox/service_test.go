@@ -250,3 +250,81 @@ func TestCreate_ValidatesPorts(t *testing.T) {
 		}
 	}
 }
+
+// A sandbox may describe its own pod instead of naming a pool — the deployments
+// shape. Exactly one of the two, because both would be ambiguous and neither
+// leaves nothing to run.
+func TestCreate_PoolOrImageButNotBoth(t *testing.T) {
+	t.Parallel()
+	svc, orch := testService()
+
+	tests := []struct {
+		name string
+		req  *Request
+		want string
+	}{
+		{"neither", &Request{ID: "a"}, "pool or image is required"},
+		{"both", &Request{ID: "a", Pool: "py", Image: "img", Port: 3000}, "not both"},
+		{"image without a port", &Request{ID: "a", Image: "img"}, "port is required with image"},
+		{"port out of range", &Request{ID: "a", Image: "img", Port: 70000}, "must be 1-65535"},
+		{"negative cpu", &Request{ID: "a", Image: "img", Port: 3000, CPU: -1}, "cpu must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.Create(t.Context(), tt.req)
+			if err == nil {
+				t.Fatal("want a rejection")
+			}
+			if got := apperrors.HTTPStatus(err); got != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (%v)", got, err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error should say %q, got %q", tt.want, err)
+			}
+		})
+	}
+
+	// The poolless happy path: accepted, and the backend is handed the spec.
+	status, err := svc.Create(t.Context(), &Request{
+		ID: "solo", Image: "python:3.12-slim", Port: 3000, RuntimeClass: "gvisor",
+	})
+	if err != nil {
+		t.Fatalf("poolless create: %v", err)
+	}
+	if orch.last.Image != "python:3.12-slim" || orch.last.Port != 3000 {
+		t.Errorf("the backend must get the request's own shape, got %+v", orch.last)
+	}
+	if status.PoolID != "" {
+		t.Errorf("there was no pool: got poolId %q", status.PoolID)
+	}
+}
+
+// The pool of one is what keeps a poolless sandbox's pod its own: keyed by the
+// sandbox id, so no other claim can be offered it, sized zero so nothing
+// replenishes it, and cold so the claim creates it.
+func TestInlinePool_IsAPoolOfOneKeyedByTheSandbox(t *testing.T) {
+	t.Parallel()
+	p := InlinePool(&Request{ID: "solo", Image: "img", Port: 3000})
+
+	if p.ID != "solo" {
+		t.Errorf("a pool of one must be keyed by its sandbox, got %q", p.ID)
+	}
+	if p.Size != 0 {
+		t.Errorf("nothing should replenish it, got size %d", p.Size)
+	}
+	if p.Burst != pool.BurstCold {
+		t.Errorf("the claim has to create the pod, got burst %q", p.Burst)
+	}
+	if p.Mounts {
+		t.Error("no mount artifact, so no privilege")
+	}
+
+	// Mounting is inferred per request here, as it is for a job or a revision:
+	// the pod is built for this request, so nothing had to be declared ahead.
+	mounting := InlinePool(&Request{ID: "solo", Image: "img", Port: 3000, Artifacts: artifact.Set{
+		&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"},
+	}})
+	if !mounting.Mounts {
+		t.Error("a poolless sandbox that mounts must get the capability")
+	}
+}

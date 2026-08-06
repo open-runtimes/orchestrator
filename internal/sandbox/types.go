@@ -13,6 +13,7 @@ package sandbox
 import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/pool"
+	"orchestrator/internal/volume"
 )
 
 // Request creates a sandbox.
@@ -40,8 +41,33 @@ type Request struct {
 	TimeoutSeconds     *int `json:"timeoutSeconds,omitempty"`
 	IdleTimeoutSeconds int  `json:"idleTimeoutSeconds,omitempty"` // tear down after this long with no traffic; 0 = until DELETE
 
-	// Pool names the sandbox pool to claim from.
-	Pool string `json:"pool"`
+	// Pool names the sandbox pool to claim from — the fast path: a warm pod is
+	// already running, so a create is a claim. Leave it empty and declare an
+	// Image instead for a sandbox with no pool behind it: the pod is created on
+	// demand, which costs a cold start but needs no standing capacity and takes
+	// its shape from this request rather than from an operator's config.
+	//
+	// Exactly one of Pool or Image.
+	Pool string `json:"pool,omitempty"`
+
+	// Image is the runtime image for a poolless sandbox. The agent is installed
+	// into it exactly as it is into a pool's image, so any image works.
+	Image string `json:"image,omitempty"`
+	// Port is where the contract is served in a poolless sandbox — what a pool
+	// would otherwise declare. Required with Image.
+	Port int `json:"port,omitempty"`
+	// CPU and Memory size a poolless sandbox's workload container. Zero takes
+	// the platform default, as a pool's would.
+	CPU    float64 `json:"cpu,omitempty"`
+	Memory int     `json:"memory,omitempty"`
+	// RuntimeClass is the isolation tier for a poolless sandbox (runc | gvisor |
+	// kata). Unlike a pool's, this is per-sandbox: the pod is built for this
+	// request, so nothing was fixed before it arrived.
+	RuntimeClass string `json:"runtimeClass,omitempty"`
+	// Volumes attach existing storage to a poolless sandbox. Also per-sandbox
+	// for the same reason — a pool cannot do this because its pods are already
+	// running when you claim one.
+	Volumes []volume.Volume `json:"volumes,omitempty"`
 
 	// Token is the capability the sandbox's hostname carries — minted by the
 	// service, never accepted from or echoed back into a request body.
@@ -65,8 +91,9 @@ const MetricKind = "sandbox"
 // URL is a CAPABILITY: anyone who can reach it can run commands in the
 // sandbox, so it must stay out of logs, error bodies, and event payloads.
 type Status struct {
-	ID     string `json:"id"`
-	PoolID string `json:"poolId"`
+	ID string `json:"id"`
+	// PoolID names the pool it was claimed from, absent for a poolless sandbox.
+	PoolID string `json:"poolId,omitempty"`
 	State  string `json:"status"` // creating|ready|failed|deleting
 	URL    string `json:"url,omitempty"`
 	// URLs addresses every port the sandbox serves, keyed by port number

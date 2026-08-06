@@ -93,6 +93,12 @@ type Config struct {
 	OrphanTTL              time.Duration     // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 	Naming                 Naming
 
+	// ReapUnpooled extends the control loop's end-of-life rule to claims whose
+	// pool is not configured — workloads that brought their own pool of one.
+	// Consumers that only ever claim from declared pools leave it off, so
+	// removing a pool from the config cannot start reaping its live claims.
+	ReapUnpooled bool
+
 	// LeaderElection gates the control loop (replenishment + GC) to one replica.
 	LeaderElection kube.LeaderElectionConfig
 

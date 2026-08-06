@@ -105,7 +105,13 @@ func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
 // Create claims a warm pod for the sandbox, stamps it with the sandbox id and
 // its capability token, and waits for the image's contract to answer.
 func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandbox.Status, error) {
+	// A declared pool, or the pool of one a poolless sandbox brings with it. The
+	// claim is the same either way; only where the pod comes from differs, and
+	// the burst policy on an empty pool of one is what creates it.
 	p := o.warm.Pool(req.Pool)
+	if req.Pool == "" {
+		p = sandbox.InlinePool(req)
+	}
 	if p == nil {
 		return nil, apperrors.NotFound("pool", req.Pool)
 	}
@@ -119,9 +125,13 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if err != nil {
 		var poison *claim.Poison
 		if errors.As(err, &poison) {
-			// Artifact materialization failed: the pod is poisoned (discarded by
-			// the control loop, never handed to another sandbox) and this
-			// sandbox has failed. No URL — nothing is serving.
+			// Artifact materialization failed: the pod is poisoned and this
+			// sandbox has failed. No URL — nothing is serving. A declared pool's
+			// control loop discards the pod; a pool of one has no loop watching
+			// it, so it is discarded here and now.
+			if req.Pool == "" && poison.Unit != "" {
+				_ = o.warm.Delete(ctx, poison.Unit)
+			}
 			return &sandbox.Status{
 				ID: req.ID, PoolID: req.Pool,
 				State: sandbox.StateFailed, Error: poison.Msg,

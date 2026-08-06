@@ -113,7 +113,13 @@ func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
 // sandbox, its artifacts, the worker, and the proxy — then waits for the
 // proxy's health check to report the contract serving.
 func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandbox.Status, error) {
+	// A declared pool, or the pool of one the request describes. Docker creates
+	// the container either way — it has no warm capacity — so poolless costs it
+	// nothing extra.
 	p := o.pools[req.Pool]
+	if req.Pool == "" {
+		p = sandbox.InlinePool(req)
+	}
 	if p == nil {
 		return nil, apperrors.NotFound("pool", req.Pool)
 	}
@@ -492,13 +498,22 @@ func (o *Orchestrator) statusFrom(ctx context.Context, labels map[string]string)
 	id := labels[labelID]
 	status := sandbox.Status{ID: id, PoolID: labels[labelPool]}
 	token := labels[labelToken]
+	spec, err := parseSpec(labels[labelSpec])
+	if err != nil {
+		return status, err
+	}
+	// The primary port comes off the pool it was claimed from, or — for a
+	// poolless sandbox, whose pool existed only in its own request — off the
+	// stored spec. Reading it back must return the same addresses the create did.
+	primary := spec.Port
 	if p := o.pools[status.PoolID]; p != nil {
-		spec, err := parseSpec(labels[labelSpec])
-		if err != nil {
-			return status, err
-		}
+		primary = p.Port
+	} else {
+		status.PoolID = ""
+	}
+	if primary > 0 {
 		status.URL = o.addr.URL(token)
-		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
+		status.URLs = o.addr.URLs(token, primary, spec.Ports)
 	}
 	state, err := o.serving(ctx, id)
 	if err != nil {

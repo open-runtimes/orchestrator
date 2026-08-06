@@ -175,6 +175,9 @@ func (c *Config) warmConfig() warm.Config {
 		Naming:                 naming(),
 		Metrics:                c.Metrics,
 		LeaderElection:         c.LeaderElection,
+		// A poolless sandbox's pool exists only in its own spec, so no declared
+		// pool's reconcile would ever reap it.
+		ReapUnpooled: true,
 
 		// Every sandbox pool gets the agent, so a pool's image needs to serve
 		// nothing itself; the agent is told which port to listen on and where the
