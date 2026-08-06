@@ -1,6 +1,6 @@
 # Operations Guide
 
-How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), and [pools](pools.md) guides instead.
+How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), [pools](pools.md), and [sandboxes](sandboxes.md) guides instead.
 
 - [What gets deployed](#what-gets-deployed)
 - [Prerequisites](#prerequisites)
@@ -24,7 +24,7 @@ Every component is opt-in — a default install renders nothing.
 | --- | --- | --- |
 | **jobs** | `jobs.enabled` | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
 | **deployments** | `deployments.enabled` | `/v1/deployments` and `/v1/deployment-pools` — long-lived HTTP workloads and warm pools |
-| **activator** | `deployments.activator.enabled` | The buffering edge for cold and async traffic — required for scale-to-zero and `Prefer: respond-async` |
+| **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
 
 Both derive all state from the cluster: restarts and replica failovers lose nothing, and there is no database.
 
@@ -84,7 +84,7 @@ Unlike `deployments.gateway` (a pointer the deployments-service's own reconciler
 deployments:
   enabled: true
   activator:
-    enabled: true # the cold/async buffering edge
+    enabled: true # holds cold and async requests
   domain: apps.example.com        # auto-assigned hosts become {id}.apps.example.com
   gateway:
     name: orchestrator            # the Gateway resource HTTPRoutes attach to
@@ -133,6 +133,30 @@ deployments:
 
 Each pool keeps `size` pods warm at all times; claimed pods are replaced off the request path. See the [pools guide](pools.md) for the consumer side.
 
+## Sandboxes
+
+[Sandboxes](sandboxes.md) are live workspaces created from their own warm pools, reached at their own hostnames. Three pieces of operator config:
+
+```yaml
+sandboxes:
+  domain: sandboxes.example.com   # needs a wildcard DNS record: *.sandboxes.example.com
+  pools:
+    - id: py
+      image: python:3.12-slim    # any runtime image: the agent is installed into it
+      port: 3000                 # where the agent listens; no command needed
+      size: 4
+      runtimeClass: gvisor       # untrusted code is the expected workload here
+      maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod
+  proxy:
+    enabled: true                # the wildcard data plane every sandbox request passes through
+```
+
+`sandboxes` sits alongside `jobs` and `deployments` because a sandbox is a workload kind, not a deployments feature — but the API is served by the deployments service today, so `deployments.enabled` must be true as well. The chart fails the install if it is not, rather than rendering a proxy with nothing behind it.
+
+Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production the sandbox proxy is its own Deployment behind one wildcard `HTTPRoute` for `*.{domain}` — not a mode of the activator: it is permanently on the request path, reads pods only, and raises nothing. Scale it for sandbox traffic (`sandboxes.proxy.autoscaling`) rather than for cold starts.
+
+**A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandboxes.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
+
 ## Configuration reference
 
 The most consequential values (see `charts/orchestrator/values.yaml` for the full annotated set):
@@ -156,7 +180,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `jobs.workloadNodeSelector` | `{}` | Same, independently for job pods |
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
-| `deployments.activator.replicaCount` | `1` | Buffering-edge replicas |
+| `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
 | `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
 | `extraEnv` | `[]` | Extra environment for the services (e.g. `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |
@@ -196,7 +220,8 @@ deployments:
 
 The NetworkPolicy admits ingress only from the gateway, the activator, and the control plane, and blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
-**Sandbox tiers.** Workloads can request stronger kernel isolation with `"sandbox": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_SANDBOX_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.
+<a id="isolation-tiers"></a>
+**Isolation tiers.** Workloads can request stronger kernel isolation with `"runtimeClass": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.
 
 **Secrets at rest.** Deployment specs — including callback signing keys — are stored in Secrets, not ConfigMaps or annotations. Pool claim tokens are HMAC-derived per pod from an install key that never leaves its Secret.
 

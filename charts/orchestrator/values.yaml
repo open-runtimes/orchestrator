@@ -135,11 +135,6 @@ deployments:
     repository: ghcr.io/open-runtimes/orchestrator/deployments-service
     tag: "" # defaults to the chart's appVersion
     pullPolicy: IfNotPresent
-  # Image for the deployments-sidecar (reverse proxy) in every workload pod.
-  sidecarImage:
-    ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/deployments-sidecar
-    tag: "" # defaults to the chart's appVersion
   # Credentials for s3:// download artifacts, scoped to the deployments/pools
   # service. Forwarded into the artifact-pre init container and warm-pool pods.
   s3:
@@ -235,16 +230,17 @@ deployments:
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
   pools: []
   # Image for the pool-shim (warm-pod entrypoint; installed into workload
-  # containers by the shim-install init container).
+  # containers by the shim-install init container). Shared by deployment pools
+  # and sandbox pools.
   shimImage:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/pool-shim
     tag: "" # defaults to the chart's appVersion
-  # The buffering edge for cold/async traffic (deployments-activator).
+  # The activator: holds cold-start and async requests in front of deployments
+  # and raises cold revisions from zero. Opt-in like every component; without
+  # it, scale-to-zero deployments 503 when cold and async requests have nowhere
+  # to buffer. Sandboxes have their own data plane — see sandboxes.proxy.
   activator:
-    # The buffering edge for cold-start and async traffic. Opt-in like every
-    # component; without it, scale-to-zero deployments 503 when cold and
-    # async requests have nowhere to buffer.
     enabled: false
     replicaCount: 1
     # HPA for the buffering edge (stateless; no leader election needed).
@@ -280,6 +276,98 @@ deployments:
       memory: 64Mi
     limits:
       memory: 256Mi
+
+# Image for the workload-sidecar: the reverse proxy in front of every serving
+# workload — deployment replicas, pool activations, and sandboxes. One image for
+# all three, because the pod-local invariants it owns (readiness, drain,
+# per-request timeout, concurrency cap, request counting, and the claim protocol)
+# are the same wherever it runs. Jobs have their own, at jobs.sidecarImage.
+workloadSidecarImage:
+  ref: ""
+  repository: ghcr.io/open-runtimes/orchestrator/workload-sidecar
+  tag: "" # defaults to the chart's appVersion
+
+# Sandboxes (docs/sandboxes.md): live, isolated workspaces created from their own
+# warm pools and driven over HTTP at their own hostnames — a workload kind
+# alongside jobs and deployments.
+#
+# The sandbox API is served by the deployments service today, so
+# `deployments.enabled` must also be true; the chart fails the install rather
+# than rendering a sandbox proxy with nothing serving /v1/sandbox.
+sandboxes:
+  # Sandbox pools. Same schema as deployments.pools. The image needs to serve
+  # nothing: the open-runtimes/sandbox agent is copied into every sandbox's
+  # workspace at pod creation and run there, so any runtime image works and
+  # `port` is simply where the agent listens. Declare `command` only to override
+  # it (an image that serves the contract itself, say).
+  # Untrusted, model-generated code is the expected workload here, so set
+  # runtimeClass: gvisor (or kata) and map it with KUBE_RUNTIME_CLASSES.
+  # maxIdleSeconds caps how long an abandoned sandbox may hold a warm pod.
+  #
+  #   - id: py
+  #     image: python:3.12-slim
+  #     port: 3000
+  #     size: 4
+  #     runtimeClass: gvisor
+  #     maxIdleSeconds: 900
+  pools: []
+  # Sandboxes may also declare extra ports per create call; each is addressed
+  # at s-{token}-{port}.{domain} — the same label, so one wildcard cert covers
+  # every port of every sandbox.
+  #
+  # Image publishing the agent that serves the sandbox contract. It is used as an
+  # init container whose command is replaced by a copy of the binary into the
+  # sandbox's workspace — so pool images stay ordinary runtime images, and this
+  # tag (or a digest in `ref`) is the agent version pin, and it matches the
+  # in-code default (pkg/sandbox.AgentImage) — bump both together.
+  agentImage:
+    ref: ""
+    repository: ghcr.io/open-runtimes/sandbox
+    tag: "0.1.0"
+  # Wildcard domain sandboxes are addressed at: s-{token}.{domain}. Requires
+  # a wildcard DNS record (*.{domain}) pointing at the gateway. Each
+  # sandbox's hostname carries a 128-bit capability token, so treat the URL
+  # as a secret: reaching it is enough to run code in the sandbox.
+  domain: ""
+  # Scheme handed back in sandbox URLs (https where the gateway terminates TLS).
+  scheme: http
+  # Empty = "<deployments name>-sandboxes-leader".
+  leaseName: ""
+  # The sandbox proxy: the data plane every sandbox request passes through.
+  # Its own component rather than a mode of the activator — it is permanently
+  # on the request path (so it scales with sandbox traffic, not with cold
+  # starts), it reads pods only, and it has nothing to raise.
+  proxy:
+    enabled: false
+    replicaCount: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+    image:
+      ref: ""
+      repository: ghcr.io/open-runtimes/orchestrator/sandbox-proxy
+      tag: "" # defaults to the chart's appVersion
+      pullPolicy: IfNotPresent
+    port: 8081
+    # How long a request waits for a still-creating sandbox to answer. Seconds,
+    # not the deployments start timeout: a sandbox has no scale-from-zero, so
+    # if its pod is gone, waiting cannot help.
+    holdSeconds: 5
+    # A wildcard HTTPRoute for *.{domain} backed by the sandbox proxy — the
+    # whole routing story for every sandbox. Per-sandbox routes are
+    # deliberately not used: gateway programming takes seconds, which would
+    # negate the sub-second claim a create is built on.
+    route:
+      enabled: true
+    # No CPU limit by design (same rule as the activator).
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
 
 replicaCount: 1
 

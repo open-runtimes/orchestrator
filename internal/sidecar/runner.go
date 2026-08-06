@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
-	"orchestrator/pkg/emitter"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/emitter"
+	"orchestrator/internal/job"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -204,8 +204,14 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 
 // RunPre processes pre-job artifacts and exits. Used by the Kubernetes backend as
 // a regular init container — the worker will not start until this returns successfully.
+//
+// Mounts are skipped here, not dropped: on a job the post sidecar in the same
+// pod establishes them before the worker starts, so this phase must leave them
+// alone. A consumer with no post sidecar cannot honour a mount at all, and says
+// so before it ever gets here — the serving registry rejects the type at
+// validation, and the claim endpoint refuses it (internal/proxy/pool.go).
 func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) error {
-	_, rest := splitMounts(artifacts) // mounts are established by the post sidecar
+	_, rest := splitMounts(artifacts)
 	preJob, _ := artifact.Partition(rest)
 	logger := slog.With("jobId", r.jobID, "mode", "pre", "preJob", len(preJob))
 	logger.Info("Sidecar pre-mode starting")

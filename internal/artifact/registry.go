@@ -19,17 +19,31 @@ type TypeDef struct {
 	// SourcePath returns the filesystem path that must exist before Apply is called.
 	// Return "" or leave nil to skip the file-wait.
 	SourcePath func(a Artifact) string
+	// NeedsPostPhase marks a type whose work is NOT Apply's to do: it has to be
+	// established before the worker starts and undone after it exits, which only
+	// the post-phase sidecar can arrange. A workload that runs no post phase
+	// cannot honour such a type at all, so a registry built for one rejects it
+	// (see ServingRegistry) instead of accepting it and quietly doing nothing.
+	NeedsPostPhase bool
 }
 
 // Registry holds a set of artifact type definitions. It is immutable after
 // construction and safe for concurrent use without locking.
 type Registry struct {
 	types map[string]TypeDef
+	// postPhase reports whether the consumer runs the post-phase sidecar, and so
+	// whether the types that depend on one can be honoured here.
+	postPhase bool
 }
 
-// NewRegistry builds a Registry from the provided TypeDefs.
+// NewRegistry builds a Registry for a consumer that runs the whole artifact
+// lifecycle, post phase included.
 // Panics on duplicate type names so misconfiguration is caught at construction.
 func NewRegistry(types ...TypeDef) *Registry {
+	return buildRegistry(true, types)
+}
+
+func buildRegistry(postPhase bool, types []TypeDef) *Registry {
 	m := make(map[string]TypeDef, len(types))
 	for _, td := range types {
 		if _, exists := m[td.Type]; exists {
@@ -37,7 +51,7 @@ func NewRegistry(types ...TypeDef) *Registry {
 		}
 		m[td.Type] = td
 	}
-	return &Registry{types: m}
+	return &Registry{types: m, postPhase: postPhase}
 }
 
 // Unmarshal decodes a JSON array of artifacts using the registered types.
@@ -86,6 +100,11 @@ func (r *Registry) Validate(i int, a Artifact) error {
 	if !ok {
 		return fmt.Errorf("artifact[%d]: unknown type %q", i, a.ArtifactType())
 	}
+	if td.NeedsPostPhase && !r.postPhase {
+		return apperrors.Validation(field+".type", fmt.Sprintf(
+			"artifact type %q is only supported for jobs: it needs the post-phase sidecar that establishes it before the workload starts and undoes it afterwards",
+			a.ArtifactType()))
+	}
 	if td.Validate == nil {
 		return nil
 	}
@@ -123,26 +142,43 @@ func TypedSourcePath[T Artifact](fn func(a T) string) func(a Artifact) string {
 	}
 }
 
+// builtinTypes lists every artifact type the service understands. Both
+// registries below are built from this one list, so a new type is available
+// everywhere it can work and rejected — never dropped — where it cannot.
+func builtinTypes() []TypeDef {
+	return []TypeDef{
+		DownloadDef,
+		UploadDef,
+		WriteDef,
+		ReadDef,
+		ArchiveDef,
+		UnarchiveDef,
+		MountDef,
+		ListDef,
+		StatDef,
+	}
+}
+
 var (
 	defaultRegistryOnce sync.Once
 	defaultReg          *Registry
+	servingRegistryOnce sync.Once
+	servingReg          *Registry
 )
 
-// DefaultRegistry returns a Registry pre-loaded with all built-in artifact types.
+// DefaultRegistry returns the Registry for jobs: every built-in type, including
+// the ones needing the post-phase sidecar a job runs.
 // It is computed on first call and cached for subsequent calls.
 func DefaultRegistry() *Registry {
-	defaultRegistryOnce.Do(func() {
-		defaultReg = NewRegistry(
-			DownloadDef,
-			UploadDef,
-			WriteDef,
-			ReadDef,
-			ArchiveDef,
-			UnarchiveDef,
-			MountDef,
-			ListDef,
-			StatDef,
-		)
-	})
+	defaultRegistryOnce.Do(func() { defaultReg = buildRegistry(true, builtinTypes()) })
 	return defaultReg
+}
+
+// ServingRegistry returns the Registry for serving workloads — deployments, pool
+// activations and sandboxes. They materialize artifacts in a pre phase only and
+// then keep serving, with no post phase to establish a mount or undo it, so a
+// type needing one is a validation error here rather than a silent no-op.
+func ServingRegistry() *Registry {
+	servingRegistryOnce.Do(func() { servingReg = buildRegistry(false, builtinTypes()) })
+	return servingReg
 }

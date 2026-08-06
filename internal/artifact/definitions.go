@@ -194,6 +194,9 @@ var (
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Mount) string { return a.In }),
+		// The mount has to outlive the artifact phase that asks for it, so only a
+		// workload with a post-phase sidecar can have one.
+		NeedsPostPhase: true,
 	}
 
 	StatDef = TypeDef{

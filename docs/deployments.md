@@ -84,7 +84,7 @@ Each host is owned by exactly one deployment — claiming a host another deploym
     "url": "https://acme.test/hook",
     "key": "signing-secret"
   },
-  "sandbox": "gvisor",            // isolation tier: runc (default) | gvisor | kata — K8s only
+  "runtimeClass": "gvisor",       // isolation tier: runc (default) | gvisor | kata — K8s only
   "timeoutSeconds": 300,              // per-request total → 504; default 300
   "startTimeoutSeconds": 300, // wait for capacity on a cold start → 503; default 300
   "readyTimeoutSeconds": 600      // ready deadline before a rollout is marked failed; default 600
@@ -95,7 +95,7 @@ Unknown fields are rejected with `400` naming the field, so a typo (`"replcias"`
 
 Probes: the **readiness** probe is run by the orchestrator's sidecar and honors sub-second periods — it gates whether a replica receives traffic. Liveness and startup probes are kubelet-run at whole-second granularity. Omitting `path` makes a probe a TCP connect check.
 
-Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving.
+Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving. Every type except [`mount`](jobs.md#mount) is available: a mount needs a post phase, and a serving workload has none.
 
 ## Status and lifecycle
 
@@ -200,5 +200,5 @@ The Docker backend (`ORCHESTRATOR_BACKEND=docker`) is the dev-parity implementat
 
 - **Single revision**: applies replace in place; there is no revision history, so traffic splitting returns `400` (100% to the deployment itself, or an empty release, are accepted no-ops).
 - **One replica**: `replicas` is clamped to 1; autoscaling honors only 0↔1 (scale-to-zero still works).
-- **No sandbox tiers**: `"sandbox"` other than `runc` is rejected.
+- **No isolation tiers**: `"runtimeClass"` other than `runc` is rejected.
 - The data plane is served by the orchestrator's own listener rather than a gateway — same host-based routing, same async semantics.

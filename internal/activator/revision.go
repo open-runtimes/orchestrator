@@ -10,9 +10,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
 	"time"
@@ -56,9 +56,9 @@ const (
 
 // RevisionConfig configures the RevisionActivator.
 type RevisionConfig struct {
-	Namespace            string
-	ProxyPort            int32         // workload pod data port (proxy.DefaultProxyPort)
-	AdminPort            int32         // workload pod admin port for direct probing (proxy.DefaultAdminPort)
+	Namespace    string
+	ProxyPort    int32         // workload pod data port (workload.DefaultProxyPort)
+	AdminPort    int32         // workload pod admin port for direct probing (workload.DefaultAdminPort)
 	StartTimeout time.Duration // wait for the first reachable pod → 503; default 300s
 }
 
@@ -68,7 +68,7 @@ type RevisionConfig struct {
 // whose endpoints are this activator during the cold window (loop).
 type RevisionActivator struct {
 	client kubernetes.Interface
-	broker *broker
+	broker *deploymentBroker
 	cfg    RevisionConfig
 
 	pods        corelisters.PodLister
@@ -80,17 +80,17 @@ type RevisionActivator struct {
 // Call Start before serving.
 func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, cfg RevisionConfig, rec Recorder) *RevisionActivator {
 	if cfg.ProxyPort == 0 {
-		cfg.ProxyPort = proxy.DefaultProxyPort
+		cfg.ProxyPort = workload.DefaultProxyPort
 	}
 	if cfg.AdminPort == 0 {
-		cfg.AdminPort = proxy.DefaultAdminPort
+		cfg.AdminPort = workload.DefaultAdminPort
 	}
 	if cfg.StartTimeout <= 0 {
 		cfg.StartTimeout = defaultStartTimeout
 	}
 	return &RevisionActivator{
 		client: client,
-		broker: newBroker(queue, rec),
+		broker: newDeploymentBroker(queue, rec),
 		cfg:    cfg,
 	}
 }
@@ -137,7 +137,7 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	c := revisionCapacity{a: a, rev: rev}
 
-	if proxy.PreferAsync(r) {
+	if workload.PreferAsync(r) {
 		spec, err := a.specFor(r.Context(), rev)
 		if err != nil {
 			http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)
@@ -150,9 +150,8 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // revisionCapacity adapts one revision to the broker's seam: targets are the
-// informer's ready pods — or, during a cold start, the first Running pod
-// whose sidecar answers a direct /ready probe (the Knative activator move,
-// skipping kubelet readiness propagation) — and a raise patches the revision
+// informer's ready pods — or, during a cold start, the first Running pod whose
+// sidecar answers a direct /ready probe — and a raise patches the revision
 // Deployment's scale subresource 0→1.
 type revisionCapacity struct {
 	a   *RevisionActivator
@@ -168,7 +167,7 @@ func (c revisionCapacity) Target(ctx context.Context) (*url.URL, error) {
 	if target := readyPodTarget(pods, c.a.cfg.ProxyPort); target != nil {
 		return target, nil
 	}
-	return c.a.probeCandidates(ctx, pods), nil
+	return probeCandidates(ctx, pods, c.a.cfg.ProxyPort, c.a.cfg.AdminPort), nil
 }
 
 func (c revisionCapacity) Raise(ctx context.Context) error {
@@ -192,26 +191,28 @@ func (c revisionCapacity) Raise(ctx context.Context) error {
 	return nil
 }
 
-// probeCandidates direct-probes the sidecar /ready of the revision's Running
-// (ready or not) pods, releasing the request to the first responder.
-func (a *RevisionActivator) probeCandidates(ctx context.Context, pods []*corev1.Pod) *url.URL {
+// probeCandidates direct-probes the sidecar /ready of the Running (ready or
+// not) pods, releasing the request to the first responder — the Knative
+// activator move, skipping kubelet readiness propagation. Shared by every edge:
+// the wait it saves matters most for a sub-second sandbox claim.
+func probeCandidates(ctx context.Context, pods []*corev1.Pod, proxyPort, adminPort int32) *url.URL {
 	for _, pod := range pods {
 		if pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" {
 			continue
 		}
-		if a.probeReady(ctx, pod.Status.PodIP) {
-			return podDataTarget(pod, a.cfg.ProxyPort)
+		if probeReady(ctx, pod.Status.PodIP, adminPort) {
+			return podDataTarget(pod, proxyPort)
 		}
 	}
 	return nil
 }
 
 // probeReady checks the sidecar admin /ready endpoint on the pod directly.
-func (a *RevisionActivator) probeReady(ctx context.Context, podIP string) bool {
+func probeReady(ctx context.Context, podIP string, adminPort int32) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	probeURL := "http://" + net.JoinHostPort(podIP, strconv.Itoa(int(a.cfg.AdminPort))) + "/ready"
+	probeURL := "http://" + net.JoinHostPort(podIP, strconv.Itoa(int(adminPort))) + "/ready"
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, probeURL, nil)
 	if err != nil {
 		return false
@@ -256,7 +257,7 @@ func deploymentIDOf(rev string) string {
 // readyPodTarget returns the data-port URL of the first ready pod.
 func readyPodTarget(pods []*corev1.Pod, port int32) *url.URL {
 	for _, pod := range pods {
-		if revisionPodReady(pod) && pod.Status.PodIP != "" {
+		if podReady(pod) && pod.Status.PodIP != "" {
 			return podDataTarget(pod, port)
 		}
 	}
@@ -270,7 +271,7 @@ func podDataTarget(pod *corev1.Pod, port int32) *url.URL {
 	}
 }
 
-func revisionPodReady(pod *corev1.Pod) bool {
+func podReady(pod *corev1.Pod) bool {
 	// A terminating pod can still report Ready — draining traffic belongs on
 	// the surviving pods (same rule as the endpoint-flip reconciler).
 	if pod.DeletionTimestamp != nil {

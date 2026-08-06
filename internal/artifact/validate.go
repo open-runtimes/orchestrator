@@ -9,11 +9,6 @@ import (
 	"strings"
 )
 
-// Validate validates an artifact at the given index using the default registry.
-func Validate(i int, a Artifact) error {
-	return DefaultRegistry().Validate(i, a)
-}
-
 func validateURL(rawURL string) error {
 	if rawURL == "" {
 		return nil

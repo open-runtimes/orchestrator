@@ -1,6 +1,6 @@
 // Package docker implements the deployment.Orchestrator interface using the
 // Docker API. Each deployment is a worker container fronted by a
-// deployments-sidecar proxy container, with an optional one-shot artifacts
+// workload-sidecar proxy container, with an optional one-shot artifacts
 // step, all sharing a workspace volume. The daemon is the source of truth:
 // the volume is the identity anchor and carries the canonical spec on its
 // labels, so a deployment scaled to zero (no containers) still exists — there
@@ -12,16 +12,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
-	volspec "orchestrator/pkg/volume"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/moby"
+	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +28,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
@@ -68,8 +65,8 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // stays idle; any change tears down the containers and volume and recreates
 // everything, re-running artifacts.
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
-	if req.Sandbox != "" && req.Sandbox != deployment.SandboxRunc {
-		return false, apperrors.Validation("sandbox", "sandbox tiers require the Kubernetes backend")
+	if req.RuntimeClass != "" && req.RuntimeClass != deployment.RuntimeClassRunc {
+		return false, apperrors.Validation("runtimeClass", "runtimeClass tiers require the Kubernetes backend")
 	}
 	spec, err := json.Marshal(req)
 	if err != nil {
@@ -150,7 +147,7 @@ func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec
 
 	if len(req.Artifacts) > 0 {
 		// Detached context so an HTTP request timeout doesn't cancel image pulls.
-		if err := o.pullImageIfNeeded(context.WithoutCancel(ctx), o.cfg.JobSidecarImage); err != nil {
+		if err := moby.PullImage(context.WithoutCancel(ctx), o.client, o.cfg.JobSidecarImage); err != nil {
 			return apperrors.Internal("docker.pullJobSidecarImage", err)
 		}
 		if err := o.runArtifacts(ctx, req); err != nil {
@@ -167,10 +164,10 @@ func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec
 func (o *Orchestrator) createContainers(ctx context.Context, req *deployment.Request, spec string) error {
 	// Detached context so an HTTP request timeout doesn't cancel image pulls.
 	pullCtx := context.WithoutCancel(ctx)
-	if err := o.pullImageIfNeeded(pullCtx, req.Image); err != nil {
+	if err := moby.PullImage(pullCtx, o.client, req.Image); err != nil {
 		return apperrors.Internal("docker.pullImage", err)
 	}
-	if err := o.pullImageIfNeeded(pullCtx, o.cfg.SidecarImage); err != nil {
+	if err := moby.PullImage(pullCtx, o.client, o.cfg.SidecarImage); err != nil {
 		return apperrors.Internal("docker.pullSidecarImage", err)
 	}
 
@@ -202,7 +199,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 	workspace := workspaceOf(req)
 	env := []string{
 		"JOB_ID=dep-" + req.ID,
-		"SHARED_VOLUME_PATH=" + workspace,
+		config.EnvSharedVolume + "=" + workspace,
 		"ARTIFACTS_JSON=" + string(artifactsJSON),
 	}
 	if o.cfg.ArtifactEndpoint != "" {
@@ -224,7 +221,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 			Mounts:     []mount.Mount{o.workspaceMount(req.ID, workspace)},
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
-		o.networkingConfig(), nil, artifactsName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, artifactsName(req.ID))
 	if err != nil {
 		return apperrors.Internal("docker.createArtifactsContainer", err)
 	}
@@ -267,13 +264,13 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
 		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, volumeMounts(req.Volumes)...),
+			Mounts: append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, moby.Mounts(req.Volumes)...),
 			Resources: container.Resources{
 				NanoCPUs: int64(req.CPU * 1e9),
 				Memory:   int64(req.Memory) * 1024 * 1024,
 			},
 		},
-		o.networkingConfig(), nil, workerName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, workerName(req.ID))
 	if err != nil {
 		return "", apperrors.Internal("docker.createWorker", err)
 	}
@@ -283,7 +280,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 	return resp.ID, nil
 }
 
-// startProxy creates and starts the deployments-sidecar proxy fronting the
+// startProxy creates and starts the workload-sidecar proxy fronting the
 // worker. It mirrors the volume's spec and host labels for observability; the
 // volume remains authoritative.
 func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, workerIP, spec string) error {
@@ -292,7 +289,7 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 	labels[labelHost] = strings.Join(req.Hosts, ",")
 
 	healthCheck := &container.HealthConfig{
-		Test:          []string{"CMD", "/ko-app/deployments-sidecar", "-check-ready"},
+		Test:          []string{"CMD", "/ko-app/workload-sidecar", "-check-ready"},
 		Interval:      500 * time.Millisecond,
 		Timeout:       5 * time.Second,
 		StartPeriod:   readyTimeout(req.ReadyTimeoutSeconds),
@@ -307,7 +304,7 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 			Labels:      labels,
 		},
 		&container.HostConfig{ExtraHosts: o.cfg.ExtraHosts},
-		o.networkingConfig(), nil, proxyName(req.ID))
+		moby.NetworkingConfig(o.cfg.Network), nil, proxyName(req.ID))
 	if err != nil {
 		return apperrors.Internal("docker.createProxy", err)
 	}
@@ -376,7 +373,7 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 	}
 	return []*url.URL{{
 		Scheme: "http",
-		Host:   net.JoinHostPort(ip, strconv.Itoa(proxy.DefaultProxyPort)),
+		Host:   net.JoinHostPort(ip, strconv.Itoa(workload.DefaultProxyPort)),
 	}}, nil
 }
 
@@ -506,45 +503,6 @@ func (o *Orchestrator) containersFor(ctx context.Context, id string) ([]containe
 // targeting the request's workspace path.
 func (o *Orchestrator) workspaceMount(id, path string) mount.Mount {
 	return mount.Mount{Type: mount.TypeVolume, Source: volumeName(id), Target: path}
-}
-
-// volumeMounts attaches existing Docker named volumes to the worker container.
-func volumeMounts(vols []volspec.Volume) []mount.Mount {
-	mounts := make([]mount.Mount, 0, len(vols))
-	for _, v := range vols {
-		m := mount.Mount{Type: mount.TypeVolume, Source: v.Source, Target: v.Path, ReadOnly: v.ReadOnly}
-		if v.SubPath != "" {
-			m.VolumeOptions = &mount.VolumeOptions{Subpath: v.SubPath}
-		}
-		mounts = append(mounts, m)
-	}
-	return mounts
-}
-
-func (o *Orchestrator) networkingConfig() *network.NetworkingConfig {
-	if o.cfg.Network == "" {
-		return nil
-	}
-	return &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			o.cfg.Network: {},
-		},
-	}
-}
-
-func (o *Orchestrator) pullImageIfNeeded(ctx context.Context, imageName string) error {
-	if _, err := o.client.ImageInspect(ctx, imageName); err == nil {
-		return nil
-	}
-
-	reader, err := o.client.ImagePull(ctx, imageName, image.PullOptions{})
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-
-	_, err = io.Copy(io.Discard, reader)
-	return err
 }
 
 // waitForExit blocks until the container stops and returns its exit code.

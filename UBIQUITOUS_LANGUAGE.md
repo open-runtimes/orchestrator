@@ -80,7 +80,7 @@
 | **Host** | A hostname routing external traffic to exactly one Deployment; a Deployment may own several, the first being primary | Domain, URL, alias |
 | **Marker** | The per-Deployment record of lifecycle state: latest revision, last ready revision, traffic mode | State ConfigMap, metadata |
 | **Spec Secret** | The at-rest store of a Deployment's full spec, including secret material like signing keys | Spec annotation, marker spec |
-| **Deployment sidecar** | The reverse proxy in every Revision replica: readiness, drain, concurrency cap, stats | Sidecar (unqualified), proxy, queue-proxy |
+| **Workload sidecar** | The reverse proxy in front of every serving workload — Revision replica, pool activation, or Sandbox: readiness, drain, per-request timeout, concurrency cap, request counting, and the Claim endpoint | Deployment sidecar, sidecar (unqualified), queue-proxy |
 | **Gateway** | The Gateway API edge that terminates Hosts and applies the traffic table | Ingress, load balancer |
 
 ## Traffic
@@ -100,7 +100,7 @@
 | **Warm** | The state of a Revision with at least one ready replica serving directly | Active, hot |
 | **Cold** | The state of a Revision scaled to zero replicas | Idle, off |
 | **Endpoint flip** | The swap of a Revision's endpoints between its ready pods (warm) and Activator pods (cold) | Slice swap, SKS flip |
-| **Activator** | The buffering edge that holds cold and async requests, raises cold Revisions, and forwards | Buffer, edge proxy |
+| **Activator** | The component in front of DEPLOYMENTS that holds cold and async requests, raises cold Revisions, and forwards | Buffer, edge, proxy |
 | **Raise** | The Activator's scale-up of a cold Revision from zero so a held request can be served | Wake, cold scale-up |
 | **Cold start** | The end-to-end latency of a request that arrives while its Revision is cold | Spin-up time |
 | **Async request** | A request marked `Prefer: respond-async`, accepted immediately and answered via the Callback | Background request |
@@ -113,7 +113,7 @@
 | **Concurrency** | The number of requests in flight in a replica, measured as a concurrency-seconds integral | Load, QPS, RPS |
 | **Concurrency target** | The per-replica concurrency the Autoscaler aims for when sizing a Revision | Threshold, limit |
 | **Scale to zero** | The Autoscaler's N→0 transition after a window with no concurrency, making the Revision cold | Idling, hibernation |
-| **Drain** | The deployment sidecar's refusal of new requests while in-flight ones finish during shutdown | Graceful shutdown |
+| **Drain** | The workload sidecar's refusal of new requests while in-flight ones finish during shutdown | Graceful shutdown |
 
 ## Pools
 
@@ -125,6 +125,7 @@
 | **Claim** | The atomic, token-authenticated take of one warm pod; the sidecar's accepted POST *is* the claim | Reservation, checkout |
 | **Claim token** | The per-pod credential (HMAC of the pod name under the install key) that authorizes a claim | Secret, password |
 | **Inventory** | What a Pool backend supplies to the shared claim module: how to list, create, and address warm units | Backend, provider |
+| **Phase** | The claim-neutral lifecycle of a claimed pod (starting, serving, failed, terminating) that each warm consumer names in its own vocabulary — an Activation is "activating" where a Sandbox is "creating" | Status, state (unqualified) |
 | **Activation** | The materialization of artifacts and exec of a payload inside a claimed warm pod | Cold start, launch |
 | **Poison** | The marking of a claimed pod as unusable after a failed activation so it is never reissued | Taint, quarantine |
 | **Replenish** | The pool's creation of new warm pods to restore its declared size after claims | Refill, top-up |
@@ -136,7 +137,10 @@
 | --- | --- | --- |
 | **Workload namespace** | The hardened namespace (restricted PSA, default-deny, quota) where workload pods run | Jobs namespace, tenant ns |
 | **Release namespace** | The namespace holding the control plane: services, Activator, gateway wiring | System namespace |
-| **Sandbox** | A workload's isolation tier — runc, gvisor, or kata — mapped to a RuntimeClass | Runtime, isolation level |
+| **Sandbox** | A live, isolated workspace claimed from a warm pool and driven over HTTP at its own hostname; exec and files are the image's contract, not ours | Container, session, REPL |
+| **Capability token** | The unguessable leading DNS label of a sandbox's hostname — reaching the URL is authorization to run code in it | Sandbox id, slug |
+| **Sandbox proxy** | The component in front of SANDBOXES: one wildcard route for all of them, resolved by the capability token in the request's Host. Not an Activator — it holds and forwards but never raises, because a Sandbox has no zero to rise from | Sandbox activator, sandbox edge, router |
+| **Runtime class** | A workload's isolation tier — runc, gvisor, or kata — mapped to a Kubernetes RuntimeClass | Sandbox, runtime |
 | **Overcommit** | The divisor deriving a workload's CPU request from its declared limit | Oversubscription ratio |
 
 ## Infrastructure
@@ -156,7 +160,7 @@
 - The **LifecycleWatcher** emits **Signals**; the **Controller** consumes them to drive state transitions in the **Store** and fire **Callbacks** via the **Dispatcher**.
 - A **Deployment** owns one or more **Hosts** (each Host belongs to exactly one Deployment) and one or more **Revisions**; its **Marker** tracks lifecycle and its **Spec Secret** holds the spec.
 - The **Traffic table** distributes a **Deployment**'s traffic across **traffic targets**, each naming exactly one **Revision**.
-- Every **Revision** replica pairs the workload with one **Deployment sidecar**; the **endpoint flip** decides whether the Revision's endpoints are its own pods (**warm**) or the **Activator** (**cold**).
+- Every **Revision** replica pairs the workload with one **Workload sidecar**; the **endpoint flip** decides whether the Revision's endpoints are its own pods (**warm**) or the **Activator** (**cold**).
 - The **Activator** owns 0→N (**raise**); the **Autoscaler** owns 1↔N and **scale to zero** — the two never overlap.
 - A **Pool** maintains N **warm pods**; a **Claim** takes one, an **Activation** turns it into a running workload, and the Pool **replenishes**; a failed activation **poisons** the pod.
 - Both Pool backends delegate claiming to one shared claim module; each supplies an **Inventory** (Kubernetes: pool pods + HMAC tokens; Docker: slots + label tokens).
@@ -176,7 +180,7 @@
 ## Flagged ambiguities
 
 - **"Deployment"** collides three ways: the domain entity, the Kubernetes `apps/v1 Deployment` that backs each Revision, and the verb "to deploy". Reserve the bare word for the domain entity; say "apps/v1 Deployment" for the Kubernetes object and "roll out" for the act.
-- **"Sidecar"** unqualified is ambiguous across planes — the **Job sidecar** (artifacts/lifecycle) and the **Deployment sidecar** (reverse proxy) are unrelated programs. Qualify it whenever both planes are in scope; the binary names (`job-sidecar`, `deployments-sidecar`) already do.
+- **"Sidecar"** unqualified is ambiguous across planes — the **Job sidecar** (artifacts/lifecycle) and the **Workload sidecar** (reverse proxy) are unrelated programs. Qualify it whenever both planes are in scope; the binary names (`job-sidecar`, `workload-sidecar`) already do.
 - **"Activation" vs "cold start"** were used interchangeably during design. They are distinct: **Activation** is the pool mechanism (claim + exec in a warm pod); **cold start** is the latency of serving a request to a cold Revision via a **raise**.
 - **"Idle" vs "cold"**: both described a scaled-to-zero Revision. Use **scale to zero** for the transition and **cold** for the state; drop "idle" as a state name.
 - **"Target"** is overloaded: a row in the **Traffic table** and the **Autoscaler**'s per-replica concurrency goal. Say **traffic target** and **concurrency target**.

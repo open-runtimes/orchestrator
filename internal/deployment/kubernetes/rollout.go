@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"orchestrator/internal/apperrors"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"

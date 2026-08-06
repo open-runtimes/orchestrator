@@ -93,6 +93,15 @@ linters:
       max: 8
     depguard:
       rules:
+        # A service exposes binaries, not packages. internal/ is the
+        # compiler-enforced boundary; pkg/ is not a Go standard and said nothing
+        # true here — every pkg/ package imported internal/ anyway.
+        no_pkg_dir:
+          files:
+            - $all
+          deny:
+            - pkg: "orchestrator/pkg/.*"
+              desc: "Put it in internal/. A service exposes binaries, not importable packages."
         no_vague_packages:
           files:
             - $all
@@ -234,7 +243,7 @@ linters:
       # State machine transition table is a package-level constant in disguise
       - linters:
           - gochecknoglobals
-        path: pkg/lifecycle/entry\.go
+        path: internal/lifecycle/entry\.go
       # HTTP handler methods named Get* write to ResponseWriter, not return values
       - linters:
           - revive
@@ -243,7 +252,7 @@ linters:
       # Cleanup functions intentionally ignore errors
       - linters:
           - errcheck
-        path: internal/orchestrator/docker/
+        path: internal/job/docker/
         text: "Error return value of .*(ContainerStop|ContainerRemove|NetworkRemove|VolumeRemove).*is not checked"
     presets:
       - comments

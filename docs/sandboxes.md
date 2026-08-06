@@ -1,7 +1,5 @@
 # Sandboxes Guide
 
-> **Status: proposed, not implemented.** No `/v1/sandbox` endpoint exists yet. This is written as a guide because the API shape is the thing under review — the reasoning and the build delta are in [design notes](#design-notes) at the end. Nothing here is a contract until it ships.
-
 A **sandbox** is a live, isolated workspace you drive from the outside: create one, run commands in it, read and write its files, tear it down. Where a [job](jobs.md) runs to completion and a [deployment](deployments.md) serves traffic under a stable name, a sandbox does neither — it sits there and waits for you. It is the shape an agent, a notebook kernel, or an interactive build wants.
 
 A sandbox is created from a **sandbox pool** — standing warm capacity, the same claim-and-late-bind machinery [pools](pools.md) use — so creation is sub-second rather than a cold container start.
@@ -10,6 +8,7 @@ A sandbox is created from a **sandbox pool** — standing warm capacity, the sam
 - [The sandbox contract](#the-sandbox-contract)
 - [Running commands](#running-commands)
 - [Files](#files)
+- [Ports](#ports)
 - [Persistence](#persistence)
 - [Isolation](#isolation)
 - [Lifecycle](#lifecycle)
@@ -34,15 +33,25 @@ curl -X POST http://localhost:8080/v1/sandbox \
 
 `201 Created`, and the URL is live — no per-sandbox gateway programming to wait on. The `id` is optional; pass one for a stable API path and idempotency (re-POSTing an existing id is `409`).
 
-**Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it.
+**Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it.
 
-`command` is optional and defaults to the pool's: a sandbox pool's image already serves the sandbox contract, so there is usually nothing to late-bind but artifacts.
+`command` is optional: with none declared anywhere, the sandbox runs the agent installed in its workspace, so there is usually nothing to late-bind but artifacts. `timeoutSeconds` bounds each request to the sandbox's URL — omitted takes 300, the maximum is 3600, and an explicit `0` means no bound at all (see [ports](#ports) for when you want that).
 
 ## The sandbox contract
 
-**Exec and files are not part of this API.** They are an HTTP contract the sandbox *image* implements, and you reach them at the sandbox's own URL. The orchestrator creates, routes, and reaps sandboxes; it does not sit in the middle of your commands.
+**Exec and files are not part of this API.** They are an HTTP contract served *inside* the sandbox, and you reach them at the sandbox's own URL. The orchestrator creates, routes, and reaps sandboxes; it does not sit in the middle of your commands.
 
-`open-runtimes/sandbox` is the reference image. Any image that answers these three routes on the pool's port is a valid sandbox image:
+**Your image does not have to implement it.** The [`open-runtimes/sandbox`](https://github.com/open-runtimes/sandbox) agent is a static binary, and the orchestrator copies it into every sandbox's workspace at pod creation — the same mechanism that installs the pool shim. A sandbox pool over `node:22-slim`, `python:3.12-slim`, or a distroless image serves the contract with nothing added to the image and no `command` declared:
+
+```yaml
+sandboxes:
+  pools:
+    - id: node
+      image: node:22-slim   # implements nothing; the agent supplies the contract
+      port: 3000
+```
+
+A pool or a create call may still set `command` — to run an image that serves the contract itself, or to wrap the agent — and it wins over the installed agent. These are the three routes it answers on the pool's port:
 
 | | |
 | --- | --- |
@@ -50,7 +59,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
 | `GET\|PUT\|DELETE /files/{path}` | whole-file read / write / remove, relative to the workspace |
 | `GET /healthz` | readiness — the pool's probe subject |
 
-That split is deliberate. It keeps the control plane off the data path, so a long exec is not killed by an orchestrator rolling restart and a large file upload is not a shared-fate bottleneck. It also means you can bring your own sandbox image — a computer-use image, a JVM with a warm classloader, an image that speaks a protocol we have never heard of — without changing anything here.
+That split is deliberate. It keeps the control plane off the data path, so a long exec is not killed by an orchestrator rolling restart and a large file upload is not a shared-fate bottleneck. And because the agent is installed rather than baked in, "bring your own image" costs nothing: a computer-use image, a JVM with a warm classloader, or an image that also speaks a protocol we have never heard of all work — the last of those by declaring its own `command`.
 
 ## Running commands
 
@@ -64,7 +73,7 @@ curl -X POST http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/exe
 {"exitCode": 0, "stdout": "4\n", "stderr": "", "durationMillis": 41}
 ```
 
-For the reference image: commands run in the worker container — same image, same filesystem, same [isolation tier](#isolation) — with the workspace as the working directory, and are **serialized per sandbox** (a second `/execute` against a busy sandbox is `409`). One sandbox is one seat; concurrent execs would race on a shared filesystem. Output is capped at 1 MiB per stream, past which `truncated` is `true` — beyond that, write to a file and read it back.
+For the reference image: commands run in the worker container — same image, same filesystem, same [isolation tier](#isolation) — with the workspace as the working directory. Output is capped at 1 MiB per stream, past which `truncated` is `true`; beyond that, write to a file and read it back.
 
 ## Files
 
@@ -73,9 +82,9 @@ curl -X PUT  http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/fil
 curl         http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com/files/out.json
 ```
 
-Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON.
+Paths are relative to the workspace; `..` and absolute paths are `400`. `GET` on a directory lists it as JSON — including the machinery's own `.pool/`, `.sandbox-agent`, `.pool-exec.fifo`, and `.pool-shim.log`, which share the workspace volume. Ignore them; they are inert once the sandbox is serving.
 
-For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready:
+For anything bulkier, use [artifacts](jobs.md#artifacts) at create time — the bulk-in path, materialized into the workspace by the sidecar before the sandbox reports ready. Every type except [`mount`](jobs.md#mount) is available, which needs a post phase a sandbox does not have:
 
 ```bash
 curl -X POST http://localhost:8080/v1/sandbox \
@@ -89,29 +98,71 @@ curl -X POST http://localhost:8080/v1/sandbox \
   }'
 ```
 
-If artifact materialization fails the sandbox is `failed` with the reason, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
+If artifact materialization fails the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
+
+## Ports
+
+A sandbox serves its pool's port — the contract — and any extra ports you declare at create time. Each gets its own hostname, so a dev server, a language server, or a terminal socket is reachable alongside `/execute`:
+
+```bash
+curl -X POST http://localhost:8080/v1/sandbox \
+  -H "Content-Type: application/json" \
+  -d '{"pool": "py", "ports": [5173, 9229]}'
+```
+
+```json
+{
+  "id": "py-3f9c1a02",
+  "poolId": "py",
+  "status": "ready",
+  "url": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
+  "urls": {
+    "3000": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
+    "5173": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f-5173.sandboxes.example.com",
+    "9229": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f-9229.sandboxes.example.com"
+  }
+}
+```
+
+Read the addresses out of `urls`; don't build them. Ports are **not** a pool dimension the way [`volumes`](#persistence) and [`runtimeClass`](#isolation) are: a container may bind a port at any time, so nothing about the warm pod fixes them. Nothing needs to be listening when you create the sandbox either — start the dev server from an `/execute` call later and its URL begins working.
+
+Two rules the platform enforces:
+
+- **Only declared ports are reachable.** The port travels in the hostname; the proxy turns it into a hint the sidecar checks against the claim, and the dial happens on loopback inside that sandbox's own pod. A port you did not declare is `404`, and a hint a client sets by hand is discarded.
+- **One module renders and reads the hostname** (`internal/sandbox`, `Addressing`). The backends format URLs with it and the sandbox proxy resolves them with it, so the writer cannot drift from the reader, and the `s-` prefix is an enforced invariant rather than a convention — a host that merely shares the domain is not a sandbox.
+- **The port shares the token's DNS label** (`s-{token}-5173`), rather than nesting as `s-5173.{token}`. A wildcard certificate covers exactly one label, so the flat form is reachable under one `*.{domain}` cert while the nested form would need a certificate per sandbox.
+
+Readiness is the primary port's alone: a secondary port that never comes up does not fail the sandbox, and traffic to it counts as activity for the [idle timeout](#lifecycle) like any other request. `8000` and `8001` belong to the sidecar and are refused.
+
+WebSocket traffic (terminals, LSP) upgrades cleanly through the proxy. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox; artifact materialization keeps its own budget regardless, so an unbounded sandbox is not an unbounded download. The same bound decides how long a rolling restart waits for that session before giving up on it, capped by the pod's `PROXY_MAX_DRAIN_SECONDS`.
 
 ## Persistence
 
 The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-ins buy durability:
 
 - **`artifacts`** — bulk in, per sandbox, at create time (above).
-- **`volumes`** — an existing Docker volume or K8s PVC, the same [schema](jobs.md#volumes) jobs and deployments use. Attach-only: the orchestrator never creates, sizes, or deletes the storage.
+- **`volumes`** — an existing K8s PVC, the same [schema](jobs.md#volumes) jobs and deployments use. Attach-only: the orchestrator never creates, sizes, or deletes the storage.
 
 **`volumes` is a pool dimension, not a per-sandbox field** — the same constraint as [`runtimeClass`](#isolation), and for the same reason. A warm pod is already running when you claim it, and its mounts were fixed when it was created; the claim protocol late-binds a command, environment, and artifacts, but it cannot attach storage to a live pod. So the volume is declared on the pool and mounted into every warm pod in that fleet:
 
-```json
-// operator config, not an API call
-{"id": "py", "image": "open-runtimes/sandbox-python:3.12", "volumes": [{"source": "agent-scratch", "path": "/data"}]}
+```yaml
+# values.yaml — operator config, not an API call
+sandboxes:
+  pools:
+    - id: py
+      image: python:3.12-slim
+      volumes:
+        - source: agent-scratch
+          path: /data
 ```
 
-Want per-sandbox storage? Declare a pool per storage shape. The alternative — accepting `volumes` on the create call and cold-starting a pod for it — is what `agent-sandbox`'s `SandboxClaim` does ("Specifying this field forces a cold start because warm pool pods will not have these volumes"), and it is rejected here for now: it silently turns a sub-second create into a slow one, which is a bad thing to do quietly.
+Want per-sandbox storage? Declare a pool per storage shape. Accepting `volumes` on the create call would mean cold-starting a pod for it, which silently turns a sub-second create into a slow one — a bad thing to do quietly.
 
 Nothing is checkpointed and there is no suspend/resume — a sandbox is either running or gone. Anything worth keeping goes in a pool volume, or gets read out through `/files` before teardown.
 
 ## Isolation
 
-A sandbox runs at its pool's isolation tier, set by the pool's `runtimeClass` (`runc` | `gvisor` | `kata`). Warm pods are runtime-fixed at creation, so this is a **pool dimension, not a per-sandbox field** — warm fleets are keyed by `(image, runtimeClass)`. Want gVisor-isolated sandboxes? Configure a gVisor pool and create from it.
+A sandbox runs at its pool's isolation tier, set by the pool's `runtimeClass` (`runc` | `gvisor` | `kata`). Warm pods are runtime-fixed at creation, so this is a **pool dimension, not a per-sandbox field** — warm pools are keyed by `(image, runtimeClass)`. Want gVisor-isolated sandboxes? Configure a gVisor pool and create from it.
 
 Untrusted, model-generated code is the expected workload here, so `gvisor` or `kata` is the right default for a sandbox pool even though `runc` is the platform default. See [operations](operations.md#isolation-tiers) for mapping tiers to your cluster's RuntimeClasses.
 
@@ -130,9 +181,9 @@ GET    /v1/sandbox/{id}         # one sandbox's status
 DELETE /v1/sandbox/{id}         # tear down → 204
 ```
 
-`idleTimeoutSeconds` tears the sandbox down after that long with no traffic (`0` = live until `DELETE`). Pools should set a ceiling: an abandoned sandbox holds a warm pod hostage.
+`idleTimeoutSeconds` tears the sandbox down after that long with no traffic (`0` = live until `DELETE`, where the pool allows it). A pool's `maxIdleSeconds` caps it and fills it in when omitted: an abandoned sandbox holds a warm pod hostage, so requesting more than the ceiling is a `400`.
 
-As with activations, a used pod is **never reused** — teardown discards it and the pool replenishes with a fresh one.
+As with activations, a used pod is **never reused** — teardown discards it and the pool replenishes with a fresh one. Nothing about a sandbox is held in service memory, so a restart of the control plane leaves live sandboxes serving and reconstructs their state by listing pods.
 
 ## Sandbox pools
 
@@ -143,124 +194,114 @@ curl http://localhost:8080/v1/sandbox-pool
 ```
 
 ```json
-{"pools": [{"id": "py", "image": "open-runtimes/sandbox-python:3.12", "runtimeClass": "gvisor", "size": 4, "warm": 4, "claimed": 1}]}
+{"pools": [{"id": "py", "image": "python:3.12-slim", "size": 4, "warm": 4, "claimed": 1}]}
 ```
 
-`GET /v1/sandbox-pool/{id}` returns one pool. They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — and are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than per-workload route.
+`GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — plus an optional `command` (overriding the installed agent) and `maxIdleSeconds`. They are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
 
-Sandboxes require the Kubernetes backend; the Docker development backend serves deployments and jobs only.
+```yaml
+deployments:
+  enabled: true                     # serves /v1/sandbox and reconciles the pools
+sandboxes:
+  domain: sandboxes.example.com     # needs a wildcard DNS record for *.sandboxes.example.com
+  pools:
+    - id: py
+      image: python:3.12-slim         # any runtime image; the agent is installed
+      port: 3000                      # where the agent listens
+      size: 4
+      runtimeClass: gvisor
+      maxIdleSeconds: 900
+  proxy:
+    enabled: true
+```
 
----
+The **sandbox proxy** is the component every sandbox request passes through: one wildcard `HTTPRoute` for `*.{domain}` sends traffic to it, and it resolves the sandbox from the capability token in the request's `Host`.
+
+It is deliberately its own component rather than a mode of the [deployments activator](deployments.md), because the two differ everywhere it matters: the proxy is permanently on the request path (so it scales with sandbox traffic, including file transfers, not with cold starts), it reads pods and nothing else — no Secrets, no scale writes — and it never raises anything, since a sandbox is a claimed pod. Separate components keep those blast radii, RBAC grants, and scaling knobs separate.
+
+### The Docker backend
+
+Sandboxes also run on the Docker development backend, so you can build against the API without a cluster. Each sandbox is a container running the pool's image, fronted by a sidecar, sharing a workspace volume; the sandbox proxy runs inside the deployments service itself and serves sandboxes on its data port, so URLs carry that port (`http://s-{token}.sandboxes.test:8081`).
+
+```yaml
+# docker-compose / env for the deployments service
+ORCHESTRATOR_BACKEND: docker
+SANDBOX_DOMAIN: sandboxes.test
+SANDBOX_POOLS_JSON: '[{"id":"py","image":"node:22-slim","port":3000,"maxIdleSeconds":900}]'
+DOCKER_NETWORK: orchestrator   # recommended: keeps sandboxes off the default bridge
+```
+
+Everything in this guide works there — the contract, artifacts, extra ports, idle teardown, `status`/`list` reconstruction after a restart — with two honest exceptions:
+
+- **No warm pool.** `size` is ignored and `warm` is always `0`: a create pays a full container start (seconds), where Kubernetes claims an already-running pod in well under one.
+- **No isolation tiers.** `gvisor` and `kata` are RuntimeClasses, which Docker has no equivalent of. A sandbox here has ordinary container isolation, so **do not run untrusted code on it** — that is what the Kubernetes backend and a gVisor pool are for.
+
+One environment note: the service reaches sandboxes by container address, so it must run where those are routable — beside the daemon, or on a host whose engine routes to containers (OrbStack does, Docker Desktop does not). This is the same constraint the Docker deployments backend already has.
 
 ## Design notes
 
-Not part of the API contract — the reasoning behind the shape above, and the delta to build it.
+Not part of the API contract — the reasoning behind the shape above.
 
-### The shared engine
+### Why the agent is installed rather than required of the image
 
-The claim protocol is the whole point, and it is currently misfiled. `internal/pool/claim` is written against an `Inventory` seam and describes itself in backend-neutral terms, but it lives under `internal/pool` as though it belonged to one consumer. It has at least three: activations, sandboxes, and deployment cold starts.
+The contract has to be served from inside the sandbox (see below), but requiring
+it of the *image* would have made every pool image a custom build. So the agent
+is installed instead: `ghcr.io/open-runtimes/sandbox` runs as an init container
+with its command replaced by
 
-The shared concept is **warm fleet + claim + late-bind**, and it gets a neutral home before sandboxes are built on it — not after:
+```
+cp /usr/local/bin/sandbox /workspace/.sandbox-agent
+```
 
-| Today | Concept | Home |
-| --- | --- | --- |
-| `internal/pool/claim` | the claim protocol: POST-is-the-claim, poison, burst fallback, steal-retry | `internal/claim` |
-| `internal/pool/kubernetes` (inventory + replenish) | warm fleet reconcile and replenishment | `internal/warm` |
-| `pkg/pool.Pool` | a fleet declaration: `id`, `image`, `runtimeClass`, `size`, `cpu`, `memory`, `burst`, `volumes` | `pkg/fleet.Fleet`, specialized per consumer |
-| the artifact round-trip (`Parse`/`UnmarshalJSON`/`MarshalJSON`) in `pkg/pool/types.go:100-178` **and** `pkg/deployment/types.go:127+` | artifact-bearing spec codec | one generic helper in `internal/artifact` |
+and the claim then execs that path. Plain `cp` — no shell, no mkdir — so the
+publishing image needs to contain nothing but the binary and a `cp`, and the
+destination sits at the workspace root for the same reason.
 
-`pkg/lifecycle` is already correctly neutral — it is the model to follow.
+Distributing it as an image rather than a fetched artifact is the point: the tag
+(or digest, via `sandboxes.agentImage.ref`) IS the version pin, the registry
+verifies the bytes, the kubelet caches it per node instead of per pod, and an
+air-gapped install mirrors it like any other image. The alternative we tried —
+vendoring the release tarball into our own image at build time — needed a fetch
+script, hand-maintained SHA-256 digests, and a build-time network call, to end up
+in the same place.
 
-The last row lands first, independently: it is already duplicated twice today, so it pays for itself with no sandbox code written, and a third copy would be indefensible. The `internal/pool/claim` → `internal/claim` move is mechanical (only the package path is wrong).
+### Why exec and files live inside the sandbox
 
-This extraction is the load-bearing part of the design. One claim-and-late-bind engine serving jobs, deployments, activations, and sandboxes across Docker and Kubernetes is the thing worth having; a second copy of the claim flow sitting next to the first is a worse `agent-sandbox`.
+The alternatives are both worse. Through the control plane: `deployments-service` is stateless with N replicas and is rolling-restarted on every deploy, so a long exec dies every time we ship; every tenant's file uploads share those replicas; and streaming stdout gains a hop of buffering. Through our own sidecar: the sidecar and worker are different containers sharing only the workspace `emptyDir`, not a process or mount namespace — so the sidecar cannot run the worker image's interpreter or see a worker-only volume mount. Fixing that means either a resident supervisor in `cmd/pool-shim` (it `syscall.Exec`s the payload as PID 1 and dies with it, so this is an inversion plus a socket protocol) or backend-native exec (`pods/exec` + Docker exec: two exec implementations, two file-copy implementations, and `pods/exec` RBAC we would rather not grant).
 
-New code on top: `pkg/sandbox/{types,service,orchestrator}.go`, `internal/api/sandboxes.go`, a sandbox `Inventory`, and wildcard resolution in the activator. Notably *not* new: the shim, the sidecar, the claim protocol, the artifact pipeline, `pkg/volume`.
-
-### Why exec and files live in the image
-
-The alternative was serving them ourselves, and both ways of doing that are worse.
-
-Through the control plane: `deployments-service` is stateless with N replicas and is rolling-restarted on every deploy, so a long exec dies every time we ship; every tenant's file uploads share those replicas; and streaming stdout gains a hop of buffering. Through our own sidecar: the sidecar and worker are different containers sharing only the workspace `emptyDir`, not a process or mount namespace — so the sidecar cannot run the worker image's interpreter or see a worker-only volume mount. Fixing that means either a resident supervisor in `cmd/pool-shim` (it currently `syscall.Exec`s the payload as PID 1 at `cmd/pool-shim/main.go:128` and dies with it, so this is an inversion, ~200 lines plus a socket protocol) or backend-native exec (`pods/exec` + Docker exec: two exec implementations, two file-copy implementations, and `pods/exec` RBAC we would rather not grant).
-
-Putting the contract in the image costs none of that and buys bring-your-own-image. It is also what `kubernetes-sigs/agent-sandbox` converged on, though somewhat by accident: their SDK `POST`s `/execute` to a server that ships in the sandbox image (`clients/python/.../commands/command_executor.py`, `examples/demo-cilium-egress/exec-sandbox/server.py`), invisible to the CRD, the controller, and its RBAC.
-
-The cost is a contract we must version and a reference image we must maintain. Serializing exec per sandbox is deliberate and belongs in the contract: it keeps the reference implementation single-threaded and sidesteps concurrent-write races. Relaxing it later is compatible; the reverse is not.
+Putting the contract in the image costs none of that and buys bring-your-own-image. The cost is a contract to version and a reference image to maintain.
 
 ### Routing: wildcard, not per-sandbox routes
 
-Deployments get an HTTPRoute per deployment with stable `backendRefs`, and `endpointflip` swaps the revision Service's endpoints between ready pods (warm) and the shared activator (cold or draining) — so the activator buffers cold starts without sitting on the warm path (`internal/deployment/endpointflip/reconciler.go:1-5`). Activations extend that with a Service and HTTPRoute per activation (`internal/pool/kubernetes/route.go:35,62`), which is fine at tens-to-hundreds of long-lived activations.
+Activations get a Service and HTTPRoute each, which is fine at tens-to-hundreds of long-lived activations. It does not extend to sandboxes, for two reasons — and the second is disqualifying:
 
-It does not extend to sandboxes, for two reasons — and the second is the disqualifying one:
-
-1. **Churn.** Thousands of sandboxes with minute-scale lifetimes means a Gateway config recompute and xDS push per create and per delete.
+1. **Churn.** Thousands of sandboxes with minute-scale lifetimes means a gateway config recompute and xDS push per create and per delete.
 2. **Programming latency.** A new HTTPRoute is not live until the gateway programs it, often seconds. We would return a URL that 503s for longer than the sub-second claim took — negating the entire reason to use a warm pool.
 
-So sandboxes get **one wildcard HTTPRoute** for `*.{sandbox domain}`, backed by the activator, which resolves the sandbox by Host — it already routes by Host (`internal/activator/activator.go:33`) and already owns the `Prefer: respond-async` split. No per-sandbox Service, route, or flip slice; nothing to churn; creates as fast as the claim. The wildcard-DNS half of this is already how deployments are reached (`docs/operations.md:112`).
-
-This is the same topology as agent-sandbox's Sandbox Router — a shared edge keyed by sandbox identity — but reusing an edge we already own and keying on Host rather than a bespoke `X-Sandbox-ID` header. Their router is inline permanently because it is the only thing that can resolve that header; ours can step aside per-sandbox via the deployments route-and-flip path when a sandbox declares `hosts` and wants gateway-direct serving.
-
-### How the sandbox edge fits the activator
-
-`internal/activator` already hosts **two** edges over one broker, which settles the question of whether a third fits: `Activator` routes by Host through a `Resolver` (Docker/Phase 1, `activator.go:88`), and `RevisionActivator` routes by the gateway's `X-Revision` header through pod informers (`revision.go:130`). The `Resolver` seam belongs to the first edge only — a sandbox edge would not touch it.
-
-What the broker actually requires is small: an opaque `key string` and a `capacity` with `Target(ctx) (*url.URL, error)` and `Raise(ctx) error` (`broker.go:40-46`). A `SandboxActivator` supplies both trivially:
-
-- **Host → token needs no lookup.** With `{token}.{sandbox domain}`, the leading DNS label *is* the [capability token](#the-url-is-a-capability) — never the caller-chosen `id`, which is guessable and must never be addressable. Cheaper than either existing edge: no `Resolver` scan, no id→token indirection, no resolve cache (`activator.go:67-84` becomes unnecessary).
-- **`Target`** is `revisionCapacity.Target` with a different label selector: list pods carrying that token, take a ready one. `readyPodTarget`, `podDataTarget`, `probeCandidates`, and `probeReady` (`revision.go:197-266`) are reusable as-is — including the direct-sidecar-probe trick that beats kubelet readiness propagation, which matters for a sub-second claim.
-- **`Raise` is a no-op.** A sandbox has no scale-from-zero: it is a claimed pod, and if the pod is gone the sandbox is gone. This dissolves the "does being on the data path conflict with scale-from-zero" worry — there is no raise to conflict with. Holding still earns its keep during `creating` (the pod exists, artifacts are materializing), so `hold` should be a few seconds rather than the deployments `StartTimeout` of 300s.
-
-**Use `broker.sync` only.** The async path is deployment-typed — `async` takes a `*deployment.Request` for `spec.Callback`/`spec.TimeoutSeconds`, and `dispatchResponse` hardcodes the `orchestrator.deployment.response` event type, the `deploymentId` key, and `source = "orchestrator/deployments"` (`broker.go:121,199,247`). Generalizing that means parameterizing the callback/event triple, and there is no reason to: async exec belongs to the image's contract now, not ours. Sync-only also keeps file uploads streaming through `httputil.ReverseProxy` (`broker.go:326`) rather than hitting the async path's 10 MiB buffer.
-
-**Deploy it as its own Deployment.** The sandbox edge is permanently on the data path, while `deployments-activator` only sees cold and async traffic — different load profiles, and sandbox file transfers should not share a failure domain with deployment cold starts. Same binary and image, separate replica set and selector.
-
-The bookkeeping maps are already churn-safe (`pruneMapThreshold = 1024`, `pruneStale`, `broker.go:400-416`), which matters at sandbox create/delete rates. One wart: the `Recorder` metrics are activator-generic in name but would conflate sandbox and deployment holds in one series — wants a label or a second recorder.
+So sandboxes get one wildcard HTTPRoute backed by the sandbox proxy, which resolves the sandbox by Host. No per-sandbox Service, route, or endpoint flip; nothing to churn; creates as fast as the claim.
 
 ### The URL is a capability
 
-With a wildcard route and no per-sandbox auth, **reaching a sandbox's URL is sufficient to execute code in it.** The URL is the credential, so it has to be unguessable.
+With a wildcard route and no per-sandbox auth, **reaching a sandbox's URL is sufficient to execute code in it.** The URL is the credential, so it has to be unguessable — and the `id` cannot serve, because a caller-chosen `my-agent-sandbox` is guessable no matter how much entropy our generator has.
 
-Activation ids are minted from 4 random bytes (`pkg/pool/service.go:159-169`) — 32 bits behind a predictable `{pool}-` prefix. Fine for activations, where URL secrecy was never the security model; not fine when a guess yields arbitrary code execution inside someone else's gVisor sandbox.
-
-**The host carries its own 16-byte token, independent of the sandbox id.** This is not just a wider id, because `id` is caller-choosable for idempotency and stable API paths — and a caller-chosen `my-agent-sandbox` is guessable no matter how much entropy our generator has. Decoupling keeps both properties:
+So the host carries its own 16-byte token, independent of the id:
 
 ```
 POST /v1/sandbox  {"id": "my-agent", ...}
   → {"id": "my-agent", "url": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com"}
 
-/v1/sandbox/my-agent          # stable, caller-chosen, idempotent
-s-9f3c…95f.sandboxes.example.com  # unguessable, the capability
+/v1/sandbox/my-agent                # stable, caller-chosen, idempotent
+s-9f3c…95f.sandboxes.example.com    # unguessable, the capability
 ```
 
-The token is the routing key: warm pods are labelled with it on claim, so the edge's `Target` selector keys on the token and the lookup stays as cheap as keying on the id would have been. The host is no longer derivable from the id, so it must be returned at create time and available from `GET /v1/sandbox/{id}` — which it would be anyway.
+The token is also the routing key: warm pods are labelled with it on claim, so the proxy's lookup stays as cheap as keying on the id would have been. It lives only as that label — never in an annotation, a log line, or an event payload — so `DELETE` invalidates it along with the pod, and a leaked URL is dead on teardown.
 
-Consequences to honor: the URL is a secret, so it stays out of logs, error bodies, redirects, and CloudEvent payloads. `DELETE` must invalidate the token, not just the pod, so a leaked URL is dead on teardown.
-
-Edge authentication — a per-sandbox bearer token the `SandboxActivator` requires — remains the stronger answer and stays open. It decouples addressability from authorization outright, and the edge is the right place for it since it is already the only thing on the path. Worth doing if sandboxes ever hold tenant data. `agent-sandbox` punts here too: their router's default authorizer is `AllowAll`, with a real one merely recommended in their threat model.
-
-### The `sandbox` → `runtimeClass` rename
-
-`sandbox` currently names the isolation tier on jobs, deployments, and pools. Once sandbox is also a workload kind, one word means two things. Kubernetes calls the resource `RuntimeClass` and the field `spec.runtimeClassName`; plain `runtime` is unavailable because open-runtimes already uses it for the language runtime image. So the tier becomes `runtimeClass`, and `sandbox` is freed for the kind.
-
-Breaking, and cheap now:
-
-| | from | to |
-| --- | --- | --- |
-| API field | `"sandbox": "gvisor"` | `"runtimeClass": "gvisor"` |
-| Constants | `SandboxRunc/Gvisor/Kata`, `ValidSandbox` | `RuntimeClassRunc/Gvisor/Kata`, `ValidRuntimeClass` |
-| Env | `KUBE_SANDBOX_RUNTIME_CLASSES` | `KUBE_RUNTIME_CLASSES` |
-| File | `internal/kube/sandbox.go` | `internal/kube/runtimeclass.go` |
-
-Call sites: `pkg/deployment/types.go:17,72-83`, `pkg/pool/types.go:22,75-78`, `internal/kube/sandbox.go`, `internal/deployment/{docker,kubernetes}`, `internal/pool/kubernetes`, `charts/orchestrator`, `docs/{deployments,operations}.md`, `UBIQUITOUS_LANGUAGE.md:139`.
-
-**The wire field is serialized in four places, not one.** `pkg/deployment/types.go` carries the public `Request.Sandbox` (`:17`) *and* a shadow copy in `requestJSON` (`:132`), plus the two hand-written halves that move values between them — `fromRaw` (`:182`) and `MarshalJSON` (`:217`). Miss any of the three and the failure is quiet in the worst way: a `runtimeClass` request parses fine and silently drops its isolation setting, so the workload runs on the shared host kernel while the caller believes it asked for gVisor. Change all four together, and add a round-trip test asserting the tier survives marshal→unmarshal.
-
-That hazard is itself an argument for the [codec extraction](#the-shared-engine): the shadow-struct pattern is duplicated across `pkg/deployment` and `pkg/pool`, so every field either package adds carries the same four-place obligation.
+Proxy authentication — a per-sandbox bearer token the proxy requires — remains the stronger answer and stays open. It decouples addressability from authorization outright, and the proxy is the right place for it since it is already the only thing on the path. Worth doing if sandboxes ever hold tenant data.
 
 ### Deliberately out of scope
 
-**Suspend/resume.** `agent-sandbox` makes this first-class (`operatingMode: Running|Suspended` — delete the pod, keep the CR, Service, and PVCs). Right feature eventually, wrong one now: it requires owning per-sandbox PVC lifecycle, quota, and cleanup, and a resume cannot use warm-pool claiming, so it needs a second, slower creation path. Ephemeral workspaces plus pool-level volumes cover the agent use case.
+**Suspend/resume.** It requires owning per-sandbox PVC lifecycle, quota, and cleanup, and a resume cannot use warm-pool claiming, so it needs a second, slower creation path. Ephemeral workspaces plus pool-level volumes cover the agent use case.
 
 **Per-sandbox managed storage.** Same reasoning, plus the warm-pod constraint: pool `volumes` attach storage whose lifecycle someone else owns, which is exactly why they are cheap, and a live pod's mounts cannot be changed at claim time regardless.
 
-**A sandbox network policy.** Untrusted code with default-open egress is the real exposure, and we have no equivalent to agent-sandbox's managed default-deny NetworkPolicy (`docs/security/threat_model.md`). A genuine gap, but a platform concern spanning pools and deployments too — its own change, not this one.
+**A sandbox network policy.** Untrusted code with default-open egress is the real exposure. The workload-namespace policy blocks the cloud metadata endpoint and default-denies ingress, but a sandbox-specific default-deny egress is a platform concern spanning pools and deployments too — its own change, not this one.

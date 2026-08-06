@@ -285,3 +285,32 @@ func TestStats(t *testing.T) {
 	}
 	waitFor(t, "stats to drop to zero", func() bool { return fetch().InFlight == 0 })
 }
+
+// Direct mode takes its secondary ports from the environment, the way the
+// Docker sandbox backend supplies them — the same binding the claim path builds.
+func TestDirectMode_ExtraPortsFromConfig(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig("127.0.0.1:1")
+	cfg.TargetHost = "127.0.0.1"
+	cfg.ExtraPorts = []int{5173}
+	p := New(cfg)
+
+	b := p.bind.Load()
+	if b == nil {
+		t.Fatal("direct mode must arm a binding at New")
+	}
+	if got, ok := b.extra[5173]; !ok || got != "127.0.0.1:5173" {
+		t.Errorf("extra port target: got %q (%v)", got, ok)
+	}
+	if _, ok := b.extra[9229]; ok {
+		t.Error("undeclared ports must not be routable")
+	}
+}
+
+func TestParsePorts(t *testing.T) {
+	t.Parallel()
+	got := parsePorts("5173, 9229 ,,notaport,0,70000")
+	if len(got) != 2 || got[0] != 5173 || got[1] != 9229 {
+		t.Errorf("parsePorts: got %v — junk must be skipped, not fatal", got)
+	}
+}

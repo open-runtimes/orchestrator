@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"os"
 	"path/filepath"
 	"sync"

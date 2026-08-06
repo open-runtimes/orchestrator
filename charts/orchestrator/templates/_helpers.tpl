@@ -49,11 +49,15 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.deploymentsSidecarImage" -}}
-{{- if .Values.deployments.sidecarImage.ref -}}
-{{- .Values.deployments.sidecarImage.ref -}}
+{{/*
+  workloadSidecarImage: one image for every serving workload's sidecar —
+  deployment replicas, pool activations, and sandboxes.
+*/}}
+{{- define "orchestrator.workloadSidecarImage" -}}
+{{- if .Values.workloadSidecarImage.ref -}}
+{{- .Values.workloadSidecarImage.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.sidecarImage.repository (default .Chart.AppVersion .Values.deployments.sidecarImage.tag) -}}
+{{- printf "%s:%s" .Values.workloadSidecarImage.repository (default .Chart.AppVersion .Values.workloadSidecarImage.tag) -}}
 {{- end -}}
 {{- end -}}
 
@@ -95,6 +99,26 @@ imagePullSecrets:
 {{- .Values.deployments.activator.image.ref -}}
 {{- else -}}
 {{- printf "%s:%s" .Values.deployments.activator.image.repository (default .Chart.AppVersion .Values.deployments.activator.image.tag) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+  sandboxAgentImage: the image the contract-serving binary is copied out of.
+  Tagged, not floating: this is the agent version pin.
+*/}}
+{{- define "orchestrator.sandboxAgentImage" -}}
+{{- if .Values.sandboxes.agentImage.ref -}}
+{{- .Values.sandboxes.agentImage.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.sandboxes.agentImage.repository (required "sandboxes.agentImage.tag is required (pin the agent version)" .Values.sandboxes.agentImage.tag) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.sandboxProxyImage" -}}
+{{- if .Values.sandboxes.proxy.image.ref -}}
+{{- .Values.sandboxes.proxy.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.sandboxes.proxy.image.repository (default .Chart.AppVersion .Values.sandboxes.proxy.image.tag) -}}
 {{- end -}}
 {{- end -}}
 
@@ -297,3 +321,14 @@ rollingUpdate:
   maxUnavailable: 0
   maxSurge: 1
 {{- end }}
+
+{{- define "orchestrator.sandboxProxyLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: sandbox-proxy
+{{- end -}}
+
+{{- define "orchestrator.sandboxProxySelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: sandbox-proxy
+{{- end -}}

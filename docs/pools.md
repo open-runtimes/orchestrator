@@ -45,7 +45,7 @@ Run-to-completion workloads belong to the [jobs API](jobs.md), not pools.
 
 ## Artifacts
 
-Activations accept the same [artifact schema as jobs](jobs.md#artifacts), materialized into the pod's `/workspace` before your command runs:
+Activations accept the same [artifact schema as jobs](jobs.md#artifacts), materialized into the pod's `/workspace` before your command runs — every type except [`mount`](jobs.md#mount), which needs a post phase an activation does not have:
 
 ```bash
 curl -X POST http://localhost:8080/v1/deployment-pools/py/activations \

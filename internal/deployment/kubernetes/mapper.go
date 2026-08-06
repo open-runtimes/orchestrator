@@ -5,16 +5,15 @@ import (
 	"net"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/workload"
 	"slices"
 	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -36,7 +35,7 @@ const (
 	VolumeTmp       = "tmp"
 	// workspacePath is the default shared-volume mount path when a request
 	// does not set req.Workspace.
-	workspacePath = "/workspace"
+	workspacePath = config.DefaultWorkspace
 
 	portNameProxy = "proxy"
 	portNameAdmin = "admin"
@@ -126,7 +125,7 @@ func buildService(id, revision string) *corev1.Service {
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       80,
-				TargetPort: intstr.FromInt32(proxy.DefaultProxyPort),
+				TargetPort: intstr.FromInt32(workload.DefaultProxyPort),
 			}},
 		},
 	}
@@ -166,9 +165,9 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 			},
 		}},
 	}
-	// Sandbox tier (docs/operations.md): gvisor/kata stamp their mapped
+	// Isolation tier (docs/operations.md): gvisor/kata stamp their mapped
 	// RuntimeClass; runc (the default) stamps nothing.
-	if rc := kube.RuntimeClassFor(cfg.SandboxRuntimeClasses, req.Sandbox); rc != "" {
+	if rc := kube.RuntimeClassFor(cfg.RuntimeClasses, req.RuntimeClass); rc != "" {
 		spec.RuntimeClassName = &rc
 	}
 	return spec
@@ -181,7 +180,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	workspace := workspaceOf(req)
 	env := []corev1.EnvVar{
 		{Name: "JOB_ID", Value: objectNameFor(req.ID)},
-		{Name: "SHARED_VOLUME_PATH", Value: workspace},
+		{Name: config.EnvSharedVolume, Value: workspace},
 	}
 	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
 	// needs to unmarshal them back into concrete types.
@@ -198,11 +197,11 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 		Args:            []string{"-mode=pre"},
 		Env:             env,
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }
 
-// proxyContainer is the deployments-sidecar: a native sidecar (init container
+// proxyContainer is the workload-sidecar: a native sidecar (init container
 // with restartPolicy Always) reverse-proxying traffic to the worker. Its
 // kubelet readiness probe (GET /ready on the admin port) is what admits the
 // pod into the Service's EndpointSlice.
@@ -215,64 +214,52 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
 		Env:             proxyEnv(req),
 		Ports: []corev1.ContainerPort{
-			{Name: portNameProxy, ContainerPort: proxy.DefaultProxyPort},
-			{Name: portNameAdmin, ContainerPort: proxy.DefaultAdminPort},
+			{Name: portNameProxy, ContainerPort: workload.DefaultProxyPort},
+			{Name: portNameAdmin, ContainerPort: workload.DefaultAdminPort},
 		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/ready",
-					Port: intstr.FromInt32(proxy.DefaultAdminPort),
+					Port: intstr.FromInt32(workload.DefaultAdminPort),
 				},
 			},
 			PeriodSeconds:    1,
 			FailureThreshold: 3,
 		},
 		RestartPolicy:   &alwaysRestart,
-		Resources:       proxyResources(),
+		Resources:       kube.SidecarResources(),
 		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
-}
-
-// proxyResources is the sidecar's small fixed overhead shape, counted into
-// the pod request per resource-model.md: modest requests, a memory ceiling,
-// and no cpu limit (same CFS-throttling rationale as the worker).
-func proxyResources() corev1.ResourceRequirements {
-	requests := corev1.ResourceList{}
-	requests[corev1.ResourceCPU] = resource.MustParse("25m")
-	requests[corev1.ResourceMemory] = resource.MustParse("32Mi")
-	limits := corev1.ResourceList{}
-	limits[corev1.ResourceMemory] = resource.MustParse("64Mi")
-	return corev1.ResourceRequirements{Requests: requests, Limits: limits}
 }
 
 // proxyEnv stamps the internal/proxy env contract into the proxy container.
 func proxyEnv(req *deployment.Request) []corev1.EnvVar {
 	env := []corev1.EnvVar{
-		{Name: proxy.EnvTarget, Value: net.JoinHostPort("127.0.0.1", strconv.Itoa(req.Port))},
+		{Name: workload.EnvTarget, Value: net.JoinHostPort("127.0.0.1", strconv.Itoa(req.Port))},
 	}
 	if req.TimeoutSeconds > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvTimeoutSeconds, Value: strconv.Itoa(req.TimeoutSeconds)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvTimeoutSeconds, Value: strconv.Itoa(req.TimeoutSeconds)})
 	}
 	if req.Concurrency > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvConcurrency, Value: strconv.Itoa(req.Concurrency)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvConcurrency, Value: strconv.Itoa(req.Concurrency)})
 	}
 	if req.Probes == nil || req.Probes.Readiness == nil {
 		return env
 	}
 	r := req.Probes.Readiness
 	if r.Path != "" {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessPath, Value: r.Path})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessPath, Value: r.Path})
 	}
 	if r.PeriodMillis > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessPeriodMillis, Value: strconv.Itoa(r.PeriodMillis)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessPeriodMillis, Value: strconv.Itoa(r.PeriodMillis)})
 	}
 	if r.TimeoutMillis > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessTimeoutMillis, Value: strconv.Itoa(r.TimeoutMillis)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessTimeoutMillis, Value: strconv.Itoa(r.TimeoutMillis)})
 	}
 	if r.FailureThreshold > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessFailureThreshold, Value: strconv.Itoa(r.FailureThreshold)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessFailureThreshold, Value: strconv.Itoa(r.FailureThreshold)})
 	}
 	return env
 }
@@ -310,7 +297,7 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
 		LivenessProbe:   kubeletProbe(probes.Liveness, req.Port),
 		StartupProbe:    kubeletProbe(probes.Startup, req.Port),
-		SecurityContext: hardenedSecurityContext(cfg),
+		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }
 
@@ -373,24 +360,4 @@ func kubeletProbe(p *deployment.Probe, port int) *corev1.Probe {
 // ceilSeconds converts milliseconds to whole seconds, rounding up (min 1s).
 func ceilSeconds(millis int) int32 {
 	return int32((millis + 999) / 1000)
-}
-
-// hardenedSecurityContext is the workload hardening floor (docs/operations.md),
-// applied to every container: non-root, no privilege escalation, all
-// capabilities dropped, default seccomp, read-only rootfs (writes go to the
-// workspace and /tmp emptyDirs).
-func hardenedSecurityContext(cfg Config) *corev1.SecurityContext {
-	nonRoot := true
-	noEscalation := false
-	readOnlyRootFS := true
-	uid := cfg.RunAsUser
-	return &corev1.SecurityContext{
-		RunAsNonRoot:             &nonRoot,
-		RunAsUser:                &uid,
-		RunAsGroup:               &uid,
-		AllowPrivilegeEscalation: &noEscalation,
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		ReadOnlyRootFilesystem:   &readOnlyRootFS,
-	}
 }

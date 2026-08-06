@@ -11,9 +11,9 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/workload"
 	"strings"
 	"sync"
 	"time"
@@ -34,7 +34,7 @@ type Resolver interface {
 // Activator routes data-plane traffic by Host.
 type Activator struct {
 	resolver Resolver
-	broker   *broker
+	broker   *deploymentBroker
 
 	mu    sync.Mutex
 	cache map[string]resolveEntry // host → spec, TTL-bounded
@@ -50,7 +50,7 @@ type resolveEntry struct {
 func New(resolver Resolver, queue dispatcher.Queue, rec Recorder) *Activator {
 	return &Activator{
 		resolver: resolver,
-		broker:   newBroker(queue, rec),
+		broker:   newDeploymentBroker(queue, rec),
 		cache:    make(map[string]resolveEntry),
 	}
 }
@@ -98,7 +98,7 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Forward the host the client actually used — any of the deployment's
 	// hosts is a valid virtual host for the workload.
-	if proxy.PreferAsync(r) {
+	if workload.PreferAsync(r) {
 		a.broker.async(w, r, spec.ID, host, spec, hold, c)
 		return
 	}

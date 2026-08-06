@@ -1,6 +1,9 @@
 package artifact
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Mount mounts a squashfs or erofs image into the workspace so the worker can
 // read it without extraction; the format is detected from the image's magic.
@@ -12,8 +15,12 @@ import "context"
 // Unlike other artifacts, a mount is not applied-and-done: the mount must exist
 // before the worker starts and persist for its whole lifetime, then be torn
 // down afterwards. That lifecycle is owned by the sidecar runner, which detects
-// Mount artifacts and drives the host Mounter directly — so Apply here is a
-// no-op and is never invoked through the normal artifact flow.
+// Mount artifacts and drives the host Mounter directly, so Apply is never
+// reached through the normal artifact flow.
+//
+// A workload with no post-phase sidecar therefore cannot have a mount at all —
+// which is why MountDef declares NeedsPostPhase and the serving registry rejects
+// it (internal/artifact/registry.go). Jobs are the only plane that runs one.
 type Mount struct {
 	ID       string `json:"id"`
 	In       string `json:"in"`  // Source image path (squashfs or erofs, in the workspace)
@@ -38,7 +45,9 @@ func HasMount(artifacts []Artifact) bool {
 	return false
 }
 
-// Apply is a no-op; the sidecar runner owns the mount lifecycle (see type doc).
+// Apply must never run: the sidecar establishes mounts out of band (see the
+// type doc). Reaching here means a mount slipped into the ordinary artifact
+// flow, so it fails loudly rather than reporting a success nobody performed.
 func (a *Mount) Apply(context.Context, string) *Result {
-	return &Result{Status: "success"}
+	return &Result{Status: "error", Error: errors.New("mount artifacts are established by the sidecar, not applied")}
 }

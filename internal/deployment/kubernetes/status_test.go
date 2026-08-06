@@ -3,7 +3,7 @@ package kubernetes
 import (
 	"errors"
 	"orchestrator/internal/apperrors"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"reflect"
 	"testing"
 

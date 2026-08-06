@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/config"
+	"orchestrator/internal/job"
+	"orchestrator/internal/job/docker"
+	"orchestrator/internal/job/kubernetes"
 	"orchestrator/internal/observability"
-	"orchestrator/internal/orchestrator/docker"
-	"orchestrator/internal/orchestrator/kubernetes"
-	"orchestrator/pkg/job"
-	"orchestrator/pkg/server"
+	"orchestrator/internal/server"
 	"os"
 )
 

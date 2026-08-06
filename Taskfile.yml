@@ -56,10 +56,20 @@ tasks:
       - task: build-service
       - task: build-sidecar
       - task: build-deployments
-      - task: build-deployments-sidecar
+      - task: build-workload-sidecar
       - task: build-deployments-activator
+      - task: build-sandbox-proxy
       - task: build-pool-shim
     silent: true
+
+  build-sandbox-proxy:
+    desc: Build sandbox-proxy image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/sandbox-proxy {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/sandbox-proxy
+    sources:
+      - cmd/sandbox-proxy/**/*.go
+      - internal/**/*.go
 
   build-pool-shim:
     desc: Build pool-shim image
@@ -69,7 +79,6 @@ tasks:
     sources:
       - cmd/pool-shim/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-deployments-activator:
@@ -80,7 +89,6 @@ tasks:
     sources:
       - cmd/deployments-activator/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-deployments:
@@ -91,18 +99,16 @@ tasks:
     sources:
       - cmd/deployments-service/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
-  build-deployments-sidecar:
-    desc: Build deployments-sidecar image
+  build-workload-sidecar:
+    desc: Build workload-sidecar image
     deps: [tools]
     cmds:
-      - KO_DOCKER_REPO=ko.local/deployments-sidecar {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/deployments-sidecar
+      - KO_DOCKER_REPO=ko.local/workload-sidecar {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/workload-sidecar
     sources:
-      - cmd/deployments-sidecar/**/*.go
+      - cmd/workload-sidecar/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-service:
@@ -113,7 +119,6 @@ tasks:
     sources:
       - cmd/jobs-service/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-sidecar:
@@ -124,7 +129,6 @@ tasks:
     sources:
       - cmd/job-sidecar/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   # === Test ===
@@ -143,9 +147,9 @@ tasks:
     desc: Run real-cluster K8s integration tests (requires kind + built images)
     deps: [build, kind:up]
     cmds:
-      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/deployments-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-shim:latest --name {{.KIND_CLUSTER}}
+      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/sandbox-proxy:latest ko.local/pool-shim:latest --name {{.KIND_CLUSTER}}
       - bash hack/install-gateway.sh
-      - go test -race -tags=k8s_integration -timeout=10m ./internal/orchestrator/kubernetes/... ./internal/deployment/kubernetes/...
+      - go test -race -tags=k8s_integration -timeout=10m ./internal/job/kubernetes/... ./internal/deployment/kubernetes/...
 
   test-e2e:
     desc: Run e2e tests (full system)

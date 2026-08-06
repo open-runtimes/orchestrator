@@ -2,11 +2,12 @@ package api
 
 import (
 	"net/http"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/deployment"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/pool"
+	"orchestrator/internal/sandbox"
 )
 
 // DeploymentsRouterConfig holds dependencies for the deployments API router.
@@ -20,6 +21,10 @@ type DeploymentsRouterConfig struct {
 	// (nil = no pool routes). Dispatcher delivers async activation results.
 	PoolService *pool.Service
 	Dispatcher  dispatcher.Queue
+
+	// SandboxService mounts /v1/sandbox and /v1/sandbox-pool when sandbox
+	// pools are configured (nil = no sandbox routes).
+	SandboxService *sandbox.Service
 }
 
 // NewDeploymentsRouter creates the management router for the deployments
@@ -41,6 +46,9 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 
 	if cfg.PoolService != nil {
 		registerPoolRoutes(mux, auth, cfg.PoolService, cfg.Dispatcher)
+	}
+	if cfg.SandboxService != nil {
+		registerSandboxRoutes(mux, auth, cfg.SandboxService)
 	}
 
 	var handler http.Handler = mux

@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 	"orchestrator/internal/health"
+	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/job"
 )
 
 // RouterConfig holds dependencies for the router.

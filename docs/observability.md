@@ -81,7 +81,7 @@ it cannot drift. Register new saturation metrics with
 `Metrics.ObserveInt64`, and reach for `UpDownCounter` only when the increment
 and decrement are provably in the same function (e.g. a `defer`).
 
-See: `internal/observability/metrics.go`, `internal/orchestrator/kubernetes/transport.go`
+See: `internal/observability/metrics.go`, `internal/job/kubernetes/transport.go`
 
 **Deployments Metrics:**
 
@@ -89,21 +89,23 @@ Both the deployments service and the standalone activator (K8s) expose the same 
 
 | Signal | Metrics |
 |--------|---------|
-| Latency | `deployment_rollout_duration_seconds` (revision minted → traffic cut), `activator_hold_duration_seconds{outcome=served\|timeout}` (the client-visible cold-start cost) |
-| Traffic | `deployments_applied_total{created}`, `deployment_rollout_cuts_total`, `activator_raises_total`, `activator_async_total{result=delivered\|failed}`, `autoscaler_scale_events_total{direction=up\|down}` |
+| Latency | `deployment_rollout_duration_seconds` (revision minted → traffic cut), `activator_hold_duration_seconds{component,outcome=served\|timeout}` (the client-visible cold-start cost) |
+| Traffic | `deployments_applied_total{created}`, `deployment_rollout_cuts_total`, `activator_raises_total{component}`, `activator_async_total{component,result=delivered\|failed}`, `autoscaler_scale_events_total{direction=up\|down}` |
 | Errors | `autoscaler_scrape_errors_total` (failed concurrency scrapes while replicas are serving) |
-| Saturation | `deployments_active`, `activator_queued` (requests held for capacity), `autoscaler_desired_replicas{deployment}` |
+| Saturation | `deployments_active`, `activator_queued{component}` (requests held for capacity), `autoscaler_desired_replicas{deployment}` |
 
-Rollout metrics come from the leader's reconciler; leadership and K8s API metrics apply to the deployments service and activator exactly as to jobs.
+Rollout metrics come from the leader's reconciler; leadership and K8s API metrics apply to the deployments service and activator exactly as to jobs. The broker behind these series runs in two components, and the `component` label says which — `deployments-activator` or `sandbox-proxy`, matching their `app.kubernetes.io/component` labels, so a PromQL series and a pod selector read the same. A sandbox hold never reads as a deployment cold start, and `activator_raises_total` is only ever the activator's: the sandbox proxy has nothing to raise.
 
 **Pool Metrics:**
 
+Warm pools serve two consumers — deployment-pool activations and [sandboxes](sandboxes.md) — and both are claim-and-late-bind, so they share one set of series. The `kind` label (`pool` | `sandbox`) says which, and pool ids may repeat across the two config lists without colliding.
+
 | Signal | Metrics |
 |--------|---------|
-| Latency | `pool_activation_duration_seconds{pool,success}` (claim through serving) |
-| Traffic | `pool_activations_total{pool}`, `pool_burst_total{pool,policy=reject\|cold}` |
-| Errors | `pool_poisoned_total{pool}` (failed artifact materialization), `pool_claim_conflicts_total{pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
-| Saturation | `pool_activations_active{pool}`, `pool_warm{pool}`, `pool_claimed{pool}` |
+| Latency | `pool_activation_duration_seconds{kind,pool,success}` (claim through serving) |
+| Traffic | `pool_activations_total{kind,pool}`, `pool_burst_total{kind,pool,policy=reject\|cold}` |
+| Errors | `pool_poisoned_total{kind,pool}` (failed artifact materialization), `pool_claim_conflicts_total{kind,pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
+| Saturation | `pool_activations_active{kind,pool}`, `pool_warm{kind,pool}`, `pool_claimed{kind,pool}` |
 
 Warm/claimed capacity gauges are recorded by the leader's control loop each tick. `pool_warm` dropping to zero while `pool_burst_total{policy="reject"}` climbs is the signal to grow `size`.
 

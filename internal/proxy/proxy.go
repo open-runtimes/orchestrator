@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"orchestrator/internal/workload"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -57,13 +58,35 @@ type binding struct {
 	reverse *httputil.ReverseProxy
 	prober  *prober
 	timeout time.Duration // per-request total → 504
+
+	// extra holds the claim's secondary ports, keyed by port. A request naming
+	// one (workload.HeaderPort) is dialed there on loopback instead of Target; anything
+	// not in here is refused, so the header can never widen what the claim
+	// declared.
+	extra map[int]string
 }
 
 func newBinding(cfg Config) *binding {
+	var extra map[int]string
+	if len(cfg.ExtraPorts) > 0 {
+		extra = make(map[int]string, len(cfg.ExtraPorts))
+		for _, port := range cfg.ExtraPorts {
+			extra[port] = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(port))
+		}
+	}
 	return &binding{
+		extra: extra,
 		reverse: &httputil.ReverseProxy{
 			Rewrite: func(r *httputil.ProxyRequest) {
-				r.SetURL(&url.URL{Scheme: "http", Host: cfg.Target})
+				// handleData resolved (and validated) which port this request is
+				// for; the hint itself is ours, not the workload's, so it is
+				// stripped before forwarding.
+				target := cfg.Target
+				if addr, ok := r.In.Context().Value(targetKey{}).(string); ok && addr != "" {
+					target = addr
+				}
+				r.Out.Header.Del(workload.HeaderPort)
+				r.SetURL(&url.URL{Scheme: "http", Host: target})
 				r.SetXForwarded()
 			},
 			ErrorHandler: writeProxyError,
@@ -71,6 +94,28 @@ func newBinding(cfg Config) *binding {
 		prober:  newProber(cfg),
 		timeout: cfg.Timeout,
 	}
+}
+
+// targetKey carries the resolved upstream address from handleData (which
+// validates the port) into the proxy's Rewrite hook.
+type targetKey struct{}
+
+// target resolves which upstream address a request is for: the claim's primary
+// port by default, a declared secondary port when workload.HeaderPort names one. An
+// undeclared port is ("", false) — a 404, never a dial.
+func (b *binding) target(r *http.Request, primary string) (string, bool) {
+	raw := r.Header.Get(workload.HeaderPort)
+	if raw == "" {
+		return primary, true
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return "", false
+	}
+	if addr, ok := b.extra[port]; ok {
+		return addr, true
+	}
+	return "", false
 }
 
 // New creates a proxy from cfg. Call Run (or Start) to serve.
@@ -162,7 +207,13 @@ func (p *Proxy) handleData(w http.ResponseWriter, r *http.Request) {
 	p.requests.Add(1)
 	defer p.accumulate(-1)
 
-	ctx := r.Context()
+	target, ok := b.target(r, p.cfg.Target)
+	if !ok {
+		http.Error(w, "port not exposed by this workload", http.StatusNotFound)
+		return
+	}
+
+	ctx := context.WithValue(r.Context(), targetKey{}, target)
 	if b.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, b.timeout)
@@ -213,8 +264,8 @@ func (p *Proxy) adminMux() *http.ServeMux {
 	mux.HandleFunc("GET /ready", p.handleReady)
 	mux.HandleFunc("GET /stats", p.handleStats)
 	if p.pool != nil {
-		mux.HandleFunc("POST "+ClaimPath, p.handleActivate)
-		mux.HandleFunc("GET "+ClaimStatePath, p.handleClaimState)
+		mux.HandleFunc("POST "+workload.ClaimPath, p.handleActivate)
+		mux.HandleFunc("GET "+workload.ClaimStatePath, p.handleClaimState)
 	}
 	return mux
 }
@@ -269,6 +320,28 @@ type stats struct {
 	Ready              bool    `json:"ready"`
 }
 
+// requestBound is how long a request may take, as bound right now: the claim's
+// value once one has armed the data plane, the configured default until then.
+// 0 means unbounded. This is the only source for that fact — a claim that
+// states its own bound (including 0) must not find a second answer waiting
+// somewhere else.
+func (p *Proxy) requestBound() time.Duration {
+	if b := p.bind.Load(); b != nil {
+		return b.timeout
+	}
+	return p.cfg.Timeout
+}
+
+// drainWindow is how long drain lets in-flight requests finish: as long as the
+// bound in force allows them to take, capped by MaxDrain. An unbounded bound
+// must not read as a zero window, so the cap is then MaxDrain alone.
+func (p *Proxy) drainWindow() time.Duration {
+	if bound := p.requestBound(); bound > 0 {
+		return min(bound, p.cfg.MaxDrain)
+	}
+	return p.cfg.MaxDrain
+}
+
 func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats{
@@ -281,19 +354,13 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 
 // drain fails readiness so routing de-registers the pod, waits out
 // propagation, then lets in-flight requests finish bounded by
-// min(Timeout, MaxDrain) — requests still running at the deadline are dropped.
+// min(requestBound, MaxDrain) — requests still running at the deadline are
+// dropped.
 func (p *Proxy) drain() {
 	p.draining.Store(true)
 	time.Sleep(p.deregisterDelay)
 
-	// Timeout == 0 means "no per-request timeout" (handleData skips the
-	// deadline), so it must not read as a zero drain window here — the cap is
-	// then MaxDrain alone.
-	window := p.cfg.MaxDrain
-	if p.cfg.Timeout > 0 {
-		window = min(p.cfg.Timeout, p.cfg.MaxDrain)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), window)
+	ctx, cancel := context.WithTimeout(context.Background(), p.drainWindow())
 	defer cancel()
 	_ = p.data.Shutdown(ctx)
 	_ = p.admin.Close()

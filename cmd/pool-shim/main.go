@@ -1,5 +1,5 @@
 // pool-shim is the warm-pod entrypoint: it blocks on a workspace FIFO until
-// the deployments-sidecar signals an activation, then execs the payload —
+// the workload-sidecar signals an activation, then execs the payload —
 // replacing PID 1, so container exit == workload exit and the pod is
 // discarded (never reused) when the workload ends. See docs/pools.md.
 package main
@@ -10,7 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"orchestrator/internal/config"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,7 +40,7 @@ func main() {
 		return
 	}
 
-	workspace := config.GetEnv("SHARED_VOLUME_PATH", "/workspace")
+	workspace := config.Workspace()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(logSink(workspace), nil)).With("service", "pool-shim"))
 
 	if err := run(workspace); err != nil {
@@ -88,7 +88,7 @@ func install(path string) error {
 }
 
 func run(workspace string) error {
-	fifoPath := filepath.Join(workspace, proxy.ShimFIFOName)
+	fifoPath := filepath.Join(workspace, workload.ShimFIFOName)
 
 	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil && !os.IsExist(err) {
 		return err
@@ -101,7 +101,7 @@ func run(workspace string) error {
 	if err != nil {
 		return err
 	}
-	var payload proxy.ShimExec
+	var payload workload.ShimExec
 	if err := json.NewDecoder(fifo).Decode(&payload); err != nil {
 		_ = fifo.Close()
 		return err

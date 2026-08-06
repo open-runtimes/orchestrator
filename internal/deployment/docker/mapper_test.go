@@ -2,8 +2,8 @@ package docker
 
 import (
 	"encoding/json"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/workload"
 	"slices"
 	"testing"
 	"time"
@@ -158,7 +158,7 @@ func TestProxyEnv_Minimal(t *testing.T) {
 	req := &deployment.Request{ID: "d1", Port: 3000}
 	env := proxyEnv(req, "10.0.0.5")
 
-	want := []string{proxy.EnvTarget + "=10.0.0.5:3000"}
+	want := []string{workload.EnvTarget + "=10.0.0.5:3000"}
 	if !slices.Equal(env, want) {
 		t.Errorf("proxyEnv() = %v, want %v", env, want)
 	}
@@ -184,13 +184,13 @@ func TestProxyEnv_Full(t *testing.T) {
 	env := proxyEnv(req, "10.0.0.5")
 
 	want := []string{
-		proxy.EnvTarget + "=10.0.0.5:8080",
-		proxy.EnvTimeoutSeconds + "=120",
-		proxy.EnvConcurrency + "=10",
-		proxy.EnvReadinessPath + "=/healthz",
-		proxy.EnvReadinessPeriodMillis + "=250",
-		proxy.EnvReadinessTimeoutMillis + "=500",
-		proxy.EnvReadinessFailureThreshold + "=5",
+		workload.EnvTarget + "=10.0.0.5:8080",
+		workload.EnvTimeoutSeconds + "=120",
+		workload.EnvConcurrency + "=10",
+		workload.EnvReadinessPath + "=/healthz",
+		workload.EnvReadinessPeriodMillis + "=250",
+		workload.EnvReadinessTimeoutMillis + "=500",
+		workload.EnvReadinessFailureThreshold + "=5",
 	}
 	if !slices.Equal(env, want) {
 		t.Errorf("proxyEnv() = %v, want %v", env, want)

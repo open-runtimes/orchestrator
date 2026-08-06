@@ -3,8 +3,8 @@ package kubernetes
 import (
 	"encoding/json"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/deployment"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/volume"
 	"reflect"
 	"slices"
 	"strings"
@@ -102,7 +102,7 @@ func TestBuildDeployment_ProxySidecar(t *testing.T) {
 		t.Errorf("RestartPolicy: want Always (native sidecar), got %v", p.RestartPolicy)
 	}
 	if len(p.Args) != 0 {
-		t.Errorf("Args: want none (dedicated deployments-sidecar binary), got %v", p.Args)
+		t.Errorf("Args: want none (dedicated workload-sidecar binary), got %v", p.Args)
 	}
 	if !envHas(p.Env, "PROXY_TARGET", "127.0.0.1:8080") {
 		t.Errorf("env missing PROXY_TARGET=127.0.0.1:8080: %v", p.Env)

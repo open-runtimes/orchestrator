@@ -33,16 +33,17 @@ internal/         # Private packages
   api/            # HTTP handlers, middleware, routing
   config/         # Environment-based configuration helpers
   dispatcher/     # Async event dispatch with retry and circuit breaker
-  orchestrator/   # Orchestrator implementations
+  health/         # Liveness/readiness checks
+  job/            # Jobs: Orchestrator interface, validation, types, event builders
     docker/       # Docker backend
     kubernetes/   # Kubernetes backend (batch/v1.Job + native sidecar)
-  health/         # Liveness/readiness checks
-  job/            # Orchestrator interface, validation, types, event builders
   observability/  # Prometheus metrics
   sidecar/        # Input download, output upload handlers
-pkg/              # Public packages
   circuitbreaker/ # Per-host circuit breaker implementation
   cloudevent/     # CloudEvents 1.0 types and HTTP sender
+  lifecycle/      # Run-to-completion state machine (signals, FSM, in-memory store)
+  workload/       # The workload-sidecar contract: ports, env, claim payloads
+  proxy/          # The workload sidecar itself
 charts/           # Helm chart (charts/orchestrator/)
 hack/             # Dev-only assets: install-tools.sh, kind-config.yaml, dev-values.yaml
 Tiltfile         # Live-reload dev loop against the kind cluster
@@ -96,13 +97,13 @@ Sidecar callbacks are proxied through the orchestrator's dispatcher by default. 
 Design decision: Unit tests mock the interfaces and have wide coverage. Integration tests use real Docker; the K8s backend has unit tests via `k8s.io/client-go/kubernetes/fake` but no real-cluster integration tests yet. E2E tests run the full system over the Docker backend and focus on happy paths to remain fast.
 
 Key test files:
-- `internal/orchestrator/docker/docker_integration_test.go` - Docker adapter against real daemon
-- `internal/orchestrator/docker/{mapper,watcher}_test.go` - Docker mapping and event watcher
-- `internal/orchestrator/kubernetes/{mapper,kubernetes}_test.go` - K8s mapping + fake-clientset coverage
+- `internal/job/docker/docker_integration_test.go` - Docker adapter against real daemon
+- `internal/job/docker/{mapper,watcher}_test.go` - Docker mapping and event watcher
+- `internal/job/kubernetes/{mapper,kubernetes}_test.go` - K8s mapping + fake-clientset coverage
 - `internal/dispatcher/memory_test.go` - Dispatcher with retry/circuit breaker tests
 - `internal/sidecar/*_test.go` - Input/output handlers with retry scenarios
 - `internal/job/service_test.go` - Request validation edge cases
-- `pkg/circuitbreaker/*_test.go` - Circuit breaker state transitions
+- `internal/circuitbreaker/*_test.go` - Circuit breaker state transitions
 
 ## Observability
 

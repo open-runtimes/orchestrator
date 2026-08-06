@@ -3,7 +3,7 @@
 // Package kubernetes — real-cluster integration tests for the pools backend.
 //
 // These tests expect a running kind cluster named "orchestrator-dev" with the
-// ko.local/deployments-sidecar and ko.local/pool-shim images loaded (same
+// ko.local/workload-sidecar and ko.local/pool-shim images loaded (same
 // setup as the deployments backend's k8s_integration tests, so they share a
 // CI job). Run via:
 //
@@ -25,8 +25,9 @@ import (
 	"fmt"
 	"net/http"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/pool"
 	"orchestrator/internal/testutil"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/warm"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ import (
 
 const (
 	itNamespace    = "orchestrator-pools-integration"
-	itSidecarImage = "ko.local/deployments-sidecar:latest"
+	itSidecarImage = "ko.local/workload-sidecar:latest"
 	itShimImage    = "ko.local/pool-shim:latest"
 
 	// agnhost is a static binary that runs fine as uid 65532 with a read-only
@@ -150,17 +151,17 @@ func waitWarm(t *testing.T, o *Orchestrator, poolID string, want int, timeout ti
 // the host (the claim POST would never arrive).
 func requirePodNetwork(t *testing.T, o *Orchestrator, poolID string) {
 	t.Helper()
-	pods, err := o.poolPods(t.Context(), poolID)
+	pods, err := o.warm.Pods(t.Context(), poolID)
 	if err != nil {
 		t.Fatalf("poolPods: %v", err)
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
 	for i := range pods {
-		if !claimable(&pods[i]) {
+		if !o.warm.Claimable(&pods[i]) {
 			continue
 		}
 		reachable := testutil.WaitFor(t, func() bool {
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, adminURL(pods[i].Status.PodIP, "/ready"), nil)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, warm.AdminURL(pods[i].Status.PodIP, "/ready"), nil)
 			if err != nil {
 				return false
 			}
@@ -278,12 +279,12 @@ func TestIntegration_ReplenishAfterClaim(t *testing.T) {
 	claimedPod := status.PodID
 
 	testutil.MustWaitFor(t, func() bool {
-		pods, err := o.poolPods(t.Context(), "it-replenish")
+		pods, err := o.warm.Pods(t.Context(), "it-replenish")
 		if err != nil {
 			return false
 		}
 		for i := range pods {
-			if claimable(&pods[i]) && pods[i].Name != claimedPod {
+			if o.warm.Claimable(&pods[i]) && pods[i].Name != claimedPod {
 				return true
 			}
 		}

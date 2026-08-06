@@ -13,16 +13,19 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/autoscaler"
 	"orchestrator/internal/config"
+	"orchestrator/internal/deployment"
 	depdocker "orchestrator/internal/deployment/docker"
 	depkubernetes "orchestrator/internal/deployment/kubernetes"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/pool"
 	poolkubernetes "orchestrator/internal/pool/kubernetes"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
-	"orchestrator/pkg/pool"
-	"orchestrator/pkg/server"
+	"orchestrator/internal/sandbox"
+	sandboxdocker "orchestrator/internal/sandbox/docker"
+	sandboxkubernetes "orchestrator/internal/sandbox/kubernetes"
+	"orchestrator/internal/server"
+	"orchestrator/internal/workload"
 	"os"
 	"time"
 )
@@ -42,7 +45,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest"), metrics)
+	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest"), metrics)
 	if err != nil {
 		slog.Error("Failed to build orchestrator", "error", err)
 		os.Exit(1)
@@ -66,7 +69,7 @@ func main() {
 		}
 		return "http://" + host + ":" + dataPort
 	}
-	svc := deployment.NewService(orchestrator, metrics, artifact.DefaultRegistry(), domain, urlFor)
+	svc := deployment.NewService(orchestrator, metrics, artifact.ServingRegistry(), domain, urlFor)
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 
@@ -74,22 +77,14 @@ func main() {
 	// scrapes supply warm concurrency on both; the cold hold-up signal comes
 	// from the standalone activator's /stats on Kubernetes and directly from
 	// the in-process activator on Docker.
-	concurrency := autoscaler.NewSidecarConcurrency(orchestrator, proxy.DefaultAdminPort)
+	concurrency := autoscaler.NewSidecarConcurrency(orchestrator, workload.DefaultAdminPort)
 	var queue autoscaler.QueueSource
-	var extra []*http.Server
+	var deploymentsActivator *activator.Activator
 	if backend == "kubernetes" {
 		queue = autoscaler.NewActivatorQueue(config.GetEnv("ACTIVATOR_STATS_URL", "http://deployments-activator:8081/stats"))
 	} else {
-		act := activator.New(svc, eventDispatcher, metrics)
-		queue = autoscaler.QueuedDepthFunc(act.QueuedDepth)
-		// Data-plane listener: requests can legitimately run for minutes
-		// (the per-request timeout lives in the deployments-sidecar), so no
-		// WriteTimeout here.
-		extra = append(extra, &http.Server{
-			Addr:              ":" + dataPort,
-			Handler:           act,
-			ReadHeaderTimeout: 10 * time.Second,
-		})
+		deploymentsActivator = activator.New(svc, eventDispatcher, metrics)
+		queue = autoscaler.QueuedDepthFunc(deploymentsActivator.QueuedDepth)
 	}
 
 	scaler := autoscaler.New(orchestrator, concurrency, queue, autoscaler.LoadConfigFromEnv(), metrics)
@@ -124,18 +119,65 @@ func main() {
 			slog.Error("Failed to start pool orchestrator", "error", err)
 			os.Exit(1)
 		}
-		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.DefaultRegistry())
+		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.ServingRegistry())
 		slog.Info("Pools configured", "count", len(pools))
+	}
+
+	// Sandbox pools are config-declared too: no SANDBOX_POOLS_JSON → no
+	// sandbox orchestrator, no sandbox routes.
+	sandboxPools, err := sandbox.LoadPools(config.GetEnv("SANDBOX_POOLS_JSON", ""))
+	if err != nil {
+		slog.Error("Invalid sandbox pool configuration", "error", err)
+		os.Exit(1)
+	}
+	var sandboxSvc *sandbox.Service
+	var sandboxProxy *activator.SandboxProxy
+	if len(sandboxPools) > 0 {
+		sandboxOrchestrator, err := buildSandboxOrchestrator(ctx, backend, sandboxPools, metrics)
+		if err != nil {
+			slog.Error("Failed to build sandbox orchestrator", "error", err)
+			os.Exit(1)
+		}
+		defer sandboxOrchestrator.Close()
+		if err := sandboxOrchestrator.Start(ctx); err != nil {
+			slog.Error("Failed to start sandbox orchestrator", "error", err)
+			os.Exit(1)
+		}
+		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.ServingRegistry())
+		slog.Info("Sandbox pools configured", "count", len(sandboxPools))
+
+		// On Docker the sandbox data plane runs in-process, resolving tokens
+		// straight from the daemon; on Kubernetes it is its own Deployment behind
+		// the wildcard route (cmd/sandbox-proxy).
+		if targets, ok := sandboxOrchestrator.(activator.SandboxTargets); ok {
+			sandboxProxy = activator.NewSandboxProxy(targets, activator.SandboxConfig{
+				Domain: config.GetEnv("SANDBOX_DOMAIN", "localhost"),
+				Hold:   time.Duration(config.GetIntEnv("SANDBOX_HOLD_SECONDS", 5)) * time.Second,
+			}, metrics)
+		}
+	}
+
+	// Data-plane listener (Docker): requests can legitimately run for minutes —
+	// the per-request timeout lives in the workload-sidecar — so no
+	// WriteTimeout here.
+	var extra []*http.Server
+	if deploymentsActivator != nil {
+		extra = append(extra, &http.Server{
+			Addr:              ":" + dataPort,
+			Handler:           dataHandler(deploymentsActivator, sandboxProxy),
+			ReadHeaderTimeout: 10 * time.Second,
+		})
 	}
 
 	healthChecker := health.NewChecker(orchestrator)
 	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{
-		Service:       svc,
-		Metrics:       metrics,
-		HealthChecker: healthChecker,
-		APIKey:        svcCfg.APIKey,
-		PoolService:   poolSvc,
-		Dispatcher:    eventDispatcher,
+		Service:        svc,
+		Metrics:        metrics,
+		HealthChecker:  healthChecker,
+		APIKey:         svcCfg.APIKey,
+		PoolService:    poolSvc,
+		Dispatcher:     eventDispatcher,
+		SandboxService: sandboxSvc,
 	})
 
 	if svcCfg.APIKey == "" {
@@ -164,7 +206,7 @@ func main() {
 }
 
 func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Pool, metrics *observability.Metrics) (pool.Orchestrator, error) {
-	sidecarImage := config.GetEnv("DEPLOYMENT_SIDECAR_IMAGE", "deployments-sidecar:latest")
+	sidecarImage := config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
 	shimImage := config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
 	switch backend {
 	case "docker":
@@ -179,6 +221,49 @@ func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Poo
 		cfg.Pools = pools
 		cfg.Metrics = metrics
 		return poolkubernetes.NewOrchestrator(ctx, cfg)
+	default:
+		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
+	}
+}
+
+// buildSandboxOrchestrator builds the sandbox backend. The Docker one is for
+// development: no warm pool (creates are cold) and no isolation tiers, since
+// gvisor and kata are RuntimeClasses. See docs/sandboxes.md.
+// dataHandler picks which activator serves a request. Both data planes share the
+// one Docker listener, so the Host decides, and pkg/sandbox owns that decision:
+// a sandbox host is s-{token}.{sandbox domain}, and the "s-" prefix is required,
+// so every other host under the domain falls through to deployments. Give
+// sandboxes their own domain if a deployment host could itself start with "s-".
+func dataHandler(deployments http.Handler, sandboxes *activator.SandboxProxy) http.Handler {
+	if sandboxes == nil {
+		return deployments
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sandboxes.Matches(r.Host) {
+			sandboxes.ServeHTTP(w, r)
+			return
+		}
+		deployments.ServeHTTP(w, r)
+	})
+}
+
+func buildSandboxOrchestrator(ctx context.Context, backend string, pools []pool.Pool, metrics *observability.Metrics) (sandbox.Orchestrator, error) {
+	switch backend {
+	case "docker":
+		cfg := sandboxdocker.LoadConfigFromEnv()
+		cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
+		cfg.Pools = pools
+		return sandboxdocker.NewOrchestrator(ctx, cfg)
+	case "kubernetes":
+		cfg, err := sandboxkubernetes.LoadConfigFromEnv()
+		if err != nil {
+			return nil, err
+		}
+		cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
+		cfg.ShimImage = config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
+		cfg.Pools = pools
+		cfg.Metrics = metrics
+		return sandboxkubernetes.NewOrchestrator(ctx, cfg)
 	default:
 		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
 	}

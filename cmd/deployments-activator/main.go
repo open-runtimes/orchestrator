@@ -1,7 +1,11 @@
-// deployments-activator is the Kubernetes buffering edge: the gateway routes
-// cold-start and async traffic here, tagged X-Revision per weighted
-// backendRef; warm sync traffic bypasses it entirely. See
-// docs/deployments.md.
+// deployments-activator is the Kubernetes buffering data plane for deployments:
+// the gateway routes cold-start and async traffic here, tagged X-Revision per
+// weighted backendRef, and it holds each request until the revision serves —
+// raising it from zero when needed. Warm sync traffic bypasses it entirely.
+//
+// Sandboxes have their own data plane (cmd/sandbox-proxy) rather than a mode of
+// this one: it is permanently on the request path, needs no scale or Secret
+// access, and has nothing to raise. See docs/deployments.md.
 package main
 
 import (
@@ -15,7 +19,7 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/server"
+	"orchestrator/internal/server"
 	"os"
 	"time"
 )
@@ -43,7 +47,7 @@ func run(ctx context.Context) error {
 
 	queue := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 	act := activator.NewRevisionActivator(client, queue, activator.RevisionConfig{
-		Namespace:            config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
+		Namespace:    config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
 		StartTimeout: time.Duration(config.GetIntEnv("START_TIMEOUT_SECONDS", 300)) * time.Second,
 	}, metrics)
 	if err := act.Start(ctx); err != nil {

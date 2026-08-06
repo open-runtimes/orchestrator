@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"math"
 	"orchestrator/internal/config"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"time"
 )
 

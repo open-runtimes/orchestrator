@@ -10,18 +10,18 @@ import (
 	"net/http"
 	"net/url"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/testutil"
-	"orchestrator/pkg/deployment"
 	"os"
 	"testing"
 	"time"
 )
 
 func sidecarTestImage() string {
-	if img := os.Getenv("DEPLOYMENT_SIDECAR_IMAGE"); img != "" {
+	if img := os.Getenv("WORKLOAD_SIDECAR_IMAGE"); img != "" {
 		return img
 	}
-	return "ko.local/deployments-sidecar:latest"
+	return "ko.local/workload-sidecar:latest"
 }
 
 func jobSidecarTestImage() string {
@@ -129,11 +129,11 @@ func TestDeployment_ApplyServeUpdateDelete(t *testing.T) {
 	t.Cleanup(func() { _ = o.Delete(context.WithoutCancel(ctx), id) })
 
 	req := &deployment.Request{
-		ID:                      id,
-		Image:                   "traefik/whoami:latest",
-		CPU:                     1,
-		Memory:                  128,
-		Port:                    80,
+		ID:                  id,
+		Image:               "traefik/whoami:latest",
+		CPU:                 1,
+		Memory:              128,
+		Port:                80,
 		ReadyTimeoutSeconds: 60,
 	}
 	if _, err := o.Apply(ctx, req); err != nil {
@@ -201,13 +201,13 @@ func TestDeployment_ScaleToZeroAndBack(t *testing.T) {
 	t.Cleanup(func() { _ = o.Delete(context.WithoutCancel(ctx), id) })
 
 	req := &deployment.Request{
-		ID:                      id,
-		Image:                   "traefik/whoami:latest",
-		CPU:                     1,
-		Memory:                  128,
-		Port:                    80,
+		ID:                  id,
+		Image:               "traefik/whoami:latest",
+		CPU:                 1,
+		Memory:              128,
+		Port:                80,
 		ReadyTimeoutSeconds: 60,
-		Autoscaling:             &deployment.Autoscaling{MinReplicas: 0},
+		Autoscaling:         &deployment.Autoscaling{MinReplicas: 0},
 	}
 	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("Failed to apply deployment: %v", err)
@@ -268,12 +268,12 @@ func TestDeployment_NeverReadyFails(t *testing.T) {
 	t.Cleanup(func() { _ = o.Delete(context.WithoutCancel(ctx), id) })
 
 	req := &deployment.Request{
-		ID:                      id,
-		Image:                   "alpine:latest",
-		Command:                 "sleep 300",
-		CPU:                     1,
-		Memory:                  64,
-		Port:                    80,
+		ID:                  id,
+		Image:               "alpine:latest",
+		Command:             "sleep 300",
+		CPU:                 1,
+		Memory:              64,
+		Port:                80,
 		ReadyTimeoutSeconds: 5,
 	}
 	if _, err := o.Apply(ctx, req); err != nil {

@@ -3,7 +3,7 @@
 // Package kubernetes — real-cluster integration tests.
 //
 // These tests expect a running kind cluster named "orchestrator-dev" with the
-// ko.local/deployments-sidecar image loaded (same setup as the jobs backend's
+// ko.local/workload-sidecar image loaded (same setup as the jobs backend's
 // k8s_integration tests, so they share a CI job). Run via:
 //
 //	go test -race -tags=k8s_integration -timeout=10m ./internal/deployment/kubernetes/...
@@ -21,9 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/testutil"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/workload"
 	"testing"
 	"time"
 
@@ -35,7 +35,7 @@ import (
 
 const (
 	testNamespace   = "orchestrator-integration"
-	sidecarImage    = "ko.local/deployments-sidecar:latest"
+	sidecarImage    = "ko.local/workload-sidecar:latest"
 	jobSidecarImage = "ko.local/job-sidecar:latest"
 
 	// agnhost is a static binary that runs fine as uid 65532 with a read-only
@@ -140,15 +140,15 @@ func requireGateway(t *testing.T, o *Orchestrator) {
 
 func serverRequest(id string) *deployment.Request {
 	return &deployment.Request{
-		ID:                      id,
-		Image:                   workerImage,
-		Command:                 "/agnhost netexec --http-port=8080",
-		CPU:                     0.1,
-		Memory:                  64,
-		Hosts:                   []string{id + ".example.com"},
-		Port:                    8080,
-		Replicas:                1,
-		TimeoutSeconds:          60,
+		ID:                  id,
+		Image:               workerImage,
+		Command:             "/agnhost netexec --http-port=8080",
+		CPU:                 0.1,
+		Memory:              64,
+		Hosts:               []string{id + ".example.com"},
+		Port:                8080,
+		Replicas:            1,
+		TimeoutSeconds:      60,
 		ReadyTimeoutSeconds: 120,
 	}
 }
@@ -293,7 +293,7 @@ func TestIntegration_HTTPRouteShape(t *testing.T) {
 	}
 	async, dflt := route.Spec.Rules[0], route.Spec.Rules[1]
 	if len(async.Matches) != 1 || len(async.Matches[0].Headers) != 1 ||
-		string(async.Matches[0].Headers[0].Name) != "Prefer" || async.Matches[0].Headers[0].Value != proxy.PreferAsyncPattern {
+		string(async.Matches[0].Headers[0].Name) != "Prefer" || async.Matches[0].Headers[0].Value != workload.PreferAsyncPattern {
 		t.Errorf("async match: got %+v", async.Matches)
 	}
 	if len(async.BackendRefs) != 1 || string(async.BackendRefs[0].Name) != o.cfg.ActivatorService {

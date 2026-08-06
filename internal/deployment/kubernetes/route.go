@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/workload"
 	"slices"
 	"strings"
 
@@ -273,7 +273,7 @@ func (o *Orchestrator) buildRouteRules(targets []deployment.Target) []gatewayv1.
 					// the RequestHeaderModifier this design already requires.
 					Type:  ptr.To(gatewayv1.HeaderMatchRegularExpression),
 					Name:  headerPrefer,
-					Value: proxy.PreferAsyncPattern,
+					Value: workload.PreferAsyncPattern,
 				}},
 			}},
 			BackendRefs: async,

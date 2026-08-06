@@ -81,8 +81,8 @@ spec:
               value: {{ .Values.service.metricsPort | quote }}
             - name: DEPLOYMENTS_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
-            - name: DEPLOYMENT_SIDECAR_IMAGE
-              value: {{ include "orchestrator.deploymentsSidecarImage" . | quote }}
+            - name: WORKLOAD_SIDECAR_IMAGE
+              value: {{ include "orchestrator.workloadSidecarImage" . | quote }}
             - name: JOB_SIDECAR_IMAGE
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE
@@ -118,6 +118,22 @@ spec:
               value: {{ include "orchestrator.poolShimImage" . | quote }}
             - name: POOL_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
+            {{- end }}
+            {{- if .Values.sandboxes.pools }}
+            - name: SANDBOX_POOLS_JSON
+              value: {{ .Values.sandboxes.pools | toJson | quote }}
+            - name: POOL_SHIM_IMAGE
+              value: {{ include "orchestrator.poolShimImage" . | quote }}
+            - name: SANDBOX_DOMAIN
+              value: {{ required "sandboxes.domain is required when sandbox pools are configured" .Values.sandboxes.domain | quote }}
+            - name: SANDBOX_AGENT_IMAGE
+              value: {{ include "orchestrator.sandboxAgentImage" . | quote }}
+            - name: SANDBOX_SCHEME
+              value: {{ .Values.sandboxes.scheme | quote }}
+            {{- if .Values.deployments.leaderElection.enabled }}
+            - name: KUBE_SANDBOX_LEADER_LEASE_NAME
+              value: {{ default (printf "%s-sandboxes-leader" (include "orchestrator.deploymentsName" .)) .Values.sandboxes.leaseName | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.deployments.leaderElection.enabled }}
             - name: KUBE_LEADER_ELECTION
@@ -264,7 +280,7 @@ subjects:
     name: {{ include "orchestrator.deploymentsName" . }}
     namespace: {{ .Release.Namespace }}
 ---
-# Sandbox tiers (docs/operations.md): the service validates a workload's
+# Isolation tiers (docs/operations.md): the service validates a workload's
 # RuntimeClass exists before minting revisions / replenishing pools.
 # RuntimeClasses are cluster-scoped, so this is the service's one
 # cluster-scoped grant.

@@ -7,8 +7,9 @@ import (
 	"net"
 	"net/url"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/kube"
+	"orchestrator/internal/workload"
 	"slices"
 	"strconv"
 
@@ -76,12 +77,12 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 	var endpoints []*url.URL
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if !routed[pod.Labels[LabelRevision]] || !isPodReady(pod) || pod.Status.PodIP == "" {
+		if !routed[pod.Labels[LabelRevision]] || !kube.PodReady(pod) || pod.Status.PodIP == "" {
 			continue
 		}
 		endpoints = append(endpoints, &url.URL{
 			Scheme: "http",
-			Host:   net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(proxy.DefaultProxyPort)),
+			Host:   net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(workload.DefaultProxyPort)),
 		})
 	}
 	return endpoints, nil
@@ -239,13 +240,4 @@ func rolloutFailure(dep *appsv1.Deployment) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func isPodReady(pod *corev1.Pod) bool {
-	for _, c := range pod.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
-	}
-	return false
 }

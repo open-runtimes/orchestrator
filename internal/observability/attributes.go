@@ -19,11 +19,13 @@ const (
 	attrVerb       = "verb"
 	attrResource   = "resource"
 	attrCreated    = "created"
+	attrComponent  = "component" // which component held the request
 	attrOutcome    = "outcome"
 	attrResult     = "result"
 	attrDirection  = "direction"
 	attrDeployment = "deployment"
 	attrPool       = "pool"
+	attrKind       = "kind" // which warm-pool consumer: pool | sandbox
 	attrPolicy     = "policy"
 )
 
@@ -66,6 +68,10 @@ func createdAttr(created bool) attribute.KeyValue {
 	return attribute.Bool(attrCreated, created)
 }
 
+func componentAttr(component string) attribute.KeyValue {
+	return attribute.String(attrComponent, component)
+}
+
 func outcomeAttr(outcome string) attribute.KeyValue {
 	return attribute.String(attrOutcome, outcome)
 }
@@ -80,6 +86,10 @@ func directionAttr(direction string) attribute.KeyValue {
 
 func deploymentAttr(id string) attribute.KeyValue {
 	return attribute.String(attrDeployment, id)
+}
+
+func kindAttr(kind string) attribute.KeyValue {
+	return attribute.String(attrKind, kind)
 }
 
 func poolAttr(id string) attribute.KeyValue {

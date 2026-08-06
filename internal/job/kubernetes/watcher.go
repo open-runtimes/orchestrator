@@ -1,0 +1,486 @@
+package kubernetes
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"orchestrator/internal/job"
+	"strings"
+	"sync"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+)
+
+// LifecycleWatcher observes managed-job Pods cluster-wide and emits callbacks
+// for Started / Exited / Failed / Completed / LogLine signals. It is self-contained: the
+// orchestrator's only interaction is Start(ctx) — tracker lifecycle, callback
+// emission, and log streaming are all handled internally.
+//
+// Start blocks until ctx cancels, at which point all in-flight trackers are
+// torn down and the informer stops. A single watcher instance is reusable via
+// repeated Start calls with fresh contexts (each call is a fresh leadership
+// term in the leader-elected deployment).
+type LifecycleWatcher interface {
+	Start(ctx context.Context)
+
+	// Counts reports tracker and non-exited-job counts for the async gauges.
+	Counts() (trackers, active int64)
+}
+
+// k8sLifecycleWatcher runs a SharedInformer over Pods labelled as managed-by
+// jobs-service and materialises a jobTracker for each unique job.id. Trackers
+// drive the per-job state machine and emit callbacks directly via the shared
+// emitter.
+type k8sLifecycleWatcher struct {
+	client       kubernetes.Interface
+	namespace    string
+	emitter      *job.CallbackEmitter
+	logFlushWait time.Duration // max time buffered log lines wait before a flush
+	termStart    time.Time     // when the current leadership term began; set by Start
+
+	mu       sync.Mutex
+	trackers map[string]*jobTracker
+}
+
+func newK8sLifecycleWatcher(client kubernetes.Interface, namespace string, emitter *job.CallbackEmitter, logFlushWait time.Duration) *k8sLifecycleWatcher {
+	if logFlushWait <= 0 {
+		logFlushWait = time.Second
+	}
+	return &k8sLifecycleWatcher{
+		client:       client,
+		logFlushWait: logFlushWait,
+		namespace:    namespace,
+		emitter:      emitter,
+		trackers:     make(map[string]*jobTracker),
+	}
+}
+
+// Start runs the informer until ctx cancels, then tears down all trackers.
+// Safe to call repeatedly (e.g. on each leader-acquire) because a new
+// informer factory is built per call.
+func (w *k8sLifecycleWatcher) Start(ctx context.Context) {
+	w.termStart = time.Now()
+	labelSelector := LabelManagedBy + "=" + ManagedByValue
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		w.client,
+		30*time.Second,
+		informers.WithNamespace(w.namespace),
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			opts.LabelSelector = labelSelector
+		}),
+	)
+
+	informer := factory.Core().V1().Pods().Informer()
+	_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj any) {
+			if pod, ok := obj.(*corev1.Pod); ok {
+				w.handle(ctx, pod, false)
+			}
+		},
+		UpdateFunc: func(_, newObj any) {
+			if pod, ok := newObj.(*corev1.Pod); ok {
+				w.handle(ctx, pod, false)
+			}
+		},
+		DeleteFunc: func(obj any) {
+			if pod, ok := obj.(*corev1.Pod); ok {
+				w.handle(ctx, pod, true)
+			}
+		},
+	})
+
+	stopCh := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(stopCh)
+	}()
+	factory.Start(stopCh)
+	factory.WaitForCacheSync(stopCh)
+
+	<-stopCh
+
+	// Leadership term ended (or Close called). Cancel all in-flight trackers
+	// so their log-streaming goroutines exit and no more callbacks fire.
+	w.mu.Lock()
+	for _, t := range w.trackers {
+		t.close()
+	}
+	w.trackers = make(map[string]*jobTracker)
+	w.mu.Unlock()
+}
+
+// Counts returns the number of trackers this replica holds and, of those, how
+// many are for jobs that have not exited yet. Both are read at scrape time by
+// async gauges, so they are exact by construction — followers, which hold no
+// trackers, report zero and a leadership handover moves the count with it.
+func (w *k8sLifecycleWatcher) Counts() (trackers, active int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, t := range w.trackers {
+		trackers++
+		if t.inFlight() {
+			active++
+		}
+	}
+	return trackers, active
+}
+
+// handle routes a pod event to its tracker, creating one on first observation.
+// Trackers stay in the map after reaching terminal state (marked closed) so
+// that post-terminal Pod updates — which K8s emits routinely (status tweaks,
+// resyncs) — don't cause a new tracker to be created and the state machine to
+// replay. The tracker is only evicted when the Pod itself is deleted.
+func (w *k8sLifecycleWatcher) handle(ctx context.Context, pod *corev1.Pod, deleted bool) {
+	jobID := pod.Labels[LabelJobID]
+	if jobID == "" {
+		return
+	}
+
+	w.mu.Lock()
+	t, ok := w.trackers[jobID]
+	if !ok {
+		if deleted {
+			// Pod deleted and we never saw it — nothing to do.
+			w.mu.Unlock()
+			return
+		}
+		t = newJobTracker(w, watchConfigFromPod(pod))
+		w.trackers[jobID] = t
+	}
+	w.mu.Unlock()
+
+	if deleted {
+		t.handleDelete()
+		w.mu.Lock()
+		if cur, ok := w.trackers[jobID]; ok && cur == t {
+			delete(w.trackers, jobID)
+		}
+		w.mu.Unlock()
+		return
+	}
+	t.handleUpdate(ctx, pod)
+}
+
+// watchConfigFromPod derives the callback destination from a Pod's annotations
+// and labels. Mirrors watchConfigFromJob; used when the watcher first observes
+// a Pod and needs to know where to dispatch callbacks for its job.
+func watchConfigFromPod(pod *corev1.Pod) *watchConfig {
+	cfg := &watchConfig{jobID: pod.Labels[LabelJobID]}
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		if c.Name == ContainerWorker {
+			cfg.image = c.Image
+			break
+		}
+	}
+	cfg.dest = callbackDestFromAnnotations(pod.Annotations)
+	return cfg
+}
+
+// jobTracker owns the per-job state machine. Events arriving via
+// handleUpdate/handleDelete drive FSM transitions and callback emission.
+type jobTracker struct {
+	watcher *k8sLifecycleWatcher
+	cfg     *watchConfig
+	logger  *slog.Logger
+
+	mu         sync.Mutex
+	state      trackerState
+	closed     bool
+	closedOnce sync.Once
+}
+
+// trackerState is the per-job mutable state. Guarded by jobTracker.mu.
+type trackerState struct {
+	isStarted bool
+	isExited  bool
+	startTime time.Time
+	logCancel context.CancelFunc
+	logDone   chan struct{}
+}
+
+func newJobTracker(w *k8sLifecycleWatcher, cfg *watchConfig) *jobTracker {
+	return &jobTracker{
+		watcher: w,
+		cfg:     cfg,
+		logger:  slog.With("namespace", w.namespace, "jobId", cfg.jobID),
+	}
+}
+
+// handleUpdate advances the state machine for a pod update. Once terminal
+// state is reached, the tracker closes itself — subsequent calls are no-ops.
+func (t *jobTracker) handleUpdate(ctx context.Context, pod *corev1.Pod) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return
+	}
+	if t.applyPodStateLocked(ctx, pod) {
+		t.closeLocked()
+	}
+}
+
+func (t *jobTracker) handleDelete() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return
+	}
+	if !t.state.isExited {
+		t.emit(job.Failed{Reason: "pod deleted"})
+	} else {
+		// Exit already fired; the pod vanished (e.g. force-delete) before a
+		// terminal phase was observed. Emit the completion so consumers
+		// waiting on it aren't left hanging — nothing more will run.
+		t.emit(job.Completed{})
+	}
+	t.closeLocked()
+}
+
+// inFlight reports whether the tracker's job can still be running. Both halves
+// matter: a worker can exit while the pod lives on (the native sidecar is still
+// processing post-job artifacts), and a pod that fails before its worker ever
+// starts reaches terminal state without setting isExited. Keying off closed too
+// means any terminal path — present or future — stops counting immediately
+// rather than at pod deletion, which may be a retention period away or never.
+func (t *jobTracker) inFlight() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.closed && !t.state.isExited
+}
+
+// close tears the tracker down; used when the watcher's context is cancelled
+// (leadership lost / orchestrator closed).
+func (t *jobTracker) close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.closeLocked()
+}
+
+func (t *jobTracker) closeLocked() {
+	t.closedOnce.Do(func() {
+		t.closed = true
+		t.stopLogsLocked()
+	})
+}
+
+func (t *jobTracker) emit(s job.Signal) {
+	job.EmitCallback(t.watcher.emitter, t.cfg.jobID, t.cfg.image, t.cfg.dest, s)
+}
+
+// applyPodStateLocked advances the state machine for one pod update.
+// Returns true when the job reaches terminal state. Caller must hold t.mu.
+func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) bool {
+	var worker *corev1.ContainerStatus
+	for i := range pod.Status.ContainerStatuses {
+		cs := &pod.Status.ContainerStatuses[i]
+		if cs.Name == ContainerWorker {
+			worker = cs
+			break
+		}
+	}
+
+	// Pod-level failure before the worker ever ran (e.g. artifact-pre init
+	// failure, ImagePullBackOff, scheduler rejection).
+	if !t.state.isStarted && pod.Status.Phase == corev1.PodFailed && worker == nil {
+		reason := pod.Status.Reason
+		if reason == "" {
+			reason = "pod failed before worker started"
+		}
+		t.emit(job.Failed{Reason: reason})
+		return true
+	}
+
+	if worker == nil {
+		return false
+	}
+
+	if !t.state.isStarted && worker.State.Running != nil {
+		t.state.isStarted = true
+		t.state.startTime = worker.State.Running.StartedAt.Time
+		if t.state.startTime.IsZero() {
+			t.state.startTime = time.Now()
+		}
+		t.logger.Info("Worker started")
+		t.emit(job.Started{})
+		t.startLogsLocked(ctx, pod.Name)
+	}
+
+	// A Pod first observed with the worker already terminated is one of two
+	// indistinguishable-by-status cases: created before this leadership term
+	// (the previous leader emitted its callbacks — suppress, or failover
+	// would double-fire), or created during this term by a fast job whose
+	// running state the informer never surfaced (nobody emitted — synthesize
+	// Started here and fall through so the normal exit/complete path fires,
+	// with a faithful start time from the terminal container status).
+	if !t.state.isStarted && worker.State.Terminated != nil {
+		if !pod.CreationTimestamp.After(t.watcher.termStart) {
+			t.state.isStarted = true
+			t.state.isExited = true
+			return isPodTerminal(pod)
+		}
+		t.state.isStarted = true
+		t.state.startTime = worker.State.Terminated.StartedAt.Time
+		t.logger.Info("Worker started (first observed already terminated)")
+		t.emit(job.Started{})
+		t.startLogsLocked(ctx, pod.Name)
+	}
+
+	if t.state.isStarted && !t.state.isExited && worker.State.Terminated != nil {
+		t.state.isExited = true
+		exitCode := int(worker.State.Terminated.ExitCode)
+		reason := ""
+		if exitCode != 0 && worker.State.Terminated.Reason == "OOMKilled" {
+			reason = job.ExitReasonOOM
+		}
+		duration := time.Duration(0)
+		if !worker.State.Terminated.FinishedAt.IsZero() && !t.state.startTime.IsZero() {
+			duration = worker.State.Terminated.FinishedAt.Sub(t.state.startTime)
+		}
+		t.logger.Info("Worker exited", "exitCode", exitCode, "reason", reason)
+		time.Sleep(500 * time.Millisecond) // allow log flush
+		t.stopLogsLocked()
+		t.emit(job.Exited{ExitCode: exitCode, Reason: reason, Duration: duration})
+		// Not terminal yet: the native sidecar is still processing post-job
+		// artifacts. The pod phase turning terminal marks completion below.
+	}
+
+	// Pod failed after the worker started (node loss, preemption, OOM-at-pod-
+	// level). kubelet may mark the Pod Failed before the container-status
+	// update lands, so we key off pod.Status.Phase here rather than waiting
+	// for worker.State.Terminated.
+	if t.state.isStarted && !t.state.isExited && pod.Status.Phase == corev1.PodFailed {
+		reason := pod.Status.Reason
+		if reason == "" {
+			reason = "pod failed"
+		}
+		t.state.isExited = true
+		t.logger.Info("Pod failed during job", "reason", reason)
+		t.stopLogsLocked()
+		t.emit(job.Failed{Reason: reason})
+		return true
+	}
+
+	if t.state.isExited && isPodTerminal(pod) {
+		t.logger.Info("Pod terminated, job complete")
+		t.emit(job.Completed{})
+		return true
+	}
+
+	return false
+}
+
+// isPodTerminal reports whether every container in the pod has stopped —
+// including the native sidecar, i.e. post-job artifacts are done.
+func isPodTerminal(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+}
+
+func (t *jobTracker) startLogsLocked(ctx context.Context, podName string) {
+	if t.state.logCancel != nil {
+		return
+	}
+	logCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t.streamLogs(logCtx, podName)
+	}()
+	t.state.logCancel = cancel
+	t.state.logDone = done
+}
+
+func (t *jobTracker) stopLogsLocked() {
+	if t.state.logCancel == nil {
+		return
+	}
+	t.state.logCancel()
+	done := t.state.logDone
+	t.state.logCancel = nil
+	t.state.logDone = nil
+	if done != nil {
+		t.mu.Unlock()
+		<-done
+		t.mu.Lock()
+	}
+}
+
+func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
+	req := t.watcher.client.CoreV1().Pods(t.watcher.namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: ContainerWorker,
+		Follow:    true,
+	})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		t.logger.Warn("Failed to stream logs", "error", err)
+		return
+	}
+	defer stream.Close()
+
+	lines := make(chan string, logBatchMax)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(stream)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimRight(scanner.Text(), "\r")
+			if line == "" {
+				continue
+			}
+			select {
+			case lines <- line:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
+			t.logger.Debug("Log stream ended", "error", err)
+		}
+	}()
+
+	batchLines(lines, t.watcher.logFlushWait, logBatchMax, func(batch []string) {
+		t.emit(job.LogLine{Stream: "stdout", Lines: batch})
+	})
+}
+
+const logBatchMax = 32
+
+// batchLines groups lines into emit calls, flushing at maxBatch lines or
+// after flushWait with a non-empty batch — whichever comes first — so
+// low-volume streams (a typical build) still deliver in near real time
+// instead of arriving all at once when the stream ends.
+func batchLines(lines <-chan string, flushWait time.Duration, maxBatch int, emit func([]string)) {
+	ticker := time.NewTicker(flushWait)
+	defer ticker.Stop()
+
+	var batch []string
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		emit(batch)
+		batch = nil
+	}
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, line)
+			if len(batch) >= maxBatch {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
+}

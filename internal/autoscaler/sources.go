@@ -24,7 +24,7 @@ type EndpointLister interface {
 }
 
 // SidecarConcurrency derives each replica's average concurrency from the
-// deployments-sidecar /stats concurrency-seconds integral: Δintegral/Δt
+// workload-sidecar /stats concurrency-seconds integral: Δintegral/Δt
 // between our own scrapes. Instantaneous in-flight sampling under-reads fast
 // handlers (a 2s tick sees ~0 between millisecond requests); the integral
 // measures the true time-averaged load. First sight of a pod falls back to
@@ -43,7 +43,7 @@ type integralSample struct {
 	at       time.Time
 }
 
-// sidecarStats mirrors the deployments-sidecar /stats payload.
+// sidecarStats mirrors the workload-sidecar /stats payload.
 type sidecarStats struct {
 	InFlight           int64   `json:"inFlight"`
 	ConcurrencySeconds float64 `json:"concurrencySeconds"`

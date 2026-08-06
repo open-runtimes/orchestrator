@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"net"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/config"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ const (
 
 // workspacePath is the default shared-volume mount path when a request does
 // not set req.Workspace.
-const workspacePath = "/workspace"
+const workspacePath = config.DefaultWorkspace
 
 // workspaceOf is the request's workspace (working directory and shared-volume
 // mount path), falling back to the default for specs stored before the field
@@ -118,28 +119,28 @@ func containerIP(ns *container.NetworkSettings, networkName string) string {
 // proxyEnv builds the proxy container environment per the internal/proxy
 // contract. Zero-valued knobs are omitted so the proxy's own defaults apply.
 func proxyEnv(req *deployment.Request, workerIP string) []string {
-	env := []string{proxy.EnvTarget + "=" + net.JoinHostPort(workerIP, strconv.Itoa(req.Port))}
+	env := []string{workload.EnvTarget + "=" + net.JoinHostPort(workerIP, strconv.Itoa(req.Port))}
 	if req.TimeoutSeconds > 0 {
-		env = append(env, proxy.EnvTimeoutSeconds+"="+strconv.Itoa(req.TimeoutSeconds))
+		env = append(env, workload.EnvTimeoutSeconds+"="+strconv.Itoa(req.TimeoutSeconds))
 	}
 	if req.Concurrency > 0 {
-		env = append(env, proxy.EnvConcurrency+"="+strconv.Itoa(req.Concurrency))
+		env = append(env, workload.EnvConcurrency+"="+strconv.Itoa(req.Concurrency))
 	}
 	if req.Probes == nil || req.Probes.Readiness == nil {
 		return env
 	}
 	r := req.Probes.Readiness
 	if r.Path != "" {
-		env = append(env, proxy.EnvReadinessPath+"="+r.Path)
+		env = append(env, workload.EnvReadinessPath+"="+r.Path)
 	}
 	if r.PeriodMillis > 0 {
-		env = append(env, proxy.EnvReadinessPeriodMillis+"="+strconv.Itoa(r.PeriodMillis))
+		env = append(env, workload.EnvReadinessPeriodMillis+"="+strconv.Itoa(r.PeriodMillis))
 	}
 	if r.TimeoutMillis > 0 {
-		env = append(env, proxy.EnvReadinessTimeoutMillis+"="+strconv.Itoa(r.TimeoutMillis))
+		env = append(env, workload.EnvReadinessTimeoutMillis+"="+strconv.Itoa(r.TimeoutMillis))
 	}
 	if r.FailureThreshold > 0 {
-		env = append(env, proxy.EnvReadinessFailureThreshold+"="+strconv.Itoa(r.FailureThreshold))
+		env = append(env, workload.EnvReadinessFailureThreshold+"="+strconv.Itoa(r.FailureThreshold))
 	}
 	return env
 }

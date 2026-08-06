@@ -4,7 +4,8 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/pool"
+	"orchestrator/internal/warm"
 	"strconv"
 	"time"
 
@@ -23,7 +24,7 @@ const (
 
 // Config holds configuration for the Kubernetes pool orchestrator.
 type Config struct {
-	SidecarImage string      // deployments-sidecar (proxy) image (set by the caller)
+	SidecarImage string      // workload-sidecar (proxy) image (set by the caller)
 	ShimImage    string      // pool-shim image for the shim-install init container (set by the caller)
 	Pools        []pool.Pool // configured pools (set by the caller from POOLS_JSON)
 
@@ -41,11 +42,11 @@ type Config struct {
 	// NodeSelector pins every warm pod to a node pool (internal/kube).
 	NodeSelector map[string]string
 
-	// SandboxRuntimeClasses maps sandbox tiers (gvisor, kata) to the
-	// RuntimeClass stamped on warm pods (KUBE_SANDBOX_RUNTIME_CLASSES,
+	// RuntimeClasses maps isolation tiers (gvisor, kata) to the
+	// RuntimeClass stamped on warm pods (KUBE_RUNTIME_CLASSES,
 	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
 	// default. Defaults: gvisor→gvisor, kata→kata.
-	SandboxRuntimeClasses map[string]string
+	RuntimeClasses map[string]string
 
 	GatewayEnabled   bool   // reconcile per-activation HTTPRoutes; off for pre-Gateway clusters
 	GatewayName      string // parentRef Gateway name
@@ -68,7 +69,7 @@ type Config struct {
 // concept matches. SidecarImage, ShimImage, and Pools are provided by the
 // caller.
 func LoadConfigFromEnv() (Config, error) {
-	sandboxClasses, err := kube.ParseSandboxRuntimeClasses(config.GetEnv("KUBE_SANDBOX_RUNTIME_CLASSES", ""))
+	classes, err := kube.ParseRuntimeClasses(config.GetEnv("KUBE_RUNTIME_CLASSES", ""))
 	if err != nil {
 		return Config{}, err
 	}
@@ -90,7 +91,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
-		SandboxRuntimeClasses:  sandboxClasses,
+		RuntimeClasses:         classes,
 
 		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:      config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
@@ -138,10 +139,32 @@ func (c *Config) applyDefaults() {
 	if c.OrphanTTL <= 0 {
 		c.OrphanTTL = defaultOrphanTTL
 	}
-	if c.SandboxRuntimeClasses == nil {
-		c.SandboxRuntimeClasses, _ = kube.ParseSandboxRuntimeClasses("")
+	if c.RuntimeClasses == nil {
+		c.RuntimeClasses, _ = kube.ParseRuntimeClasses("")
 	}
 	if c.LeaderElection.Enabled {
 		c.LeaderElection.ApplyDefaults(defaultLeaderLeaseName)
+	}
+}
+
+// warmConfig projects the pool config onto the warm-pool manager's — the
+// images, hardening, placement, and GC knobs it shares with every other warm
+// consumer.
+func (c *Config) warmConfig() warm.Config {
+	return warm.Config{
+		Namespace:              c.Namespace,
+		SidecarImage:           c.SidecarImage,
+		ShimImage:              c.ShimImage,
+		SidecarImagePullPolicy: c.SidecarImagePullPolicy,
+		WorkerImagePullPolicy:  c.WorkerImagePullPolicy,
+		RunAsUser:              c.RunAsUser,
+		Overcommit:             c.Overcommit,
+		Tolerations:            c.Tolerations,
+		NodeSelector:           c.NodeSelector,
+		RuntimeClasses:         c.RuntimeClasses,
+		OrphanTTL:              c.OrphanTTL,
+		Naming:                 naming(),
+		Metrics:                c.Metrics,
+		LeaderElection:         c.LeaderElection,
 	}
 }

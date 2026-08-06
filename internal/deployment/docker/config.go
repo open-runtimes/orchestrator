@@ -7,7 +7,7 @@ import (
 
 // Config holds configuration for the Docker deployment orchestrator.
 type Config struct {
-	SidecarImage     string   // deployments-sidecar (proxy) image (set by the caller, e.g. from DEPLOYMENT_SIDECAR_IMAGE)
+	SidecarImage     string   // workload-sidecar (proxy) image (set by the caller, e.g. from WORKLOAD_SIDECAR_IMAGE)
 	JobSidecarImage  string   // job-sidecar image for artifact materialization (JOB_SIDECAR_IMAGE)
 	Network          string   // Docker network to attach deployment containers to
 	ArtifactEndpoint string   // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)

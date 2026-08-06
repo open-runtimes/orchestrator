@@ -1,0 +1,223 @@
+{{- if .Values.sandboxes.proxy.enabled }}
+{{- if not .Values.deployments.enabled }}
+{{- fail "sandboxes.proxy.enabled requires deployments.enabled: the deployments service is what serves /v1/sandbox and reconciles sandbox pools" }}
+{{- end }}
+{{- /*
+The sandbox proxy: one wildcard HTTPRoute for *.{domain} sends every sandbox
+here, and it resolves the sandbox from the capability token in the request's
+Host. Its own component rather than a mode of the activator — permanently on the
+data path, pods-read-only RBAC, and nothing to raise (cmd/sandbox-proxy).
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+spec:
+  {{- if not .Values.sandboxes.proxy.autoscaling.enabled }}
+  replicas: {{ .Values.sandboxes.proxy.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+      {{- with include "orchestrator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      securityContext:
+        {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 14 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      containers:
+        - name: sandbox-proxy
+          image: {{ include "orchestrator.sandboxProxyImage" . | quote }}
+          imagePullPolicy: {{ .Values.sandboxes.proxy.image.pullPolicy }}
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          ports:
+            - name: data
+              containerPort: {{ .Values.sandboxes.proxy.port }}
+            - name: mgmt
+              containerPort: {{ .Values.service.apiPort }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          env:
+            - name: ACTIVATOR_PORT
+              value: {{ .Values.sandboxes.proxy.port | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.service.metricsPort | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
+            - name: SANDBOX_DOMAIN
+              value: {{ required "sandboxes.domain is required when the sandbox proxy is enabled" .Values.sandboxes.domain | quote }}
+            - name: SANDBOX_HOLD_SECONDS
+              value: {{ .Values.sandboxes.proxy.holdSeconds | quote }}
+            - name: PORT
+              value: {{ .Values.service.apiPort | quote }}
+            - name: SHUTDOWN_DRAIN_WAIT
+              value: "0s"
+          {{- /*
+          Probes hit the management port, not the data port: the data listener
+          serves only sandbox traffic, since every path there belongs to the
+          sandbox (including the contract's own /healthz).
+          */}}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: mgmt
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: mgmt
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.sandboxes.proxy.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 4 }}
+  ports:
+    - name: data
+      port: {{ .Values.sandboxes.proxy.port }}
+      targetPort: data
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+---
+{{- /*
+Pods, read-only: all it does is resolve a token to the pod carrying it. No
+secrets (sandbox traffic is sync — there is no callback config to read), no
+scale writes, nothing mutable. This is half the reason it is not a mode of the
+activator, which needs both.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+    namespace: {{ .Release.Namespace }}
+{{- if and .Values.sandboxes.proxy.route.enabled .Values.deployments.gateway.enabled }}
+---
+{{- /*
+One wildcard route for every sandbox that will ever exist. Nothing is
+programmed per create or per delete, so creates stay as fast as the claim and
+minute-scale sandbox churn never touches the gateway config.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-sandboxes
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.deployments.gateway.name }}
+      namespace: {{ default .Release.Namespace .Values.deployments.gateway.namespace }}
+  hostnames:
+    - {{ printf "*.%s" .Values.sandboxes.domain | quote }}
+  rules:
+    - backendRefs:
+        - name: sandbox-proxy
+          port: {{ .Values.sandboxes.proxy.port }}
+{{- end }}
+{{- /*
+Replica-aware PDB — see the jobs PDB note; singletons never get one.
+*/}}
+{{- if or (gt (int .Values.sandboxes.proxy.replicaCount) 1) (and .Values.sandboxes.proxy.autoscaling.enabled (gt (int .Values.sandboxes.proxy.autoscaling.minReplicas) 1)) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.sandboxes.proxy.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  minReplicas: {{ .Values.sandboxes.proxy.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.sandboxes.proxy.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.sandboxes.proxy.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}

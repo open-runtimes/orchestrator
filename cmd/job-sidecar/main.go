@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/sidecar"
 	"os"
 	"os/signal"
@@ -28,10 +29,7 @@ func main() {
 
 	// Probe paths — must stay silent (no log setup) to avoid polluting status output.
 	if checkReady || checkMounts {
-		path := os.Getenv("SHARED_VOLUME_PATH")
-		if path == "" {
-			path = "/workspace"
-		}
+		path := config.Workspace()
 		ready := sidecar.CheckReady(path)
 		if checkMounts {
 			ready = sidecar.CheckMountsReady(path)
