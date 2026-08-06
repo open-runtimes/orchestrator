@@ -34,7 +34,7 @@ type Resolver interface {
 // Activator routes data-plane traffic by Host.
 type Activator struct {
 	resolver Resolver
-	broker   *broker
+	broker   *deploymentBroker
 
 	mu    sync.Mutex
 	cache map[string]resolveEntry // host → spec, TTL-bounded
@@ -50,7 +50,7 @@ type resolveEntry struct {
 func New(resolver Resolver, queue dispatcher.Queue, rec Recorder) *Activator {
 	return &Activator{
 		resolver: resolver,
-		broker:   newBroker(queue, rec, componentActivator),
+		broker:   newDeploymentBroker(queue, rec),
 		cache:    make(map[string]resolveEntry),
 	}
 }

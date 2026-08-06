@@ -98,7 +98,7 @@ func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	b := newBroker(newCaptureQueue(), nil, componentActivator)
+	b := newBroker(nil, componentActivator)
 	c := &fakeCapacity{target: mustURL(t, backend.URL)}
 
 	rec := httptest.NewRecorder()
@@ -116,7 +116,7 @@ func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
 }
 
 func TestBrokerColdHoldRaisesOnceThen503(t *testing.T) {
-	b := newBroker(newCaptureQueue(), nil, componentActivator)
+	b := newBroker(nil, componentActivator)
 	c := &fakeCapacity{readyAfter: 1 << 30} // never ready
 
 	const concurrent = 5
@@ -160,7 +160,7 @@ func TestBrokerColdStartServesAfterRaise(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	b := newBroker(newCaptureQueue(), nil, componentActivator)
+	b := newBroker(nil, componentActivator)
 	c := &fakeCapacity{target: mustURL(t, backend.URL), readyAfter: 2}
 
 	rec := httptest.NewRecorder()
@@ -175,7 +175,7 @@ func TestBrokerColdStartServesAfterRaise(t *testing.T) {
 }
 
 func TestBrokerAsyncRequiresCallback(t *testing.T) {
-	b := newBroker(newCaptureQueue(), nil, componentActivator)
+	b := newDeploymentBroker(newCaptureQueue(), nil)
 	spec := brokerSpec()
 	spec.Callback = nil
 
@@ -188,7 +188,7 @@ func TestBrokerAsyncRequiresCallback(t *testing.T) {
 }
 
 func TestBrokerAsyncRejectsOversizedBody(t *testing.T) {
-	b := newBroker(newCaptureQueue(), nil, componentActivator)
+	b := newDeploymentBroker(newCaptureQueue(), nil)
 
 	body := bytes.NewReader(make([]byte, maxAsyncRequestBody+1))
 	rec := httptest.NewRecorder()
@@ -207,7 +207,7 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil, componentActivator)
+	b := newDeploymentBroker(queue, nil)
 	c := &fakeCapacity{target: mustURL(t, backend.URL)}
 
 	rec := httptest.NewRecorder()
@@ -245,7 +245,7 @@ func TestBrokerAsyncHonorsClientInvocationID(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil, componentActivator)
+	b := newDeploymentBroker(queue, nil)
 	req := newDataRequest(t, http.MethodPost, nil)
 	req.Header.Set("X-Invocation-Id", "exec-123")
 
@@ -270,7 +270,7 @@ func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil, componentActivator)
+	b := newDeploymentBroker(queue, nil)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, "http://h/run?x=1", http.NoBody)
 	if err != nil {
@@ -316,7 +316,7 @@ func TestBrokerAsyncBoundsRequestPath(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil, componentActivator)
+	b := newDeploymentBroker(queue, nil)
 
 	long := "/" + strings.Repeat("a", maxEchoedPathBytes+100)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://h"+long, http.NoBody)
@@ -346,7 +346,7 @@ func TestBrokerAsyncCallbackBase64ForBinaryBody(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil, componentActivator)
+	b := newDeploymentBroker(queue, nil)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), time.Second,
@@ -373,7 +373,7 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 	defer backend.Close()
 
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil, componentActivator)
+	b := newDeploymentBroker(queue, nil)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), time.Second,
@@ -390,7 +390,7 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 
 func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 	queue := newCaptureQueue()
-	b := newBroker(queue, nil, componentActivator)
+	b := newDeploymentBroker(queue, nil)
 
 	rec := httptest.NewRecorder()
 	b.async(rec, newDataRequest(t, http.MethodPost, nil), "dep", "h", brokerSpec(), 200*time.Millisecond,
@@ -453,7 +453,7 @@ func TestBrokerRecordsTelemetry(t *testing.T) {
 	defer backend.Close()
 
 	rec := &fakeRecorder{}
-	b := newBroker(newCaptureQueue(), rec, componentActivator)
+	b := newBroker(rec, componentActivator)
 
 	// Served (warm).
 	b.sync(httptest.NewRecorder(), newDataRequest(t, http.MethodGet, nil), "dep", "h", time.Second,
@@ -475,9 +475,39 @@ func TestBrokerRecordsTelemetry(t *testing.T) {
 	}
 }
 
+// A workload with nothing to raise must not report raises. The sandbox proxy is
+// that case — a sandbox is already claimed, so there is no zero to rise from —
+// and counting its holds as cold starts made activator_raises_total describe an
+// operation the component never performs.
+func TestBrokerRecordsNoRaiseForCapacityThatCannotRise(t *testing.T) {
+	rec := &fakeRecorder{}
+	b := newBroker(rec, componentSandboxProxy)
+
+	// waiter implements capacity and NOT riser: nothing to raise.
+	b.sync(httptest.NewRecorder(), newDataRequest(t, http.MethodGet, nil), "tok", "h", 150*time.Millisecond,
+		waiter{})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.raises != 0 {
+		t.Errorf("raises = %d, want 0 — nothing was raised", rec.raises)
+	}
+	// The hold itself is still the broker's business, and still reported.
+	if len(rec.holds) != 1 || rec.holds[0] != "timeout" {
+		t.Errorf("holds = %v, want [timeout]", rec.holds)
+	}
+}
+
+// waiter is a capacity that never has a target and cannot be raised.
+type waiter struct{}
+
+func (waiter) Target(context.Context) (*url.URL, error) {
+	return nil, nil //nolint:nilnil // nil,nil is the capacity contract for "none ready yet"
+}
+
 func TestBrokerRecordsAsyncResult(t *testing.T) {
 	rec := &fakeRecorder{}
-	b := newBroker(newCaptureQueue(), rec, componentActivator)
+	b := newDeploymentBroker(newCaptureQueue(), rec)
 
 	// Hold times out → the async response callback carries an error → failed.
 	recorder := httptest.NewRecorder()

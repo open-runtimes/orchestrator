@@ -68,7 +68,7 @@ type RevisionConfig struct {
 // whose endpoints are this activator during the cold window (loop).
 type RevisionActivator struct {
 	client kubernetes.Interface
-	broker *broker
+	broker *deploymentBroker
 	cfg    RevisionConfig
 
 	pods        corelisters.PodLister
@@ -90,7 +90,7 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 	}
 	return &RevisionActivator{
 		client: client,
-		broker: newBroker(queue, rec, componentActivator),
+		broker: newDeploymentBroker(queue, rec),
 		cfg:    cfg,
 	}
 }

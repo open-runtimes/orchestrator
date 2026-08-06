@@ -90,7 +90,7 @@ func NewSandboxProxy(targets SandboxTargets, cfg SandboxConfig, rec Recorder) *S
 	}
 	return &SandboxProxy{
 		targets: targets,
-		broker:  newBroker(nil, rec, componentSandboxProxy),
+		broker:  newBroker(rec, componentSandboxProxy),
 		addr:    sandbox.Addressing{Domain: cfg.Domain},
 		cfg:     cfg,
 	}
@@ -180,8 +180,9 @@ func (a *SandboxProxy) Matches(host string) bool {
 }
 
 // sandboxCapacity adapts one sandbox to the broker's seam: the target is
-// whatever serves this token, and there is nothing to raise — a sandbox is a
-// claimed workload, so if it is gone, it is gone.
+// whatever serves this token. It implements no riser — a sandbox is a claimed
+// workload, so if it is gone, it is gone, and the broker's only job here is the
+// one legitimate wait: the tail of the sandbox's own creation.
 type sandboxCapacity struct {
 	targets SandboxTargets
 	token   string
@@ -191,4 +192,3 @@ func (c sandboxCapacity) Target(ctx context.Context) (*url.URL, error) {
 	return c.targets.Target(ctx, c.token)
 }
 
-func (c sandboxCapacity) Raise(context.Context) error { return nil }
