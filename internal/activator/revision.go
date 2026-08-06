@@ -197,6 +197,15 @@ func (c revisionCapacity) Raise(ctx context.Context) error {
 // the wait it saves matters most for a sub-second sandbox claim.
 func probeCandidates(ctx context.Context, pods []*corev1.Pod, proxyPort, adminPort int32) *url.URL {
 	for _, pod := range pods {
+		// A terminating pod is excluded here for the same reason podReady
+		// excludes it — and it matters more on this path, which exists to reach a
+		// pod BEFORE kubelet readiness propagates. Without the check, a pod the
+		// ready path has just rejected gets traffic anyway: for a sandbox that
+		// means a deleted one still executing code at its URL for as long as its
+		// termination takes.
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
 		if pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" {
 			continue
 		}

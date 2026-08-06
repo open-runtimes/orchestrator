@@ -54,7 +54,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
 
 `201 Created`, and the URL is live when you receive it — there is no per-sandbox gateway route to wait on. The call is synchronous because a claim is sub-second; there is no async variant and no callback.
 
-**Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it.
+**Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it immediately: the proxy stops routing to a pod the moment it is marked for deletion, so the URL fails while the pod is still terminating, and dies with the token when it goes.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
