@@ -16,7 +16,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/deployment/endpointflip"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -82,7 +82,7 @@ func (o *Orchestrator) runReconcilers(ctx context.Context) {
 		flip := endpointflip.New(o.client, o.namespace, endpointflip.Options{
 			ActivatorSelector:  o.cfg.ActivatorSelector,
 			ActivatorNamespace: o.cfg.ActivatorNamespace,
-			ProxyPort:          proxy.DefaultProxyPort,
+			ProxyPort:          workload.DefaultProxyPort,
 			ActivatorPort:      int32(o.cfg.ActivatorPort),
 		})
 		go flip.Run(ctx)

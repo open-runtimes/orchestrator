@@ -3,7 +3,7 @@ package warm
 import (
 	"context"
 	"orchestrator/internal/claim"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"sync"
 	"testing"
@@ -32,27 +32,27 @@ var testNaming = Naming{
 // reachable sidecars, and the pod IP is the claim protocol's address.
 type fakeSidecar struct {
 	mu       sync.Mutex
-	conflict map[string]bool             // Claim → 409
-	poison   map[string]bool             // Claim → 422 (artifacts failed)
-	state    map[string]proxy.ClaimState // State responses
-	notReady map[string]bool             // Ready → false (default ready)
-	requests map[string]int64            // Requests responses
-	claimed  []string                    // successful claim IPs, in order
-	tokens   []string                    // bearer tokens presented with them
-	last     *proxy.ClaimRequest
+	conflict map[string]bool                // Claim → 409
+	poison   map[string]bool                // Claim → 422 (artifacts failed)
+	state    map[string]workload.ClaimState // State responses
+	notReady map[string]bool                // Ready → false (default ready)
+	requests map[string]int64               // Requests responses
+	claimed  []string                       // successful claim IPs, in order
+	tokens   []string                       // bearer tokens presented with them
+	last     *workload.ClaimRequest
 }
 
 func newFakeSidecar() *fakeSidecar {
 	return &fakeSidecar{
 		conflict: map[string]bool{},
 		poison:   map[string]bool{},
-		state:    map[string]proxy.ClaimState{},
+		state:    map[string]workload.ClaimState{},
 		notReady: map[string]bool{},
 		requests: map[string]int64{},
 	}
 }
 
-func (f *fakeSidecar) Claim(_ context.Context, podIP, token string, req *proxy.ClaimRequest) error {
+func (f *fakeSidecar) Claim(_ context.Context, podIP, token string, req *workload.ClaimRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.conflict[podIP] {
@@ -67,7 +67,7 @@ func (f *fakeSidecar) Claim(_ context.Context, podIP, token string, req *proxy.C
 	return nil
 }
 
-func (f *fakeSidecar) State(_ context.Context, podIP string) (*proxy.ClaimState, error) {
+func (f *fakeSidecar) State(_ context.Context, podIP string) (*workload.ClaimState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	state := f.state[podIP]
@@ -162,7 +162,7 @@ func TestClaim_ConflictRetriesNextPod(t *testing.T) {
 	addPod(t, cs, warmPodFixture(m, "std", "pod-b", "10.0.0.2"))
 	sidecar.conflict["10.0.0.1"] = true // a racing replica won pod-a
 
-	pod, err := m.Claim(t.Context(), m.Pool("std"), &proxy.ClaimRequest{ActivationID: "act1", Command: "serve"})
+	pod, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ActivationID: "act1", Command: "serve"})
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestClaim_TokenIsDerivedFromPodName(t *testing.T) {
 	m, cs, sidecar := newTestManager(t, testPool("std"))
 	addPod(t, cs, warmPodFixture(m, "std", "pod-a", "10.0.0.1"))
 
-	if _, err := m.Claim(t.Context(), m.Pool("std"), &proxy.ClaimRequest{ActivationID: "act1"}); err != nil {
+	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ActivationID: "act1"}); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if len(sidecar.tokens) != 1 || sidecar.tokens[0] != deriveClaimToken(m.installKey, "pod-a") {
@@ -188,7 +188,7 @@ func TestClaim_ExhaustedRejects(t *testing.T) {
 	t.Parallel()
 	m, _, _ := newTestManager(t, testPool("std")) // burst: reject, and no warm pods
 
-	if _, err := m.Claim(t.Context(), m.Pool("std"), &proxy.ClaimRequest{ActivationID: "act1"}); err == nil {
+	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ActivationID: "act1"}); err == nil {
 		t.Fatal("want an exhausted-pool error")
 	}
 }

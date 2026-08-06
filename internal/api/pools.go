@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/dispatcher"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/cloudevent"
 	"orchestrator/pkg/pool"
 	"time"
@@ -60,7 +60,7 @@ func (h *poolsHandler) activate(w http.ResponseWriter, r *http.Request) {
 	}
 	poolID := r.PathValue("id")
 
-	if !proxy.PreferAsync(r) {
+	if !workload.PreferAsync(r) {
 		status, err := h.svc.Activate(r.Context(), poolID, act)
 		if err != nil {
 			handleServiceError(w, r, err)

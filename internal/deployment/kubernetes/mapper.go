@@ -6,7 +6,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	"slices"
 	"strconv"
@@ -126,7 +126,7 @@ func buildService(id, revision string) *corev1.Service {
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       80,
-				TargetPort: intstr.FromInt32(proxy.DefaultProxyPort),
+				TargetPort: intstr.FromInt32(workload.DefaultProxyPort),
 			}},
 		},
 	}
@@ -215,14 +215,14 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
 		Env:             proxyEnv(req),
 		Ports: []corev1.ContainerPort{
-			{Name: portNameProxy, ContainerPort: proxy.DefaultProxyPort},
-			{Name: portNameAdmin, ContainerPort: proxy.DefaultAdminPort},
+			{Name: portNameProxy, ContainerPort: workload.DefaultProxyPort},
+			{Name: portNameAdmin, ContainerPort: workload.DefaultAdminPort},
 		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/ready",
-					Port: intstr.FromInt32(proxy.DefaultAdminPort),
+					Port: intstr.FromInt32(workload.DefaultAdminPort),
 				},
 			},
 			PeriodSeconds:    1,
@@ -250,29 +250,29 @@ func proxyResources() corev1.ResourceRequirements {
 // proxyEnv stamps the internal/proxy env contract into the proxy container.
 func proxyEnv(req *deployment.Request) []corev1.EnvVar {
 	env := []corev1.EnvVar{
-		{Name: proxy.EnvTarget, Value: net.JoinHostPort("127.0.0.1", strconv.Itoa(req.Port))},
+		{Name: workload.EnvTarget, Value: net.JoinHostPort("127.0.0.1", strconv.Itoa(req.Port))},
 	}
 	if req.TimeoutSeconds > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvTimeoutSeconds, Value: strconv.Itoa(req.TimeoutSeconds)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvTimeoutSeconds, Value: strconv.Itoa(req.TimeoutSeconds)})
 	}
 	if req.Concurrency > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvConcurrency, Value: strconv.Itoa(req.Concurrency)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvConcurrency, Value: strconv.Itoa(req.Concurrency)})
 	}
 	if req.Probes == nil || req.Probes.Readiness == nil {
 		return env
 	}
 	r := req.Probes.Readiness
 	if r.Path != "" {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessPath, Value: r.Path})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessPath, Value: r.Path})
 	}
 	if r.PeriodMillis > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessPeriodMillis, Value: strconv.Itoa(r.PeriodMillis)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessPeriodMillis, Value: strconv.Itoa(r.PeriodMillis)})
 	}
 	if r.TimeoutMillis > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessTimeoutMillis, Value: strconv.Itoa(r.TimeoutMillis)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessTimeoutMillis, Value: strconv.Itoa(r.TimeoutMillis)})
 	}
 	if r.FailureThreshold > 0 {
-		env = append(env, corev1.EnvVar{Name: proxy.EnvReadinessFailureThreshold, Value: strconv.Itoa(r.FailureThreshold)})
+		env = append(env, corev1.EnvVar{Name: workload.EnvReadinessFailureThreshold, Value: strconv.Itoa(r.FailureThreshold)})
 	}
 	return env
 }

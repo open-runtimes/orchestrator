@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
-	"orchestrator/internal/proxy"
 	"orchestrator/internal/warm"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
 	"strings"
@@ -34,27 +34,27 @@ var testInstallKey = []byte("0123456789abcdef0123456789abcdef")
 // no reachable sidecars, and the pod IP is the claim protocol's address.
 type fakeClaims struct {
 	mu        sync.Mutex
-	conflict  map[string]bool             // Claim → 409
-	poison    map[string]bool             // Claim → 422 (artifacts failed)
-	state     map[string]proxy.ClaimState // State responses
-	notReady  map[string]bool             // Ready → false (default ready)
-	requests  map[string]int64            // Requests responses
-	claimed   []string                    // successful claim IPs, in order
-	tokens    []string                    // bearer tokens presented with them
-	lastClaim *proxy.ClaimRequest
+	conflict  map[string]bool                // Claim → 409
+	poison    map[string]bool                // Claim → 422 (artifacts failed)
+	state     map[string]workload.ClaimState // State responses
+	notReady  map[string]bool                // Ready → false (default ready)
+	requests  map[string]int64               // Requests responses
+	claimed   []string                       // successful claim IPs, in order
+	tokens    []string                       // bearer tokens presented with them
+	lastClaim *workload.ClaimRequest
 }
 
 func newFakeClaims() *fakeClaims {
 	return &fakeClaims{
 		conflict: map[string]bool{},
 		poison:   map[string]bool{},
-		state:    map[string]proxy.ClaimState{},
+		state:    map[string]workload.ClaimState{},
 		notReady: map[string]bool{},
 		requests: map[string]int64{},
 	}
 }
 
-func (f *fakeClaims) Claim(_ context.Context, podIP, token string, req *proxy.ClaimRequest) error {
+func (f *fakeClaims) Claim(_ context.Context, podIP, token string, req *workload.ClaimRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.conflict[podIP] {
@@ -69,7 +69,7 @@ func (f *fakeClaims) Claim(_ context.Context, podIP, token string, req *proxy.Cl
 	return nil
 }
 
-func (f *fakeClaims) State(_ context.Context, podIP string) (*proxy.ClaimState, error) {
+func (f *fakeClaims) State(_ context.Context, podIP string) (*workload.ClaimState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	state := f.state[podIP]
@@ -309,7 +309,7 @@ func TestActivate_HTTPCreatesServiceAndRoute(t *testing.T) {
 	if svc.Spec.Selector[LabelActivation] != "site" {
 		t.Errorf("service selector: got %v", svc.Spec.Selector)
 	}
-	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != int(proxy.DefaultProxyPort) {
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 || svc.Spec.Ports[0].TargetPort.IntValue() != int(workload.DefaultProxyPort) {
 		t.Errorf("service ports: got %+v", svc.Spec.Ports)
 	}
 	if svc.Labels[LabelPoolID] != "web" || svc.Labels[LabelManagedBy] != ManagedByValue {

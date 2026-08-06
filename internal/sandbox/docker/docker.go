@@ -29,7 +29,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"orchestrator/pkg/sandbox"
 	volspec "orchestrator/pkg/volume"
@@ -412,16 +412,16 @@ func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Pool, req *sandbo
 	labels[labelToken] = req.Token
 
 	env := []string{
-		proxy.EnvTarget + "=" + net.JoinHostPort(workerIP, strconv.Itoa(p.Port)),
-		proxy.EnvTargetHost + "=" + workerIP,
+		workload.EnvTarget + "=" + net.JoinHostPort(workerIP, strconv.Itoa(p.Port)),
+		workload.EnvTargetHost + "=" + workerIP,
 	}
 	if len(req.Ports) > 0 {
-		env = append(env, proxy.EnvExtraPorts+"="+portList(req.Ports))
+		env = append(env, workload.EnvExtraPorts+"="+portList(req.Ports))
 	}
 	// An explicit 0 means no per-request bound (long-lived sessions); nil takes
 	// the sidecar's own default, exactly as on the claim path.
 	if req.TimeoutSeconds != nil {
-		env = append(env, proxy.EnvTimeoutSeconds+"="+strconv.Itoa(*req.TimeoutSeconds))
+		env = append(env, workload.EnvTimeoutSeconds+"="+strconv.Itoa(*req.TimeoutSeconds))
 	}
 
 	resp, err := o.client.ContainerCreate(ctx,
@@ -533,7 +533,7 @@ func (o *Orchestrator) Target(ctx context.Context, token string) (*url.URL, erro
 		if ip == "" || !o.reachable(ctx, ip) {
 			continue
 		}
-		return &url.URL{Scheme: "http", Host: net.JoinHostPort(ip, strconv.Itoa(proxy.DefaultProxyPort))}, nil
+		return &url.URL{Scheme: "http", Host: net.JoinHostPort(ip, strconv.Itoa(workload.DefaultProxyPort))}, nil
 	}
 	//nolint:nilnil // the activator.SandboxTargets contract: nil means nothing
 	// serves this token, which the broker turns into a hold rather than an error
@@ -545,7 +545,7 @@ func (o *Orchestrator) reachable(ctx context.Context, ip string) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	probeURL := "http://" + net.JoinHostPort(ip, strconv.Itoa(proxy.DefaultAdminPort)) + "/ready"
+	probeURL := "http://" + net.JoinHostPort(ip, strconv.Itoa(workload.DefaultAdminPort)) + "/ready"
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, probeURL, nil)
 	if err != nil {
 		return false

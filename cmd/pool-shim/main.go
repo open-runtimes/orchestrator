@@ -10,7 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"orchestrator/internal/config"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,7 +88,7 @@ func install(path string) error {
 }
 
 func run(workspace string) error {
-	fifoPath := filepath.Join(workspace, proxy.ShimFIFOName)
+	fifoPath := filepath.Join(workspace, workload.ShimFIFOName)
 
 	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil && !os.IsExist(err) {
 		return err
@@ -101,7 +101,7 @@ func run(workspace string) error {
 	if err != nil {
 		return err
 	}
-	var payload proxy.ShimExec
+	var payload workload.ShimExec
 	if err := json.NewDecoder(fifo).Decode(&payload); err != nil {
 		_ = fifo.Close()
 		return err

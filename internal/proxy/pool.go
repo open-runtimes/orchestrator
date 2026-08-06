@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/sidecar"
+	"orchestrator/internal/workload"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,22 +30,22 @@ const shimOpenTimeout = 10 * time.Second
 // point — racing pool backends get 409 and retry another warm pod, so the
 // service stays stateless. See claim.go for the wire protocol.
 type pool struct {
-	token     string // bearer token required on ClaimPath
+	token     string // bearer token required on workload.ClaimPath
 	workspace string // shared volume: artifacts materialize here, the shim FIFO lives here
 
-	claimed atomic.Bool                // claim gate: the first CAS wins, forever
-	state   atomic.Pointer[ClaimState] // published record; written only by the claim winner
+	claimed atomic.Bool                         // claim gate: the first CAS wins, forever
+	state   atomic.Pointer[workload.ClaimState] // published record; written only by the claim winner
 }
 
 func newPool(cfg Config) *pool {
 	pl := &pool{token: cfg.ClaimToken, workspace: cfg.Workspace}
-	pl.state.Store(&ClaimState{})
+	pl.state.Store(&workload.ClaimState{})
 	return pl
 }
 
-func (pl *pool) snapshot() ClaimState { return *pl.state.Load() }
+func (pl *pool) snapshot() workload.ClaimState { return *pl.state.Load() }
 
-func (pl *pool) publish(s ClaimState) { pl.state.Store(&s) }
+func (pl *pool) publish(s workload.ClaimState) { pl.state.Store(&s) }
 
 // authorized checks Authorization: Bearer <token> in constant time.
 func (pl *pool) authorized(r *http.Request) bool {
@@ -53,7 +54,7 @@ func (pl *pool) authorized(r *http.Request) bool {
 		subtle.ConstantTimeCompare([]byte(token), []byte(pl.token)) == 1
 }
 
-// handleActivate accepts the activation (POST ClaimPath): 401 bad token, 409
+// handleActivate accepts the activation (POST workload.ClaimPath): 401 bad token, 409
 // already claimed or poisoned, 400 undecodable claim, 422 artifacts or shim
 // signaling failed (poisoned), 200 claimed and signaled.
 func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
@@ -69,17 +70,17 @@ func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
 		writeClaimState(w, http.StatusConflict, pl.snapshot())
 		return
 	}
-	var req ClaimRequest
+	var req workload.ClaimRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		// The claim is spent: a pod is never resold, so an undecodable claim
 		// poisons it and replenishment replaces it.
-		pl.publish(ClaimState{Claimed: true, Failed: true, Error: "decode claim: " + err.Error()})
+		pl.publish(workload.ClaimState{Claimed: true, Failed: true, Error: "decode claim: " + err.Error()})
 		writeClaimState(w, http.StatusBadRequest, pl.snapshot())
 		return
 	}
-	pl.publish(ClaimState{Claimed: true, ActivationID: req.ActivationID})
+	pl.publish(workload.ClaimState{Claimed: true, ActivationID: req.ActivationID})
 	if err := p.activate(r.Context(), req); err != nil {
-		pl.publish(ClaimState{Claimed: true, ActivationID: req.ActivationID, Failed: true, Error: err.Error()})
+		pl.publish(workload.ClaimState{Claimed: true, ActivationID: req.ActivationID, Failed: true, Error: err.Error()})
 		writeClaimState(w, http.StatusUnprocessableEntity, pl.snapshot())
 		return
 	}
@@ -87,22 +88,22 @@ func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleClaimState reports the authoritative claim record (GET
-// ClaimStatePath) — the backends' reconcile / orphan-GC source of truth.
+// workload.ClaimStatePath) — the backends' reconcile / orphan-GC source of truth.
 // Unauthenticated by design: it leaks only an activation id.
 func (p *Proxy) handleClaimState(w http.ResponseWriter, _ *http.Request) {
 	writeClaimState(w, http.StatusOK, p.pool.snapshot())
 }
 
-func writeClaimState(w http.ResponseWriter, status int, s ClaimState) {
+func writeClaimState(w http.ResponseWriter, status int, s workload.ClaimState) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(s)
 }
 
 // activate materializes the payload onto the pod: artifacts into the
-// workspace, one ShimExec line down the FIFO, then the late-bound data
+// workspace, one workload.ShimExec line down the FIFO, then the late-bound data
 // plane. Any error poisons the pod (the caller publishes it).
-func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
+func (p *Proxy) activate(ctx context.Context, req workload.ClaimRequest) error {
 	// Artifacts keep a bound even when the requests they serve do not: an
 	// unbounded claim means long-lived SESSIONS, not an unbounded download.
 	timeoutSeconds := int(p.cfg.Timeout / time.Second)
@@ -127,7 +128,7 @@ func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
 		return err
 	}
 
-	if err := p.pool.signalShim(ctx, ShimExec{
+	if err := p.pool.signalShim(ctx, workload.ShimExec{
 		Command:     req.Command,
 		Environment: req.Environment,
 		WorkDir:     p.pool.workspace,
@@ -143,7 +144,7 @@ func (p *Proxy) activate(ctx context.Context, req ClaimRequest) error {
 // TargetHost:Port (plus any secondary ports), the claim's per-request timeout,
 // and the readiness prober
 // — from here /ready means the workload serves.
-func (p *Proxy) arm(req ClaimRequest) {
+func (p *Proxy) arm(req workload.ClaimRequest) {
 	cfg := p.cfg
 	cfg.Target = net.JoinHostPort(cfg.TargetHost, strconv.Itoa(req.Port))
 	// A claim that states its timeout wins, including a 0 that asks for no
@@ -151,16 +152,16 @@ func (p *Proxy) arm(req ClaimRequest) {
 	if req.TimeoutSeconds != nil {
 		cfg.Timeout = time.Duration(*req.TimeoutSeconds) * time.Second
 	}
-	// Secondary ports are addressable but never probed — see ClaimRequest.Ports.
+	// Secondary ports are addressable but never probed — see workload.ClaimRequest.Ports.
 	cfg.ExtraPorts = req.Ports
 	b := newBinding(cfg)
 	p.bind.Store(b)
 	go b.prober.run(p.runCtx)
 }
 
-// signalShim writes the single ShimExec JSON line that turns the idle shim
+// signalShim writes the single workload.ShimExec JSON line that turns the idle shim
 // into the workload.
-func (pl *pool) signalShim(ctx context.Context, payload ShimExec) error {
+func (pl *pool) signalShim(ctx context.Context, payload workload.ShimExec) error {
 	fifo, err := pl.openFIFO(ctx)
 	if err != nil {
 		return fmt.Errorf("open shim FIFO: %w", err)
@@ -177,7 +178,7 @@ func (pl *pool) signalShim(ctx context.Context, payload ShimExec) error {
 // reader exists — and retry briefly; no reader within shimOpenTimeout means
 // the shim isn't there.
 func (pl *pool) openFIFO(ctx context.Context) (*os.File, error) {
-	path := filepath.Join(pl.workspace, ShimFIFOName)
+	path := filepath.Join(pl.workspace, workload.ShimFIFOName)
 	deadline := time.Now().Add(shimOpenTimeout)
 	for {
 		fifo, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)

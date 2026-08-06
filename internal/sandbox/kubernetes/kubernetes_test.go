@@ -5,8 +5,8 @@ import (
 	"errors"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
-	"orchestrator/internal/proxy"
 	"orchestrator/internal/warm"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"orchestrator/pkg/sandbox"
 	"strings"
@@ -29,7 +29,7 @@ type fakeSidecar struct {
 	poison   map[string]bool
 	notReady map[string]bool
 	requests map[string]int64
-	last     *proxy.ClaimRequest
+	last     *workload.ClaimRequest
 }
 
 func newFakeSidecar() *fakeSidecar {
@@ -40,7 +40,7 @@ func newFakeSidecar() *fakeSidecar {
 	}
 }
 
-func (f *fakeSidecar) Claim(_ context.Context, podIP, _ string, req *proxy.ClaimRequest) error {
+func (f *fakeSidecar) Claim(_ context.Context, podIP, _ string, req *workload.ClaimRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.poison[podIP] {
@@ -50,8 +50,8 @@ func (f *fakeSidecar) Claim(_ context.Context, podIP, _ string, req *proxy.Claim
 	return nil
 }
 
-func (f *fakeSidecar) State(_ context.Context, podIP string) (*proxy.ClaimState, error) {
-	return &proxy.ClaimState{}, nil
+func (f *fakeSidecar) State(_ context.Context, podIP string) (*workload.ClaimState, error) {
+	return &workload.ClaimState{}, nil
 }
 
 func (f *fakeSidecar) Ready(_ context.Context, podIP string) bool {

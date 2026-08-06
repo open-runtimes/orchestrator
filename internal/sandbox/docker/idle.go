@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"strconv"
 	"time"
 )
@@ -90,7 +90,7 @@ func (o *Orchestrator) requestCount(ctx context.Context, id string) (int64, bool
 	if ip == "" {
 		return 0, false
 	}
-	statsURL := "http://" + net.JoinHostPort(ip, strconv.Itoa(proxy.DefaultAdminPort)) + "/stats"
+	statsURL := "http://" + net.JoinHostPort(ip, strconv.Itoa(workload.DefaultAdminPort)) + "/stats"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statsURL, nil)
 	if err != nil {
 		return 0, false

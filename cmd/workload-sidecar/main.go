@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"os"
 	"os/signal"
 	"strconv"
@@ -42,7 +43,7 @@ func main() {
 func run() error {
 	cfg := proxy.LoadConfigFromEnv()
 	if cfg.Target == "" && cfg.ClaimToken == "" {
-		return errors.New(proxy.EnvTarget + " (direct mode) or " + proxy.EnvClaimToken + " (pool mode) is required")
+		return errors.New(workload.EnvTarget + " (direct mode) or " + workload.EnvClaimToken + " (pool mode) is required")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,9 +60,9 @@ func run() error {
 
 // ready probes the local admin /ready endpoint.
 func ready() bool {
-	port := os.Getenv(proxy.EnvAdminPort)
+	port := os.Getenv(workload.EnvAdminPort)
 	if port == "" {
-		port = strconv.Itoa(proxy.DefaultAdminPort)
+		port = strconv.Itoa(workload.DefaultAdminPort)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

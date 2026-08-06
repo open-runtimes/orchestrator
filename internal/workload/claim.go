@@ -1,13 +1,21 @@
-package proxy
+// Package workload is the contract every process shares with the workload
+// sidecar: the ports it listens on, the environment a backend stamps into it,
+// the headers it honours, the claim endpoints and their payloads, and the line
+// the shim reads. It is the vocabulary of talking TO a workload — the sidecar
+// that implements it is internal/proxy, and nothing here imports it.
+//
+// Kept apart from that implementation on purpose: twelve packages need these
+// names and exactly one runs the sidecar, so the contract must not drag a
+// reverse proxy, a readiness prober and an artifact runner along with it.
+package workload
 
 import (
 	"orchestrator/internal/artifact"
 )
 
 // The claim protocol — the contract between the pool backends (which POST
-// activations), this sidecar (the pod's serialization point: it accepts
-// exactly one), and the pool-shim (which it signals over the FIFO). See
-// docs/pools.md.
+// activations), the sidecar (the pod's serialization point: it accepts exactly
+// one), and the pool-shim (which it signals over the FIFO). See docs/pools.md.
 const (
 	// EnvClaimToken arms pool mode: when set, the sidecar starts unclaimed
 	// (no proxy target, not ready) and exposes the claim endpoints, requiring

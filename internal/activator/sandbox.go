@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/sandbox"
 	"time"
 
@@ -64,8 +64,8 @@ type PodTargetsConfig struct {
 	// (internal/sandbox/kubernetes).
 	ManagedBy  string
 	TokenLabel string
-	ProxyPort  int32 // sandbox pod data port (proxy.DefaultProxyPort)
-	AdminPort  int32 // sandbox pod admin port for direct probing (proxy.DefaultAdminPort)
+	ProxyPort  int32 // sandbox pod data port (workload.DefaultProxyPort)
+	AdminPort  int32 // sandbox pod admin port for direct probing (workload.DefaultAdminPort)
 }
 
 // SandboxProxy is the sandbox data plane: it resolves the capability token from
@@ -107,10 +107,10 @@ type PodTargets struct {
 // serving.
 func NewPodTargets(client kubernetes.Interface, cfg PodTargetsConfig) *PodTargets {
 	if cfg.ProxyPort == 0 {
-		cfg.ProxyPort = proxy.DefaultProxyPort
+		cfg.ProxyPort = workload.DefaultProxyPort
 	}
 	if cfg.AdminPort == 0 {
-		cfg.AdminPort = proxy.DefaultAdminPort
+		cfg.AdminPort = workload.DefaultAdminPort
 	}
 	return &PodTargets{client: client, cfg: cfg}
 }
@@ -163,9 +163,9 @@ func (a *SandboxProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// client: an inbound copy is dropped, so a caller cannot reach a port the
 	// hostname did not name (and the sidecar refuses any the claim did not
 	// declare either).
-	r.Header.Del(proxy.HeaderPort)
+	r.Header.Del(workload.HeaderPort)
 	if port != "" {
-		r.Header.Set(proxy.HeaderPort, port)
+		r.Header.Set(workload.HeaderPort, port)
 	}
 	a.broker.sync(w, r, token, r.Host, a.cfg.Hold, sandboxCapacity{targets: a.targets, token: token})
 }
@@ -191,4 +191,3 @@ type sandboxCapacity struct {
 func (c sandboxCapacity) Target(ctx context.Context) (*url.URL, error) {
 	return c.targets.Target(ctx, c.token)
 }
-

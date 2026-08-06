@@ -16,8 +16,8 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/proxy"
 	"orchestrator/internal/warm"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"orchestrator/pkg/sandbox"
 
@@ -139,8 +139,8 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 // falls back from the request to the pool to the installed agent — so the usual
 // case is that nobody names one, and the image serves the contract by running
 // the agent the shim dropped in its workspace.
-func claimRequest(p *pool.Pool, req *sandbox.Request) *proxy.ClaimRequest {
-	return &proxy.ClaimRequest{
+func claimRequest(p *pool.Pool, req *sandbox.Request) *workload.ClaimRequest {
+	return &workload.ClaimRequest{
 		ActivationID:   req.ID,
 		Command:        cmp.Or(req.Command, p.Command, agentPath),
 		Environment:    req.Environment,

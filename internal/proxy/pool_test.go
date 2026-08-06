@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/workload"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,21 +31,21 @@ func poolConfig(t *testing.T) Config {
 }
 
 // shimReader mimics the pool-shim: it creates the workspace FIFO and blocks
-// reading one ShimExec, delivered on the returned channel.
-func shimReader(t *testing.T, workspace string) <-chan ShimExec {
+// reading one workload.ShimExec, delivered on the returned channel.
+func shimReader(t *testing.T, workspace string) <-chan workload.ShimExec {
 	t.Helper()
-	path := filepath.Join(workspace, ShimFIFOName)
+	path := filepath.Join(workspace, workload.ShimFIFOName)
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatalf("mkfifo: %v", err)
 	}
-	ch := make(chan ShimExec, 1)
+	ch := make(chan workload.ShimExec, 1)
 	go func() {
 		fifo, err := os.Open(path) // blocks until the sidecar opens the write end
 		if err != nil {
 			return
 		}
 		defer fifo.Close()
-		var payload ShimExec
+		var payload workload.ShimExec
 		if err := json.NewDecoder(fifo).Decode(&payload); err != nil {
 			return
 		}
@@ -55,14 +56,14 @@ func shimReader(t *testing.T, workspace string) <-chan ShimExec {
 
 // postActivate POSTs a claim with the given bearer token and returns the
 // status code (0 on transport error, so it is goroutine-safe).
-func postActivate(t *testing.T, p *Proxy, token string, claim ClaimRequest) int {
+func postActivate(t *testing.T, p *Proxy, token string, claim workload.ClaimRequest) int {
 	t.Helper()
 	body, err := json.Marshal(claim)
 	if err != nil {
 		t.Errorf("marshal claim: %v", err)
 		return 0
 	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, localURL(t, p.AdminAddr(), ClaimPath), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, localURL(t, p.AdminAddr(), workload.ClaimPath), bytes.NewReader(body))
 	if err != nil {
 		t.Errorf("build claim request: %v", err)
 		return 0
@@ -77,13 +78,13 @@ func postActivate(t *testing.T, p *Proxy, token string, claim ClaimRequest) int 
 	return resp.StatusCode
 }
 
-func claimState(t *testing.T, p *Proxy) ClaimState {
+func claimState(t *testing.T, p *Proxy) workload.ClaimState {
 	t.Helper()
-	status, body := get(t, localURL(t, p.AdminAddr(), ClaimStatePath))
+	status, body := get(t, localURL(t, p.AdminAddr(), workload.ClaimStatePath))
 	if status != http.StatusOK {
-		t.Fatalf("GET %s: got %d, want 200", ClaimStatePath, status)
+		t.Fatalf("GET %s: got %d, want 200", workload.ClaimStatePath, status)
 	}
-	var s ClaimState
+	var s workload.ClaimState
 	if err := json.Unmarshal([]byte(body), &s); err != nil {
 		t.Fatalf("decode claim state %q: %v", body, err)
 	}
@@ -124,7 +125,7 @@ func TestPoolClaimSignalsShim(t *testing.T) {
 	execCh := shimReader(t, cfg.Workspace)
 	p := startProxy(t, cfg)
 
-	status := postActivate(t, p, testClaimToken, ClaimRequest{
+	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID: "act-1",
 		Command:      "node index.js",
 		Environment:  map[string]string{"FOO": "bar"},
@@ -146,7 +147,7 @@ func TestPoolClaimSignalsShim(t *testing.T) {
 	if s := claimState(t, p); !s.Claimed || s.Failed || s.ActivationID != "act-1" {
 		t.Fatalf("claimed state: got %+v, want claimed act-1", s)
 	}
-	if status := postActivate(t, p, testClaimToken, ClaimRequest{ActivationID: "act-2", Command: "true", Port: port}); status != http.StatusConflict {
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{ActivationID: "act-2", Command: "true", Port: port}); status != http.StatusConflict {
 		t.Fatalf("second claim: got %d, want 409", status)
 	}
 }
@@ -162,7 +163,7 @@ func TestPoolClaimRace(t *testing.T) {
 	for i := range racers {
 		go func() {
 			<-start
-			statuses <- postActivate(t, p, testClaimToken, ClaimRequest{
+			statuses <- postActivate(t, p, testClaimToken, workload.ClaimRequest{
 				ActivationID: "act-" + strconv.Itoa(i),
 				Command:      "true",
 			})
@@ -187,7 +188,7 @@ func TestPoolClaimRace(t *testing.T) {
 func TestPoolClaimBadToken(t *testing.T) {
 	p := startProxy(t, poolConfig(t))
 
-	if status := postActivate(t, p, "wrong-token", ClaimRequest{ActivationID: "act-1", Command: "true"}); status != http.StatusUnauthorized {
+	if status := postActivate(t, p, "wrong-token", workload.ClaimRequest{ActivationID: "act-1", Command: "true"}); status != http.StatusUnauthorized {
 		t.Fatalf("bad token: got %d, want 401", status)
 	}
 	if s := claimState(t, p); s.Claimed {
@@ -228,7 +229,7 @@ func TestPoolClaimHTTP(t *testing.T) {
 	execCh := shimReader(t, cfg.Workspace)
 	p := startProxy(t, cfg)
 
-	status := postActivate(t, p, testClaimToken, ClaimRequest{
+	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID:   "act-http",
 		Command:        "serve",
 		Port:           port,
@@ -261,7 +262,7 @@ func TestPoolClaimHTTP(t *testing.T) {
 func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 	p := startProxy(t, poolConfig(t)) // no FIFO: artifacts fail before signaling
 
-	status := postActivate(t, p, testClaimToken, ClaimRequest{
+	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID: "act-bad",
 		Command:      "true",
 		Artifacts:    []artifact.Artifact{&artifact.Read{ID: "missing", In: "does-not-exist.json"}},
@@ -277,7 +278,7 @@ func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 	if status, _ := get(t, localURL(t, p.AdminAddr(), "/ready")); status != http.StatusServiceUnavailable {
 		t.Fatalf("/ready poisoned: got %d, want 503", status)
 	}
-	if status := postActivate(t, p, testClaimToken, ClaimRequest{ActivationID: "act-retry", Command: "true"}); status != http.StatusConflict {
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{ActivationID: "act-retry", Command: "true"}); status != http.StatusConflict {
 		t.Fatalf("claim after poison: got %d, want 409", status)
 	}
 }
@@ -290,7 +291,7 @@ func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 func TestPoolClaim_RefusesAMountItCannotEstablish(t *testing.T) {
 	p := startProxy(t, poolConfig(t))
 
-	status := postActivate(t, p, testClaimToken, ClaimRequest{
+	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID: "act-mount",
 		Command:      "true",
 		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
@@ -305,7 +306,7 @@ func TestPoolClaim_RefusesAMountItCannotEstablish(t *testing.T) {
 }
 
 // A claim may declare extra ports. They are addressable through the same data
-// listener via HeaderPort — dialed on loopback inside this pod, so the header
+// listener via workload.HeaderPort — dialed on loopback inside this pod, so the header
 // can never reach another pod, and never a port the claim did not declare.
 func TestPoolClaim_ExtraPorts(t *testing.T) {
 	primary := backendOnLoopback(t, "primary")
@@ -315,7 +316,7 @@ func TestPoolClaim_ExtraPorts(t *testing.T) {
 	execCh := shimReader(t, cfg.Workspace)
 	p := startProxy(t, cfg)
 
-	if status := postActivate(t, p, testClaimToken, ClaimRequest{
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID: "act-ports",
 		Command:      "serve",
 		Port:         primary,
@@ -337,7 +338,7 @@ func TestPoolClaim_ExtraPorts(t *testing.T) {
 	}
 	// An undeclared port is refused rather than dialed — including the
 	// sidecar's own admin port.
-	for _, port := range []string{"1", strconv.Itoa(DefaultProxyPort), strconv.Itoa(DefaultAdminPort), "notaport"} {
+	for _, port := range []string{"1", strconv.Itoa(workload.DefaultProxyPort), strconv.Itoa(workload.DefaultAdminPort), "notaport"} {
 		if status, _ := getWithPort(t, p, port); status != http.StatusNotFound {
 			t.Errorf("undeclared port %s: got %d, want 404", port, status)
 		}
@@ -349,7 +350,7 @@ func TestPoolClaim_ExtraPorts(t *testing.T) {
 func TestPoolClaim_PortHintStrippedFromUpstream(t *testing.T) {
 	seen := make(chan string, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- r.Header.Get(HeaderPort)
+		seen <- r.Header.Get(workload.HeaderPort)
 	}))
 	t.Cleanup(backend.Close)
 	port := backendPort(t, backend)
@@ -357,7 +358,7 @@ func TestPoolClaim_PortHintStrippedFromUpstream(t *testing.T) {
 	cfg := poolConfig(t)
 	execCh := shimReader(t, cfg.Workspace)
 	p := startProxy(t, cfg)
-	if status := postActivate(t, p, testClaimToken, ClaimRequest{
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID: "act-strip", Command: "serve", Port: port, Ports: []int{port},
 	}); status != http.StatusOK {
 		t.Fatalf("claim: got %d, want 200", status)
@@ -404,7 +405,7 @@ func getWithPort(t *testing.T, p *Proxy, port string) (int, string) {
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	req.Header.Set(HeaderPort, port)
+	req.Header.Set(workload.HeaderPort, port)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -434,7 +435,7 @@ func TestPoolClaim_DrainWaitsAsLongAsTheClaimAllows(t *testing.T) {
 	execCh := shimReader(t, cfg.Workspace)
 	p := startProxy(t, cfg)
 
-	if status := postActivate(t, p, testClaimToken, ClaimRequest{
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID:   "act-session",
 		Command:        "serve",
 		Port:           backendPort(t, backend),
@@ -496,7 +497,7 @@ func TestPoolClaim_TimeoutSeconds(t *testing.T) {
 			execCh := shimReader(t, cfg.Workspace)
 			p := startProxy(t, cfg)
 
-			if status := postActivate(t, p, testClaimToken, ClaimRequest{
+			if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 				ActivationID:   "act-" + name,
 				Command:        "serve",
 				Port:           backendOnLoopback(t, "ok"),

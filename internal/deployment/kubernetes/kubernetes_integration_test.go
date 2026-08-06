@@ -21,8 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
 	"orchestrator/internal/testutil"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	"testing"
 	"time"
@@ -293,7 +293,7 @@ func TestIntegration_HTTPRouteShape(t *testing.T) {
 	}
 	async, dflt := route.Spec.Rules[0], route.Spec.Rules[1]
 	if len(async.Matches) != 1 || len(async.Matches[0].Headers) != 1 ||
-		string(async.Matches[0].Headers[0].Name) != "Prefer" || async.Matches[0].Headers[0].Value != proxy.PreferAsyncPattern {
+		string(async.Matches[0].Headers[0].Name) != "Prefer" || async.Matches[0].Headers[0].Value != workload.PreferAsyncPattern {
 		t.Errorf("async match: got %+v", async.Matches)
 	}
 	if len(async.BackendRefs) != 1 || string(async.BackendRefs[0].Name) != o.cfg.ActivatorService {

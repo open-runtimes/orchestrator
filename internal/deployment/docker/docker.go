@@ -19,7 +19,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	volspec "orchestrator/pkg/volume"
 	"strconv"
@@ -376,7 +376,7 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 	}
 	return []*url.URL{{
 		Scheme: "http",
-		Host:   net.JoinHostPort(ip, strconv.Itoa(proxy.DefaultProxyPort)),
+		Host:   net.JoinHostPort(ip, strconv.Itoa(workload.DefaultProxyPort)),
 	}}, nil
 }
 

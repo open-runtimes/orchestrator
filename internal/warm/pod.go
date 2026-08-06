@@ -6,7 +6,7 @@ import (
 	"maps"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"slices"
 
@@ -144,9 +144,9 @@ func shimInstallContainer(cfg Config) corev1.Container {
 func proxyContainer(cfg Config, token string) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	env := []corev1.EnvVar{
-		{Name: proxy.EnvClaimToken, Value: token},
+		{Name: workload.EnvClaimToken, Value: token},
 		{Name: envSharedVolume, Value: workspacePath},
-		{Name: proxy.EnvTargetHost, Value: "127.0.0.1"},
+		{Name: workload.EnvTargetHost, Value: "127.0.0.1"},
 	}
 	// The proxy materializes s3:// artifacts in-process on claim, so it needs
 	// the deployments/pools service's S3 credentials.
@@ -159,14 +159,14 @@ func proxyContainer(cfg Config, token string) corev1.Container {
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
 		Env:             env,
 		Ports: []corev1.ContainerPort{
-			{Name: portNameProxy, ContainerPort: proxy.DefaultProxyPort},
-			{Name: portNameAdmin, ContainerPort: proxy.DefaultAdminPort},
+			{Name: portNameProxy, ContainerPort: workload.DefaultProxyPort},
+			{Name: portNameAdmin, ContainerPort: workload.DefaultAdminPort},
 		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/ready",
-					Port: intstr.FromInt32(proxy.DefaultAdminPort),
+					Port: intstr.FromInt32(workload.DefaultAdminPort),
 				},
 			},
 			PeriodSeconds:    1,

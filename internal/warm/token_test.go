@@ -1,7 +1,7 @@
 package warm
 
 import (
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"testing"
 
@@ -95,7 +95,7 @@ func TestCreate_InjectsDerivedTokenNoAnnotation(t *testing.T) {
 			continue
 		}
 		for _, env := range c.Env {
-			if env.Name == proxy.EnvClaimToken {
+			if env.Name == workload.EnvClaimToken {
 				found = true
 				if env.Value != want {
 					t.Errorf("POOL_CLAIM_TOKEN: want the derived token, got %q", env.Value)

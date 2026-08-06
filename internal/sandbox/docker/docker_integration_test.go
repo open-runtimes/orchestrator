@@ -21,8 +21,8 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/proxy"
 	"orchestrator/internal/testutil"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"orchestrator/pkg/sandbox"
 	"os"
@@ -185,7 +185,7 @@ func proxyAddr(t *testing.T, o *Orchestrator, id string) string {
 		if ip == "" {
 			return false
 		}
-		addr = net.JoinHostPort(ip, strconv.Itoa(proxy.DefaultProxyPort))
+		addr = net.JoinHostPort(ip, strconv.Itoa(workload.DefaultProxyPort))
 		return true
 	}, testutil.WithTimeout(30*time.Second), testutil.WithInterval(500*time.Millisecond)) {
 		t.Fatalf("proxy container for %s never came up", id)
@@ -207,7 +207,7 @@ func do(t *testing.T, o *Orchestrator, id, addr, method, path, body, port string
 
 	header := ""
 	if port != "" {
-		header = " --header '" + proxy.HeaderPort + ": " + port + "'"
+		header = " --header '" + workload.HeaderPort + ": " + port + "'"
 	}
 	url := "http://" + addr + path
 
@@ -221,7 +221,7 @@ func do(t *testing.T, o *Orchestrator, id, addr, method, path, body, port string
 	default:
 		raw := method + " " + path + " HTTP/1.1\r\nHost: sandbox\r\nConnection: close\r\n"
 		if port != "" {
-			raw += proxy.HeaderPort + ": " + port + "\r\n"
+			raw += workload.HeaderPort + ": " + port + "\r\n"
 		}
 		raw += "Content-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + body
 		cmd = "{ echo " + base64.StdEncoding.EncodeToString([]byte(raw)) +

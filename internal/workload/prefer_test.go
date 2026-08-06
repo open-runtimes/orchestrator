@@ -1,4 +1,4 @@
-package proxy
+package workload
 
 import (
 	"net/http"

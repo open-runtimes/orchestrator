@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"orchestrator/internal/dispatcher"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	"strings"
 	"sync"
@@ -98,7 +98,7 @@ func (a *Activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Forward the host the client actually used — any of the deployment's
 	// hosts is a valid virtual host for the workload.
-	if proxy.PreferAsync(r) {
+	if workload.PreferAsync(r) {
 		a.broker.async(w, r, spec.ID, host, spec, hold, c)
 		return
 	}

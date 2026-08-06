@@ -4,7 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"testing"
 	"time"
 
@@ -215,7 +215,7 @@ func TestSandboxEdge_ClaimsNoPathOfItsOwn(t *testing.T) {
 func TestSandboxEdge_PortLabelBecomesThePortHint(t *testing.T) {
 	var hints []string
 	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hints = append(hints, r.Header.Get(proxy.HeaderPort))
+		hints = append(hints, r.Header.Get(workload.HeaderPort))
 		w.WriteHeader(http.StatusOK)
 	}))
 	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
@@ -241,14 +241,14 @@ func TestSandboxEdge_PortLabelBecomesThePortHint(t *testing.T) {
 func TestSandboxEdge_StripsClientSuppliedPortHint(t *testing.T) {
 	var hints []string
 	ip, port := revisionBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hints = append(hints, r.Header.Get(proxy.HeaderPort))
+		hints = append(hints, r.Header.Get(workload.HeaderPort))
 		w.WriteHeader(http.StatusOK)
 	}))
 	act := newTestSandboxProxy(t, sandboxOpts{proxyPort: port, adminPort: port, hold: time.Second},
 		sandboxPod(testToken, "sbx-1", ip, true))
 
 	req := sandboxRequest(t, "s-"+testToken+"."+testSandboxDomain)
-	req.Header.Set(proxy.HeaderPort, "8001") // the sidecar's admin port
+	req.Header.Set(workload.HeaderPort, "8001") // the sidecar's admin port
 	rec := httptest.NewRecorder()
 	act.ServeHTTP(rec, req)
 

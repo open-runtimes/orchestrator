@@ -1,4 +1,4 @@
-package proxy
+package workload
 
 import (
 	"net/http"
@@ -7,7 +7,7 @@ import (
 
 // The async preference is one protocol rule with several enforcement points
 // — the pools API, both activator edges, and the gateway's HTTPRoute rule —
-// so it lives here once, next to the rest of the data-plane contract.
+// so it lives here once, with the rest of the data-plane contract.
 
 // PreferAsync reports whether the request prefers an async response: the
 // single respond-async token, matched case-insensitively (RFC 7240 tokens

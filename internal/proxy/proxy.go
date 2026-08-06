@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"orchestrator/internal/workload"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -59,7 +60,7 @@ type binding struct {
 	timeout time.Duration // per-request total → 504
 
 	// extra holds the claim's secondary ports, keyed by port. A request naming
-	// one (HeaderPort) is dialed there on loopback instead of Target; anything
+	// one (workload.HeaderPort) is dialed there on loopback instead of Target; anything
 	// not in here is refused, so the header can never widen what the claim
 	// declared.
 	extra map[int]string
@@ -84,7 +85,7 @@ func newBinding(cfg Config) *binding {
 				if addr, ok := r.In.Context().Value(targetKey{}).(string); ok && addr != "" {
 					target = addr
 				}
-				r.Out.Header.Del(HeaderPort)
+				r.Out.Header.Del(workload.HeaderPort)
 				r.SetURL(&url.URL{Scheme: "http", Host: target})
 				r.SetXForwarded()
 			},
@@ -100,10 +101,10 @@ func newBinding(cfg Config) *binding {
 type targetKey struct{}
 
 // target resolves which upstream address a request is for: the claim's primary
-// port by default, a declared secondary port when HeaderPort names one. An
+// port by default, a declared secondary port when workload.HeaderPort names one. An
 // undeclared port is ("", false) — a 404, never a dial.
 func (b *binding) target(r *http.Request, primary string) (string, bool) {
-	raw := r.Header.Get(HeaderPort)
+	raw := r.Header.Get(workload.HeaderPort)
 	if raw == "" {
 		return primary, true
 	}
@@ -263,8 +264,8 @@ func (p *Proxy) adminMux() *http.ServeMux {
 	mux.HandleFunc("GET /ready", p.handleReady)
 	mux.HandleFunc("GET /stats", p.handleStats)
 	if p.pool != nil {
-		mux.HandleFunc("POST "+ClaimPath, p.handleActivate)
-		mux.HandleFunc("GET "+ClaimStatePath, p.handleClaimState)
+		mux.HandleFunc("POST "+workload.ClaimPath, p.handleActivate)
+		mux.HandleFunc("GET "+workload.ClaimStatePath, p.handleClaimState)
 	}
 	return mux
 }

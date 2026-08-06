@@ -7,7 +7,7 @@ import (
 	"net"
 	"net/url"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	"slices"
 	"strconv"
@@ -81,7 +81,7 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 		}
 		endpoints = append(endpoints, &url.URL{
 			Scheme: "http",
-			Host:   net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(proxy.DefaultProxyPort)),
+			Host:   net.JoinHostPort(pod.Status.PodIP, strconv.Itoa(workload.DefaultProxyPort)),
 		})
 	}
 	return endpoints, nil

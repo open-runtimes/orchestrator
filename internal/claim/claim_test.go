@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,14 +41,14 @@ type fakePoster struct {
 	posted   []string
 }
 
-func (f *fakePoster) Post(_ context.Context, u Unit, _ *proxy.ClaimRequest) error {
+func (f *fakePoster) Post(_ context.Context, u Unit, _ *workload.ClaimRequest) error {
 	f.posted = append(f.posted, u.ID)
 	return f.outcomes[u.ID]
 }
 
 func unit(id string) Unit { return Unit{ID: id, Addr: "10.0.0.1", Token: "t"} }
 
-func req() *proxy.ClaimRequest { return &proxy.ClaimRequest{ActivationID: "act"} }
+func req() *workload.ClaimRequest { return &workload.ClaimRequest{ActivationID: "act"} }
 
 func TestClaimWinsFirstFreeUnit(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
@@ -151,8 +151,8 @@ func TestHTTPPosterMapsProtocolStatuses(t *testing.T) {
 	var gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		if r.URL.Path != proxy.ClaimPath {
-			t.Errorf("posted to %s, want %s", r.URL.Path, proxy.ClaimPath)
+		if r.URL.Path != workload.ClaimPath {
+			t.Errorf("posted to %s, want %s", r.URL.Path, workload.ClaimPath)
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte("because"))
@@ -168,7 +168,7 @@ func TestHTTPPosterMapsProtocolStatuses(t *testing.T) {
 	poster := &httpPoster{client: server.Client()}
 	target := Unit{ID: "u", Addr: u.Hostname(), Token: "tok"}
 	post := func() error {
-		return poster.postTo(t.Context(), server.URL+proxy.ClaimPath, target, req())
+		return poster.postTo(t.Context(), server.URL+workload.ClaimPath, target, req())
 	}
 
 	status = http.StatusOK

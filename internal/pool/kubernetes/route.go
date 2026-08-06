@@ -3,7 +3,7 @@ package kubernetes
 import (
 	"context"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -44,7 +44,7 @@ func (o *Orchestrator) createActivationService(ctx context.Context, poolID, acti
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       servicePort,
-				TargetPort: intstr.FromInt32(proxy.DefaultProxyPort),
+				TargetPort: intstr.FromInt32(workload.DefaultProxyPort),
 			}},
 		},
 	}

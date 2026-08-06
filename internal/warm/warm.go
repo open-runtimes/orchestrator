@@ -24,7 +24,7 @@ import (
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"sync"
 	"time"
@@ -270,7 +270,7 @@ func (m *Manager) counts(pods []corev1.Pod) (warm, claimed int) {
 // *claim.Poison error means the winning pod accepted the claim but its
 // artifacts failed — the claim has failed, and the pod is discarded, never
 // resold.
-func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *proxy.ClaimRequest) (*corev1.Pod, error) {
+func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *workload.ClaimRequest) (*corev1.Pod, error) {
 	key, err := m.claimKey(ctx)
 	if err != nil {
 		return nil, err
@@ -456,7 +456,7 @@ type poster struct {
 	sc Client
 }
 
-func (p poster) Post(ctx context.Context, u claim.Unit, req *proxy.ClaimRequest) error {
+func (p poster) Post(ctx context.Context, u claim.Unit, req *workload.ClaimRequest) error {
 	return p.sc.Claim(ctx, u.Addr, u.Token, req)
 }
 

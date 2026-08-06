@@ -18,7 +18,7 @@ import (
 	"net"
 	"net/http"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"strconv"
 	"time"
 )
@@ -51,7 +51,7 @@ func (e *Poison) Error() string { return e.Msg }
 // a slot on Docker.
 type Unit struct {
 	ID    string // pod name / slot ID
-	Addr  string // sidecar admin address (IP; port is proxy.DefaultAdminPort)
+	Addr  string // sidecar admin address (IP; port is workload.DefaultAdminPort)
 	Token string // claim bearer token
 }
 
@@ -76,14 +76,14 @@ type Recorder interface {
 // Poster performs the sidecar claim POST. Faked in backend unit tests where
 // pods have no reachable sidecars; production uses NewPoster.
 type Poster interface {
-	Post(ctx context.Context, u Unit, req *proxy.ClaimRequest) error
+	Post(ctx context.Context, u Unit, req *workload.ClaimRequest) error
 }
 
 // Claim wins one warm unit for the request. With no free unit the pool's
 // burst policy decides: reject (429-mapped) or cold-create. Returns
 // *Poison when the winning unit's artifacts failed — the activation is
 // failed, not errored.
-func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID, burst string, req *proxy.ClaimRequest) (*Unit, error) {
+func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID, burst string, req *workload.ClaimRequest) (*Unit, error) {
 	unit, ok, err := tryWarm(ctx, inv, post, rec, poolID, req)
 	if err != nil || ok {
 		return unit, recordPoison(ctx, rec, poolID, err)
@@ -138,7 +138,7 @@ func recordPoison(ctx context.Context, rec Recorder, poolID string, err error) e
 // failures are logged and skipped — one broken unit must not fail an
 // activation while others are free. Poison stops the pass: the sidecar
 // accepted, so the activation is spent.
-func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID string, req *proxy.ClaimRequest) (*Unit, bool, error) {
+func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID string, req *workload.ClaimRequest) (*Unit, bool, error) {
 	units, err := inv.Free(ctx)
 	if err != nil {
 		return nil, false, err
@@ -193,12 +193,12 @@ func NewPoster() Poster {
 	return &httpPoster{client: &http.Client{Timeout: 10 * time.Second}}
 }
 
-func (p *httpPoster) Post(ctx context.Context, u Unit, req *proxy.ClaimRequest) error {
-	url := "http://" + net.JoinHostPort(u.Addr, strconv.Itoa(proxy.DefaultAdminPort)) + proxy.ClaimPath
+func (p *httpPoster) Post(ctx context.Context, u Unit, req *workload.ClaimRequest) error {
+	url := "http://" + net.JoinHostPort(u.Addr, strconv.Itoa(workload.DefaultAdminPort)) + workload.ClaimPath
 	return p.postTo(ctx, url, u, req)
 }
 
-func (p *httpPoster) postTo(ctx context.Context, url string, u Unit, req *proxy.ClaimRequest) error {
+func (p *httpPoster) postTo(ctx context.Context, url string, u Unit, req *workload.ClaimRequest) error {
 	// ClaimRequest's custom codec routes artifacts through the registry so
 	// each carries its "type" discriminator.
 	body, err := json.Marshal(req)

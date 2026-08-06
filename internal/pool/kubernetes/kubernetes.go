@@ -16,8 +16,8 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/proxy"
 	"orchestrator/internal/warm"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 
 	corev1 "k8s.io/api/core/v1"
@@ -165,8 +165,8 @@ func redacted(act *pool.Activation) *pool.Activation {
 
 // claimRequest maps the activation onto the sidecar claim protocol; a request
 // without a command falls back to the pool's.
-func claimRequest(p *pool.Pool, act *pool.Activation) *proxy.ClaimRequest {
-	return &proxy.ClaimRequest{
+func claimRequest(p *pool.Pool, act *pool.Activation) *workload.ClaimRequest {
+	return &workload.ClaimRequest{
 		ActivationID:   act.ID,
 		Command:        cmp.Or(act.Command, p.Command),
 		Environment:    act.Environment,

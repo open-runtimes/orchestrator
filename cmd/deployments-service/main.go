@@ -19,9 +19,9 @@ import (
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
 	poolkubernetes "orchestrator/internal/pool/kubernetes"
-	"orchestrator/internal/proxy"
 	sandboxdocker "orchestrator/internal/sandbox/docker"
 	sandboxkubernetes "orchestrator/internal/sandbox/kubernetes"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	"orchestrator/pkg/pool"
 	"orchestrator/pkg/sandbox"
@@ -77,7 +77,7 @@ func main() {
 	// scrapes supply warm concurrency on both; the cold hold-up signal comes
 	// from the standalone activator's /stats on Kubernetes and directly from
 	// the in-process activator on Docker.
-	concurrency := autoscaler.NewSidecarConcurrency(orchestrator, proxy.DefaultAdminPort)
+	concurrency := autoscaler.NewSidecarConcurrency(orchestrator, workload.DefaultAdminPort)
 	var queue autoscaler.QueueSource
 	var deploymentsActivator *activator.Activator
 	if backend == "kubernetes" {

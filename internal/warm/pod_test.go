@@ -1,7 +1,7 @@
 package warm
 
 import (
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"testing"
 
@@ -82,35 +82,35 @@ func TestBuildPod_Shape(t *testing.T) {
 	for _, e := range sidecar.Env {
 		env[e.Name] = e.Value
 	}
-	if env[proxy.EnvClaimToken] != "aabbccdd" || env[envSharedVolume] != workspacePath || env[proxy.EnvTargetHost] != "127.0.0.1" {
+	if env[workload.EnvClaimToken] != "aabbccdd" || env[envSharedVolume] != workspacePath || env[workload.EnvTargetHost] != "127.0.0.1" {
 		t.Errorf("proxy env: got %v", env)
 	}
-	if len(sidecar.Ports) != 2 || sidecar.Ports[0].ContainerPort != proxy.DefaultProxyPort || sidecar.Ports[1].ContainerPort != proxy.DefaultAdminPort {
+	if len(sidecar.Ports) != 2 || sidecar.Ports[0].ContainerPort != workload.DefaultProxyPort || sidecar.Ports[1].ContainerPort != workload.DefaultAdminPort {
 		t.Errorf("proxy ports: got %v", sidecar.Ports)
 	}
 	probe := sidecar.ReadinessProbe
-	if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/ready" || probe.HTTPGet.Port.IntValue() != int(proxy.DefaultAdminPort) {
+	if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/ready" || probe.HTTPGet.Port.IntValue() != int(workload.DefaultAdminPort) {
 		t.Errorf("proxy readiness probe (the warm-ready gate): got %+v", probe)
 	}
 
 	if len(pod.Spec.Containers) != 1 {
 		t.Fatalf("want 1 container, got %d", len(pod.Spec.Containers))
 	}
-	workload := pod.Spec.Containers[0]
-	if workload.Name != ContainerWorkload || workload.Image != "runtime:latest" {
-		t.Errorf("workload: got %s/%s", workload.Name, workload.Image)
+	worker := pod.Spec.Containers[0]
+	if worker.Name != ContainerWorkload || worker.Image != "runtime:latest" {
+		t.Errorf("workload: got %s/%s", worker.Name, worker.Image)
 	}
-	if len(workload.Command) != 1 || workload.Command[0] != shimPath {
-		t.Errorf("workload command must be the shim, got %v", workload.Command)
+	if len(worker.Command) != 1 || worker.Command[0] != shimPath {
+		t.Errorf("workload command must be the shim, got %v", worker.Command)
 	}
-	if workload.WorkingDir != workspacePath {
-		t.Errorf("workload workdir: got %q", workload.WorkingDir)
+	if worker.WorkingDir != workspacePath {
+		t.Errorf("workload workdir: got %q", worker.WorkingDir)
 	}
-	if len(workload.Env) != 2 || workload.Env[0].Name != "A" || workload.Env[1].Name != "B" {
-		t.Errorf("workload env (sorted): got %v", workload.Env)
+	if len(worker.Env) != 2 || worker.Env[0].Name != "A" || worker.Env[1].Name != "B" {
+		t.Errorf("workload env (sorted): got %v", worker.Env)
 	}
-	if len(workload.VolumeMounts) != 2 {
-		t.Errorf("workload mounts (workspace + tmp): got %v", workload.VolumeMounts)
+	if len(worker.VolumeMounts) != 2 {
+		t.Errorf("workload mounts (workspace + tmp): got %v", worker.VolumeMounts)
 	}
 }
 

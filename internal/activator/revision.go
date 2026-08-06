@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"orchestrator/internal/dispatcher"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/deployment"
 	"strconv"
 	"strings"
@@ -57,8 +57,8 @@ const (
 // RevisionConfig configures the RevisionActivator.
 type RevisionConfig struct {
 	Namespace    string
-	ProxyPort    int32         // workload pod data port (proxy.DefaultProxyPort)
-	AdminPort    int32         // workload pod admin port for direct probing (proxy.DefaultAdminPort)
+	ProxyPort    int32         // workload pod data port (workload.DefaultProxyPort)
+	AdminPort    int32         // workload pod admin port for direct probing (workload.DefaultAdminPort)
 	StartTimeout time.Duration // wait for the first reachable pod → 503; default 300s
 }
 
@@ -80,10 +80,10 @@ type RevisionActivator struct {
 // Call Start before serving.
 func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, cfg RevisionConfig, rec Recorder) *RevisionActivator {
 	if cfg.ProxyPort == 0 {
-		cfg.ProxyPort = proxy.DefaultProxyPort
+		cfg.ProxyPort = workload.DefaultProxyPort
 	}
 	if cfg.AdminPort == 0 {
-		cfg.AdminPort = proxy.DefaultAdminPort
+		cfg.AdminPort = workload.DefaultAdminPort
 	}
 	if cfg.StartTimeout <= 0 {
 		cfg.StartTimeout = defaultStartTimeout
@@ -137,7 +137,7 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	c := revisionCapacity{a: a, rev: rev}
 
-	if proxy.PreferAsync(r) {
+	if workload.PreferAsync(r) {
 		spec, err := a.specFor(r.Context(), rev)
 		if err != nil {
 			http.Error(w, "no deployment for revision "+rev, http.StatusNotFound)

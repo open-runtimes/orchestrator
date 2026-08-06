@@ -9,7 +9,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/observability"
-	"orchestrator/internal/proxy"
+	"orchestrator/internal/workload"
 	"orchestrator/pkg/pool"
 	"regexp"
 	"strings"
@@ -200,7 +200,7 @@ func validatePorts(ports []int, primary int) error {
 		switch {
 		case port < 1 || port > 65535:
 			return apperrors.Validation("ports", fmt.Sprintf("port %d is out of range (1-65535)", port))
-		case port == proxy.DefaultProxyPort || port == proxy.DefaultAdminPort:
+		case port == workload.DefaultProxyPort || port == workload.DefaultAdminPort:
 			return apperrors.Validation("ports", fmt.Sprintf("port %d is reserved by the sandbox sidecar", port))
 		case port == primary:
 			return apperrors.Validation("ports", fmt.Sprintf("port %d is the pool's own port and is always served", port))
