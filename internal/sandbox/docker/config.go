@@ -2,8 +2,8 @@ package docker
 
 import (
 	"orchestrator/internal/config"
-	"orchestrator/pkg/pool"
-	"orchestrator/pkg/sandbox"
+	"orchestrator/internal/pool"
+	"orchestrator/internal/sandbox"
 	"strings"
 	"time"
 )

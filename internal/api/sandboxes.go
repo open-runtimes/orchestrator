@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/sandbox"
+	"orchestrator/internal/sandbox"
 )
 
 // sandboxesHandler serves /v1/sandbox and /v1/sandbox-pool. Pools are

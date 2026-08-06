@@ -40,9 +40,11 @@ internal/         # Private packages
   job/            # Orchestrator interface, validation, types, event builders
   observability/  # Prometheus metrics
   sidecar/        # Input download, output upload handlers
-pkg/              # Public packages
   circuitbreaker/ # Per-host circuit breaker implementation
   cloudevent/     # CloudEvents 1.0 types and HTTP sender
+  lifecycle/      # Run-to-completion state machine (signals, FSM, in-memory store)
+  workload/       # The workload-sidecar contract: ports, env, claim payloads
+  proxy/          # The workload sidecar itself
 charts/           # Helm chart (charts/orchestrator/)
 hack/             # Dev-only assets: install-tools.sh, kind-config.yaml, dev-values.yaml
 Tiltfile         # Live-reload dev loop against the kind cluster
@@ -102,7 +104,7 @@ Key test files:
 - `internal/dispatcher/memory_test.go` - Dispatcher with retry/circuit breaker tests
 - `internal/sidecar/*_test.go` - Input/output handlers with retry scenarios
 - `internal/job/service_test.go` - Request validation edge cases
-- `pkg/circuitbreaker/*_test.go` - Circuit breaker state transitions
+- `internal/circuitbreaker/*_test.go` - Circuit breaker state transitions
 
 ## Observability
 

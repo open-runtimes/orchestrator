@@ -3,7 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"runtime"
 	"strings"
 

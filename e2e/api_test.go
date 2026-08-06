@@ -16,7 +16,7 @@ import (
 	"orchestrator/internal/health"
 	"orchestrator/internal/orchestrator/docker"
 	"orchestrator/internal/testutil"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"os"
 	"sync"
 	"sync/atomic"

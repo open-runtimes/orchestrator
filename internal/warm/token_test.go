@@ -1,8 +1,8 @@
 package warm
 
 import (
+	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/pool"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"

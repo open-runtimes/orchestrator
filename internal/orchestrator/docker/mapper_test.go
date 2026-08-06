@@ -1,8 +1,8 @@
 package docker
 
 import (
-	"orchestrator/pkg/job"
-	vol "orchestrator/pkg/volume"
+	"orchestrator/internal/job"
+	vol "orchestrator/internal/volume"
 	"reflect"
 	"runtime"
 	"testing"

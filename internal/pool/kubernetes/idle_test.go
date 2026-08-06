@@ -1,8 +1,8 @@
 package kubernetes
 
 import (
+	"orchestrator/internal/pool"
 	"orchestrator/internal/warm"
-	"orchestrator/pkg/pool"
 	"testing"
 	"time"
 )

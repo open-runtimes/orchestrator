@@ -3,8 +3,8 @@ package warm
 import (
 	"context"
 	"orchestrator/internal/claim"
+	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/pool"
 	"sync"
 	"testing"
 	"time"

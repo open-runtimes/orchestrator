@@ -9,9 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/cloudevent"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
-	"orchestrator/pkg/cloudevent"
-	"orchestrator/pkg/deployment"
 	"time"
 	"unicode/utf8"
 )

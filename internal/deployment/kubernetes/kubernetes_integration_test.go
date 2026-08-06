@@ -21,9 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/testutil"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/deployment"
 	"testing"
 	"time"
 

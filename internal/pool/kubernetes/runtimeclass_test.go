@@ -2,8 +2,8 @@ package kubernetes
 
 import (
 	"context"
-	"orchestrator/pkg/deployment"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/pool"
 	"strings"
 	"testing"
 

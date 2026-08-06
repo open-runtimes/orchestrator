@@ -2,12 +2,12 @@ package api
 
 import (
 	"net/http"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/deployment"
-	"orchestrator/pkg/pool"
-	"orchestrator/pkg/sandbox"
+	"orchestrator/internal/pool"
+	"orchestrator/internal/sandbox"
 )
 
 // DeploymentsRouterConfig holds dependencies for the deployments API router.

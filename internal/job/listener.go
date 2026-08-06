@@ -1,8 +1,8 @@
 package job
 
 import (
-	"orchestrator/pkg/cloudevent"
-	"orchestrator/pkg/emitter"
+	"orchestrator/internal/cloudevent"
+	"orchestrator/internal/emitter"
 )
 
 // CallbackEnvelope represents an outbound callback emitted by the orchestrator.

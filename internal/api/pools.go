@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/cloudevent"
 	"orchestrator/internal/dispatcher"
+	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/cloudevent"
-	"orchestrator/pkg/pool"
 	"time"
 )
 

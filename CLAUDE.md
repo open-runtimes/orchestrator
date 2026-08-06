@@ -25,8 +25,10 @@ Job orchestration service for running containerized workloads with async callbac
 - `cmd/deployments-activator` — K8s buffering data plane for deployments: holds cold/async traffic (gateway routes here with X-Revision) and raises cold revisions
 - `cmd/sandbox-proxy` — K8s data plane for sandboxes: one wildcard route, resolved by the capability token in the Host. Its own component, not an activator mode — always on the path, pods-read-only, nothing to raise
 - `cmd/pool-shim` — warm-pod entrypoint: blocks on a FIFO, execs the activation payload as PID 1
-- `internal/` — core packages: api, job, artifact, dispatcher, kube (shared K8s client/leader election), warm (warm-pool engine: pods, claim, replenish, GC — shared by pools and sandboxes), claim (the claim protocol), orchestrator/{docker,kubernetes}, sandbox/kubernetes, sidecar, config
-- `pkg/` — reusable utilities: backoff, circuitbreaker, cloudevent, lifecycle (shared workload FSM/store), server
+- `internal/` — everything. A service exposes binaries, not packages, so nothing here is importable from outside the module (there is no `pkg/`: it is not a Go standard, and `internal/` is the compiler-enforced one). Domain packages sit above their own adapters — `internal/sandbox` beside `internal/sandbox/{docker,kubernetes}`, likewise deployment and pool.
+  - Domain + API types: job, deployment, pool, sandbox, artifact, volume, lifecycle (run-to-completion FSM)
+  - Machinery: api, server, warm (warm-pool engine: pods, claim, replenish, GC — shared by pools and sandboxes), claim (the claim protocol), workload (the workload-sidecar contract), proxy (that sidecar), sidecar (artifact runner), activator, autoscaler, dispatcher, kube, config, observability, apperrors
+  - Utilities with no dependency on any of the above: backoff, circuitbreaker, cloudevent, emitter
 - `charts/orchestrator/` — Helm chart
 - `hack/` — dev-only assets (kind config, dev values, install-tools.sh)
 - `Tiltfile` — live-reload dev loop against kind

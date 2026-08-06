@@ -2,7 +2,7 @@ package job
 
 import (
 	"fmt"
-	"orchestrator/pkg/cloudevent"
+	"orchestrator/internal/cloudevent"
 	"slices"
 	"time"
 )

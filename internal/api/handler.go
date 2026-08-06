@@ -9,8 +9,8 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/health"
+	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/job"
 )
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion

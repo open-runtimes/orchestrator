@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/claim"
-	"orchestrator/pkg/deployment"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/volume"
 )
 
 // Pool is the service-config schema for one warm pool (Helm renders it from a

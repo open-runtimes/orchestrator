@@ -1,7 +1,7 @@
 package kube
 
 import (
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/volume"
 	"testing"
 )
 

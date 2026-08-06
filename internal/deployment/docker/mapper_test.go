@@ -2,8 +2,8 @@ package docker
 
 import (
 	"encoding/json"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/deployment"
 	"slices"
 	"testing"
 	"time"

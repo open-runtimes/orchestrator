@@ -4,7 +4,7 @@ package deployment
 
 import (
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/volume"
 )
 
 // Request is the declarative deployment spec. POST is create-or-update.

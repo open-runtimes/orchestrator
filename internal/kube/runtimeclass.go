@@ -2,7 +2,7 @@ package kube
 
 import (
 	"fmt"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"strings"
 )
 

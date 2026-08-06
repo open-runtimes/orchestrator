@@ -4,7 +4,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
-	"orchestrator/pkg/cloudevent"
+	"orchestrator/internal/cloudevent"
 )
 
 // ErrBufferFull is returned when the dispatcher's buffer is full and the event is dropped.

@@ -25,7 +25,7 @@ import (
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
 	sandboxkubernetes "orchestrator/internal/sandbox/kubernetes"
-	"orchestrator/pkg/server"
+	"orchestrator/internal/server"
 	"os"
 	"time"
 )

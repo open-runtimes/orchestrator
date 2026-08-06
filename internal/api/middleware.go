@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/job"
 	"strings"
 	"time"
 )

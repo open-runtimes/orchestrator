@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/pool"
 	"strings"
 	"testing"
 )

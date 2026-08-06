@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"orchestrator/internal/apperrors"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"testing"
 
 	nodev1 "k8s.io/api/node/v1"

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"strings"
 	"sync"
 	"testing"

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"orchestrator/internal/sandbox"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/sandbox"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

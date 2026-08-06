@@ -24,8 +24,8 @@ import (
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/pool"
 	"sync"
 	"time"
 

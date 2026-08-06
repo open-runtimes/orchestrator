@@ -3,8 +3,8 @@ package kubernetes
 import (
 	"encoding/json"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/deployment"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/deployment"
+	"orchestrator/internal/volume"
 	"reflect"
 	"slices"
 	"strings"

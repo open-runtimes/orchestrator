@@ -3,7 +3,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"sync"
 	"time"
 

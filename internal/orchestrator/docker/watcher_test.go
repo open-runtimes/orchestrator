@@ -2,7 +2,7 @@ package docker
 
 import (
 	"context"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"sync"
 	"testing"
 	"time"

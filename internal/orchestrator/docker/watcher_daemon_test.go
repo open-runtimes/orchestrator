@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"strings"
 	"sync"
 	"testing"

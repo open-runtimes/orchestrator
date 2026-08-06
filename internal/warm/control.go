@@ -3,7 +3,7 @@ package warm
 import (
 	"context"
 	"log/slog"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/pool"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"

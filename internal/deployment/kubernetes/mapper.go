@@ -5,9 +5,9 @@ import (
 	"net"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/deployment"
 	"slices"
 	"strconv"
 

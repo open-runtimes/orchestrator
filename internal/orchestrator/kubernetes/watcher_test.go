@@ -1,7 +1,7 @@
 package kubernetes
 
 import (
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"slices"
 	"sync"
 	"testing"

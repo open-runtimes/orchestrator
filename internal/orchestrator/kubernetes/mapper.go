@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	"orchestrator/internal/job"
 	"orchestrator/internal/kube"
-	"orchestrator/pkg/job"
 	"strconv"
 	"strings"
 

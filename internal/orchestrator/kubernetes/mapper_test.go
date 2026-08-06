@@ -2,8 +2,8 @@ package kubernetes
 
 import (
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/job"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/job"
+	"orchestrator/internal/volume"
 	"reflect"
 	"slices"
 	"strconv"

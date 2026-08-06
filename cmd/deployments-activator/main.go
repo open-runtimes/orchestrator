@@ -19,7 +19,7 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/server"
+	"orchestrator/internal/server"
 	"os"
 	"time"
 )

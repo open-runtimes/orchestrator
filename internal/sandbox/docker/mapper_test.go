@@ -1,7 +1,7 @@
 package docker
 
 import (
-	"orchestrator/pkg/sandbox"
+	"orchestrator/internal/sandbox"
 	"testing"
 )
 

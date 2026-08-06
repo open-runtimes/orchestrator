@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/config"
-	"orchestrator/pkg/sandbox"
+	"orchestrator/internal/sandbox"
 	"strconv"
 	"strings"
 )

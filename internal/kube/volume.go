@@ -2,7 +2,7 @@ package kube
 
 import (
 	"fmt"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/volume"
 
 	corev1 "k8s.io/api/core/v1"
 )

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/deployment"
 	"slices"
 	"strings"
 

@@ -16,10 +16,10 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
+	"orchestrator/internal/pool"
+	"orchestrator/internal/sandbox"
 	"orchestrator/internal/warm"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/pool"
-	"orchestrator/pkg/sandbox"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"

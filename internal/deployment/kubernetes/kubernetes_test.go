@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"orchestrator/internal/apperrors"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"reflect"
 	"strings"
 	"testing"

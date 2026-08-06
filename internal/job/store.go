@@ -1,6 +1,6 @@
 package job
 
-import "orchestrator/pkg/lifecycle"
+import "orchestrator/internal/lifecycle"
 
 // The run-to-completion state machine (Entry, Signal, MemoryStore and friends)
 // lives in pkg/lifecycle, backend-agnostic and free of anything job-shaped.

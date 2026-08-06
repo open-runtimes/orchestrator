@@ -3,9 +3,9 @@ package dispatcher
 import (
 	"context"
 	"errors"
-	"orchestrator/pkg/backoff"
-	"orchestrator/pkg/circuitbreaker"
-	"orchestrator/pkg/cloudevent"
+	"orchestrator/internal/backoff"
+	"orchestrator/internal/circuitbreaker"
+	"orchestrator/internal/cloudevent"
 	"time"
 )
 

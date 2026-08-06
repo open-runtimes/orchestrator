@@ -1,12 +1,12 @@
 package warm
 
 import (
+	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/pool"
 	"testing"
 
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/kube"
-	"orchestrator/pkg/deployment"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/fake"

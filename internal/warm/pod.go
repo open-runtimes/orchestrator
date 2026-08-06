@@ -6,8 +6,8 @@ import (
 	"maps"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
+	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/pool"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"

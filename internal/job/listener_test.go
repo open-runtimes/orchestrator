@@ -1,7 +1,7 @@
 package job
 
 import (
-	"orchestrator/pkg/cloudevent"
+	"orchestrator/internal/cloudevent"
 	"testing"
 )
 

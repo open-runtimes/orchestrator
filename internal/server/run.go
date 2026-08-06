@@ -12,8 +12,8 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
+	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
-	"orchestrator/pkg/job"
 )
 
 // activeCounter is the optional surface a backend implements to report its live

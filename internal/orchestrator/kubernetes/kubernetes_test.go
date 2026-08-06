@@ -2,8 +2,8 @@ package kubernetes
 
 import (
 	"context"
+	"orchestrator/internal/job"
 	"orchestrator/internal/testutil"
-	"orchestrator/pkg/job"
 	"strings"
 	"sync"
 	"testing"

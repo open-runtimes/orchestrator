@@ -14,10 +14,10 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/deployment/endpointflip"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/deployment"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

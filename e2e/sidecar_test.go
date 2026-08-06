@@ -12,7 +12,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/testutil"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"os"
 	"path/filepath"
 	"sync"

@@ -2,8 +2,8 @@ package job
 
 import (
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/lifecycle"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/lifecycle"
+	"orchestrator/internal/volume"
 )
 
 // Request represents a request to create a new job

@@ -2,7 +2,7 @@ package sandbox
 
 import (
 	"context"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/pool"
 )
 
 // Orchestrator materializes sandboxes on a backend. The backend is the source

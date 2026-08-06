@@ -12,7 +12,7 @@ package sandbox
 
 import (
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/pool"
+	"orchestrator/internal/pool"
 )
 
 // Request creates a sandbox.

@@ -4,9 +4,9 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/pool"
+	"orchestrator/internal/sandbox"
 	"orchestrator/internal/warm"
-	"orchestrator/pkg/pool"
-	"orchestrator/pkg/sandbox"
 	"strconv"
 	"time"
 

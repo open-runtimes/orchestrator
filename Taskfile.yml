@@ -70,7 +70,6 @@ tasks:
     sources:
       - cmd/sandbox-proxy/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
 
   build-pool-shim:
     desc: Build pool-shim image
@@ -80,7 +79,6 @@ tasks:
     sources:
       - cmd/pool-shim/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-deployments-activator:
@@ -91,7 +89,6 @@ tasks:
     sources:
       - cmd/deployments-activator/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-deployments:
@@ -102,7 +99,6 @@ tasks:
     sources:
       - cmd/deployments-service/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-workload-sidecar:
@@ -113,7 +109,6 @@ tasks:
     sources:
       - cmd/workload-sidecar/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-service:
@@ -124,7 +119,6 @@ tasks:
     sources:
       - cmd/jobs-service/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   build-sidecar:
@@ -135,7 +129,6 @@ tasks:
     sources:
       - cmd/job-sidecar/**/*.go
       - internal/**/*.go
-      - pkg/**/*.go
       - go.mod
 
   # === Test ===

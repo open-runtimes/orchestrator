@@ -129,7 +129,7 @@ Read the addresses out of `urls`; don't build them. Ports are **not** a pool dim
 Two rules the platform enforces:
 
 - **Only declared ports are reachable.** The port travels in the hostname; the proxy turns it into a hint the sidecar checks against the claim, and the dial happens on loopback inside that sandbox's own pod. A port you did not declare is `404`, and a hint a client sets by hand is discarded.
-- **One module renders and reads the hostname** (`pkg/sandbox`, `Addressing`). The backends format URLs with it and the sandbox proxy resolves them with it, so the writer cannot drift from the reader, and the `s-` prefix is an enforced invariant rather than a convention — a host that merely shares the domain is not a sandbox.
+- **One module renders and reads the hostname** (`internal/sandbox`, `Addressing`). The backends format URLs with it and the sandbox proxy resolves them with it, so the writer cannot drift from the reader, and the `s-` prefix is an enforced invariant rather than a convention — a host that merely shares the domain is not a sandbox.
 - **The port shares the token's DNS label** (`s-{token}-5173`), rather than nesting as `s-5173.{token}`. A wildcard certificate covers exactly one label, so the flat form is reachable under one `*.{domain}` cert while the nested form would need a certificate per sandbox.
 
 Readiness is the primary port's alone: a secondary port that never comes up does not fail the sandbox, and traffic to it counts as activity for the [idle timeout](#lifecycle) like any other request. `8000` and `8001` belong to the sidecar and are refused.

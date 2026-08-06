@@ -2,7 +2,7 @@ package autoscaler
 
 import (
 	"context"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"testing"
 	"time"
 )

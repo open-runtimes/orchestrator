@@ -7,8 +7,8 @@ import (
 	"net"
 	"net/url"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/workload"
-	"orchestrator/pkg/deployment"
 	"slices"
 	"strconv"
 

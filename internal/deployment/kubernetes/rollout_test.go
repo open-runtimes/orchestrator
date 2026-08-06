@@ -2,7 +2,7 @@ package kubernetes
 
 import (
 	"fmt"
-	"orchestrator/pkg/deployment"
+	"orchestrator/internal/deployment"
 	"reflect"
 	"testing"
 

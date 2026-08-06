@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"orchestrator/pkg/job"
+	"orchestrator/internal/job"
 	"strings"
 	"sync"
 	"time"

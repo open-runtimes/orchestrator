@@ -4,7 +4,7 @@ import (
 	"errors"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
-	"orchestrator/pkg/volume"
+	"orchestrator/internal/volume"
 	"testing"
 )
 
