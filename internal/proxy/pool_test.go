@@ -420,18 +420,79 @@ func ptrTo[T any](v T) *T { return &v }
 // bound at all. Anything else cuts the long-lived sessions (WebSocket
 // terminals, language servers) that request it, at whatever default the pod
 // happened to be configured with.
+// The drain window follows the claim's bound in practice, not just in the rule.
+// Shutdown does not cut an in-flight request when the window expires — it stops
+// waiting for it, and the process exits from under it. So the observable
+// promise is that drain keeps waiting for a request the claim still allows.
+// This is the sandbox case: claimed for long sessions on a pod whose configured
+// default is short.
+func TestPoolClaim_DrainWaitsAsLongAsTheClaimAllows(t *testing.T) {
+	backend, release := blockingBackend(t)
+	cfg := poolConfig(t)
+	cfg.Timeout = 50 * time.Millisecond // the static default, overridden by the claim
+	cfg.MaxDrain = 5 * time.Second
+	execCh := shimReader(t, cfg.Workspace)
+	p := startProxy(t, cfg)
+
+	if status := postActivate(t, p, testClaimToken, ClaimRequest{
+		ActivationID:   "act-session",
+		Command:        "serve",
+		Port:           backendPort(t, backend),
+		TimeoutSeconds: ptrTo(2),
+	}); status != http.StatusOK {
+		t.Fatalf("claim: got %d, want 200", status)
+	}
+	<-execCh
+	waitReady(t, p)
+
+	statuses := make(chan int, 1)
+	asyncGet(t, localURL(t, p.DataAddr(), "/"), statuses)
+	waitFor(t, "request in flight", func() bool { return p.inFlight.Load() == 1 })
+
+	drained := make(chan struct{})
+	go func() {
+		p.drain()
+		close(drained)
+	}()
+
+	// Well past the 50ms static window that used to bound the drain, and well
+	// inside the 2s the claim asked for: drain must still be waiting.
+	time.Sleep(400 * time.Millisecond)
+	select {
+	case <-drained:
+		t.Fatal("drain stopped waiting for a request the claim still allows")
+	default:
+	}
+
+	close(release)
+	if status := <-statuses; status != http.StatusOK {
+		t.Fatalf("in-flight request during drain: got %d, want 200 — cut by a window the claim overrode", status)
+	}
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("drain did not finish")
+	}
+}
+
+// The claim decides how long a request may take, and that one answer decides the
+// drain window too — an unbounded claim drains for MaxDrain rather than for no
+// time at all.
 func TestPoolClaim_TimeoutSeconds(t *testing.T) {
 	for name, tc := range map[string]struct {
-		claim *int
-		want  time.Duration
+		claim      *int
+		want       time.Duration
+		wantWindow time.Duration
 	}{
-		"stated":    {claim: ptrTo(30), want: 30 * time.Second},
-		"unbounded": {claim: ptrTo(0), want: 0},
-		"unstated":  {claim: nil, want: 300 * time.Second}, // the pod's own default
+		// MaxDrain is 60s below, so it caps the window without hiding the bound.
+		"stated":    {claim: ptrTo(30), want: 30 * time.Second, wantWindow: 30 * time.Second},
+		"unbounded": {claim: ptrTo(0), want: 0, wantWindow: 60 * time.Second},
+		"unstated":  {claim: nil, want: 300 * time.Second, wantWindow: 60 * time.Second}, // the pod's own default
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := poolConfig(t)
 			cfg.Timeout = 300 * time.Second
+			cfg.MaxDrain = 60 * time.Second
 			execCh := shimReader(t, cfg.Workspace)
 			p := startProxy(t, cfg)
 
@@ -445,8 +506,11 @@ func TestPoolClaim_TimeoutSeconds(t *testing.T) {
 			}
 			<-execCh
 
-			if got := p.bind.Load().timeout; got != tc.want {
-				t.Errorf("per-request timeout: want %v, got %v", tc.want, got)
+			if got := p.requestBound(); got != tc.want {
+				t.Errorf("per-request bound: want %v, got %v", tc.want, got)
+			}
+			if got := p.drainWindow(); got != tc.wantWindow {
+				t.Errorf("drain window: want %v, got %v", tc.wantWindow, got)
 			}
 		})
 	}

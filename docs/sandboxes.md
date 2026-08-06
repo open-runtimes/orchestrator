@@ -134,7 +134,7 @@ Two rules the platform enforces:
 
 Readiness is the primary port's alone: a secondary port that never comes up does not fail the sandbox, and traffic to it counts as activity for the [idle timeout](#lifecycle) like any other request. `8000` and `8001` belong to the sidecar and are refused.
 
-WebSocket traffic (terminals, LSP) upgrades cleanly through the proxy. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox; artifact materialization keeps its own budget regardless, so an unbounded sandbox is not an unbounded download.
+WebSocket traffic (terminals, LSP) upgrades cleanly through the proxy. Create those sandboxes with `"timeoutSeconds": 0` — the per-request bound applies to an upgraded connection like any other request, so at the default it would cut the session after five minutes. `0` removes the bound for that sandbox; artifact materialization keeps its own budget regardless, so an unbounded sandbox is not an unbounded download. The same bound decides how long a rolling restart waits for that session before giving up on it, capped by the pod's `PROXY_MAX_DRAIN_SECONDS`.
 
 ## Persistence
 

@@ -319,6 +319,28 @@ type stats struct {
 	Ready              bool    `json:"ready"`
 }
 
+// requestBound is how long a request may take, as bound right now: the claim's
+// value once one has armed the data plane, the configured default until then.
+// 0 means unbounded. This is the only source for that fact — a claim that
+// states its own bound (including 0) must not find a second answer waiting
+// somewhere else.
+func (p *Proxy) requestBound() time.Duration {
+	if b := p.bind.Load(); b != nil {
+		return b.timeout
+	}
+	return p.cfg.Timeout
+}
+
+// drainWindow is how long drain lets in-flight requests finish: as long as the
+// bound in force allows them to take, capped by MaxDrain. An unbounded bound
+// must not read as a zero window, so the cap is then MaxDrain alone.
+func (p *Proxy) drainWindow() time.Duration {
+	if bound := p.requestBound(); bound > 0 {
+		return min(bound, p.cfg.MaxDrain)
+	}
+	return p.cfg.MaxDrain
+}
+
 func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats{
@@ -331,19 +353,13 @@ func (p *Proxy) handleStats(w http.ResponseWriter, _ *http.Request) {
 
 // drain fails readiness so routing de-registers the pod, waits out
 // propagation, then lets in-flight requests finish bounded by
-// min(Timeout, MaxDrain) — requests still running at the deadline are dropped.
+// min(requestBound, MaxDrain) — requests still running at the deadline are
+// dropped.
 func (p *Proxy) drain() {
 	p.draining.Store(true)
 	time.Sleep(p.deregisterDelay)
 
-	// Timeout == 0 means "no per-request timeout" (handleData skips the
-	// deadline), so it must not read as a zero drain window here — the cap is
-	// then MaxDrain alone.
-	window := p.cfg.MaxDrain
-	if p.cfg.Timeout > 0 {
-		window = min(p.cfg.Timeout, p.cfg.MaxDrain)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), window)
+	ctx, cancel := context.WithTimeout(context.Background(), p.drainWindow())
 	defer cancel()
 	_ = p.data.Shutdown(ctx)
 	_ = p.admin.Close()
