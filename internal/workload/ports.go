@@ -24,6 +24,12 @@ const (
 	EnvReadinessTimeoutMillis    = "PROXY_READINESS_TIMEOUT_MS"
 	EnvReadinessFailureThreshold = "PROXY_READINESS_FAILURE_THRESHOLD"
 
+	// EnvMounts tells a pool-mode sidecar its pod can establish image mounts:
+	// it runs privileged and the workspace carries propagation. Set only for
+	// pools that declared the capability, so a claim asking to mount without it
+	// fails in the API rather than with EPERM in the pod.
+	EnvMounts = "PROXY_MOUNTS"
+
 	// EnvTargetHost is the pool-mode host the claimed workload serves on; the
 	// claim's Port is joined to it. Docker warm containers front a sibling
 	// container, not localhost — hence a distinct knob from EnvTarget.

@@ -82,7 +82,7 @@ func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 				{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			}, podVolumes...),
-			InitContainers: initContainers(cfg, token),
+			InitContainers: initContainers(p, cfg, token),
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
@@ -101,12 +101,12 @@ func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 // initContainers builds the pod's init containers in order: the shim install,
 // the optional agent install, then the sidecar (a native sidecar, which the
 // kubelet starts and leaves running).
-func initContainers(cfg Config, token string) []corev1.Container {
+func initContainers(p *pool.Pool, cfg Config, token string) []corev1.Container {
 	containers := []corev1.Container{shimInstallContainer(cfg)}
 	if cfg.Agent.Image != "" {
 		containers = append(containers, agentInstallContainer(cfg))
 	}
-	return append(containers, proxyContainer(cfg, token))
+	return append(containers, proxyContainer(p, cfg, token))
 }
 
 // agentInstallContainer copies the contract-serving binary out of the image that
@@ -140,12 +140,15 @@ func shimInstallContainer(cfg Config) corev1.Container {
 // proxyContainer is the workload-sidecar in pool mode: a native sidecar
 // listening from pod start, holding the claim endpoints. Its kubelet /ready
 // probe gates the pod's Ready condition — warm-ready while unclaimed.
-func proxyContainer(cfg Config, token string) corev1.Container {
+func proxyContainer(p *pool.Pool, cfg Config, token string) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	env := []corev1.EnvVar{
 		{Name: workload.EnvClaimToken, Value: token},
 		{Name: envSharedVolume, Value: workspacePath},
 		{Name: workload.EnvTargetHost, Value: "127.0.0.1"},
+	}
+	if p.Mounts {
+		env = append(env, corev1.EnvVar{Name: workload.EnvMounts, Value: "true"})
 	}
 	// The proxy materializes s3:// artifacts in-process on claim, so it needs
 	// the deployments/pools service's S3 credentials.
@@ -173,9 +176,30 @@ func proxyContainer(cfg Config, token string) corev1.Container {
 		},
 		RestartPolicy:   &alwaysRestart,
 		Resources:       kube.SidecarResources(),
-		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspacePath}},
-		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
+		VolumeMounts:    []corev1.VolumeMount{workspaceMount(p, corev1.MountPropagationBidirectional)},
+		SecurityContext: sidecarSecurityContext(p, cfg),
 	}
+}
+
+// sidecarSecurityContext hardens the sidecar, unless the pool lets a claim
+// mount — then it needs privilege, which is the cost of the capability.
+func sidecarSecurityContext(p *pool.Pool, cfg Config) *corev1.SecurityContext {
+	if p.Mounts {
+		return kube.MountingSecurityContext()
+	}
+	return kube.HardenedSecurityContext(cfg.RunAsUser)
+}
+
+// workspaceMount mounts the shared workspace, carrying propagation only for a
+// pool that mounts: a mount established in the sidecar reaches the workload
+// through the shared subtree, and the workload's copy must accept it. Nothing
+// is propagated for a pool without the capability.
+func workspaceMount(p *pool.Pool, propagation corev1.MountPropagationMode) corev1.VolumeMount {
+	m := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: workspacePath}
+	if p.Mounts {
+		m.MountPropagation = &propagation
+	}
+	return m
 }
 
 // workloadContainer is the pool image, entrypoint overridden to the installed
@@ -203,7 +227,7 @@ func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
 		Env:             env,
 		WorkingDir:      workspacePath,
 		VolumeMounts: append([]corev1.VolumeMount{
-			{Name: VolumeWorkspace, MountPath: workspacePath},
+			workspaceMount(p, corev1.MountPropagationHostToContainer),
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
 		Resources:       cfg.Overcommit.WorkerResources(p.CPU, p.Memory),

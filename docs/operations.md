@@ -155,6 +155,8 @@ sandboxes:
 
 Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production the sandbox proxy is its own Deployment behind one wildcard `HTTPRoute` for `*.{domain}` — not a mode of the activator: it is permanently on the request path, reads pods only, and raises nothing. Scale it for sandbox traffic (`sandboxes.proxy.autoscaling`) rather than for cold starts.
 
+**Mounting pools run a privileged container.** A sandbox pool with `mounts: true` gives its sidecar `CAP_SYS_ADMIN` and root so it can loop-mount a filesystem image, and puts mount propagation on the shared workspace. That privileged container is in every pod of the pool, beside whatever the sandbox runs — so treat such a pool as trusted infrastructure and keep untrusted workloads on pools without it. See [mounting a filesystem image](sandboxes.md#mounting-a-filesystem-image).
+
 **A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandboxes.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
 
 ## Configuration reference

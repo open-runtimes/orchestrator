@@ -547,6 +547,9 @@
           "type": "integer",
           "minimum": 0
         },
+        "mounts": {
+          "type": "boolean"
+        },
         "environment": {
           "$ref": "#/$defs/stringMap"
         },

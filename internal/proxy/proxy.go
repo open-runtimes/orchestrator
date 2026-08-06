@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"orchestrator/internal/sidecar"
 	"orchestrator/internal/workload"
 	"strconv"
 	"sync"
@@ -41,7 +42,14 @@ type Proxy struct {
 	integral   float64
 	integralAt time.Time
 
+	// mounts holds the claim's runner when it established image mounts, so
+	// shutdown can release them. Nil when nothing was mounted.
+	mounts atomic.Pointer[sidecar.Runner]
+
 	deregisterDelay time.Duration // drainDeregisterDelay; shortened in tests
+	// mounter performs the claim's image mounts. Nil uses the real one; unit
+	// tests inject a fake, since mounting needs a privileged pod.
+	mounter sidecar.Mounter
 
 	runCtx context.Context // Start's ctx; late-armed probers run under it
 
@@ -145,7 +153,17 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 	<-ctx.Done()
 	p.drain()
+	p.release()
 	return nil
+}
+
+// release unmounts whatever the claim mounted, after in-flight requests have
+// finished with it. The workspace propagates bidirectionally, so a mount left
+// behind survives the pod and leaks on the node — this is not optional.
+func (p *Proxy) release() {
+	if r := p.mounts.Load(); r != nil {
+		r.Release()
+	}
 }
 
 // Start binds both listeners (port 0 = ephemeral) and serves in the

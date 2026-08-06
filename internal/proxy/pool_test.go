@@ -2,17 +2,21 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/sidecar"
 	"orchestrator/internal/workload"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -283,13 +287,52 @@ func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 	}
 }
 
-// A mount needs a post-phase sidecar to establish it and undo it, and this
-// sidecar runs a pre phase only. The claim must be refused rather than
-// materializing everything else and starting a workload whose mount is silently
-// absent. (The API rejects these at validation; this is the boundary refusing
-// them too.)
-func TestPoolClaim_RefusesAMountItCannotEstablish(t *testing.T) {
-	p := startProxy(t, poolConfig(t))
+// fakeMounter stands in for the kernel: mounting needs a privileged pod, which a
+// unit test does not have. It records what was mounted and released, in order.
+type fakeMounter struct {
+	mu       sync.Mutex
+	mounted  []string
+	released []string
+	err      error
+}
+
+func (f *fakeMounter) Mount(_, target string, _ sidecar.MountOpts) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.mounted = append(f.mounted, target)
+	return nil
+}
+
+func (f *fakeMounter) Unmount(target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, target)
+	return nil
+}
+
+// writeWorkspaceFile stands in for the artifact that would have produced the
+// image a mount consumes.
+func writeWorkspaceFile(t *testing.T, workspace, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(workspace, name), []byte("image"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+func (f *fakeMounter) counts() (int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.mounted), len(f.released)
+}
+
+// A mount needs a privileged sidecar and a propagating workspace, both fixed
+// when the warm pod was created. A pool without the capability must refuse the
+// claim rather than start a workload whose mount is silently absent.
+func TestPoolClaim_RefusesAMountThePoolCannotPerform(t *testing.T) {
+	p := startProxy(t, poolConfig(t)) // Mounts defaults to false
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID: "act-mount",
@@ -300,127 +343,107 @@ func TestPoolClaim_RefusesAMountItCannotEstablish(t *testing.T) {
 		t.Fatalf("claim with a mount: got %d, want 422", status)
 	}
 	s := claimState(t, p)
-	if !s.Failed || !strings.Contains(s.Error, "post-phase") {
-		t.Fatalf("state should name what is missing, got %+v", s)
+	if !s.Failed || !strings.Contains(s.Error, "mounts on the pool") {
+		t.Fatalf("state should name the pool setting, got %+v", s)
 	}
 }
 
-// A claim may declare extra ports. They are addressable through the same data
-// listener via workload.HeaderPort — dialed on loopback inside this pod, so the header
-// can never reach another pod, and never a port the claim did not declare.
-func TestPoolClaim_ExtraPorts(t *testing.T) {
-	primary := backendOnLoopback(t, "primary")
-	extra := backendOnLoopback(t, "extra")
-
+// With the capability, the mount is established BEFORE the shim is signalled —
+// so the payload finds it in place rather than racing it.
+func TestPoolClaim_MountsBeforeSignallingTheWorkload(t *testing.T) {
 	cfg := poolConfig(t)
+	cfg.Mounts = true
+	mounter := &fakeMounter{}
 	execCh := shimReader(t, cfg.Workspace)
+	// The image is normally produced by a preceding artifact; the mount waits
+	// for it either way.
+	writeWorkspaceFile(t, cfg.Workspace, "data.sqfs")
 	p := startProxy(t, cfg)
+	p.mounter = mounter
 
-	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-ports",
+	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
+		ActivationID: "act-mount",
 		Command:      "serve",
-		Port:         primary,
-		Ports:        []int{extra},
-	}); status != http.StatusOK {
-		t.Fatalf("claim: got %d, want 200", status)
+		Port:         backendOnLoopback(t, "ok"),
+		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("claim: got %d, want 200 (%+v)", status, claimState(t, p))
 	}
+
+	// Receiving the exec line proves the claim got past Mount, so a mount
+	// recorded by now was established first.
 	<-execCh
-
-	waitReady(t, p)
-
-	// No hint → the primary port, exactly as before extra ports existed.
-	if _, body := get(t, localURL(t, p.DataAddr(), "/")); body != "primary" {
-		t.Errorf("unhinted request: got %q, want primary", body)
-	}
-	// The declared extra.
-	if status, body := getWithPort(t, p, strconv.Itoa(extra)); status != http.StatusOK || body != "extra" {
-		t.Errorf("declared port: got %d %q, want 200 extra", status, body)
-	}
-	// An undeclared port is refused rather than dialed — including the
-	// sidecar's own admin port.
-	for _, port := range []string{"1", strconv.Itoa(workload.DefaultProxyPort), strconv.Itoa(workload.DefaultAdminPort), "notaport"} {
-		if status, _ := getWithPort(t, p, port); status != http.StatusNotFound {
-			t.Errorf("undeclared port %s: got %d, want 404", port, status)
-		}
+	if mounted, _ := mounter.counts(); mounted != 1 {
+		t.Fatalf("want the image mounted before the workload was signalled, got %d mounts", mounted)
 	}
 }
 
-// The port hint is the machinery's, not the workload's: it must not reach the
-// upstream.
-func TestPoolClaim_PortHintStrippedFromUpstream(t *testing.T) {
-	seen := make(chan string, 1)
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- r.Header.Get(workload.HeaderPort)
-	}))
-	t.Cleanup(backend.Close)
-	port := backendPort(t, backend)
-
+// A failed mount poisons the pod: the workload never starts, and the claim says
+// why.
+func TestPoolClaim_FailedMountPoisons(t *testing.T) {
 	cfg := poolConfig(t)
-	execCh := shimReader(t, cfg.Workspace)
+	cfg.Mounts = true
+	writeWorkspaceFile(t, cfg.Workspace, "data.sqfs")
 	p := startProxy(t, cfg)
+	p.mounter = &fakeMounter{err: errors.New("not a filesystem image")}
+
+	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
+		ActivationID: "act-bad-mount",
+		Command:      "serve",
+		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+	})
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("failed mount: got %d, want 422", status)
+	}
+	if s := claimState(t, p); !s.Failed || !strings.Contains(s.Error, "not a filesystem image") {
+		t.Fatalf("state should carry the reason, got %+v", s)
+	}
+}
+
+// The workspace propagates bidirectionally, so a mount left behind outlives the
+// pod on its node. Shutdown must release it — after the drain, so in-flight
+// requests are not reading from a filesystem pulled out from under them.
+func TestPoolClaim_ReleasesMountsOnShutdown(t *testing.T) {
+	cfg := poolConfig(t)
+	cfg.Mounts = true
+	cfg.Target = ""
+	mounter := &fakeMounter{}
+	execCh := shimReader(t, cfg.Workspace)
+	writeWorkspaceFile(t, cfg.Workspace, "data.sqfs")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	p := New(cfg)
+	p.deregisterDelay = time.Millisecond
+	p.mounter = mounter
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	waitFor(t, "listeners bound", func() bool { return p.dataLn != nil && p.adminLn != nil })
+
 	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-strip", Command: "serve", Port: port, Ports: []int{port},
+		ActivationID: "act-mount",
+		Command:      "serve",
+		Port:         backendOnLoopback(t, "ok"),
+		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
 	}); status != http.StatusOK {
-		t.Fatalf("claim: got %d, want 200", status)
+		t.Fatalf("claim: got %d", status)
 	}
 	<-execCh
-	waitReady(t, p)
-
-	if status, _ := getWithPort(t, p, strconv.Itoa(port)); status != http.StatusOK {
-		t.Fatalf("request: got %d, want 200", status)
+	if mounted, released := mounter.counts(); mounted != 1 || released != 0 {
+		t.Fatalf("before shutdown: %d mounted, %d released", mounted, released)
 	}
-	if hint := <-seen; hint != "" {
-		t.Errorf("workload saw the port hint: %q", hint)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	if mounted, released := mounter.counts(); released != mounted {
+		t.Errorf("shutdown left mounts behind: %d mounted, %d released", mounted, released)
 	}
 }
 
-// backendOnLoopback starts a server answering with body and returns its port.
-func backendOnLoopback(t *testing.T, body string) int {
-	t.Helper()
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, body)
-	}))
-	t.Cleanup(backend.Close)
-	return backendPort(t, backend)
-}
-
-func backendPort(t *testing.T, backend *httptest.Server) int {
-	t.Helper()
-	_, portStr, err := net.SplitHostPort(backend.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split backend addr: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse backend port: %v", err)
-	}
-	return port
-}
-
-// getWithPort issues a data-plane request naming a port, the way the sandbox
-// edge does.
-func getWithPort(t *testing.T, p *Proxy, port string) (int, string) {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, localURL(t, p.DataAddr(), "/"), nil)
-	if err != nil {
-		t.Fatalf("build request: %v", err)
-	}
-	req.Header.Set(workload.HeaderPort, port)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body)
-}
-
-func ptrTo[T any](v T) *T { return &v }
-
-// A claim's timeout is installed as given — including a 0, which asks for no
-// bound at all. Anything else cuts the long-lived sessions (WebSocket
-// terminals, language servers) that request it, at whatever default the pod
-// happened to be configured with.
 // The drain window follows the claim's bound in practice, not just in the rule.
 // Shutdown does not cut an in-flight request when the window expires — it stops
 // waiting for it, and the process exits from under it. So the observable
@@ -516,3 +539,116 @@ func TestPoolClaim_TimeoutSeconds(t *testing.T) {
 		})
 	}
 }
+
+// A claim may declare extra ports. They are addressable through the same data
+// listener via workload.HeaderPort — dialed on loopback inside this pod, so the header
+// can never reach another pod, and never a port the claim did not declare.
+func TestPoolClaim_ExtraPorts(t *testing.T) {
+	primary := backendOnLoopback(t, "primary")
+	extra := backendOnLoopback(t, "extra")
+
+	cfg := poolConfig(t)
+	execCh := shimReader(t, cfg.Workspace)
+	p := startProxy(t, cfg)
+
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
+		ActivationID: "act-ports",
+		Command:      "serve",
+		Port:         primary,
+		Ports:        []int{extra},
+	}); status != http.StatusOK {
+		t.Fatalf("claim: got %d, want 200", status)
+	}
+	<-execCh
+
+	waitReady(t, p)
+
+	// No hint → the primary port, exactly as before extra ports existed.
+	if _, body := get(t, localURL(t, p.DataAddr(), "/")); body != "primary" {
+		t.Errorf("unhinted request: got %q, want primary", body)
+	}
+	// The declared extra.
+	if status, body := getWithPort(t, p, strconv.Itoa(extra)); status != http.StatusOK || body != "extra" {
+		t.Errorf("declared port: got %d %q, want 200 extra", status, body)
+	}
+	// An undeclared port is refused rather than dialed — including the
+	// sidecar's own admin port.
+	for _, port := range []string{"1", strconv.Itoa(workload.DefaultProxyPort), strconv.Itoa(workload.DefaultAdminPort), "notaport"} {
+		if status, _ := getWithPort(t, p, port); status != http.StatusNotFound {
+			t.Errorf("undeclared port %s: got %d, want 404", port, status)
+		}
+	}
+}
+
+// The port hint is the machinery's, not the workload's: it must not reach the
+// upstream.
+func TestPoolClaim_PortHintStrippedFromUpstream(t *testing.T) {
+	seen := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get(workload.HeaderPort)
+	}))
+	t.Cleanup(backend.Close)
+	port := backendPort(t, backend)
+
+	cfg := poolConfig(t)
+	execCh := shimReader(t, cfg.Workspace)
+	p := startProxy(t, cfg)
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
+		ActivationID: "act-strip", Command: "serve", Port: port, Ports: []int{port},
+	}); status != http.StatusOK {
+		t.Fatalf("claim: got %d, want 200", status)
+	}
+	<-execCh
+	waitReady(t, p)
+
+	if status, _ := getWithPort(t, p, strconv.Itoa(port)); status != http.StatusOK {
+		t.Fatalf("request: got %d, want 200", status)
+	}
+	if hint := <-seen; hint != "" {
+		t.Errorf("workload saw the port hint: %q", hint)
+	}
+}
+
+// backendOnLoopback starts a server answering with body and returns its port.
+// backendOnLoopback starts a server answering with body and returns its port.
+func backendOnLoopback(t *testing.T, body string) int {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(backend.Close)
+	return backendPort(t, backend)
+}
+
+func backendPort(t *testing.T, backend *httptest.Server) int {
+	t.Helper()
+	_, portStr, err := net.SplitHostPort(backend.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split backend addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse backend port: %v", err)
+	}
+	return port
+}
+
+// getWithPort issues a data-plane request naming a port, the way the sandbox
+// edge does.
+func getWithPort(t *testing.T, p *Proxy, port string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, localURL(t, p.DataAddr(), "/"), nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set(workload.HeaderPort, port)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+func ptrTo[T any](v T) *T { return &v }

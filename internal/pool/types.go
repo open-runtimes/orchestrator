@@ -44,6 +44,14 @@ type Pool struct {
 	// "reject" → 429. Always logged either way.
 	Burst string `json:"burst,omitempty"`
 
+	// Mounts lets a claim against this pool establish image mounts (the mount
+	// artifact). It is a POOL dimension because it changes the pod: the sidecar
+	// performing the mount runs privileged as root, and the shared workspace
+	// carries mount propagation. Off by default, and worth leaving off — a
+	// privileged container sits in every pod of the pool, beside whatever the
+	// claim runs.
+	Mounts bool `json:"mounts,omitempty"`
+
 	// MaxIdleSeconds caps a claim's requested idle timeout (0 = uncapped).
 	// Sandbox pools want one: an abandoned sandbox holds a warm pod hostage.
 	MaxIdleSeconds int `json:"maxIdleSeconds,omitempty"`

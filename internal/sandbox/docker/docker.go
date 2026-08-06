@@ -117,6 +117,13 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if p == nil {
 		return nil, apperrors.NotFound("pool", req.Pool)
 	}
+	// Mounts are a Kubernetes capability: a pod's containers can share a mount
+	// through propagation on a shared volume, which sibling Docker containers
+	// cannot. Say so rather than accepting the request and failing the claim.
+	if artifact.HasMount(req.Artifacts) {
+		return nil, apperrors.Validation("artifacts",
+			"the Docker backend cannot mount: sibling containers do not share a mount namespace (see docs/sandboxes.md#the-docker-backend)")
+	}
 	if _, err := o.client.VolumeInspect(ctx, volumeName(req.ID)); err == nil {
 		return nil, apperrors.Conflict("sandbox", req.ID, "sandbox "+req.ID+" already exists")
 	} else if !cerrdefs.IsNotFound(err) {

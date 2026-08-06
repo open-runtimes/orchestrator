@@ -143,7 +143,7 @@ func main() {
 			slog.Error("Failed to start sandbox orchestrator", "error", err)
 			os.Exit(1)
 		}
-		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.ServingRegistry())
+		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.MountingRegistry())
 		slog.Info("Sandbox pools configured", "count", len(sandboxPools))
 
 		// On Docker the sandbox data plane runs in-process, resolving tokens

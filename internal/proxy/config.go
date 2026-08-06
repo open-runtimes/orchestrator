@@ -27,6 +27,11 @@ type Config struct {
 	ProxyPort  int
 	AdminPort  int
 
+	// Mounts reports that this pod can establish image mounts: the sidecar runs
+	// privileged and the workspace carries propagation. Set by the backend for
+	// pools that declared the capability.
+	Mounts bool
+
 	Timeout  time.Duration // per-request total → 504
 	MaxDrain time.Duration // cap on drain wait at shutdown
 
@@ -57,6 +62,7 @@ func LoadConfigFromEnv() Config {
 		ProxyPort: config.GetIntEnv(workload.EnvProxyPort, workload.DefaultProxyPort),
 		AdminPort: config.GetIntEnv(workload.EnvAdminPort, workload.DefaultAdminPort),
 
+		Mounts:   config.GetEnv(workload.EnvMounts, "") == "true",
 		Timeout:  time.Duration(config.GetIntEnv(workload.EnvTimeoutSeconds, 300)) * time.Second,
 		MaxDrain: time.Duration(config.GetIntEnv(workload.EnvMaxDrainSeconds, 90)) * time.Second,
 

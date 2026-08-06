@@ -38,6 +38,17 @@ func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
 	}
 }
 
+// MountingSecurityContext is what a container needs to loop-mount a filesystem
+// image: CAP_SYS_ADMIN via privileged, and root to open the loop device. It is
+// the opposite of HardenedSecurityContext and is granted to exactly one
+// container — the sidecar performing the mount — and only in pods whose
+// workload asked for one.
+func MountingSecurityContext() *corev1.SecurityContext {
+	privileged := true
+	root := int64(0)
+	return &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &root}
+}
+
 // SidecarResources is what a workload sidecar asks for: a small CPU request and
 // a memory request with a matching cap. No CPU limit — throttling a proxy adds
 // latency to every request through it, and the request already buys its share.
