@@ -46,6 +46,8 @@ curl -H "Host: web.localhost" http://localhost:8081/
 | [Observability](docs/observability.md) | Metrics, logging, and tracing |
 | [Development](docs/development.md) | Building, testing, and the local dev loop |
 
+Proposals for work not yet built live in [`docs/design/`](docs/design/).
+
 ## API at a glance
 
 All request and response bodies are JSON; every error is `{"error": "..."}` with a meaningful status code. Requests with unknown fields are rejected with `400` naming the field — a typo never silently deploys defaults. When an API key is configured, send `Authorization: Bearer <key>`.
