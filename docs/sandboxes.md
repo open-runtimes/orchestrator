@@ -150,7 +150,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
   }'
 ```
 
-Every artifact type works except [`mount`](jobs.md#mount-artifact), which needs a post-phase sidecar only a job runs; submitting one is a `400` rather than a silent no-op. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
+Every artifact type works except [`mount`](jobs.md#mount-artifact), which needs a post-phase sidecar only a job runs; submitting one is a `400` rather than a silent no-op. Artifacts also run in the **pre phase only** — a post-phase artifact (one depending on the `"job"` sentinel) never runs, because a sandbox has no teardown phase to run it in. Supporting both, for restore-and-snapshot workspaces, is [a proposal](design/sandbox-mounts-and-shutdown-artifacts.md). Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
 
 If materialization fails, the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
 
@@ -457,7 +457,7 @@ Proxy authentication — a per-sandbox bearer token the proxy requires — remai
 
 **Suspend/resume.** It requires owning per-sandbox PVC lifecycle, quota, and cleanup, and a resume cannot use warm-pool claiming, so it needs a second, slower creation path. Ephemeral workspaces plus pool-level volumes cover the agent use case.
 
-**Per-sandbox managed storage.** Same reasoning, plus the warm-pod constraint: pool `volumes` attach storage whose lifecycle someone else owns, which is exactly why they are cheap, and a live pod's mounts cannot be changed at claim time regardless.
+**Per-sandbox managed storage.** Same reasoning, plus the warm-pod constraint: pool `volumes` attach storage whose lifecycle someone else owns, which is exactly why they are cheap, and a live pod's mounts cannot be changed at claim time regardless. There is a cheaper shape that gets most of the way — restore by mounting a filesystem image at create, snapshot by archiving and uploading at teardown, with S3 as the store and no PVC lifecycle to own. See [sandbox mounts and shutdown artifacts](design/sandbox-mounts-and-shutdown-artifacts.md).
 
 **A sandbox network policy.** Untrusted code with default-open egress is the real exposure. The workload-namespace policy blocks the cloud metadata endpoint and default-denies ingress, but a sandbox-specific default-deny egress is a platform concern spanning pools and deployments too — its own change, not this one.
 
