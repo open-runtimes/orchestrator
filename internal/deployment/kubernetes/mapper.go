@@ -293,11 +293,10 @@ func proxyEnv(req *deployment.Request) []corev1.EnvVar {
 	if artifact.HasMount(req.Artifacts) {
 		env = append(env, corev1.EnvVar{Name: workload.EnvMounts, Value: "true"})
 	}
-	// The sidecar needs the artifacts for any phase that is its own: a mount to
-	// establish before the worker starts, and a post-phase artifact to run when
-	// the workload stops. The artifact-pre init container handles the rest and is
-	// gone by then.
-	if artifact.HasMount(req.Artifacts) || artifact.HasPostPhase(req.Artifacts) {
+	// The sidecar needs the artifacts for the phase that is its own: establishing
+	// a mount before the worker starts, and syncing its delta afterwards. The
+	// artifact-pre init container handles the rest.
+	if artifact.HasMount(req.Artifacts) {
 		if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
 			env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
 		}

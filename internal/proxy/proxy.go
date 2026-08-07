@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -56,9 +55,6 @@ type Proxy struct {
 	// mounts holds the claim's runner when it established image mounts, so
 	// shutdown can release them. Nil when nothing was mounted.
 	mounts atomic.Pointer[sidecar.Runner]
-	// artifacts is what this workload was given, kept because the post-phase ones
-	// do not run until it is told to stop.
-	artifacts atomic.Pointer[artifact.Set]
 
 	deregisterDelay time.Duration // drainDeregisterDelay; shortened in tests
 	// mounter performs the claim's image mounts. Nil uses the real one; unit
@@ -167,38 +163,8 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 	<-ctx.Done()
 	p.drain()
-	p.finalize()
 	p.release()
 	return nil
-}
-
-// finalize runs the workload's post-phase artifacts, after the drain (so nothing
-// is still writing to the workspace) and before the release (so an artifact that
-// archives a mount still has one to read).
-//
-// Bounded by the pod's termination grace period, and best-effort by nature: a
-// node that dies takes the snapshot with it. That is stated plainly in the docs
-// rather than implied by a name.
-func (p *Proxy) finalize() {
-	artifacts := p.artifacts.Load()
-	runner := p.mounts.Load()
-	if artifacts == nil || len(*artifacts) == 0 {
-		return
-	}
-	if runner == nil {
-		// Nothing mounted, so no runner was kept — make one for this phase.
-		runner = p.newRunner("finalize")
-	}
-	// The grace period is the real bound; this only keeps a hung artifact from
-	// outliving it silently.
-	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.MaxDrain)
-	defer cancel()
-	if err := runner.Finalize(ctx, *artifacts); err != nil {
-		// Nothing to escalate to: the pod is going away and there is no request
-		// left to answer. The log is the signal, which is why the docs call this
-		// best-effort rather than durable.
-		slog.Error("Post-phase artifacts failed; the workload is stopping regardless", "error", err)
-	}
 }
 
 // release unmounts whatever the claim mounted, after in-flight requests have
@@ -268,8 +234,6 @@ func (p *Proxy) mount(ctx context.Context) error {
 	}
 	// Remembered for teardown whether or not anything is mounted: the post-phase
 	// artifacts are this sidecar's job either way.
-	set := artifact.Set(artifacts)
-	p.artifacts.Store(&set)
 	if !p.cfg.Mounts {
 		p.mountsReady.Store(true)
 		return nil

@@ -1,6 +1,9 @@
 # Sandbox mounts and shutdown artifacts
 
-**Status: partly implemented.** Mounts have shipped for all four workload kinds — see [Mounting a filesystem image](../sandboxes.md#mounting-a-filesystem-image) for what exists. Shutdown artifacts have not; the sections on them stand as the proposal. The [sandbox guide](../sandboxes.md) describes what exists today; this describes what it would take to support two things it currently refuses, and what I would want settled before writing either.
+**Status: mostly implemented.** Mounts have shipped for all four workload kinds,
+and a writable mount can now `sync` its delta continuously — which replaced the
+teardown trigger this document opened with rather than fixing it. What is left is
+the explicit snapshot endpoint. Mounts have shipped for all four workload kinds — see [Mounting a filesystem image](../sandboxes.md#mounting-a-filesystem-image) for what exists. Shutdown artifacts have not; the sections on them stand as the proposal. The [sandbox guide](../sandboxes.md) describes what exists today; this describes what it would take to support two things it currently refuses, and what I would want settled before writing either.
 
 ## What is being asked for
 
@@ -285,9 +288,13 @@ does not migrate a workspace between nodes.
    mount already works, so this closes the loop on its own.
 2. **The durable workspace and the finalizer job**, as above, for callers who
    want teardown to snapshot itself without being asked.
-3. **Delete the SIGTERM path** once 1 and 2 exist. Keeping a best-effort trigger
-   that usually does not fire is worse than not having one, because it reads
-   like a guarantee.
+3. ~~**Delete the SIGTERM path**~~ — **done.** The post-phase-at-teardown
+   mechanism and the `202`/`finalizing` API it needed are gone. With a delta
+   pushed on an interval, the flush on the way out costs an interval when it is
+   missed rather than the session, so there is nothing for a caller to wait on
+   and `DELETE` is `204` again. The `workload` dependency sentinel and the
+   `terminationGracePeriodSeconds` dimension stayed: the first is independently
+   correct, and the second still makes the final flush more likely to land.
 
 ## Mounting the bucket instead
 

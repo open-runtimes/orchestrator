@@ -162,10 +162,6 @@ func (p *Proxy) activate(ctx context.Context, req workload.ClaimRequest) error {
 		return err
 	}
 
-	// Kept for the shutdown phase: the post-phase artifacts run when this
-	// workload is told to stop, not now.
-	p.artifacts.Store(&req.Artifacts)
-
 	p.arm(req)
 	return nil
 }

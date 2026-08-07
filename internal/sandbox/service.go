@@ -132,20 +132,18 @@ func (s *Service) List(ctx context.Context) ([]Status, error) {
 
 // Delete tears a sandbox down. Its URL dies with it: the token lives only as a
 // label on the pod being deleted, so a leaked URL is dead on teardown.
-// Delete reports whether teardown has work the caller asked for still to do —
-// post-phase artifacts, which run while the pod terminates. That is the
-// difference between "gone" and "going", and the difference between 204 and 202.
-func (s *Service) Delete(ctx context.Context, id string) (finalizing bool, err error) {
-	// Read before deleting: afterwards the spec is on a pod that is on its way
-	// out, and the answer would be a race.
-	if status, err := s.orchestrator.Status(ctx, id); err == nil {
-		finalizing = status.Finalizes
-	}
+// Delete tears a sandbox down. Its URL dies with it: the token lives only as a
+// label on the pod being deleted, so a leaked URL is dead on teardown.
+//
+// A synced mount flushes its delta on the way out, which is best-effort by
+// design — the sync runs continuously, so missing the flush costs an interval
+// rather than the session, and there is nothing here for a caller to wait on.
+func (s *Service) Delete(ctx context.Context, id string) error {
 	if err := s.orchestrator.Delete(ctx, id); err != nil {
-		return false, err
+		return err
 	}
-	slog.Info("Sandbox deleted", "sandboxId", id, "finalizing", finalizing)
-	return finalizing, nil
+	slog.Info("Sandbox deleted", "sandboxId", id)
+	return nil
 }
 
 // validateSource enforces the one choice a create has to make: claim from a

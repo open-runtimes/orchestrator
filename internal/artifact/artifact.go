@@ -19,7 +19,6 @@ func PostPhase(depends string) bool {
 	return depends == WorkloadDependency || depends == JobDependency
 }
 
-// HasPostPhase reports whether any of these artifacts runs after the workload —
 // which is what makes a teardown something a caller waits on rather than a
 // deletion.
 func HasPostPhase(artifacts []Artifact) bool {
