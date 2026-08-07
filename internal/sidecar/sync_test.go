@@ -19,19 +19,26 @@ import (
 type objectStore struct {
 	mu      sync.Mutex
 	objects map[string][]byte
+	puts    map[string]int
+	fail    bool
 	url     string
 }
 
 func newObjectStore(t *testing.T) *objectStore {
 	t.Helper()
-	s := &objectStore{objects: map[string][]byte{}}
+	s := &objectStore{objects: map[string][]byte{}, puts: map[string]int{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		switch r.Method {
 		case http.MethodPut:
+			if s.fail {
+				http.Error(w, "storage is having a day", http.StatusInternalServerError)
+				return
+			}
 			body, _ := io.ReadAll(r.Body)
 			s.objects[r.URL.Path] = body
+			s.puts[r.URL.Path]++
 			w.WriteHeader(http.StatusOK)
 		case http.MethodGet:
 			body, ok := s.objects[r.URL.Path]
@@ -53,6 +60,14 @@ func (s *objectStore) has(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.objects[key]) > 0
+}
+
+// writes counts successful uploads of a key — how many times a push actually
+// left the pod.
+func (s *objectStore) writes(key string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.puts[key]
 }
 
 func (s *objectStore) put(key string, body []byte) {
@@ -194,5 +209,118 @@ func write(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// A short interval is only affordable if an idle workload costs nothing: a push
+// with no changes since the last successful one must not upload anything.
+func TestPushDelta_SkipsWhenNothingChanged(t *testing.T) {
+	t.Parallel()
+	ws := t.TempDir()
+	store := newObjectStore(t)
+	upper := UpperDir(filepath.Join(ws, "work"))
+	if err := os.MkdirAll(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(upper, "a.txt"), "one")
+
+	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
+	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
+
+	if err := r.pushDelta(t.Context(), m); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	first := store.writes("/delta.tgz")
+	if first != 1 {
+		t.Fatalf("first push should have uploaded once, got %d", first)
+	}
+
+	// Nothing touched the tree: no upload.
+	for range 3 {
+		if err := r.pushDelta(t.Context(), m); err != nil {
+			t.Fatalf("idle push: %v", err)
+		}
+	}
+	if got := store.writes("/delta.tgz"); got != first {
+		t.Errorf("an idle workload must not upload: %d uploads, want %d", got, first)
+	}
+
+	// A change is picked up.
+	write(t, filepath.Join(upper, "b.txt"), "two")
+	if err := r.pushDelta(t.Context(), m); err != nil {
+		t.Fatalf("push after change: %v", err)
+	}
+	if got := store.writes("/delta.tgz"); got != first+1 {
+		t.Errorf("a change must be pushed: %d uploads, want %d", got, first+1)
+	}
+
+	// So must a deletion, which the overlay records as a whiteout in the upper.
+	if err := os.Remove(filepath.Join(upper, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pushDelta(t.Context(), m); err != nil {
+		t.Fatalf("push after delete: %v", err)
+	}
+	if got := store.writes("/delta.tgz"); got != first+2 {
+		t.Errorf("a deletion must be pushed: %d uploads, want %d", got, first+2)
+	}
+}
+
+// A failed push must not be remembered as the baseline, or the next tick would
+// decide there was nothing to do and the change would never leave the pod.
+func TestPushDelta_FailedPushIsRetried(t *testing.T) {
+	t.Parallel()
+	ws := t.TempDir()
+	store := newObjectStore(t)
+	store.fail = true
+	upper := UpperDir(filepath.Join(ws, "work"))
+	if err := os.MkdirAll(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(upper, "a.txt"), "one")
+
+	r := NewRunner("t", ws, 5, artifact.DefaultRegistry())
+	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
+
+	if err := r.pushDelta(t.Context(), m); err == nil {
+		t.Fatal("want the push to fail")
+	}
+	store.fail = false
+	if err := r.pushDelta(t.Context(), m); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if !store.has("/delta.tgz") {
+		t.Error("the retry should have uploaded what the failure did not")
+	}
+}
+
+// Restoring records the baseline too, so a session that changes nothing never
+// re-uploads what it just downloaded.
+func TestRestoreDelta_MakesTheRestoredTreeTheBaseline(t *testing.T) {
+	t.Parallel()
+	store := newObjectStore(t)
+	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/session.tgz"}
+
+	first := t.TempDir()
+	upper := UpperDir(filepath.Join(first, "work"))
+	if err := os.MkdirAll(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(upper, "notes.txt"), "session one")
+	if err := NewRunner("a", first, 30, artifact.DefaultRegistry()).pushDelta(t.Context(), m); err != nil {
+		t.Fatal(err)
+	}
+	uploads := store.writes("/session.tgz")
+
+	second := t.TempDir()
+	r := NewRunner("b", second, 30, artifact.DefaultRegistry())
+	if err := r.restoreDelta(t.Context(), m); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pushDelta(t.Context(), m); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.writes("/session.tgz"); got != uploads {
+		t.Errorf("a session that changed nothing must not push: %d uploads, want %d", got, uploads)
 	}
 }

@@ -27,13 +27,75 @@ import (
 // intermediate push is a crash-consistent restore point. The final one runs
 // when nothing is serving, so it is clean.
 
-// syncState tracks the loops started for a claim's synced mounts.
+// syncState tracks the loops started for a claim's synced mounts, and what each
+// one last pushed.
 type syncState struct {
 	mu      sync.Mutex
 	stop    chan struct{} // closed by StopSync; ends every loop
 	done    sync.WaitGroup
 	mounts  []*artifact.Mount
+	pushed  map[string]deltaPrint // mount id → what its last successful push carried
 	stopped bool
+}
+
+// deltaPrint is a cheap summary of the upper layer — enough to tell whether
+// anything changed since the last push without reading a byte of content, so a
+// short interval costs a directory walk rather than an archive and an upload.
+//
+// Nanosecond mtimes make this reliable in practice: an in-place edit that
+// preserves the file's size AND lands in the same nanosecond as the last push
+// would be missed, and the next change to anything catches it.
+type deltaPrint struct {
+	files  int
+	bytes  int64
+	newest int64 // newest mtime, UnixNano
+}
+
+// printDelta summarises a directory tree. A tree that cannot be walked returns
+// the zero value and an error, and the caller pushes rather than guessing.
+func printDelta(dir string) (deltaPrint, error) {
+	var p deltaPrint
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		p.files++
+		p.bytes += info.Size()
+		if mod := info.ModTime().UnixNano(); mod > p.newest {
+			p.newest = mod
+		}
+		return nil
+	})
+	return p, err
+}
+
+// unchanged reports whether a mount's upper layer is exactly what its last
+// successful push carried.
+func (r *Runner) unchanged(id string, p deltaPrint) bool {
+	r.sync.mu.Lock()
+	defer r.sync.mu.Unlock()
+	last, ok := r.sync.pushed[id]
+	return ok && last == p
+}
+
+// recordPush remembers what a successful push (or restore) left in the upper
+// layer, so the next tick can tell there is nothing to do. Only successes are
+// recorded: a failed push must be retried, and a failed restore must not make
+// the next push look unnecessary.
+func (r *Runner) recordPush(id string, p deltaPrint) {
+	r.sync.mu.Lock()
+	defer r.sync.mu.Unlock()
+	if r.sync.pushed == nil {
+		r.sync.pushed = map[string]deltaPrint{}
+	}
+	r.sync.pushed[id] = p
 }
 
 // restoreDelta seeds a synced mount's upper layer from its last push, before
@@ -68,6 +130,12 @@ func (r *Runner) restoreDelta(ctx context.Context, m *artifact.Mount) error {
 		return fmt.Errorf("unpack delta: %w", err)
 	}
 	_ = os.Remove(filepath.Join(r.sharedVolumePath, archiveRel))
+
+	// The restored tree is the baseline: a session that changes nothing then
+	// pushes nothing, rather than re-uploading what it just downloaded.
+	if p, err := printDelta(upper); err == nil {
+		r.recordPush(m.ID, p)
+	}
 	slog.Info("Restored delta", "artifactId", m.ID, "sync", m.Sync)
 	return nil
 }
@@ -81,6 +149,16 @@ func (r *Runner) pushDelta(ctx context.Context, m *artifact.Mount) error {
 	if _, err := os.Stat(upper); err != nil {
 		return nil // nothing mounted, nothing to push
 	}
+
+	// Nothing new since the last successful push, so there is nothing to send.
+	// This is what makes a short interval affordable: an idle workload costs a
+	// directory walk, not an upload. A tree we cannot summarise is pushed rather
+	// than assumed unchanged.
+	current, printErr := printDelta(upper)
+	if printErr == nil && r.unchanged(m.ID, current) {
+		return nil
+	}
+
 	archiveRel := deltaArchivePath(m)
 
 	pack := &artifact.Archive{
@@ -94,6 +172,9 @@ func (r *Runner) pushDelta(ctx context.Context, m *artifact.Mount) error {
 	upload := &artifact.Upload{ID: m.ID + ".push", In: archiveRel, Out: m.Sync}
 	if err := r.apply(ctx, pack, upload); err != nil {
 		return fmt.Errorf("push delta: %w", err)
+	}
+	if printErr == nil {
+		r.recordPush(m.ID, current)
 	}
 	return nil
 }
