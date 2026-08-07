@@ -438,6 +438,95 @@ The FUSE catch still applies to JuiceFS and rclone (both need `/dev/fuse`, and
 gVisor's support is partial), which is another reason the overlay route is worth
 pricing first: it needs no FUSE at all.
 
+## What we would actually build
+
+Concretely, for the overlay-delta route: **four changes across three files.**
+Everything else already exists and shipped.
+
+A writable `mount` today is an erofs or squashfs image loop-mounted read-only at
+`<out>.lower`, with an overlay stacked at `<out>` whose upper and work layers
+live on a **tmpfs** at `<out>.scratch`. The upper directory is therefore already
+at a known path, and it already contains exactly the delta — measured:
+
+```
+OVERLAY-ON-EMPTYDIR: OK
+--- upper (the delta):
+  /w/scr/upper/new.txt     created
+  /w/scr/upper/base.txt    copied up because modified
+/dev/vdb1  btrfs  …  /w    emptyDir, not tmpfs
+```
+
+Unmodified files from the image never enter the upper. That is the whole
+mechanism; the rest is plumbing.
+
+### 1. Put the upper on disk instead of tmpfs — `internal/sidecar/mount_linux.go`
+
+When persistence is asked for, skip the tmpfs mount and `MkdirAll` the scratch
+directory on the workspace volume. Overlayfs needs upper and work on one
+filesystem that supports `trusted.overlay.*` xattrs; the emptyDir qualifies
+(verified above on btrfs).
+
+What is lost: the tmpfs `size=` cap. The replacement is the emptyDir's own
+`sizeLimit`, which the pod spec can set — a change in the pod builders, not here.
+
+### 2. A `persist` target on the mount artifact — `internal/artifact/mount.go`
+
+```jsonc
+{"id": "tree", "type": "mount", "in": "base.erofs", "out": "work",
+ "writable": true,
+ "persist": "s3://acme/sessions/42.tgz",
+ "persistEverySeconds": 30}
+```
+
+One field and an interval, plus validation. The rest of the request is unchanged.
+
+### 3. Restore, sync, and flush — `internal/sidecar/runner.go`
+
+All three reuse artifact types that already exist, run through the runner that
+already holds the S3 credentials:
+
+- **restore**, during `Mount` and before the overlay is stacked: if the object
+  exists, `download` + `unarchive` into the upper directory;
+- **sync**, a goroutine started after the mount: `archive` the upper + `upload`,
+  every `persistEverySeconds`;
+- **flush**, in `Release`: the same sync once more.
+
+The sync is roughly sixty lines, because it builds two artifacts in memory and
+hands them to the runner. It is not new I/O code.
+
+### 4. Start and stop it — `internal/proxy`
+
+The sidecar already calls `Mount` on the claim and `Release` after draining. The
+loop starts in the first and stops in the second. No new lifecycle.
+
+### What we do not build
+
+No FUSE daemon, no `/dev/fuse`, no CSI driver, no metadata service, no PVC
+lifecycle, no finalizer job, no new controller, no new endpoint — and no gVisor
+question beyond the one mounts already have. The `202`/`finalizing` API this
+document proposed becomes unnecessary too: with a sync every thirty seconds,
+missing the final flush costs thirty seconds of work, so `DELETE` can stay `204`
+and the flush is an optimisation rather than a promise.
+
+### What it costs, and what is still open
+
+- **The sync is crash-consistent, not atomic.** The workload keeps writing while
+  the upper is archived. The final flush runs after the drain, when nothing is
+  serving, so the last one is clean; intermediate ones are a best-effort restore
+  point. Freezing writes mid-session would need cooperation from the workload,
+  which we do not have.
+- **Cost grows with the delta.** Each cycle archives the whole upper, not the
+  change since the last cycle, so a long session re-uploads an increasingly large
+  archive. Fine for a first version, and the fix is per-file sync rather than
+  archive-and-upload, which is a bigger change than this one.
+- **It needs the mount capability**, so the privileged sidecar and everything
+  said about it applies unchanged. A sandbox that only wants a persistent folder
+  now pays for a privileged container, which is a real objection and the reason
+  the bucket-mount-by-CSI route stays interesting.
+- **The emptyDir sizeLimit becomes the guard rail** in place of the tmpfs cap,
+  and an unbounded upper on a node's disk is a noisy-neighbour problem worth
+  capping before this ships.
+
 ## Alternatives, and when they are better
 
 | Instead of this | When it wins |
