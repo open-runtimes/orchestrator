@@ -42,13 +42,18 @@ type syncState struct {
 // anything changed since the last push without reading a byte of content, so a
 // short interval costs a directory walk rather than an archive and an upload.
 //
-// Nanosecond mtimes make this reliable in practice: an in-place edit that
-// preserves the file's size AND lands in the same nanosecond as the last push
-// would be missed, and the next change to anything catches it.
+// Directories count as entries and contribute their mtimes, which is what makes
+// this catch changes that move no bytes: an empty mkdir, or a rename that keeps
+// a file's size and mtime, both show up as the containing directory's mtime.
+// Counting only files would call those unchanged and skip the push.
+//
+// What is left is narrow: an in-place write that preserves the file's size AND
+// lands in the same nanosecond as the last push. The next change to anything
+// catches it.
 type deltaPrint struct {
-	files  int
-	bytes  int64
-	newest int64 // newest mtime, UnixNano
+	entries int
+	bytes   int64
+	newest  int64 // newest mtime, UnixNano
 }
 
 // printDelta summarises a directory tree. A tree that cannot be walked returns
@@ -59,15 +64,14 @@ func printDelta(dir string) (deltaPrint, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			return nil
-		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		p.files++
-		p.bytes += info.Size()
+		p.entries++
+		if !d.IsDir() {
+			p.bytes += info.Size()
+		}
 		if mod := info.ModTime().UnixNano(); mod > p.newest {
 			p.newest = mod
 		}

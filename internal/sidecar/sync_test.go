@@ -221,6 +221,52 @@ func TestRestoreDelta_RestoredTreeIsWritableByTheWorkload(t *testing.T) {
 	}
 }
 
+// A change that moves no bytes is still a change. An empty mkdir and a rename
+// both leave the file count, the total size and every file mtime exactly as they
+// were, so a fingerprint over files alone would call them unchanged and skip the
+// push — losing them until something else happened to be written.
+func TestPushDelta_NoticesChangesThatMoveNoBytes(t *testing.T) {
+	t.Parallel()
+	ws := t.TempDir()
+	store := newObjectStore(t)
+	upper := UpperDir(filepath.Join(ws, "work"))
+	if err := os.MkdirAll(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(upper, "a.txt"), "one")
+
+	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
+	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
+	if err := r.pushDelta(t.Context(), m); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		change func() error
+	}{
+		{"an empty directory", func() error {
+			return os.Mkdir(filepath.Join(upper, "empty"), 0o755)
+		}},
+		// A rename keeps the size and the mtime, so only the containing
+		// directory's mtime gives it away.
+		{"a rename", func() error {
+			return os.Rename(filepath.Join(upper, "a.txt"), filepath.Join(upper, "b.txt"))
+		}},
+	} {
+		before := store.writes("/delta.tgz")
+		if err := tc.change(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if err := r.pushDelta(t.Context(), m); err != nil {
+			t.Fatalf("push after %s: %v", tc.name, err)
+		}
+		if got := store.writes("/delta.tgz"); got != before+1 {
+			t.Errorf("%s must be pushed: %d uploads, want %d", tc.name, got, before+1)
+		}
+	}
+}
+
 // Stopping flushes: a workload torn down normally loses nothing, which is what
 // makes the interval the bound on what a crash can cost.
 func TestStopSync_FlushesOnTheWayOut(t *testing.T) {
