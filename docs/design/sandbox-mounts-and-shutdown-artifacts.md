@@ -425,7 +425,7 @@ without a FUSE daemon, a metadata service, or a bucket mount at all:
 
 - restore: download the image, mount it read-only, overlay on top — **already
   works**, and it is one download plus an O(1) mount;
-- persist: sync the upper directory, which is small by construction;
+- sync: push the upper directory, which is small by construction;
 - flush at teardown: the same sync, bounded by what changed since the last one.
 
 The wrinkle noted earlier — that `archive` over a mount point captures the merged
@@ -461,7 +461,7 @@ mechanism; the rest is plumbing.
 
 ### 1. Put the upper on disk instead of tmpfs — `internal/sidecar/mount_linux.go`
 
-When persistence is asked for, skip the tmpfs mount and `MkdirAll` the scratch
+When a `sync` target is set, skip the tmpfs mount and `MkdirAll` the scratch
 directory on the workspace volume. Overlayfs needs upper and work on one
 filesystem that supports `trusted.overlay.*` xattrs; the emptyDir qualifies
 (verified above on btrfs).
@@ -469,16 +469,20 @@ filesystem that supports `trusted.overlay.*` xattrs; the emptyDir qualifies
 What is lost: the tmpfs `size=` cap. The replacement is the emptyDir's own
 `sizeLimit`, which the pod spec can set — a change in the pod builders, not here.
 
-### 2. A `persist` target on the mount artifact — `internal/artifact/mount.go`
+### 2. A `sync` target on the mount artifact — `internal/artifact/mount.go`
 
 ```jsonc
 {"id": "tree", "type": "mount", "in": "base.erofs", "out": "work",
  "writable": true,
- "persist": "s3://acme/sessions/42.tgz",
- "persistEverySeconds": 30}
+ "sync": "s3://acme/sessions/42.tgz",
+ "syncEverySeconds": 30}
 ```
 
-One field and an interval, plus validation. The rest of the request is unchanged.
+One field and an interval, plus validation. `sync` names where the overlay's
+delta is kept; the sandbox restores from it at create, pushes to it on the
+interval, and flushes to it on the way out. The rest of the request is unchanged,
+and a mount with no `sync` behaves exactly as it does today — tmpfs upper,
+nothing uploaded.
 
 ### 3. Restore, sync, and flush — `internal/sidecar/runner.go`
 
@@ -488,7 +492,7 @@ already holds the S3 credentials:
 - **restore**, during `Mount` and before the overlay is stacked: if the object
   exists, `download` + `unarchive` into the upper directory;
 - **sync**, a goroutine started after the mount: `archive` the upper + `upload`,
-  every `persistEverySeconds`;
+  every `syncEverySeconds`;
 - **flush**, in `Release`: the same sync once more.
 
 The sync is roughly sixty lines, because it builds two artifacts in memory and
