@@ -177,6 +177,50 @@ func TestDelta_RoundTrips(t *testing.T) {
 	}
 }
 
+// A restored session must be able to change what it restored. The sidecar
+// unpacks as root and the extraction does not trust the archive's modes, so
+// without opening the tree up a resumed workspace is read-only to the workload —
+// worse than a fresh one, and silently so.
+func TestRestoreDelta_RestoredTreeIsWritableByTheWorkload(t *testing.T) {
+	t.Parallel()
+	store := newObjectStore(t)
+	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/modes.tgz"}
+
+	first := t.TempDir()
+	upper := UpperDir(filepath.Join(first, "work"))
+	if err := os.MkdirAll(filepath.Join(upper, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(upper, "dir", "notes.txt"), "session one")
+	write(t, filepath.Join(upper, "run.sh"), "#!/bin/sh\n")
+	if err := os.Chmod(filepath.Join(upper, "run.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewRunner("a", first, 30, artifact.DefaultRegistry()).pushDelta(t.Context(), m); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	second := t.TempDir()
+	if err := NewRunner("b", second, 30, artifact.DefaultRegistry()).restoreDelta(t.Context(), m); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	root := UpperDir(filepath.Join(second, "work"))
+	for path, want := range map[string]os.FileMode{
+		filepath.Join(root, "dir"):              0o777,
+		filepath.Join(root, "dir", "notes.txt"): 0o666,
+		filepath.Join(root, "run.sh"):           0o777, // 0o666 plus the execute bit
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %o, want %o", filepath.Base(path), got, want)
+		}
+	}
+}
+
 // Stopping flushes: a workload torn down normally loses nothing, which is what
 // makes the interval the bound on what a crash can cost.
 func TestStopSync_FlushesOnTheWayOut(t *testing.T) {

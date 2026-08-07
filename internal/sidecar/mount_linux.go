@@ -168,6 +168,17 @@ func mountOverlay(image, target string, sizeMiB int, upperOnDisk bool) (err erro
 		}
 	}
 
+	// overlayfs takes the merged root's ownership and mode from the upper layer,
+	// so a root-owned 0755 upper makes a "writable" mount unwritable to a
+	// workload running as anyone else — which every hardened workload does. This
+	// mirrors what Kubernetes does to the emptyDir the mount lives in: world
+	// writable, because the sidecar cannot know the image's uid. Chmod rather
+	// than a mode on MkdirAll, which umask would clamp — and which would miss a
+	// restored upper that already exists.
+	if err = os.Chmod(upper, 0o777); err != nil {
+		return fmt.Errorf("chmod %s: %w", upper, err)
+	}
+
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
 	if err = unix.Mount("overlay", target, "overlay", 0, opts); err != nil {
 		return fmt.Errorf("mount overlay on %s: %w", target, err)

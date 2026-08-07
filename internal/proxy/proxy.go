@@ -232,8 +232,6 @@ func (p *Proxy) mount(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("decode artifacts: %w", err)
 	}
-	// Remembered for teardown whether or not anything is mounted: the post-phase
-	// artifacts are this sidecar's job either way.
 	if !p.cfg.Mounts {
 		p.mountsReady.Store(true)
 		return nil
