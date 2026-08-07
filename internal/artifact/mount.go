@@ -5,6 +5,15 @@ import (
 	"errors"
 )
 
+// Sync bounds. A floor on the interval keeps a mount from turning into a
+// request storm against the object store; the default is what a caller gets by
+// asking for sync and nothing else, and it is the amount of work at risk if the
+// pod dies without a flush.
+const (
+	MinSyncIntervalSeconds     = 5
+	DefaultSyncIntervalSeconds = 60
+)
+
 // Mount mounts a squashfs or erofs image into the workspace so the worker can
 // read it without extraction; the format is detected from the image's magic.
 // By default the mount is read-only; set Writable to layer a tmpfs-backed
@@ -27,7 +36,21 @@ type Mount struct {
 	Out      string `json:"out"` // Mount point directory (in the workspace)
 	Writable bool   `json:"writable,omitempty"`
 	Size     int    `json:"size,omitempty"` // Overlay tmpfs cap in MiB (writable only; 0 = default)
-	Depends  string `json:"depends,omitempty"`
+	// Sync is where this overlay's delta is kept — the changes made on top of
+	// the image, and nothing else. The workload restores from it when the mount
+	// is established, pushes to it on an interval, and flushes to it on the way
+	// out, so a workspace survives its sandbox without the orchestrator owning
+	// any storage. Requires Writable: without an overlay there is no delta.
+	//
+	// Setting it also moves the upper layer off tmpfs and onto the shared
+	// workspace, so Size no longer applies — the workspace volume's own limit
+	// does.
+	Sync string `json:"sync,omitempty"`
+	// SyncIntervalSeconds is how often the delta is pushed while the workload
+	// runs; 0 takes the default. The flush on the way out happens regardless, so
+	// this is how much work is at risk if the pod dies without one.
+	SyncIntervalSeconds int    `json:"syncIntervalSeconds,omitempty"`
+	Depends             string `json:"depends,omitempty"`
 }
 
 func (a *Mount) ArtifactID() string   { return a.ID }

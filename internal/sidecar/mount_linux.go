@@ -31,13 +31,15 @@ func (kernelMounter) Mount(image, target string, opts MountOpts) error {
 	if !opts.Writable {
 		return mountImage(image, target)
 	}
-	return mountOverlay(image, target, opts.SizeMiB)
+	return mountOverlay(image, target, opts.SizeMiB, opts.UpperOnDisk)
 }
 
-// Unmount unmounts target. For an overlay it also tears down the sibling tmpfs
-// scratch and squashfs lower set up by mountOverlay, in reverse order; read-only
-// mounts have no siblings, so those steps are skipped. The auto-clear loop
-// device is released once the squashfs mount goes away.
+// Unmount unmounts target. For an overlay it also tears down the sibling scratch
+// and squashfs lower set up by mountOverlay, in reverse order; read-only mounts
+// have no siblings, so those steps are skipped. A scratch on disk was never a
+// mount, so unmounting it fails harmlessly and the directory is removed as
+// before. The auto-clear loop device is released once the squashfs mount goes
+// away.
 func (kernelMounter) Unmount(target string) error {
 	if err := unix.Unmount(target, 0); err != nil {
 		return fmt.Errorf("unmount %s: %w", target, err)
@@ -119,10 +121,10 @@ func imageFsType(image string) (string, error) {
 // and supports the trusted.overlay.* xattrs overlayfs needs. sizeMiB caps the
 // tmpfs (0 = kernel default). On any failure it unwinds every mount and
 // directory it created, leaving the workspace as it found it.
-func mountOverlay(image, target string, sizeMiB int) (err error) {
+func mountOverlay(image, target string, sizeMiB int, upperOnDisk bool) (err error) {
 	lower := overlayLower(target)
 	scratch := overlayScratch(target)
-	upper := filepath.Join(scratch, "upper")
+	upper := UpperDir(target)
 	work := filepath.Join(scratch, "work")
 
 	// Unwind everything if we bail before the overlay is up; unmounting or
@@ -146,14 +148,19 @@ func mountOverlay(image, target string, sizeMiB int) (err error) {
 		return err
 	}
 
-	// tmpfs writes are RAM-backed and counted against the pod's memory limit; a
-	// size cap turns an overrun into ENOSPC instead of an OOM kill.
-	var tmpfsOpts string
-	if sizeMiB > 0 {
-		tmpfsOpts = fmt.Sprintf("size=%dm", sizeMiB)
-	}
-	if err = unix.Mount("tmpfs", scratch, "tmpfs", unix.MS_NODEV, tmpfsOpts); err != nil {
-		return fmt.Errorf("mount tmpfs on %s: %w", scratch, err)
+	// A synced upper stays on the workspace volume: the delta has to be an
+	// ordinary directory the runner can archive, and it must survive every write
+	// rather than the pod's memory. Otherwise tmpfs, which is RAM-backed and
+	// counted against the pod's memory limit — a size cap turns an overrun into
+	// ENOSPC instead of an OOM kill.
+	if !upperOnDisk {
+		var tmpfsOpts string
+		if sizeMiB > 0 {
+			tmpfsOpts = fmt.Sprintf("size=%dm", sizeMiB)
+		}
+		if err = unix.Mount("tmpfs", scratch, "tmpfs", unix.MS_NODEV, tmpfsOpts); err != nil {
+			return fmt.Errorf("mount tmpfs on %s: %w", scratch, err)
+		}
 	}
 	for _, d := range []string{upper, work} {
 		if err = os.MkdirAll(d, 0o755); err != nil {
