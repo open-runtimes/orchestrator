@@ -270,12 +270,14 @@ Set `writable: true` to give the worker a writable copy-on-write view: the read-
 **Options:**
 - `in` - Squashfs or erofs image to mount (required)
 - `out` - Mount point directory in the workspace (required)
-- `writable` - Overlay a tmpfs-backed writable layer on the image (optional, default read-only)
-- `size` - Cap the writable overlay's tmpfs in MiB (optional, writable only; 0/omitted = kernel default of half of RAM)
+- `writable` - Overlay a writable layer on the image (optional, default read-only)
+- `size` - Cap the writable overlay in MiB (optional, writable only; 0/omitted = kernel default of half of RAM)
+- `sync` - URL to keep the writable layer at across runs (optional, writable only). The delta is restored before the worker starts and pushed while it runs; see [keeping a workspace](sandboxes.md#keeping-a-workspace-across-sandboxes) for what that does and does not promise.
+- `syncIntervalSeconds` - How often to push the delta (optional, `sync` only; default 60, minimum 5)
 
-> **Jobs only.** A mount has to be established before the worker starts and undone after it exits, which takes the post-phase sidecar only a job runs. Deployments, pool activations and sandboxes materialize artifacts in a pre phase and then keep serving, so a `mount` submitted to one of those is rejected with a 400 rather than accepted and ignored.
+> **Every workload kind.** Mounts work for jobs, [deployment revisions](deployments.md#the-request-spec), [pool activations](pools.md#artifacts) and [sandboxes](sandboxes.md#mounting-a-filesystem-image) alike — the same sidecar establishes them in all four. A job or a revision infers the capability from its artifacts, because its pod is built for the request; a pool has to declare `mounts: true`, because its pods stand warm long before the claim arrives.
 
-> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the matching kernel module on nodes (`squashfs` or `erofs`, plus `overlay` for writable mounts), and their post sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs.
+> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the matching kernel module on nodes (`squashfs` or `erofs`, plus `overlay` for writable mounts), and their sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs. Loop devices are a finite per-node resource, so a node running many mounts at once may need `max_loop` raised; a job that cannot get one fails with `no free loop device`.
 
 ### Upload Artifact
 

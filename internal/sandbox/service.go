@@ -132,6 +132,12 @@ func (s *Service) List(ctx context.Context) ([]Status, error) {
 
 // Delete tears a sandbox down. Its URL dies with it: the token lives only as a
 // label on the pod being deleted, so a leaked URL is dead on teardown.
+// Delete tears a sandbox down. Its URL dies with it: the token lives only as a
+// label on the pod being deleted, so a leaked URL is dead on teardown.
+//
+// A synced mount flushes its delta on the way out, which is best-effort by
+// design — the sync runs continuously, so missing the flush costs an interval
+// rather than the session, and there is nothing here for a caller to wait on.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	if err := s.orchestrator.Delete(ctx, id); err != nil {
 		return err
@@ -186,16 +192,17 @@ func (s *Service) validateSource(req *Request) error {
 // it.
 func InlinePool(req *Request) *pool.Pool {
 	return &pool.Pool{
-		ID:           req.ID,
-		Image:        req.Image,
-		Port:         req.Port,
-		CPU:          req.CPU,
-		Memory:       req.Memory,
-		RuntimeClass: req.RuntimeClass,
-		Volumes:      req.Volumes,
-		Mounts:       artifact.HasMount(req.Artifacts),
-		Size:         0,
-		Burst:        pool.BurstCold,
+		ID:                            req.ID,
+		Image:                         req.Image,
+		Port:                          req.Port,
+		CPU:                           req.CPU,
+		Memory:                        req.Memory,
+		RuntimeClass:                  req.RuntimeClass,
+		Volumes:                       req.Volumes,
+		TerminationGracePeriodSeconds: req.TerminationGracePeriodSeconds,
+		Mounts:                        artifact.HasMount(req.Artifacts),
+		Size:                          0,
+		Burst:                         pool.BurstCold,
 	}
 }
 

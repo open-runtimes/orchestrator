@@ -218,6 +218,10 @@ func (o *Orchestrator) List(ctx context.Context) ([]sandbox.Status, error) {
 func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 	obs := o.warm.Observe(pod)
 	token := pod.Labels[LabelToken]
+	// The extra ports come off the stored spec, the primary off the pool — so a
+	// reconstructed sandbox advertises exactly the addresses it was created with.
+	var spec sandbox.Request
+	o.warm.Spec(pod, &spec)
 	status := sandbox.Status{
 		ID:     obs.ClaimID,
 		PoolID: obs.PoolID,
@@ -225,10 +229,6 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 		State:  sandboxState(obs.Phase),
 		Error:  obs.Error,
 	}
-	// The extra ports come off the stored spec, the primary off the pool — so a
-	// reconstructed sandbox advertises exactly the addresses it was created with.
-	var spec sandbox.Request
-	o.warm.Spec(pod, &spec)
 	if p := o.warm.Pool(status.PoolID); p != nil {
 		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
 	}

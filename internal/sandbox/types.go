@@ -64,6 +64,11 @@ type Request struct {
 	// kata). Unlike a pool's, this is per-sandbox: the pod is built for this
 	// request, so nothing was fixed before it arrived.
 	RuntimeClass string `json:"runtimeClass,omitempty"`
+	// TerminationGracePeriodSeconds bounds teardown for a poolless sandbox: the
+	// drain, the post-phase artifacts, and the unmount happen inside it. Raise it
+	// if this sandbox snapshots itself on the way out.
+	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
+
 	// Volumes attach existing storage to a poolless sandbox. Also per-sandbox
 	// for the same reason — a pool cannot do this because its pods are already
 	// running when you claim one.

@@ -84,6 +84,7 @@ type Runner struct {
 	emitter          emitter.Emitter[job.ArtifactReport]
 	s3               config.S3Credentials
 	postFileGrace    time.Duration // wait for a post-job artifact's source file
+	sync             syncState     // delta sync loops for synced mounts
 }
 
 // NewRunner creates a new sidecar runner. Production callers pass WithArtifactListener.
@@ -249,17 +250,49 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
 	defer cancel()
 
+	// A synced mount is restored before its overlay is stacked: the delta has to
+	// be in the upper layer when the workload first looks, not merged in after.
+	for _, a := range mounts {
+		m, ok := a.(*artifact.Mount)
+		if !ok || m.Sync == "" {
+			continue
+		}
+		if err := r.restoreDelta(ctx, m); err != nil {
+			r.unmountAll()
+			return fmt.Errorf("mount %s: %w", m.ID, err)
+		}
+	}
+
 	if err := r.establishMounts(ctx, mounts); err != nil {
 		r.unmountAll() // roll back whatever was established before the failure
 		return err
+	}
+
+	// Now that the overlay is up, keep pushing what the workload changes. Stops
+	// (and flushes) in Release.
+	for _, a := range mounts {
+		if m, ok := a.(*artifact.Mount); ok && m.Sync != "" {
+			r.startSync(m)
+		}
 	}
 	logger.Info("Image mounts established")
 	return nil
 }
 
-// Release unmounts everything Mount established, innermost first. Safe to call
-// when nothing was mounted.
-func (r *Runner) Release() { r.unmountAll() }
+// Release stops the sync loops, flushes each synced mount once more, and then
+// unmounts everything Mount established, innermost first. The order matters: the
+// delta is read through the upper layer, which unmounting takes away. Safe to
+// call when nothing was mounted.
+//
+// The flush is bounded by the caller's shutdown budget. Missing it costs the
+// last sync interval rather than the session, which is the whole reason the sync
+// runs continuously.
+func (r *Runner) Release() {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
+	defer cancel()
+	r.StopSync(ctx)
+	r.unmountAll()
+}
 
 // RunPost waits for the worker to finish, then processes post-job artifacts.
 // Used by the Kubernetes backend as a native sidecar container — kubelet sends
@@ -337,7 +370,12 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 			err = os.MkdirAll(target, 0o755)
 		}
 		if err == nil {
-			err = r.mounter.Mount(image, target, MountOpts{Writable: m.Writable, SizeMiB: m.Size})
+			err = r.mounter.Mount(image, target, MountOpts{
+				Writable: m.Writable, SizeMiB: m.Size,
+				// A synced delta must outlive each write and be readable by the
+				// artifact runner, which a tmpfs upper is not.
+				UpperOnDisk: m.Sync != "",
+			})
 		}
 		if err != nil {
 			r.emitArtifact(a, "failed", nil, err)

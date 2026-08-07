@@ -26,11 +26,13 @@ func (f *fakeOrchestrator) Create(_ context.Context, req *Request) (*Status, err
 	return &Status{ID: req.ID, PoolID: req.Pool, State: StateReady, URL: "http://s-" + req.Token + ".example.test"}, nil
 }
 
-func (f *fakeOrchestrator) Status(context.Context, string) (*Status, error) { return &Status{}, nil }
-func (f *fakeOrchestrator) List(context.Context) ([]Status, error)          { return nil, nil }
-func (f *fakeOrchestrator) Delete(context.Context, string) error            { return nil }
-func (f *fakeOrchestrator) Ready(context.Context) error                     { return nil }
-func (f *fakeOrchestrator) Close() error                                    { return nil }
+func (f *fakeOrchestrator) Status(_ context.Context, id string) (*Status, error) {
+	return &Status{ID: id, State: StateReady}, nil
+}
+func (f *fakeOrchestrator) List(context.Context) ([]Status, error) { return nil, nil }
+func (f *fakeOrchestrator) Delete(context.Context, string) error   { return nil }
+func (f *fakeOrchestrator) Ready(context.Context) error            { return nil }
+func (f *fakeOrchestrator) Close() error                           { return nil }
 
 func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 	if len(pools) == 0 {

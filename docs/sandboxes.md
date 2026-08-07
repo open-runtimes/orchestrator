@@ -186,11 +186,11 @@ curl -X POST http://localhost:8080/v1/sandbox \
   }'
 ```
 
-Artifacts run in the **pre phase only**: a post-phase artifact (one depending on the `"job"` sentinel) never runs, because a sandbox has no teardown phase to run it in. Snapshot-on-shutdown is [a proposal](design/sandbox-mounts-and-shutdown-artifacts.md), not a feature.
+Artifacts run in the **pre phase only**: a post-phase artifact (one depending on the `"workload"` sentinel) never runs, because a sandbox has no teardown phase to run it in. To keep a workspace across sandboxes, [sync a writable mount](#keeping-a-workspace-across-sandboxes) rather than snapshotting on the way out.
 
 ### Mounting a filesystem image
 
-A [`mount`](jobs.md#mount-artifact) puts a squashfs or erofs image into the workspace without extracting it — read-only, or `writable` with a tmpfs overlay whose size you cap. For a large read-mostly tree that is the difference between an `O(1)` mount and copying every byte in.
+A [`mount`](jobs.md#mount-artifact) puts a squashfs or erofs image into the workspace without extracting it — read-only, or `writable` with an overlay whose size you cap. For a large read-mostly tree that is the difference between an `O(1)` mount and copying every byte in.
 
 From a pool, it needs one that declares the capability:
 
@@ -225,6 +225,38 @@ The mount is established after the image is materialized and **before** the work
 **What that costs.** A privileged container sits in every pod of that pool, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work on pools without `mounts`, and treat a mounting pool as trusted infrastructure. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
 
 If materialization fails, the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
+
+### Keeping a workspace across sandboxes
+
+A `writable` mount is scratch by default: the overlay's upper layer is RAM, and it dies with the pod. Give it a `sync` destination and that layer is restored on the way in and pushed on the way out, so the next sandbox opens the workspace where the last one left it.
+
+```jsonc
+{
+  "pool": "restore",
+  "artifacts": [
+    {"id": "img",  "type": "download", "in": "s3://acme/base.erofs", "out": "base.erofs"},
+    {"id": "tree", "type": "mount", "in": "base.erofs", "out": "work", "depends": "img",
+     "writable": true, "size": 512,
+     "sync": "s3://acme/workspaces/user-42.tgz",
+     "syncIntervalSeconds": 30}
+  ]
+}
+```
+
+Only the **delta** travels. The image stays the base and the upper layer holds exactly what the workload created or changed, so a 2 GiB base with a 40 MiB working set moves 40 MiB, not 2 GiB. A synced upper lives on the workspace volume rather than tmpfs, so it does not count against the pod's memory.
+
+`syncIntervalSeconds` is how much a crash may cost — 60 by default, 5 at the least. The delta is pushed on that interval and once more after the sandbox stops serving, which is why the last push is an optimisation rather than a promise: if the pod is killed outright you lose an interval, not the session. A push is skipped when nothing changed, so an idle sandbox costs a directory walk rather than an upload.
+
+What it is not:
+
+- **Not atomic.** The workload keeps writing while the delta is archived, so an interval push is a crash-consistent restore point, not a snapshot. The final one runs when nothing is serving, so it is clean.
+- **Not shared.** Two live sandboxes syncing to the same destination will overwrite each other, last push wins. One destination, one sandbox at a time.
+- **Not a filesystem.** Nothing is written through to the destination as it happens; a reader elsewhere sees the last push.
+- **Not fine-grained.** Each push carries the whole delta, which grows with the session. A long-lived workspace that writes a lot is the case this does least well.
+
+A restored tree is made writable to whoever the workload runs as, since the sidecar unpacks it as root and cannot know the image's uid. A destination with nothing at it yet is a first session, not an error; a destination that exists and cannot be read **fails the mount**, so a workspace we merely failed to read is never overwritten by an empty one.
+
+`sync` requires `writable` — there is nothing to sync from a read-only mount — and works the same way for [pool activations](pools.md#artifacts), [deployment revisions](deployments.md#the-request-spec) and [jobs](jobs.md#mount-artifact), since it is the same sidecar in all four.
 
 ## Ports
 

@@ -1,6 +1,9 @@
 package artifact
 
-import "orchestrator/internal/apperrors"
+import (
+	"fmt"
+	"orchestrator/internal/apperrors"
+)
 
 // Built-in TypeDef variables. Pass these to NewRegistry to build a Registry
 // containing only the types you need — useful in tests.
@@ -190,6 +193,24 @@ var (
 			}
 			if a.Size > 0 && !a.Writable {
 				return apperrors.Validation(field+".size", "size only applies to writable mounts")
+			}
+			if a.Sync != "" {
+				if !a.Writable {
+					return apperrors.Validation(field+".sync",
+						"sync only applies to writable mounts: without an overlay there is no delta to sync")
+				}
+				if err := validateURL(a.Sync); err != nil {
+					return apperrors.Validation(field+".sync", "invalid sync destination: "+err.Error())
+				}
+			}
+			switch {
+			case a.SyncIntervalSeconds < 0:
+				return apperrors.Validation(field+".syncIntervalSeconds", "sync interval must not be negative")
+			case a.SyncIntervalSeconds > 0 && a.Sync == "":
+				return apperrors.Validation(field+".syncIntervalSeconds", "sync interval needs a sync destination")
+			case a.SyncIntervalSeconds > 0 && a.SyncIntervalSeconds < MinSyncIntervalSeconds:
+				return apperrors.Validation(field+".syncIntervalSeconds",
+					fmt.Sprintf("sync interval must be at least %d seconds", MinSyncIntervalSeconds))
 			}
 			return nil
 		}),
