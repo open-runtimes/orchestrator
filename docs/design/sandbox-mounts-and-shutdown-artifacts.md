@@ -475,7 +475,7 @@ What is lost: the tmpfs `size=` cap. The replacement is the emptyDir's own
 {"id": "tree", "type": "mount", "in": "base.erofs", "out": "work",
  "writable": true,
  "sync": "s3://acme/sessions/42.tgz",
- "syncEverySeconds": 30}
+ "syncIntervalSeconds": 30}
 ```
 
 One field and an interval, plus validation. `sync` names where the overlay's
@@ -492,7 +492,7 @@ already holds the S3 credentials:
 - **restore**, during `Mount` and before the overlay is stacked: if the object
   exists, `download` + `unarchive` into the upper directory;
 - **sync**, a goroutine started after the mount: `archive` the upper + `upload`,
-  every `syncEverySeconds`;
+  every `syncIntervalSeconds`;
 - **flush**, in `Release`: the same sync once more.
 
 The sync is roughly sixty lines, because it builds two artifacts in memory and
