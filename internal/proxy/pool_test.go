@@ -416,9 +416,11 @@ func TestPoolClaim_ReleasesMountsOnShutdown(t *testing.T) {
 	p := New(cfg)
 	p.deregisterDelay = time.Millisecond
 	p.mounter = mounter
-	done := make(chan error, 1)
-	go func() { done <- p.Run(ctx) }()
-	waitFor(t, "listeners bound", func() bool { return p.dataLn != nil && p.adminLn != nil })
+	if err := p.Start(ctx); err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { p.awaitShutdown(ctx); close(done) }()
 
 	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
 		ActivationID: "act-mount",
@@ -437,7 +439,7 @@ func TestPoolClaim_ReleasesMountsOnShutdown(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return")
+		t.Fatal("shutdown did not return")
 	}
 	if mounted, released := mounter.counts(); released != mounted {
 		t.Errorf("shutdown left mounts behind: %d mounted, %d released", mounted, released)

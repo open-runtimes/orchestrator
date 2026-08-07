@@ -161,10 +161,17 @@ func (p *Proxy) Run(ctx context.Context) error {
 	if err := p.Start(ctx); err != nil {
 		return err
 	}
+	p.awaitShutdown(ctx)
+	return nil
+}
+
+// awaitShutdown blocks until ctx is cancelled, then drains and releases. Split
+// from Run so a caller that has already Started — a test that needs the bound
+// addresses before shutting down — does not have to race the bind.
+func (p *Proxy) awaitShutdown(ctx context.Context) {
 	<-ctx.Done()
 	p.drain()
 	p.release()
-	return nil
 }
 
 // release unmounts whatever the claim mounted, after in-flight requests have
