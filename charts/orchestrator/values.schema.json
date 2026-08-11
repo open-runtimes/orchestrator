@@ -11,6 +11,10 @@
     "orchestrator"
   ],
   "properties": {
+    "global": {
+      "description": "Helm injects a `global` key into every subchart's values, so a closed schema must allow it or the chart cannot be used as a dependency of an umbrella chart. Left open: its contents belong to the parent chart, not this one.",
+      "type": "object"
+    },
     "nameOverride": {
       "type": "string"
     },
