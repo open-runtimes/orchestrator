@@ -110,7 +110,7 @@ func LoadConfigFromEnv() (Config, error) {
 		OrphanTTL:     config.GetDurationEnv("SANDBOX_ORPHAN_TTL", defaultOrphanTTL),
 
 		LeaderElection: kube.LeaderElectionConfig{
-			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
+			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_SANDBOX_LEADER_LEASE_NAME", defaultLeaderLeaseName),
 			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
 			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),

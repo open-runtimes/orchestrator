@@ -20,6 +20,50 @@ func TestGetEnv(t *testing.T) {
 	if result != "custom" {
 		t.Errorf("Expected 'custom', got %q", result)
 	}
+
+	// Test whitespace trimming (trailing newlines from manifests/secret tooling)
+	t.Setenv("TEST_GET_ENV_PADDED", " custom\n")
+
+	result = GetEnv("TEST_GET_ENV_PADDED", "default")
+	if result != "custom" {
+		t.Errorf("Expected 'custom' for padded value, got %q", result)
+	}
+
+	// Test whitespace-only value (should return default)
+	t.Setenv("TEST_GET_ENV_BLANK", " \n")
+
+	result = GetEnv("TEST_GET_ENV_BLANK", "default")
+	if result != "default" {
+		t.Errorf("Expected 'default' for whitespace-only value, got %q", result)
+	}
+}
+
+func TestGetBoolEnv(t *testing.T) {
+	// Test default value
+	if !GetBoolEnv("TEST_NONEXISTENT_BOOL", true) {
+		t.Error("Expected true for unset variable")
+	}
+
+	// Test the accepted ParseBool forms, including padding
+	for _, v := range []string{"true", "TRUE", "True", "1", " true\n"} {
+		t.Setenv("TEST_BOOL_ENV", v)
+		if !GetBoolEnv("TEST_BOOL_ENV", false) {
+			t.Errorf("Expected true for %q", v)
+		}
+	}
+	for _, v := range []string{"false", "FALSE", "0"} {
+		t.Setenv("TEST_BOOL_ENV", v)
+		if GetBoolEnv("TEST_BOOL_ENV", true) {
+			t.Errorf("Expected false for %q", v)
+		}
+	}
+
+	// Test with invalid bool (should return default)
+	t.Setenv("TEST_INVALID_BOOL", "not-a-bool")
+
+	if !GetBoolEnv("TEST_INVALID_BOOL", true) {
+		t.Error("Expected true (default) for invalid bool")
+	}
 }
 
 func TestGetIntEnv(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"orchestrator/internal/observability"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/warm"
-	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -93,7 +92,7 @@ func LoadConfigFromEnv() (Config, error) {
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
 
-		GatewayEnabled:   boolEnv("KUBE_GATEWAY_ENABLED", true),
+		GatewayEnabled:   config.GetBoolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:      config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
 		GatewayNamespace: config.GetEnv("KUBE_GATEWAY_NAMESPACE", ""),
 
@@ -101,7 +100,7 @@ func LoadConfigFromEnv() (Config, error) {
 		OrphanTTL:  config.GetDurationEnv("POOL_ORPHAN_TTL", defaultOrphanTTL),
 
 		LeaderElection: kube.LeaderElectionConfig{
-			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
+			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", defaultLeaderLeaseName),
 			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
 			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),
@@ -109,15 +108,6 @@ func LoadConfigFromEnv() (Config, error) {
 			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
 		},
 	}, nil
-}
-
-// boolEnv parses a boolean environment variable, falling back to the default
-// on absence or a malformed value.
-func boolEnv(key string, defaultValue bool) bool {
-	if v, err := strconv.ParseBool(config.GetEnv(key, strconv.FormatBool(defaultValue))); err == nil {
-		return v
-	}
-	return defaultValue
 }
 
 func (c *Config) applyDefaults() {
