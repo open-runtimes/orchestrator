@@ -10,6 +10,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/workload"
 	"regexp"
 	"strings"
 )
@@ -64,6 +65,9 @@ func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artif
 // Note: This method applies defaults to the request before validation.
 func (s *Service) Create(ctx context.Context, req *Request) (*Response, error) {
 	applyDefaults(req)
+	if err := workload.NormalizeEnv(req.Environment); err != nil {
+		return nil, err
+	}
 	if err := s.validate(req); err != nil {
 		return nil, err
 	}

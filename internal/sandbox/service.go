@@ -73,6 +73,9 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
 	if err := s.validateSource(req); err != nil {
 		return nil, err
 	}
+	if err := workload.NormalizeEnv(req.Environment); err != nil {
+		return nil, err
+	}
 	// The id comes first: a poolless sandbox's pool is keyed by it, which is what
 	// keeps the pod created for this request from being offered to another.
 	if req.ID == "" {

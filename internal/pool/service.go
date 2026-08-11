@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/workload"
 	"regexp"
 	"strings"
 	"time"
@@ -58,6 +59,9 @@ func (s *Service) Activate(ctx context.Context, poolID string, act *Activation) 
 	p, ok := s.pools[poolID]
 	if !ok {
 		return nil, apperrors.NotFound("pool", poolID)
+	}
+	if err := workload.NormalizeEnv(act.Environment); err != nil {
+		return nil, err
 	}
 	if err := s.validate(p, act); err != nil {
 		return nil, err
