@@ -11,6 +11,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/workload"
 	"path"
 	"regexp"
 	"slices"
@@ -82,6 +83,9 @@ func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artif
 // the deployment, reporting whether it was created.
 func (s *Service) Apply(ctx context.Context, req *Request) (*StatusResponse, bool, error) {
 	s.applyDefaults(req)
+	if err := workload.NormalizeEnv(req.Environment); err != nil {
+		return nil, false, err
+	}
 	if err := s.validate(req); err != nil {
 		return nil, false, err
 	}
