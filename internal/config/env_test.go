@@ -44,25 +44,26 @@ func TestGetBoolEnv(t *testing.T) {
 		t.Error("Expected true for unset variable")
 	}
 
-	// Test the accepted ParseBool forms, including padding
-	for _, v := range []string{"true", "TRUE", "True", "1", " true\n"} {
+	// Test accepted forms: "true"/"false" in any casing, including padding
+	for _, v := range []string{"true", "TRUE", "True", " true\n"} {
 		t.Setenv("TEST_BOOL_ENV", v)
 		if !GetBoolEnv("TEST_BOOL_ENV", false) {
 			t.Errorf("Expected true for %q", v)
 		}
 	}
-	for _, v := range []string{"false", "FALSE", "0"} {
+	for _, v := range []string{"false", "FALSE", "False"} {
 		t.Setenv("TEST_BOOL_ENV", v)
 		if GetBoolEnv("TEST_BOOL_ENV", true) {
 			t.Errorf("Expected false for %q", v)
 		}
 	}
 
-	// Test with invalid bool (should return default)
-	t.Setenv("TEST_INVALID_BOOL", "not-a-bool")
-
-	if !GetBoolEnv("TEST_INVALID_BOOL", true) {
-		t.Error("Expected true (default) for invalid bool")
+	// Anything else falls back to the default, including ParseBool-only forms
+	for _, v := range []string{"1", "0", "t", "f", "not-a-bool"} {
+		t.Setenv("TEST_BOOL_ENV", v)
+		if !GetBoolEnv("TEST_BOOL_ENV", true) {
+			t.Errorf("Expected true (default) for %q", v)
+		}
 	}
 }
 

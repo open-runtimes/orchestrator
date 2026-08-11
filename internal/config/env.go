@@ -41,12 +41,15 @@ func GetDurationEnv(key string, defaultValue time.Duration) time.Duration {
 	return defaultValue
 }
 
-// GetBoolEnv returns a boolean environment variable or a default. Accepts
-// every strconv.ParseBool form (1/0, t/f, true/false, any casing), falling
-// back to the default on absence or a malformed value.
+// GetBoolEnv returns a boolean environment variable or a default. Only the
+// strings "true" and "false" (any casing) are accepted; anything else falls
+// back to the default.
 func GetBoolEnv(key string, defaultValue bool) bool {
-	if boolVal, err := strconv.ParseBool(GetEnv(key, "")); err == nil {
-		return boolVal
+	switch strings.ToLower(GetEnv(key, "")) {
+	case "true":
+		return true
+	case "false":
+		return false
 	}
 	return defaultValue
 }
