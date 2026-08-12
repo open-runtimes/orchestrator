@@ -17,7 +17,7 @@ const (
 	defaultNamespace       = "orchestrator"
 	defaultRunAsUser       = 65532 // distroless "nonroot"
 	defaultSandboxDomain   = "localhost"
-	defaultLeaderLeaseName = "deployments-service-sandboxes-leader"
+	defaultLeaderLeaseName = "sandboxes-service-leader"
 
 	defaultOrphanTTL = 60 * time.Second
 
@@ -111,7 +111,7 @@ func LoadConfigFromEnv() (Config, error) {
 
 		LeaderElection: kube.LeaderElectionConfig{
 			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
-			LeaseName:     config.GetEnv("KUBE_SANDBOX_LEADER_LEASE_NAME", defaultLeaderLeaseName),
+			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", defaultLeaderLeaseName),
 			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
 			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),
 			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),

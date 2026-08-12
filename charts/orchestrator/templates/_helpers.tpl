@@ -62,13 +62,14 @@
 {{- end -}}
 
 {{/*
-  deploymentsWorkloadNamespace: where workload pods (revisions, warm pools),
+  workloadNamespace: where workload pods (revisions, warm pools, sandboxes),
   their markers/routes, and the leader leases live. The release namespace
-  unless the hardened workload namespace is enabled.
+  unless the hardened workload namespace is enabled. Shared by the
+  deployments and sandboxes planes.
 */}}
-{{- define "orchestrator.deploymentsWorkloadNamespace" -}}
-{{- if .Values.deployments.workloadNamespace.enabled -}}
-{{- default (printf "%s-workloads" .Release.Namespace) .Values.deployments.workloadNamespace.name -}}
+{{- define "orchestrator.workloadNamespace" -}}
+{{- if .Values.workloadNamespace.enabled -}}
+{{- default (printf "%s-workloads" .Release.Namespace) .Values.workloadNamespace.name -}}
 {{- else -}}
 {{- .Release.Namespace -}}
 {{- end -}}
@@ -100,6 +101,43 @@ imagePullSecrets:
 {{- else -}}
 {{- printf "%s:%s" .Values.deployments.activator.image.repository (default .Chart.AppVersion .Values.deployments.activator.image.tag) -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+  sandboxesName: resource name for the sandboxes API, following the same
+  per-component convention as jobsName.
+*/}}
+{{- define "orchestrator.sandboxesName" -}}
+{{- if .Values.sandboxes.fullnameOverride -}}
+{{- .Values.sandboxes.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else if eq .Release.Name "orchestrator" -}}
+{{- "sandboxes" -}}
+{{- else -}}
+{{- printf "%s-sandboxes" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.sandboxesImage" -}}
+{{- if .Values.sandboxes.image.ref -}}
+{{- .Values.sandboxes.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.sandboxes.image.repository (default .Chart.AppVersion .Values.sandboxes.image.tag) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.sandboxesLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: sandboxes
+{{- end -}}
+
+{{- define "orchestrator.sandboxesSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: sandboxes
+{{- end -}}
+
+{{- define "orchestrator.sandboxesS3SecretName" -}}
+{{- default (printf "%s-s3" (include "orchestrator.sandboxesName" .)) .Values.sandboxes.s3.existingSecret -}}
 {{- end -}}
 
 {{/*

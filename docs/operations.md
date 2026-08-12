@@ -25,8 +25,10 @@ Every component is opt-in — a default install renders nothing.
 | **jobs** | `jobs.enabled` | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
 | **deployments** | `deployments.enabled` | `/v1/deployments` and `/v1/deployment-pools` — long-lived HTTP workloads and warm pools |
 | **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
+| **sandboxes** | `sandboxes.enabled` | `/v1/sandbox` and `/v1/sandbox-pool` — live workspaces at their own hostnames |
+| **sandbox proxy** | `sandboxes.proxy.enabled` | The data plane every sandbox request passes through, behind one wildcard route |
 
-Both derive all state from the cluster: restarts and replica failovers lose nothing, and there is no database.
+All derive their state from the cluster: restarts and replica failovers lose nothing, and there is no database.
 
 ## Prerequisites
 
@@ -139,6 +141,7 @@ Each pool keeps `size` pods warm at all times; claimed pods are replaced off the
 
 ```yaml
 sandboxes:
+  enabled: true
   domain: sandboxes.example.com   # needs a wildcard DNS record: *.sandboxes.example.com
   pools:
     - id: py
@@ -151,7 +154,7 @@ sandboxes:
     enabled: true                # the wildcard data plane every sandbox request passes through
 ```
 
-`sandboxes` sits alongside `jobs` and `deployments` because a sandbox is a workload kind, not a deployments feature — but the API is served by the deployments service today, so `deployments.enabled` must be true as well. The chart fails the install if it is not, rather than rendering a proxy with nothing behind it.
+`sandboxes` sits alongside `jobs` and `deployments` because a sandbox is a workload kind, not a deployments feature: the API is served by its own sandboxes-service, so it runs with or without the deployments plane. The chart fails the install when the proxy is enabled without the service, rather than rendering a proxy with nothing behind it.
 
 Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production the sandbox proxy is its own Deployment behind one wildcard `HTTPRoute` for `*.{domain}` — not a mode of the activator: it is permanently on the request path, reads pods only, and raises nothing. Scale it for sandbox traffic (`sandboxes.proxy.autoscaling`) rather than for cold starts.
 
@@ -181,7 +184,9 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.gateway.{enabled,name,namespace}` | `true`, `orchestrator`, release ns | The Gateway that HTTPRoutes attach to |
 | `deployments.dataPort` | `8081` | Docker-backend data plane / activator data port |
 | `deployments.pools` | `[]` | Warm pool declarations (above) |
-| `deployments.workloadNamespace.*` | disabled | Hardened namespace for workload pods (below) |
+| `sandboxes.enabled` | `false` | Install the sandboxes service |
+| `sandboxes.domain` | `""` | Wildcard domain sandboxes are addressed at (required when enabled) |
+| `workloadNamespace.*` | disabled | Hardened namespace for workload pods (below) |
 | `deployments.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for workloads (below) |
 | `jobs.{cpu,memory}Overcommit` | `1` | Same, independently for job pods |
 | `deployments.workloadTolerations` | `[]` | Tolerations on workload pods (deployment replicas + warm pools) |
@@ -211,24 +216,23 @@ Defense in depth, each layer independently optional:
 
 **Pod security floor (always on).** Every workload pod runs as non-root (uid 65532) with all capabilities dropped, `RuntimeDefault` seccomp, a read-only root filesystem, and no ServiceAccount token — admissible under Pod Security Standards `restricted`.
 
-**Dedicated workload namespace.** With `deployments.workloadNamespace.enabled=true`, workload pods (deployments and pools) run in their own namespace (default `{release}-workloads`), separated from the control plane:
+**Dedicated workload namespace.** With `workloadNamespace.enabled=true`, workload pods (deployment revisions, warm pools, sandboxes) run in their own namespace (default `{release}-workloads`), separated from the control plane:
 
 ```yaml
-deployments:
-  workloadNamespace:
+workloadNamespace:
+  enabled: true
+  podSecurity: restricted        # PSA enforce/audit/warn labels
+  networkPolicy:
+    enabled: true                # default-deny ingress; egress blocks 169.254.169.254
+    gatewayNamespace: traefik-system
+  resourceQuota:
     enabled: true
-    podSecurity: restricted        # PSA enforce/audit/warn labels
-    networkPolicy:
-      enabled: true                # default-deny ingress; egress blocks 169.254.169.254
-      gatewayNamespace: traefik-system
-    resourceQuota:
-      enabled: true
-      pods: 200
-      requestsCpu: "100"
-      requestsMemory: 200Gi
+    pods: 200
+    requestsCpu: "100"
+    requestsMemory: 200Gi
 ```
 
-The NetworkPolicy admits ingress only from the gateway, the activator, and the control plane, and blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
+The NetworkPolicy admits ingress only from the gateway, the activator, the sandbox proxy, and the control planes, and blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
 <a id="isolation-tiers"></a>
 **Isolation tiers.** Workloads can request stronger kernel isolation with `"runtimeClass": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.

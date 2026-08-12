@@ -7,7 +7,6 @@ import (
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
 	"orchestrator/internal/pool"
-	"orchestrator/internal/sandbox"
 )
 
 // DeploymentsRouterConfig holds dependencies for the deployments API router.
@@ -21,20 +20,15 @@ type DeploymentsRouterConfig struct {
 	// (nil = no pool routes). Dispatcher delivers async activation results.
 	PoolService *pool.Service
 	Dispatcher  dispatcher.Queue
-
-	// SandboxService mounts /v1/sandbox and /v1/sandbox-pool when sandbox
-	// pools are configured (nil = no sandbox routes).
-	SandboxService *sandbox.Service
 }
 
 // NewDeploymentsRouter creates the management router for the deployments
 // service (the data plane is the activator's own listener).
 func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
-	h := &deploymentsHandler{svc: cfg.Service, health: cfg.HealthChecker}
+	h := &deploymentsHandler{svc: cfg.Service}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /livez", h.livez)
-	mux.HandleFunc("GET /readyz", h.readyz)
+	registerHealthRoutes(mux, cfg.HealthChecker)
 
 	auth := AuthMiddleware(cfg.APIKey)
 	mux.Handle("POST /v1/deployments", auth(http.HandlerFunc(h.apply)))
@@ -46,9 +40,6 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 
 	if cfg.PoolService != nil {
 		registerPoolRoutes(mux, auth, cfg.PoolService, cfg.Dispatcher)
-	}
-	if cfg.SandboxService != nil {
-		registerSandboxRoutes(mux, auth, cfg.SandboxService)
 	}
 
 	var handler http.Handler = mux
@@ -64,8 +55,7 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 }
 
 type deploymentsHandler struct {
-	svc    *deployment.Service
-	health *health.Checker
+	svc *deployment.Service
 }
 
 // apply handles POST /v1/deployments — declarative create-or-update.
@@ -143,17 +133,4 @@ func (h *deploymentsHandler) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *deploymentsHandler) livez(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.health.Liveness(r.Context()))
-}
-
-func (h *deploymentsHandler) readyz(w http.ResponseWriter, r *http.Request) {
-	response := h.health.Readiness(r.Context())
-	status := http.StatusOK
-	if !response.IsHealthy() {
-		status = http.StatusServiceUnavailable
-	}
-	writeJSON(w, status, response)
 }

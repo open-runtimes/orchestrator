@@ -86,7 +86,7 @@ spec:
             - name: JOB_SIDECAR_IMAGE
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
+              value: {{ include "orchestrator.workloadNamespace" . | quote }}
             - name: KUBE_ACTIVATOR_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: KUBE_GATEWAY_ENABLED
@@ -118,24 +118,6 @@ spec:
               value: {{ include "orchestrator.poolShimImage" . | quote }}
             - name: POOL_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
-            {{- end }}
-            {{- if or .Values.sandboxes.domain .Values.sandboxes.pools }}
-            {{- if .Values.sandboxes.pools }}
-            - name: SANDBOX_POOLS_JSON
-              value: {{ .Values.sandboxes.pools | toJson | quote }}
-            {{- end }}
-            - name: POOL_SHIM_IMAGE
-              value: {{ include "orchestrator.poolShimImage" . | quote }}
-            - name: SANDBOX_DOMAIN
-              value: {{ required "sandboxes.domain is required to serve sandboxes" .Values.sandboxes.domain | quote }}
-            - name: SANDBOX_AGENT_IMAGE
-              value: {{ include "orchestrator.sandboxAgentImage" . | quote }}
-            - name: SANDBOX_SCHEME
-              value: {{ .Values.sandboxes.scheme | quote }}
-            {{- if .Values.deployments.leaderElection.enabled }}
-            - name: KUBE_SANDBOX_LEADER_LEASE_NAME
-              value: {{ default (printf "%s-sandboxes-leader" (include "orchestrator.deploymentsName" .)) .Values.sandboxes.leaseName | quote }}
-            {{- end }}
             {{- end }}
             {{- if .Values.deployments.leaderElection.enabled }}
             - name: KUBE_LEADER_ELECTION
@@ -220,7 +202,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}
-  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 rules:
@@ -270,7 +252,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}
-  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 roleRef:

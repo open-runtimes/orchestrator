@@ -1,6 +1,6 @@
 {{- if .Values.sandboxes.proxy.enabled }}
-{{- if not .Values.deployments.enabled }}
-{{- fail "sandboxes.proxy.enabled requires deployments.enabled: the deployments service is what serves /v1/sandbox and reconciles sandbox pools" }}
+{{- if not .Values.sandboxes.enabled }}
+{{- fail "sandboxes.proxy.enabled requires sandboxes.enabled: the sandboxes service is what serves /v1/sandbox and reconciles sandbox pools" }}
 {{- end }}
 {{- /*
 The sandbox proxy: one wildcard HTTPRoute for *.{domain} sends every sandbox
@@ -11,7 +11,7 @@ data path, pods-read-only RBAC, and nothing to raise (cmd/sandbox-proxy).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
@@ -29,7 +29,7 @@ spec:
       labels:
         {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+      serviceAccountName: {{ include "orchestrator.sandboxesName" . }}-proxy
       {{- with include "orchestrator.imagePullSecrets" . }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -67,7 +67,7 @@ spec:
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
+              value: {{ include "orchestrator.workloadNamespace" . | quote }}
             - name: SANDBOX_DOMAIN
               value: {{ required "sandboxes.domain is required when the sandbox proxy is enabled" .Values.sandboxes.domain | quote }}
             - name: SANDBOX_HOLD_SECONDS
@@ -99,7 +99,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: sandbox-proxy
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
@@ -115,7 +115,7 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
@@ -129,8 +129,8 @@ activator, which needs both.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
-  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 rules:
@@ -141,19 +141,19 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
-  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
 subjects:
   - kind: ServiceAccount
-    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+    name: {{ include "orchestrator.sandboxesName" . }}-proxy
     namespace: {{ .Release.Namespace }}
-{{- if and .Values.sandboxes.proxy.route.enabled .Values.deployments.gateway.enabled }}
+{{- if .Values.sandboxes.proxy.route.enabled }}
 ---
 {{- /*
 One wildcard route for every sandbox that will ever exist. Nothing is
@@ -163,19 +163,19 @@ minute-scale sandbox churn never touches the gateway config.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandboxes
+  name: {{ include "orchestrator.sandboxesName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 spec:
   parentRefs:
-    - name: {{ .Values.deployments.gateway.name }}
-      namespace: {{ default .Release.Namespace .Values.deployments.gateway.namespace }}
+    - name: {{ .Values.sandboxes.gateway.name }}
+      namespace: {{ default .Release.Namespace .Values.sandboxes.gateway.namespace }}
   hostnames:
     - {{ printf "*.%s" .Values.sandboxes.domain | quote }}
   rules:
     - backendRefs:
-        - name: sandbox-proxy
+        - name: {{ include "orchestrator.sandboxesName" . }}-proxy
           port: {{ .Values.sandboxes.proxy.port }}
 {{- end }}
 {{- /*
@@ -186,7 +186,7 @@ Replica-aware PDB — see the jobs PDB note; singletons never get one.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
@@ -201,7 +201,7 @@ spec:
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+  name: {{ include "orchestrator.sandboxesName" . }}-proxy
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
@@ -209,7 +209,7 @@ spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "orchestrator.deploymentsName" . }}-sandbox-proxy
+    name: {{ include "orchestrator.sandboxesName" . }}-proxy
   minReplicas: {{ .Values.sandboxes.proxy.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.sandboxes.proxy.autoscaling.maxReplicas }}
   metrics:
