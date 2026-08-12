@@ -347,6 +347,8 @@ sandboxes:
   # a wildcard DNS record (*.{domain}) pointing at the gateway. Each
   # sandbox's hostname carries a 128-bit capability token, so treat the URL
   # as a secret: reaching it is enough to run code in the sandbox.
+  # Setting it is what enables sandboxes: pools are optional warm capacity,
+  # so a domain alone serves /v1/sandbox for poolless, image-named creates.
   domain: ""
   # Scheme handed back in sandbox URLs (https where the gateway terminates TLS).
   scheme: http

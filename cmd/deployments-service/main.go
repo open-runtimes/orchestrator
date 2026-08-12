@@ -123,8 +123,10 @@ func main() {
 		slog.Info("Pools configured", "count", len(pools))
 	}
 
-	// Sandbox pools are config-declared too: no SANDBOX_POOLS_JSON → no
-	// sandbox orchestrator, no sandbox routes.
+	// SANDBOX_DOMAIN enables sandboxes; SANDBOX_POOLS_JSON declares optional
+	// warm capacity on top, since a create may name an image instead of a pool
+	// (docs/sandboxes.md). Pools alone still enable them, for configs that
+	// predate the domain being the switch. Neither → no sandbox routes.
 	sandboxPools, err := sandbox.LoadPools(config.GetEnv("SANDBOX_POOLS_JSON", ""))
 	if err != nil {
 		slog.Error("Invalid sandbox pool configuration", "error", err)
@@ -132,7 +134,7 @@ func main() {
 	}
 	var sandboxSvc *sandbox.Service
 	var sandboxProxy *activator.SandboxProxy
-	if len(sandboxPools) > 0 {
+	if config.GetEnv("SANDBOX_DOMAIN", "") != "" || len(sandboxPools) > 0 {
 		sandboxOrchestrator, err := buildSandboxOrchestrator(ctx, backend, sandboxPools, metrics)
 		if err != nil {
 			slog.Error("Failed to build sandbox orchestrator", "error", err)
@@ -144,7 +146,7 @@ func main() {
 			os.Exit(1)
 		}
 		sandboxSvc = sandbox.NewService(sandboxOrchestrator, metrics, sandboxPools, artifact.MountingRegistry())
-		slog.Info("Sandbox pools configured", "count", len(sandboxPools))
+		slog.Info("Sandboxes enabled", "pools", len(sandboxPools))
 
 		// On Docker the sandbox data plane runs in-process, resolving tokens
 		// straight from the daemon; on Kubernetes it is its own Deployment behind

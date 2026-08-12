@@ -119,13 +119,15 @@ spec:
             - name: POOL_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
             {{- end }}
+            {{- if or .Values.sandboxes.domain .Values.sandboxes.pools }}
             {{- if .Values.sandboxes.pools }}
             - name: SANDBOX_POOLS_JSON
               value: {{ .Values.sandboxes.pools | toJson | quote }}
+            {{- end }}
             - name: POOL_SHIM_IMAGE
               value: {{ include "orchestrator.poolShimImage" . | quote }}
             - name: SANDBOX_DOMAIN
-              value: {{ required "sandboxes.domain is required when sandbox pools are configured" .Values.sandboxes.domain | quote }}
+              value: {{ required "sandboxes.domain is required to serve sandboxes" .Values.sandboxes.domain | quote }}
             - name: SANDBOX_AGENT_IMAGE
               value: {{ include "orchestrator.sandboxAgentImage" . | quote }}
             - name: SANDBOX_SCHEME
