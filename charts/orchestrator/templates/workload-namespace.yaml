@@ -1,43 +1,46 @@
-{{- if and .Values.deployments.enabled .Values.deployments.workloadNamespace.enabled }}
-{{- $ns := include "orchestrator.deploymentsWorkloadNamespace" . }}
-{{- if .Values.deployments.workloadNamespace.create }}
+{{- if and (or .Values.deployments.enabled .Values.sandbox.enabled) .Values.workloadNamespace.enabled }}
+{{- $ns := include "orchestrator.workloadNamespace" . }}
+{{- if .Values.workloadNamespace.create }}
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ $ns }}
   labels:
-    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
-    {{- with .Values.deployments.workloadNamespace.podSecurity }}
+    {{- include "orchestrator.labels" . | nindent 4 }}
+    {{- with .Values.workloadNamespace.podSecurity }}
     pod-security.kubernetes.io/enforce: {{ . }}
     pod-security.kubernetes.io/audit: {{ . }}
     pod-security.kubernetes.io/warn: {{ . }}
     {{- end }}
 {{- end }}
-{{- if .Values.deployments.workloadNamespace.networkPolicy.enabled }}
+{{- if .Values.workloadNamespace.networkPolicy.enabled }}
 ---
 # Workload isolation: default-deny ingress to managed pods, admitting only
 # the data path (gateway), the activator (deployment cold/async buffering), the
-# sandbox proxy, and the control plane (deployments-service: claim POSTs, /stats
-# scrapes, direct probes).
+# sandbox proxy, and the control planes (claim POSTs, /stats scrapes, direct
+# probes).
 # Egress blocks the cloud metadata endpoint — the highest-value single rule
 # (docs/operations.md). Requires an enforcing CNI.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-workload-isolation
+  name: {{ include "orchestrator.fullname" . }}-workload-isolation
   namespace: {{ $ns }}
   labels:
-    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+    {{- include "orchestrator.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchLabels:
-      managed-by: deployments-service
+    matchExpressions:
+      - key: managed-by
+        operator: In
+        values: ["deployments-service", "sandbox-service"]
   policyTypes: ["Ingress", "Egress"]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.deployments.workloadNamespace.networkPolicy.gatewayNamespace }}
+              kubernetes.io/metadata.name: {{ .Values.workloadNamespace.networkPolicy.gatewayNamespace }}
+        {{- if .Values.deployments.enabled }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
@@ -50,7 +53,16 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/component: deployments
-        {{- if .Values.sandboxes.proxy.enabled }}
+        {{- end }}
+        {{- if .Values.sandbox.enabled }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: sandbox
+        {{- end }}
+        {{- if .Values.sandbox.proxy.enabled }}
         # The sandbox proxy is permanently on the data path for sandbox pods.
         - namespaceSelector:
             matchLabels:
@@ -74,7 +86,7 @@ spec:
             cidr: 0.0.0.0/0
             except: ["169.254.169.254/32"]
 {{- end }}
-{{- if ne $ns .Release.Namespace }}
+{{- if and .Values.deployments.enabled (ne $ns .Release.Namespace) }}
 ---
 # The cold endpoint flip watches activator pods, which stay with the control
 # plane in the release namespace — the service's workload-namespace Role
@@ -129,19 +141,19 @@ spec:
       name: deployments-activator
 {{- end }}
 {{- end }}
-{{- if .Values.deployments.workloadNamespace.resourceQuota.enabled }}
+{{- if .Values.workloadNamespace.resourceQuota.enabled }}
 ---
 apiVersion: v1
 kind: ResourceQuota
 metadata:
-  name: {{ include "orchestrator.deploymentsName" . }}-workloads
+  name: {{ include "orchestrator.fullname" . }}-workloads
   namespace: {{ $ns }}
   labels:
-    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+    {{- include "orchestrator.labels" . | nindent 4 }}
 spec:
   hard:
-    pods: {{ .Values.deployments.workloadNamespace.resourceQuota.pods | quote }}
-    requests.cpu: {{ .Values.deployments.workloadNamespace.resourceQuota.requestsCpu | quote }}
-    requests.memory: {{ .Values.deployments.workloadNamespace.resourceQuota.requestsMemory | quote }}
+    pods: {{ .Values.workloadNamespace.resourceQuota.pods | quote }}
+    requests.cpu: {{ .Values.workloadNamespace.resourceQuota.requestsCpu | quote }}
+    requests.memory: {{ .Values.workloadNamespace.resourceQuota.requestsMemory | quote }}
 {{- end }}
 {{- end }}

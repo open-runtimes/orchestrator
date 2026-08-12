@@ -1,0 +1,299 @@
+{{- if .Values.sandbox.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+spec:
+  {{- if and (gt (int .Values.sandbox.replicaCount) 1) (not .Values.sandbox.leaderElection.enabled) }}
+  {{- fail "sandbox.replicaCount > 1 requires sandbox.leaderElection.enabled=true (pool replenishment and GC must be leader-gated)" }}
+  {{- end }}
+  {{- if not .Values.sandbox.autoscaling.enabled }}
+  replicas: {{ .Values.sandbox.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- include "orchestrator.rolloutStrategy" . | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "orchestrator.sandboxSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.sandboxSelectorLabels" . | nindent 8 }}
+      {{- with include "orchestrator.podAnnotations" (dict "annotations" .Values.sandbox.podAnnotations "s3" .Values.sandbox.s3) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "orchestrator.sandboxName" . }}
+      {{- with include "orchestrator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      securityContext:
+        {{- include "orchestrator.podSecurityContext" . | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orchestrator.sandboxSelectorLabels" . | nindent 14 }}
+      volumes:
+        # Scratch space so readOnlyRootFilesystem never bites a stray temp
+        # write (the services themselves write nothing).
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.sandbox.auth.existingSecret }}
+        - name: auth
+          secret:
+            secretName: {{ .Values.sandbox.auth.existingSecret }}
+        {{- end }}
+      containers:
+        - name: sandbox-service
+          image: {{ include "orchestrator.sandboxImage" . | quote }}
+          imagePullPolicy: {{ .Values.sandbox.image.pullPolicy }}
+          securityContext:
+            {{- include "orchestrator.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.sandbox.auth.existingSecret }}
+            - name: auth
+              mountPath: /var/run/secrets/orchestrator
+              readOnly: true
+            {{- end }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.service.apiPort }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          env:
+            - name: ORCHESTRATOR_BACKEND
+              value: kubernetes
+            - name: PORT
+              value: {{ .Values.service.apiPort | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.service.metricsPort | quote }}
+            - name: SANDBOX_DOMAIN
+              value: {{ required "sandbox.domain is required when sandbox.enabled (the wildcard domain sandboxes are addressed at)" .Values.sandbox.domain | quote }}
+            - name: SANDBOX_SCHEME
+              value: {{ .Values.sandbox.scheme | quote }}
+            {{- if .Values.sandbox.pools }}
+            - name: SANDBOX_POOLS_JSON
+              value: {{ .Values.sandbox.pools | toJson | quote }}
+            {{- end }}
+            - name: SANDBOX_AGENT_IMAGE
+              value: {{ include "orchestrator.sandboxAgentImage" . | quote }}
+            - name: WORKLOAD_SIDECAR_IMAGE
+              value: {{ include "orchestrator.workloadSidecarImage" . | quote }}
+            - name: POOL_SHIM_IMAGE
+              value: {{ include "orchestrator.poolShimImage" . | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ include "orchestrator.workloadNamespace" . | quote }}
+            - name: KUBE_CPU_OVERCOMMIT
+              value: {{ .Values.sandbox.cpuOvercommit | quote }}
+            - name: KUBE_MEMORY_OVERCOMMIT
+              value: {{ .Values.sandbox.memoryOvercommit | quote }}
+            {{- with .Values.sandbox.workloadTolerations }}
+            - name: KUBE_WORKLOAD_TOLERATIONS
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- with .Values.sandbox.workloadNodeSelector }}
+            - name: KUBE_WORKLOAD_NODE_SELECTOR
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- if .Values.sandbox.leaderElection.enabled }}
+            - name: KUBE_LEADER_ELECTION
+              value: "true"
+            - name: KUBE_LEADER_LEASE_NAME
+              value: {{ default (printf "%s-leader" (include "orchestrator.sandboxName" .)) .Values.sandbox.leaderElection.leaseName | quote }}
+            - name: KUBE_LEADER_IDENTITY
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KUBE_LEADER_LEASE_DURATION
+              value: {{ printf "%ds" (int .Values.sandbox.leaderElection.leaseDurationSeconds) | quote }}
+            - name: KUBE_LEADER_RENEW_DEADLINE
+              value: {{ printf "%ds" (int .Values.sandbox.leaderElection.renewDeadlineSeconds) | quote }}
+            - name: KUBE_LEADER_RETRY_PERIOD
+              value: {{ printf "%ds" (int .Values.sandbox.leaderElection.retryPeriodSeconds) | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.sidecarImagePullPolicy }}
+            - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.sidecarImagePullPolicy | quote }}
+            {{- end }}
+            {{- if .Values.orchestrator.workerImagePullPolicy }}
+            - name: KUBE_WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.orchestrator.workerImagePullPolicy | quote }}
+            {{- end }}
+            - name: SHUTDOWN_DRAIN_WAIT
+              value: "0s"
+            {{- include "orchestrator.s3Env" (dict "s3" .Values.sandbox.s3 "secretName" (include "orchestrator.sandboxS3SecretName" .)) | nindent 12 }}
+            {{- if .Values.sandbox.auth.existingSecret }}
+            - name: API_KEY_FILE
+              value: /var/run/secrets/orchestrator/{{ .Values.sandbox.auth.secretKey }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: api
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.sandbox.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "orchestrator.sandboxSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: {{ .Values.service.apiPort }}
+      targetPort: api
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+---
+{{- /*
+Far narrower than the deployments Role: sandboxes are pods claimed from warm
+capacity, so there are no Deployments, Services, routes, or PDBs to manage.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+rules:
+  # Create/claim/discard warm pods.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The sandbox-claim-key install key that claim tokens derive from.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "delete"]
+  {{- if .Values.sandbox.leaderElection.enabled }}
+  # Lease for leader election across replicas.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.sandboxName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.sandboxName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Isolation tiers (docs/operations.md): the service validates a sandbox's
+# RuntimeClass exists before replenishing pools. RuntimeClasses are
+# cluster-scoped, so this is the service's one cluster-scoped grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}-cluster
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+rules:
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}-cluster
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "orchestrator.sandboxName" . }}-cluster
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.sandboxName" . }}
+    namespace: {{ .Release.Namespace }}
+
+{{- /*
+Replica-aware PDB — see the jobs PDB note; singletons never get one.
+*/}}
+{{- if or (gt (int .Values.sandbox.replicaCount) 1) (and .Values.sandbox.autoscaling.enabled (gt (int .Values.sandbox.autoscaling.minReplicas) 1)) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "orchestrator.sandboxSelectorLabels" . | nindent 6 }}
+{{- end }}
+{{- if .Values.sandbox.autoscaling.enabled }}
+{{- if not .Values.sandbox.leaderElection.enabled }}
+{{- fail "sandbox.autoscaling.enabled requires sandbox.leaderElection.enabled=true" }}
+{{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "orchestrator.sandboxName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "orchestrator.sandboxName" . }}
+  minReplicas: {{ .Values.sandbox.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.sandbox.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.sandbox.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}

@@ -56,6 +56,7 @@ tasks:
       - task: build-service
       - task: build-sidecar
       - task: build-deployments
+      - task: build-sandbox
       - task: build-workload-sidecar
       - task: build-deployments-activator
       - task: build-sandbox-proxy
@@ -98,6 +99,16 @@ tasks:
       - KO_DOCKER_REPO=ko.local/deployments-service {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/deployments-service
     sources:
       - cmd/deployments-service/**/*.go
+      - internal/**/*.go
+      - go.mod
+
+  build-sandbox:
+    desc: Build sandbox-service image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/sandbox-service {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/sandbox-service
+    sources:
+      - cmd/sandbox-service/**/*.go
       - internal/**/*.go
       - go.mod
 
@@ -147,7 +158,7 @@ tasks:
     desc: Run real-cluster K8s integration tests (requires kind + built images)
     deps: [build, kind:up]
     cmds:
-      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/sandbox-proxy:latest ko.local/pool-shim:latest --name {{.KIND_CLUSTER}}
+      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/sandbox-service:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/sandbox-proxy:latest ko.local/pool-shim:latest --name {{.KIND_CLUSTER}}
       - bash hack/install-gateway.sh
       - go test -race -tags=k8s_integration -timeout=10m ./internal/job/kubernetes/... ./internal/deployment/kubernetes/...
 

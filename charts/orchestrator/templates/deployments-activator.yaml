@@ -58,7 +58,7 @@ spec:
             - name: METRICS_PORT
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ include "orchestrator.deploymentsWorkloadNamespace" . | quote }}
+              value: {{ include "orchestrator.workloadNamespace" . | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
           readinessProbe:
@@ -104,7 +104,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}-activator
-  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
 rules:
@@ -127,7 +127,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}-activator
-  namespace: {{ include "orchestrator.deploymentsWorkloadNamespace" . }}
+  namespace: {{ include "orchestrator.workloadNamespace" . }}
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
 roleRef:

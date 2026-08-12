@@ -335,60 +335,6 @@
             }
           }
         },
-        "workloadNamespace": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "name": {
-              "type": "string"
-            },
-            "create": {
-              "type": "boolean"
-            },
-            "podSecurity": {
-              "enum": [
-                "",
-                "privileged",
-                "baseline",
-                "restricted"
-              ]
-            },
-            "networkPolicy": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "gatewayNamespace": {
-                  "type": "string"
-                }
-              }
-            },
-            "resourceQuota": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "pods": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "requestsCpu": {
-                  "$ref": "#/$defs/quantity"
-                },
-                "requestsMemory": {
-                  "$ref": "#/$defs/quantity"
-                }
-              }
-            }
-          }
-        },
         "activator": {
           "type": "object",
           "additionalProperties": false,
@@ -426,14 +372,69 @@
         }
       }
     },
-    "sandboxes": {
+    "sandbox": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Sandboxes (docs/sandboxes.md): a workload kind alongside jobs and deployments. Served by the deployments service today, so deployments.enabled must also be true.",
+      "description": "Sandboxes (docs/sandboxes.md): a workload kind alongside jobs and deployments, served by its own sandbox-service. Enabled independently of the deployments plane; sandbox.domain is required when enabled.",
       "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "fullnameOverride": {
+          "type": "string"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "$ref": "#/$defs/pullableImage"
+        },
+        "s3": {
+          "$ref": "#/$defs/s3"
+        },
+        "auth": {
+          "$ref": "#/$defs/auth"
+        },
+        "podAnnotations": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "cpuOvercommit": {
+          "type": "number"
+        },
+        "memoryOvercommit": {
+          "type": "number"
+        },
+        "workloadTolerations": {
+          "$ref": "#/$defs/tolerations"
+        },
+        "workloadNodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "leaderElection": {
+          "$ref": "#/$defs/leaderElection"
+        },
+        "autoscaling": {
+          "$ref": "#/$defs/autoscaling"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            }
+          }
+        },
         "pools": {
           "type": "array",
-          "description": "pkg/pool.Pool entries, same schema as deployments.pools. The image must serve the sandbox contract, so command and port name its entrypoint and listen port.",
+          "description": "internal/pool.Pool entries, same schema as deployments.pools. The image must serve the sandbox contract, so command and port name its entrypoint and listen port.",
           "items": {
             "$ref": "#/$defs/pool"
           }
@@ -446,9 +447,6 @@
             "http",
             "https"
           ]
-        },
-        "leaseName": {
-          "type": "string"
         },
         "proxy": {
           "type": "object",
@@ -495,6 +493,60 @@
     },
     "workloadSidecarImage": {
       "$ref": "#/$defs/pullableImage"
+    },
+    "workloadNamespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "create": {
+          "type": "boolean"
+        },
+        "podSecurity": {
+          "enum": [
+            "",
+            "privileged",
+            "baseline",
+            "restricted"
+          ]
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "gatewayNamespace": {
+              "type": "string"
+            }
+          }
+        },
+        "resourceQuota": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "pods": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "requestsCpu": {
+              "$ref": "#/$defs/quantity"
+            },
+            "requestsMemory": {
+              "$ref": "#/$defs/quantity"
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

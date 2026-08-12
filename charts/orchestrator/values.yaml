@@ -152,35 +152,6 @@ deployments:
   # Annotations on the deployments-service pod (the chart-level podAnnotations
   # applies only to the jobs component).
   podAnnotations: {}
-  # Hardened workload namespace: run workloads (revisions, warm pools) in a
-  # dedicated namespace instead of the release namespace, with Pod Security
-  # Admission and network isolation applied. The Gateway must allow routes
-  # from this namespace (allowedRoutes.namespaces != Same).
-  workloadNamespace:
-    enabled: false
-    # Empty = "<release namespace>-workloads".
-    name: ""
-    # Create the namespace (with the labels below). Disable if it is
-    # provisioned externally.
-    create: true
-    # Pod Security Admission enforce level label ("" = no PSA labels). The
-    # generated pods run under the hardened floor and admit cleanly at
-    # "restricted".
-    podSecurity: restricted
-    # Default-deny ingress to workload pods except from the gateway,
-    # activator, and deployments-service; egress blocks the cloud metadata
-    # endpoint. Requires an enforcing CNI — kind's default kindnet does NOT
-    # enforce NetworkPolicy.
-    networkPolicy:
-      enabled: true
-      # Namespace the gateway controller pods run in (ingress allow rule).
-      gatewayNamespace: traefik-system
-    # Per-namespace ceiling on workload consumption.
-    resourceQuota:
-      enabled: false
-      pods: 200
-      requestsCpu: "100"
-      requestsMemory: 200Gi
   # Gateway API integration: the deployments-service reconciles an HTTPRoute
   # per deployment against this Gateway (Traefik / Envoy Gateway / Istio with
   # Extended backendRef-filter support).
@@ -224,7 +195,7 @@ deployments:
   limitRange:
     enabled: false
   # Warm pools (docs/pools.md): config-declared fleets an activation
-  # late-binds onto. Each entry is a pkg/pool.Pool: {id, image, size, cpu,
+  # late-binds onto. Each entry is a internal/pool.Pool: {id, image, size, cpu,
   # memory, port (required), burst (cold|reject; default cold), environment,
   # volumes: [{source (PVC name), path, subPath, readonly}] mounted into every pod}.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
@@ -239,7 +210,7 @@ deployments:
   # The activator: holds cold-start and async requests in front of deployments
   # and raises cold revisions from zero. Opt-in like every component; without
   # it, scale-to-zero deployments 503 when cold and async requests have nowhere
-  # to buffer. Sandboxes have their own data plane — see sandboxes.proxy.
+  # to buffer. Sandboxes have their own data plane — see sandbox.proxy.
   activator:
     enabled: false
     replicaCount: 1
@@ -277,6 +248,37 @@ deployments:
     limits:
       memory: 256Mi
 
+# Hardened workload namespace: run workloads (deployment revisions, warm
+# pools, sandboxes) in a dedicated namespace instead of the release namespace,
+# with Pod Security Admission and network isolation applied. Shared by the
+# deployments and sandboxes planes. The Gateway must allow routes from this
+# namespace (allowedRoutes.namespaces != Same).
+workloadNamespace:
+  enabled: false
+  # Empty = "<release namespace>-workloads".
+  name: ""
+  # Create the namespace (with the labels below). Disable if it is
+  # provisioned externally.
+  create: true
+  # Pod Security Admission enforce level label ("" = no PSA labels). The
+  # generated pods run under the hardened floor and admit cleanly at
+  # "restricted".
+  podSecurity: restricted
+  # Default-deny ingress to workload pods except from the gateway, activator,
+  # sandbox proxy, and the control planes; egress blocks the cloud metadata
+  # endpoint. Requires an enforcing CNI — kind's default kindnet does NOT
+  # enforce NetworkPolicy.
+  networkPolicy:
+    enabled: true
+    # Namespace the gateway controller pods run in (ingress allow rule).
+    gatewayNamespace: traefik-system
+  # Per-namespace ceiling on workload consumption.
+  resourceQuota:
+    enabled: false
+    pods: 200
+    requestsCpu: "100"
+    requestsMemory: 200Gi
+
 # Image for the workload-sidecar: the reverse proxy in front of every serving
 # workload — deployment replicas, pool activations, and sandboxes. One image for
 # all three, because the pod-local invariants it owns (readiness, drain,
@@ -287,14 +289,72 @@ workloadSidecarImage:
   repository: ghcr.io/open-runtimes/orchestrator/workload-sidecar
   tag: "" # defaults to the chart's appVersion
 
-# Sandboxes (docs/sandboxes.md): live, isolated workspaces created from their own
-# warm pools and driven over HTTP at their own hostnames — a workload kind
-# alongside jobs and deployments.
-#
-# The sandbox API is served by the deployments service today, so
-# `deployments.enabled` must also be true; the chart fails the install rather
-# than rendering a sandbox proxy with nothing serving /v1/sandbox.
-sandboxes:
+# Sandboxes (docs/sandboxes.md): live, isolated workspaces driven over HTTP at
+# their own hostnames — a workload kind alongside jobs and deployments, with
+# its own service (sandbox-service) serving /v1/sandbox. Runs with or
+# without the deployments plane.
+sandbox:
+  enabled: false
+  # Empty uses "sandbox" when the release is named "orchestrator",
+  # otherwise "<release>-sandbox".
+  fullnameOverride: ""
+  replicaCount: 1
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/sandbox-service
+    tag: "" # defaults to the chart's appVersion
+    pullPolicy: IfNotPresent
+  # Credentials for s3:// download artifacts, scoped to the sandbox service.
+  s3:
+    enabled: false
+    endpoint: ""
+    region: us-east-1
+    forcePathStyle: false
+    accessKeyId: ""
+    secretAccessKey: ""
+    existingSecret: ""
+  # Bearer-token auth for the sandbox API, same mechanism as jobs.auth.
+  auth:
+    existingSecret: ""
+    secretKey: api-key
+  # Annotations on the sandbox-service pod.
+  podAnnotations: {}
+  # Same resource model as deployments.cpuOvercommit/memoryOvercommit,
+  # applied to warm-pool and poolless sandbox pods.
+  cpuOvercommit: 1
+  memoryOvercommit: 1
+  # Tolerations / node selector stamped on every sandbox pod, independent
+  # from the deployments and jobs equivalents.
+  workloadTolerations: []
+  workloadNodeSelector: {}
+  # Leader election gates pool replenishment and GC to one replica. Required
+  # when replicaCount > 1.
+  leaderElection:
+    enabled: false
+    # Empty = "<sandbox name>-leader".
+    leaseName: ""
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  # HPA for the sandbox service. Requires sandbox.leaderElection.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # No CPU limit by design — see the activator note.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  # Gateway the wildcard sandbox HTTPRoute attaches to (the sandbox service
+  # itself programs no routes). Defaults to the same gateway the chart creates.
+  gateway:
+    name: orchestrator
+    # Empty = release namespace.
+    namespace: ""
   # Sandbox pools. Same schema as deployments.pools. The image needs to serve
   # nothing: the open-runtimes/sandbox agent is copied into every sandbox's
   # workspace at pod creation and run there, so any runtime image works and
@@ -338,20 +398,20 @@ sandboxes:
   # init container whose command is replaced by a copy of the binary into the
   # sandbox's workspace — so pool images stay ordinary runtime images, and this
   # tag (or a digest in `ref`) is the agent version pin, and it matches the
-  # in-code default (pkg/sandbox.AgentImage) — bump both together.
+  # in-code default (internal/sandbox.AgentImage) — bump both together.
   agentImage:
     ref: ""
     repository: ghcr.io/open-runtimes/sandbox
     tag: "0.1.0"
-  # Wildcard domain sandboxes are addressed at: s-{token}.{domain}. Requires
-  # a wildcard DNS record (*.{domain}) pointing at the gateway. Each
-  # sandbox's hostname carries a 128-bit capability token, so treat the URL
-  # as a secret: reaching it is enough to run code in the sandbox.
+  # Wildcard domain sandboxes are addressed at: s-{token}.{domain}. Required
+  # when enabled. Requires a wildcard DNS record (*.{domain}) pointing at the
+  # gateway. Each sandbox's hostname carries a 128-bit capability token, so
+  # treat the URL as a secret: reaching it is enough to run code in the
+  # sandbox. Pools are optional warm capacity — a domain alone serves
+  # /v1/sandbox for poolless, image-named creates.
   domain: ""
   # Scheme handed back in sandbox URLs (https where the gateway terminates TLS).
   scheme: http
-  # Empty = "<deployments name>-sandboxes-leader".
-  leaseName: ""
   # The sandbox proxy: the data plane every sandbox request passes through.
   # Its own component rather than a mode of the activator — it is permanently
   # on the request path (so it scales with sandbox traffic, not with cold

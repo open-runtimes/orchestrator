@@ -75,8 +75,10 @@ jobs:
           go build -o /dev/null ./cmd/jobs-service
           go build -o /dev/null ./cmd/job-sidecar
           go build -o /dev/null ./cmd/deployments-service
+          go build -o /dev/null ./cmd/sandbox-service
           go build -o /dev/null ./cmd/workload-sidecar
           go build -o /dev/null ./cmd/deployments-activator
+          go build -o /dev/null ./cmd/sandbox-proxy
           go build -o /dev/null ./cmd/pool-shim
 
   images:
@@ -137,6 +139,15 @@ jobs:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-service
         run: |
           ko build ./cmd/deployments-service \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push sandbox-service
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/sandbox-service
+        run: |
+          ko build ./cmd/sandbox-service \
             --bare \
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64

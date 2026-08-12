@@ -21,6 +21,7 @@ Job orchestration service for running containerized workloads with async callbac
 - `cmd/jobs-service` — main orchestration service (HTTP API on :8080, metrics on :9090)
 - `cmd/job-sidecar` — sidecar for artifact processing and job lifecycle
 - `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane
+- `cmd/sandbox-service` — sandbox control plane: /v1/sandbox API; on Docker also the in-process data plane (token-routed proxy on its own data port)
 - `cmd/workload-sidecar` — reverse proxy in front of every serving workload: deployment replicas, pool activations, and sandboxes (readiness, drain, per-request timeout, request counting, and the claim endpoint)
 - `cmd/deployments-activator` — K8s buffering data plane for deployments: holds cold/async traffic (gateway routes here with X-Revision) and raises cold revisions
 - `cmd/sandbox-proxy` — K8s data plane for sandboxes: one wildcard route, resolved by the capability token in the Host. Its own component, not an activator mode — always on the path, pods-read-only, nothing to raise
@@ -36,7 +37,7 @@ Job orchestration service for running containerized workloads with async callbac
 ## Key concepts
 
 - Jobs run in Docker containers or Kubernetes `batch/v1.Job` resources; artifacts are ordered by `depends` field
-- Sandboxes are live workspaces claimed from warm pools; exec and files are an HTTP contract served inside the sandbox by the open-runtimes/sandbox agent, which the shim copies into the workspace — so any runtime image works and a pool needs no `command`. A sandbox's hostname carries an unguessable capability token
+- Sandboxes are live workspaces claimed from warm pools or created cold by naming an image (pools are optional warm capacity); exec and files are an HTTP contract served inside the sandbox by the open-runtimes/sandbox agent, which an init container copies into the workspace — so any runtime image works and a pool needs no `command`. A sandbox's hostname carries an unguessable capability token
 - K8s backend uses a native sidecar (K8s 1.29+) — kubelet sends SIGTERM to the sidecar when the worker exits
 - Callbacks use CloudEvents 1.0 with optional HMAC-SHA256 signing
 - Service survives restarts — in-flight jobs are resumed

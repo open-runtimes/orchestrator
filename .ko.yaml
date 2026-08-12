@@ -17,3 +17,9 @@ builds:
     main: .
     ldflags:
       - -s -w
+
+  - id: sandbox-service
+    dir: ./cmd/sandbox-service
+    main: .
+    ldflags:
+      - -s -w

@@ -3,8 +3,37 @@ package api
 import (
 	"net/http"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/health"
+	"orchestrator/internal/observability"
 	"orchestrator/internal/sandbox"
 )
+
+// SandboxesRouterConfig holds dependencies for the sandboxes API router.
+type SandboxesRouterConfig struct {
+	Service       *sandbox.Service
+	Metrics       *observability.Metrics
+	HealthChecker *health.Checker
+	APIKey        string
+}
+
+// NewSandboxesRouter creates the management router for the sandboxes service
+// (the data plane is the sandbox proxy's own listener).
+func NewSandboxesRouter(cfg SandboxesRouterConfig) http.Handler {
+	mux := http.NewServeMux()
+	registerHealthRoutes(mux, cfg.HealthChecker)
+	registerSandboxRoutes(mux, AuthMiddleware(cfg.APIKey), cfg.Service)
+
+	var handler http.Handler = mux
+	handler = JSONErrorMiddleware()(handler)
+	handler = ContentTypeMiddleware()(handler)
+	handler = CORSMiddleware()(handler)
+	if cfg.Metrics != nil {
+		handler = MetricsMiddleware(cfg.Metrics, mux)(handler)
+	}
+	handler = LoggingMiddleware()(handler)
+	handler = RecoveryMiddleware()(handler)
+	return handler
+}
 
 // sandboxesHandler serves /v1/sandbox and /v1/sandbox-pool. Pools are
 // config-defined, so the surface over them is read-only; sandboxes themselves
@@ -16,8 +45,7 @@ type sandboxesHandler struct {
 	svc *sandbox.Service
 }
 
-// registerSandboxRoutes mounts the sandbox routes when sandbox pools are
-// configured.
+// registerSandboxRoutes mounts the sandbox routes.
 func registerSandboxRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *sandbox.Service) {
 	h := &sandboxesHandler{svc: svc}
 	mux.Handle("POST /v1/sandbox", auth(http.HandlerFunc(h.create)))
