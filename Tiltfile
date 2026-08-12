@@ -9,16 +9,16 @@
 # Guard against accidental deploys to anything other than the local dev cluster.
 allow_k8s_contexts('kind-orchestrator-dev')
 
-# Opt-in planes: `tilt up -- --deployments --sandboxes`.
+# Opt-in planes: `tilt up -- --deployments --sandbox`.
 config.define_bool('deployments')
-config.define_bool('sandboxes')
+config.define_bool('sandbox')
 DEPLOYMENTS_ENABLED = config.parse().get('deployments', False)
-SANDBOXES_ENABLED = config.parse().get('sandboxes', False)
+SANDBOXES_ENABLED = config.parse().get('sandbox', False)
 
 JOBS_SERVICE_IMAGE        = 'ko.local/jobs-service'
 JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
-SANDBOXES_SERVICE_IMAGE = 'ko.local/sandboxes-service'
+SANDBOX_SERVICE_IMAGE = 'ko.local/sandbox-service'
 WORKLOAD_SIDECAR_IMAGE = 'ko.local/workload-sidecar'
 DEPLOYMENTS_ACTIVATOR_IMAGE = 'ko.local/deployments-activator'
 SANDBOX_PROXY_IMAGE = 'ko.local/sandbox-proxy'
@@ -73,16 +73,16 @@ if DEPLOYMENTS_ENABLED:
     ]
 
 if SANDBOXES_ENABLED:
-    ko_build(SANDBOXES_SERVICE_IMAGE, './cmd/sandboxes-service', ['cmd/sandboxes-service', 'internal'])
+    ko_build(SANDBOX_SERVICE_IMAGE, './cmd/sandbox-service', ['cmd/sandbox-service', 'internal'])
     ko_build(SANDBOX_PROXY_IMAGE, './cmd/sandbox-proxy', ['cmd/sandbox-proxy', 'internal'])
     helm_set += [
-        'sandboxes.enabled=true',
-        'sandboxes.domain=sandboxes.localhost',
-        'sandboxes.image.repository=' + SANDBOXES_SERVICE_IMAGE,
-        'sandboxes.image.pullPolicy=Never',
-        'sandboxes.proxy.enabled=true',
-        'sandboxes.proxy.image.repository=' + SANDBOX_PROXY_IMAGE,
-        'sandboxes.proxy.image.pullPolicy=Never',
+        'sandbox.enabled=true',
+        'sandbox.domain=sandboxes.localhost',
+        'sandbox.image.repository=' + SANDBOX_SERVICE_IMAGE,
+        'sandbox.image.pullPolicy=Never',
+        'sandbox.proxy.enabled=true',
+        'sandbox.proxy.image.repository=' + SANDBOX_PROXY_IMAGE,
+        'sandbox.proxy.image.pullPolicy=Never',
     ]
 
 k8s_yaml(helm(
@@ -129,7 +129,7 @@ if DEPLOYMENTS_ENABLED:
 
 if SANDBOXES_ENABLED:
     k8s_resource(
-        'sandboxes',
+        'sandbox',
         port_forwards=[
             port_forward(8082, 8080, name='api'),
             port_forward(9092, 9090, name='metrics'),

@@ -1,4 +1,4 @@
-{{- if and (or .Values.deployments.enabled .Values.sandboxes.enabled) .Values.workloadNamespace.enabled }}
+{{- if and (or .Values.deployments.enabled .Values.sandbox.enabled) .Values.workloadNamespace.enabled }}
 {{- $ns := include "orchestrator.workloadNamespace" . }}
 {{- if .Values.workloadNamespace.create }}
 apiVersion: v1
@@ -33,7 +33,7 @@ spec:
     matchExpressions:
       - key: managed-by
         operator: In
-        values: ["deployments-service", "sandboxes-service"]
+        values: ["deployments-service", "sandbox-service"]
   policyTypes: ["Ingress", "Egress"]
   ingress:
     - from:
@@ -54,15 +54,15 @@ spec:
             matchLabels:
               app.kubernetes.io/component: deployments
         {{- end }}
-        {{- if .Values.sandboxes.enabled }}
+        {{- if .Values.sandbox.enabled }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
-              app.kubernetes.io/component: sandboxes
+              app.kubernetes.io/component: sandbox
         {{- end }}
-        {{- if .Values.sandboxes.proxy.enabled }}
+        {{- if .Values.sandbox.proxy.enabled }}
         # The sandbox proxy is permanently on the data path for sandbox pods.
         - namespaceSelector:
             matchLabels:

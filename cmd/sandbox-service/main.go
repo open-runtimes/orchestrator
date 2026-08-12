@@ -1,4 +1,4 @@
-// sandboxes-service is the sandbox control plane: live, isolated workspaces
+// sandbox-service is the sandbox control plane: live, isolated workspaces
 // created over /v1/sandbox and driven over HTTP at their own hostnames. Pools
 // (SANDBOX_POOLS_JSON) are optional warm capacity — a create may name an image
 // instead. See docs/sandboxes.md.
@@ -29,7 +29,7 @@ func main() {
 	svcCfg := config.LoadServiceConfig()
 	backend := config.GetEnv("ORCHESTRATOR_BACKEND", "docker")
 
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "sandboxes", "backend", backend))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "sandbox", "backend", backend))
 
 	metrics, metricsHandler, err := observability.NewMetrics(ctx)
 	if err != nil {

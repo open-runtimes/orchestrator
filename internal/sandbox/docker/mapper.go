@@ -23,7 +23,7 @@ const (
 	labelToken = "sandbox.token"
 	labelPool  = "sandbox.pool"
 
-	managedByValue = "sandboxes-service"
+	managedByValue = "sandbox-service"
 
 	typeWorker    = "worker"
 	typeProxy     = "proxy"

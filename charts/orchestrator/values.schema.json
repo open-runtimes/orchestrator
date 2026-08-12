@@ -372,10 +372,10 @@
         }
       }
     },
-    "sandboxes": {
+    "sandbox": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Sandboxes (docs/sandboxes.md): a workload kind alongside jobs and deployments, served by its own sandboxes-service. Enabled independently of the deployments plane; sandboxes.domain is required when enabled.",
+      "description": "Sandboxes (docs/sandboxes.md): a workload kind alongside jobs and deployments, served by its own sandbox-service. Enabled independently of the deployments plane; sandbox.domain is required when enabled.",
       "properties": {
         "enabled": {
           "type": "boolean"

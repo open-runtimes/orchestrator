@@ -54,7 +54,7 @@ The workload container is already running as the shim when the mount happens, so
 Privilege and propagation are properties of a pod spec, and a warm pod is created long before any claim. So the *capability* cannot be per-request:
 
 ```yaml
-sandboxes:
+sandbox:
   pools:
     - id: restore
       image: python:3.12-slim
@@ -117,7 +117,7 @@ The sandbox could run `aws s3 cp` itself today. The difference is credentials: t
 Assuming both pieces land:
 
 ```yaml
-sandboxes:
+sandbox:
   pools:
     - id: agent
       image: python:3.12-slim

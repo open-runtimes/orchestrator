@@ -210,7 +210,7 @@ deployments:
   # The activator: holds cold-start and async requests in front of deployments
   # and raises cold revisions from zero. Opt-in like every component; without
   # it, scale-to-zero deployments 503 when cold and async requests have nowhere
-  # to buffer. Sandboxes have their own data plane — see sandboxes.proxy.
+  # to buffer. Sandboxes have their own data plane — see sandbox.proxy.
   activator:
     enabled: false
     replicaCount: 1
@@ -291,20 +291,20 @@ workloadSidecarImage:
 
 # Sandboxes (docs/sandboxes.md): live, isolated workspaces driven over HTTP at
 # their own hostnames — a workload kind alongside jobs and deployments, with
-# its own service (sandboxes-service) serving /v1/sandbox. Runs with or
+# its own service (sandbox-service) serving /v1/sandbox. Runs with or
 # without the deployments plane.
-sandboxes:
+sandbox:
   enabled: false
-  # Empty uses "sandboxes" when the release is named "orchestrator",
-  # otherwise "<release>-sandboxes".
+  # Empty uses "sandbox" when the release is named "orchestrator",
+  # otherwise "<release>-sandbox".
   fullnameOverride: ""
   replicaCount: 1
   image:
     ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/sandboxes-service
+    repository: ghcr.io/open-runtimes/orchestrator/sandbox-service
     tag: "" # defaults to the chart's appVersion
     pullPolicy: IfNotPresent
-  # Credentials for s3:// download artifacts, scoped to the sandboxes service.
+  # Credentials for s3:// download artifacts, scoped to the sandbox service.
   s3:
     enabled: false
     endpoint: ""
@@ -313,11 +313,11 @@ sandboxes:
     accessKeyId: ""
     secretAccessKey: ""
     existingSecret: ""
-  # Bearer-token auth for the sandboxes API, same mechanism as jobs.auth.
+  # Bearer-token auth for the sandbox API, same mechanism as jobs.auth.
   auth:
     existingSecret: ""
     secretKey: api-key
-  # Annotations on the sandboxes-service pod.
+  # Annotations on the sandbox-service pod.
   podAnnotations: {}
   # Same resource model as deployments.cpuOvercommit/memoryOvercommit,
   # applied to warm-pool and poolless sandbox pods.
@@ -331,12 +331,12 @@ sandboxes:
   # when replicaCount > 1.
   leaderElection:
     enabled: false
-    # Empty = "<sandboxes name>-leader".
+    # Empty = "<sandbox name>-leader".
     leaseName: ""
     leaseDurationSeconds: 15
     renewDeadlineSeconds: 10
     retryPeriodSeconds: 2
-  # HPA for the sandboxes service. Requires sandboxes.leaderElection.
+  # HPA for the sandbox service. Requires sandbox.leaderElection.
   autoscaling:
     enabled: false
     minReplicas: 2
@@ -349,7 +349,7 @@ sandboxes:
       memory: 64Mi
     limits:
       memory: 256Mi
-  # Gateway the wildcard sandbox HTTPRoute attaches to (the sandboxes service
+  # Gateway the wildcard sandbox HTTPRoute attaches to (the sandbox service
   # itself programs no routes). Defaults to the same gateway the chart creates.
   gateway:
     name: orchestrator

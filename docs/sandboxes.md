@@ -128,7 +128,7 @@ State is reconstructed from the backend on every read — nothing about a sandbo
 **Your image does not have to implement it.** The [`open-runtimes/sandbox`](https://github.com/open-runtimes/sandbox) agent is a static binary, and the orchestrator copies it into every sandbox's workspace at pod creation — the same mechanism that installs the pool shim. A sandbox pool over `node:22-slim`, `python:3.12-slim`, or a distroless image serves the contract with nothing added to the image and no `command` declared:
 
 ```yaml
-sandboxes:
+sandbox:
   pools:
     - id: node
       image: node:22-slim   # implements nothing; the agent supplies the contract
@@ -195,7 +195,7 @@ A [`mount`](jobs.md#mount-artifact) puts a squashfs or erofs image into the work
 From a pool, it needs one that declares the capability:
 
 ```yaml
-sandboxes:
+sandbox:
   pools:
     - id: restore
       image: python:3.12-slim
@@ -311,7 +311,7 @@ The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-in
 
 ```yaml
 # values.yaml — operator config, not an API call
-sandboxes:
+sandbox:
   pools:
     - id: py
       image: python:3.12-slim
@@ -456,7 +456,7 @@ curl http://localhost:8080/v1/sandbox-pool
 `GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). Pools are optional: the domain alone enables sandboxes, and [a poolless create](#a-sandbox-with-no-pool) needs none. They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — plus an optional `command` (overriding the installed agent) and `maxIdleSeconds`. They are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
 
 ```yaml
-sandboxes:
+sandbox:
   enabled: true                     # the sandboxes service: serves /v1/sandbox and reconciles the pools
   domain: sandboxes.example.com     # needs a wildcard DNS record for *.sandboxes.example.com
   pools:
@@ -516,7 +516,7 @@ publishing image needs to contain nothing but the binary and a `cp`, and the
 destination sits at the workspace root for the same reason.
 
 Distributing it as an image rather than a fetched artifact is the point: the tag
-(or digest, via `sandboxes.agentImage.ref`) IS the version pin, the registry
+(or digest, via `sandbox.agentImage.ref`) IS the version pin, the registry
 verifies the bytes, the kubelet caches it per node instead of per pod, and an
 air-gapped install mirrors it like any other image. The alternative we tried —
 vendoring the release tarball into our own image at build time — needed a fetch
@@ -525,7 +525,7 @@ in the same place.
 
 ### Why exec and files live inside the sandbox
 
-The alternatives are both worse. Through the control plane: `sandboxes-service` is stateless with N replicas and is rolling-restarted on every deploy, so a long exec dies every time we ship; every tenant's file uploads share those replicas; and streaming stdout gains a hop of buffering. Through our own sidecar: the sidecar and worker are different containers sharing only the workspace `emptyDir`, not a process or mount namespace — so the sidecar cannot run the worker image's interpreter or see a worker-only volume mount. Fixing that means either a resident supervisor in `cmd/pool-shim` (it `syscall.Exec`s the payload as PID 1 and dies with it, so this is an inversion plus a socket protocol) or backend-native exec (`pods/exec` + Docker exec: two exec implementations, two file-copy implementations, and `pods/exec` RBAC we would rather not grant).
+The alternatives are both worse. Through the control plane: `sandbox-service` is stateless with N replicas and is rolling-restarted on every deploy, so a long exec dies every time we ship; every tenant's file uploads share those replicas; and streaming stdout gains a hop of buffering. Through our own sidecar: the sidecar and worker are different containers sharing only the workspace `emptyDir`, not a process or mount namespace — so the sidecar cannot run the worker image's interpreter or see a worker-only volume mount. Fixing that means either a resident supervisor in `cmd/pool-shim` (it `syscall.Exec`s the payload as PID 1 and dies with it, so this is an inversion plus a socket protocol) or backend-native exec (`pods/exec` + Docker exec: two exec implementations, two file-copy implementations, and `pods/exec` RBAC we would rather not grant).
 
 Putting the contract in the image costs none of that and buys bring-your-own-image. The cost is a contract to version and a reference image to maintain.
 

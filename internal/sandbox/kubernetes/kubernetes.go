@@ -38,7 +38,7 @@ const (
 
 	AnnotationSpec = "sandbox.spec"
 
-	ManagedByValue = "sandboxes-service"
+	ManagedByValue = "sandbox-service"
 )
 
 func naming() warm.Naming {

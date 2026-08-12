@@ -17,7 +17,7 @@ const (
 	defaultNamespace       = "orchestrator"
 	defaultRunAsUser       = 65532 // distroless "nonroot"
 	defaultSandboxDomain   = "localhost"
-	defaultLeaderLeaseName = "sandboxes-service-leader"
+	defaultLeaderLeaseName = "sandbox-service-leader"
 
 	defaultOrphanTTL = 60 * time.Second
 

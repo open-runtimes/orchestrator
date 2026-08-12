@@ -104,40 +104,40 @@ imagePullSecrets:
 {{- end -}}
 
 {{/*
-  sandboxesName: resource name for the sandboxes API, following the same
+  sandboxName: resource name for the sandbox API, following the same
   per-component convention as jobsName.
 */}}
-{{- define "orchestrator.sandboxesName" -}}
-{{- if .Values.sandboxes.fullnameOverride -}}
-{{- .Values.sandboxes.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- define "orchestrator.sandboxName" -}}
+{{- if .Values.sandbox.fullnameOverride -}}
+{{- .Values.sandbox.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else if eq .Release.Name "orchestrator" -}}
-{{- "sandboxes" -}}
+{{- "sandbox" -}}
 {{- else -}}
-{{- printf "%s-sandboxes" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-sandbox" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.sandboxesImage" -}}
-{{- if .Values.sandboxes.image.ref -}}
-{{- .Values.sandboxes.image.ref -}}
+{{- define "orchestrator.sandboxImage" -}}
+{{- if .Values.sandbox.image.ref -}}
+{{- .Values.sandbox.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.sandboxes.image.repository (default .Chart.AppVersion .Values.sandboxes.image.tag) -}}
+{{- printf "%s:%s" .Values.sandbox.image.repository (default .Chart.AppVersion .Values.sandbox.image.tag) -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.sandboxesLabels" -}}
+{{- define "orchestrator.sandboxLabels" -}}
 {{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: sandboxes
+app.kubernetes.io/component: sandbox
 {{- end -}}
 
-{{- define "orchestrator.sandboxesSelectorLabels" -}}
+{{- define "orchestrator.sandboxSelectorLabels" -}}
 app.kubernetes.io/name: {{ include "orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: sandboxes
+app.kubernetes.io/component: sandbox
 {{- end -}}
 
-{{- define "orchestrator.sandboxesS3SecretName" -}}
-{{- default (printf "%s-s3" (include "orchestrator.sandboxesName" .)) .Values.sandboxes.s3.existingSecret -}}
+{{- define "orchestrator.sandboxS3SecretName" -}}
+{{- default (printf "%s-s3" (include "orchestrator.sandboxName" .)) .Values.sandbox.s3.existingSecret -}}
 {{- end -}}
 
 {{/*
@@ -145,18 +145,18 @@ app.kubernetes.io/component: sandboxes
   Tagged, not floating: this is the agent version pin.
 */}}
 {{- define "orchestrator.sandboxAgentImage" -}}
-{{- if .Values.sandboxes.agentImage.ref -}}
-{{- .Values.sandboxes.agentImage.ref -}}
+{{- if .Values.sandbox.agentImage.ref -}}
+{{- .Values.sandbox.agentImage.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.sandboxes.agentImage.repository (required "sandboxes.agentImage.tag is required (pin the agent version)" .Values.sandboxes.agentImage.tag) -}}
+{{- printf "%s:%s" .Values.sandbox.agentImage.repository (required "sandbox.agentImage.tag is required (pin the agent version)" .Values.sandbox.agentImage.tag) -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "orchestrator.sandboxProxyImage" -}}
-{{- if .Values.sandboxes.proxy.image.ref -}}
-{{- .Values.sandboxes.proxy.image.ref -}}
+{{- if .Values.sandbox.proxy.image.ref -}}
+{{- .Values.sandbox.proxy.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.sandboxes.proxy.image.repository (default .Chart.AppVersion .Values.sandboxes.proxy.image.tag) -}}
+{{- printf "%s:%s" .Values.sandbox.proxy.image.repository (default .Chart.AppVersion .Values.sandbox.proxy.image.tag) -}}
 {{- end -}}
 {{- end -}}
 
