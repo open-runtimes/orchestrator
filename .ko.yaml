@@ -6,6 +6,12 @@ defaultBaseImage: gcr.io/distroless/static-debian12:nonroot
 
 # Build settings
 builds:
+  - id: orchestrator
+    dir: ./cmd/orchestrator
+    main: .
+    ldflags:
+      - -s -w
+
   - id: jobs-service
     dir: ./cmd/jobs-service
     main: .

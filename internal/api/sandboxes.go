@@ -19,20 +19,12 @@ type SandboxesRouterConfig struct {
 // NewSandboxesRouter creates the management router for the sandboxes service
 // (the data plane is the sandbox proxy's own listener).
 func NewSandboxesRouter(cfg SandboxesRouterConfig) http.Handler {
-	mux := http.NewServeMux()
-	registerHealthRoutes(mux, cfg.HealthChecker)
-	registerSandboxRoutes(mux, AuthMiddleware(cfg.APIKey), cfg.Service)
-
-	var handler http.Handler = mux
-	handler = JSONErrorMiddleware()(handler)
-	handler = ContentTypeMiddleware()(handler)
-	handler = CORSMiddleware()(handler)
-	if cfg.Metrics != nil {
-		handler = MetricsMiddleware(cfg.Metrics, mux)(handler)
-	}
-	handler = LoggingMiddleware()(handler)
-	handler = RecoveryMiddleware()(handler)
-	return handler
+	return NewOrchestratorRouter(OrchestratorRouterConfig{
+		Metrics:        cfg.Metrics,
+		HealthChecker:  cfg.HealthChecker,
+		APIKey:         cfg.APIKey,
+		SandboxService: cfg.Service,
+	})
 }
 
 // sandboxesHandler serves /v1/sandbox and /v1/sandbox-pool. Pools are
@@ -46,6 +38,7 @@ type sandboxesHandler struct {
 }
 
 // registerSandboxRoutes mounts the sandbox routes.
+//nolint:dupl // a route table, not logic: the shape it shares with the other planes is the point
 func registerSandboxRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *sandbox.Service) {
 	h := &sandboxesHandler{svc: svc}
 	mux.Handle("POST /v1/sandbox", auth(http.HandlerFunc(h.create)))

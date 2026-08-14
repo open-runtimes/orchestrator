@@ -18,6 +18,7 @@ Job orchestration service for running containerized workloads with async callbac
 
 ## Structure
 
+- `cmd/orchestrator` — all-in-one image for `docker compose` and local dev: every control plane in one process, one API port, one data port (both data planes share it, split by Host). Docker backend only — production runs the per-service images from the chart
 - `cmd/jobs-service` — main orchestration service (HTTP API on :8080, metrics on :9090)
 - `cmd/job-sidecar` — sidecar for artifact processing and job lifecycle
 - `cmd/deployments-service` — serving plane (deployments + pools): API + in-process activator data plane

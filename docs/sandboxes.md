@@ -478,7 +478,7 @@ See [operations](operations.md#sandboxes) for the full deployment picture, and [
 
 ### The Docker backend
 
-Sandboxes also run on the Docker development backend, so you can build against the API without a cluster. Each sandbox is a container running the pool's image, fronted by a sidecar, sharing a workspace volume; the sandbox proxy runs inside the sandboxes service itself and serves sandboxes on its own data port (`DATA_PORT`, default 8081), so URLs carry that port (`http://s-{token}.sandboxes.test:8081`). Running the deployments service on the same host? Give one of them a different `DATA_PORT` — each now has its own listener.
+Sandboxes also run on the Docker development backend, so you can build against the API without a cluster. Each sandbox is a container running the pool's image, fronted by a sidecar, sharing a workspace volume; the sandbox proxy runs inside the sandboxes service itself and serves sandboxes on its own data port (`DATA_PORT`, default 8081), so URLs carry that port (`http://s-{token}.sandboxes.test:8081`). The all-in-one `orchestrator` image serves both data planes on one such listener, picking by hostname, so give sandboxes and deployments distinct domains there; run as separate services on one host and each needs its own `DATA_PORT` instead.
 
 ```yaml
 # docker-compose / env for the sandboxes service

@@ -79,7 +79,11 @@ func (a Addressing) Resolve(hostport string) (token, port string, ok bool) {
 	if !cut || !strings.EqualFold(domain, a.Domain) {
 		return "", "", false
 	}
-	rest, prefixed := strings.CutPrefix(label, HostPrefix)
+	// DNS is case-insensitive in both labels, and the whole hostname is minted
+	// lowercase, so an uppercase spelling addresses the same sandbox. Fold it
+	// here rather than at each caller: the token goes on to a label selector
+	// and a lowercase-hex check, neither of which would match otherwise.
+	rest, prefixed := strings.CutPrefix(strings.ToLower(label), HostPrefix)
 	if !prefixed || rest == "" {
 		return "", "", false
 	}
@@ -102,6 +106,23 @@ func (a Addressing) addressed(host string) string {
 		addr += ":" + a.Port
 	}
 	return addr
+}
+
+// IsToken reports whether a label has the shape mintToken emits: lowercase hex
+// of the full token width. Resolve deliberately accepts any label — it is the
+// grammar, not the credential check — but where a listener serves the sandbox
+// wildcard alongside another data plane, a host that cannot be a token is
+// better given to the neighbour than 404'd here.
+func IsToken(s string) bool {
+	if len(s) != tokenBytes*2 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // stripPort drops a :port suffix, leaving an IPv6 literal alone.

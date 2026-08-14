@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/health"
 	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
 )
@@ -56,16 +55,14 @@ type ArtifactEmitter interface {
 type Handler struct {
 	svc             *job.Service
 	metrics         *observability.Metrics
-	health          *health.Checker
 	artifactEmitter ArtifactEmitter
 }
 
 // NewHandler creates a new API handler
-func NewHandler(svc *job.Service, metrics *observability.Metrics, healthChecker *health.Checker, ae ArtifactEmitter) *Handler {
+func NewHandler(svc *job.Service, metrics *observability.Metrics, ae ArtifactEmitter) *Handler {
 	return &Handler{
 		svc:             svc,
 		metrics:         metrics,
-		health:          healthChecker,
 		artifactEmitter: ae,
 	}
 }
@@ -128,27 +125,6 @@ func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// Livez handles GET /livez - liveness probe.
-// Returns 200 if the process is alive. Does not check dependencies.
-func (h *Handler) Livez(w http.ResponseWriter, r *http.Request) {
-	response := h.health.Liveness(r.Context())
-	h.writeJSON(w, http.StatusOK, response)
-}
-
-// Readyz handles GET /readyz - readiness probe.
-// Returns 200 if the service is ready to accept traffic.
-// Returns 503 if dependencies (Docker) are unavailable.
-func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
-	response := h.health.Readiness(r.Context())
-
-	status := http.StatusOK
-	if !response.IsHealthy() {
-		status = http.StatusServiceUnavailable
-	}
-
-	h.writeJSON(w, status, response)
 }
 
 // writeJSON writes a JSON response

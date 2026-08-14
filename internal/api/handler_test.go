@@ -37,50 +37,33 @@ func TestRoutePattern(t *testing.T) {
 	}
 }
 
-func TestHandler_Livez(t *testing.T) {
+// The probes are mounted for every plane by registerHealthRoutes, so they are
+// tested through the mux rather than through a handler method.
+func TestHealthRoutes(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{
-		health: health.NewChecker(nil),
+	mux := http.NewServeMux()
+	registerHealthRoutes(mux, health.NewChecker(nil)) // no orchestrator: live, but not ready
+
+	tests := []struct {
+		target string
+		code   int
+		status health.Status
+	}{
+		{"/livez", http.StatusOK, health.StatusHealthy},
+		{"/readyz", http.StatusServiceUnavailable, health.StatusUnhealthy},
 	}
+	for _, tt := range tests {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.target, nil))
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/livez", nil)
-	w := httptest.NewRecorder()
-
-	handler.Livez(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
-	}
-
-	var response health.Response
-	json.NewDecoder(w.Body).Decode(&response)
-
-	if response.Status != health.StatusHealthy {
-		t.Errorf("Expected status healthy, got %s", response.Status)
-	}
-}
-
-func TestHandler_Readyz_NoDocker(t *testing.T) {
-	t.Parallel()
-	handler := &Handler{
-		health: health.NewChecker(nil), // No Docker client
-	}
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
-	w := httptest.NewRecorder()
-
-	handler.Readyz(w, req)
-
-	// Should return 503 because Docker is not available
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
-	}
-
-	var response health.Response
-	json.NewDecoder(w.Body).Decode(&response)
-
-	if response.Status != health.StatusUnhealthy {
-		t.Errorf("Expected status unhealthy, got %s", response.Status)
+		if w.Code != tt.code {
+			t.Errorf("%s: expected status %d, got %d", tt.target, tt.code, w.Code)
+		}
+		var response health.Response
+		json.NewDecoder(w.Body).Decode(&response)
+		if response.Status != tt.status {
+			t.Errorf("%s: expected %s, got %s", tt.target, tt.status, response.Status)
+		}
 	}
 }
 

@@ -25,27 +25,17 @@ type activeCounter interface {
 	ActiveJobs() int64
 }
 
-// Run bootstraps the orchestrator service against the supplied backend factory
-// and blocks until SIGINT/SIGTERM or a server error. It returns nil on a clean
-// shutdown.
-//
-// The factory provides the chosen backend (Docker, Kubernetes, or any other
-// implementation of job.Orchestrator). metrics must be the same instance the
-// factory was built against so recorders on both sides share the same meter.
-// Config is loaded from environment variables by the various internal
-// packages; add attributes to slog.Default before calling Run if you want
-// them attached to every log line.
-func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observability.Metrics, metricsHandler http.Handler) error {
-	svcCfg := config.LoadServiceConfig()
-	dispatcherCfg := dispatcher.LoadConfigFromEnv()
-
-	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
+// NewJobEmitter builds the job callback emitter: it forwards every job event
+// with a callback URL to the dispatcher, and records the completion metrics off
+// the exit event. Exported because the all-in-one orchestrator binary wires the
+// jobs plane itself, and this is the part that must not drift between them.
+func NewJobEmitter(queue dispatcher.Queue, metrics *observability.Metrics) *job.CallbackEmitter {
 	emitter := job.NewCallbackEmitter()
 	emitter.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
 		}
-		if err := eventDispatcher.Dispatch(&dispatcher.Event{
+		if err := queue.Dispatch(&dispatcher.Event{
 			Payload:     e.Payload,
 			Destination: e.CallbackURL,
 			SigningKey:  e.SigningKey,
@@ -68,6 +58,25 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 		}
 		metrics.RecordJobCompleted(context.Background(), image, exitCode == 0, duration)
 	})
+	return emitter
+}
+
+// Run bootstraps the orchestrator service against the supplied backend factory
+// and blocks until SIGINT/SIGTERM or a server error. It returns nil on a clean
+// shutdown.
+//
+// The factory provides the chosen backend (Docker, Kubernetes, or any other
+// implementation of job.Orchestrator). metrics must be the same instance the
+// factory was built against so recorders on both sides share the same meter.
+// Config is loaded from environment variables by the various internal
+// packages; add attributes to slog.Default before calling Run if you want
+// them attached to every log line.
+func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observability.Metrics, metricsHandler http.Handler) error {
+	svcCfg := config.LoadServiceConfig()
+	dispatcherCfg := dispatcher.LoadConfigFromEnv()
+
+	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
+	emitter := NewJobEmitter(eventDispatcher, metrics)
 
 	if err := metrics.ObserveInt64("dispatcher_queue_size",
 		"Current number of events in dispatcher queue (saturation)",

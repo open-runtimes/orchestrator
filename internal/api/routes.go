@@ -16,38 +16,29 @@ type RouterConfig struct {
 	APIKey          string
 }
 
-// NewRouter creates a new HTTP router with all routes configured.
+// NewRouter creates the management router for the jobs service.
 func NewRouter(cfg RouterConfig) http.Handler {
-	handler := NewHandler(cfg.JobService, cfg.Metrics, cfg.HealthChecker, cfg.ArtifactEmitter)
+	return NewOrchestratorRouter(OrchestratorRouterConfig{
+		Metrics:         cfg.Metrics,
+		HealthChecker:   cfg.HealthChecker,
+		APIKey:          cfg.APIKey,
+		JobService:      cfg.JobService,
+		ArtifactEmitter: cfg.ArtifactEmitter,
+	})
+}
 
-	mux := http.NewServeMux()
+// registerJobRoutes mounts the jobs surface: the public /v1/jobs endpoints and
+// the internal artifact endpoint, which carries per-job token auth of its own
+// (the workload container shares the network path with the sidecar, so network
+// isolation is not enough).
+func registerJobRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, cfg OrchestratorRouterConfig) {
+	h := NewHandler(cfg.JobService, cfg.Metrics, cfg.ArtifactEmitter)
 
-	// Health check endpoints (liveness/readiness probes) - no auth required
-	mux.HandleFunc("GET /livez", handler.Livez)
-	mux.HandleFunc("GET /readyz", handler.Readyz)
-
-	// Internal endpoints - per-job token auth (the workload container shares
-	// the network path with the sidecar, so network isolation is not enough)
 	artifactAuth := ArtifactAuthMiddleware(cfg.APIKey)
-	mux.Handle("POST /internal/jobs/{jobId}/artifact", artifactAuth(http.HandlerFunc(handler.ReportArtifact)))
+	mux.Handle("POST /internal/jobs/{jobId}/artifact", artifactAuth(http.HandlerFunc(h.ReportArtifact)))
 
-	// Job endpoints - auth required
-	authMiddleware := AuthMiddleware(cfg.APIKey)
-	mux.Handle("POST /v1/jobs", authMiddleware(http.HandlerFunc(handler.CreateJob)))
-	mux.Handle("GET /v1/jobs", authMiddleware(http.HandlerFunc(handler.ListJobs)))
-	mux.Handle("GET /v1/jobs/{jobId}", authMiddleware(http.HandlerFunc(handler.GetJob)))
-	mux.Handle("DELETE /v1/jobs/{jobId}", authMiddleware(http.HandlerFunc(handler.DeleteJob)))
-
-	// Apply middleware chain (order matters: outermost first)
-	var h http.Handler = mux
-	h = JSONErrorMiddleware()(h)
-	h = ContentTypeMiddleware()(h)
-	h = CORSMiddleware()(h)
-	if cfg.Metrics != nil {
-		h = MetricsMiddleware(cfg.Metrics, mux)(h)
-	}
-	h = LoggingMiddleware()(h)
-	h = RecoveryMiddleware()(h)
-
-	return h
+	mux.Handle("POST /v1/jobs", auth(http.HandlerFunc(h.CreateJob)))
+	mux.Handle("GET /v1/jobs", auth(http.HandlerFunc(h.ListJobs)))
+	mux.Handle("GET /v1/jobs/{jobId}", auth(http.HandlerFunc(h.GetJob)))
+	mux.Handle("DELETE /v1/jobs/{jobId}", auth(http.HandlerFunc(h.DeleteJob)))
 }

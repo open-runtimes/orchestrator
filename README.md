@@ -9,7 +9,7 @@ The same API works against both backends (`ORCHESTRATOR_BACKEND=docker|kubernete
 
 ## Quick start
 
-The [compose file](docker-compose.yaml) runs both services against your local Docker daemon:
+The [compose file](docker-compose.yaml) runs the all-in-one `orchestrator` image — every control plane in one container — against your local Docker daemon:
 
 ```bash
 docker compose up -d
@@ -22,7 +22,7 @@ curl http://localhost:8080/v1/jobs/hello
 # {"id":"hello","status":"completed","exitCode":0}
 
 # Deploy an HTTP service
-curl -X POST http://localhost:8082/v1/deployments \
+curl -X POST http://localhost:8080/v1/deployments \
   -H "Content-Type: application/json" \
   -d '{"id": "web", "image": "traefik/whoami", "port": 80}'
 # 201 {"id":"web","status":"pending","url":"http://web.localhost", ...}
@@ -30,6 +30,8 @@ curl -X POST http://localhost:8082/v1/deployments \
 # Once ready, it serves on its host via the data port:
 curl -H "Host: web.localhost" http://localhost:8081/
 ```
+
+Production is the other shape: the Helm chart runs each plane as its own image and Deployment, so they scale and fail independently. The monolith is for compose and local development.
 
 (Contributors can also run the jobs service from source with hot reload: `task dev`.)
 

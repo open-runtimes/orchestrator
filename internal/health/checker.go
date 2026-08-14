@@ -36,8 +36,8 @@ type Response struct {
 
 // Checker performs health checks on dependencies.
 type Checker struct {
-	orchestrator ReadinessChecker
-	timeout      time.Duration
+	orchestrators []ReadinessChecker
+	timeout       time.Duration
 
 	mu             sync.RWMutex
 	lastCheck      time.Time
@@ -45,11 +45,19 @@ type Checker struct {
 	isShuttingDown bool
 }
 
-// NewChecker creates a new health checker.
-func NewChecker(orchestrator ReadinessChecker) *Checker {
+// NewChecker creates a new health checker. It takes more than one orchestrator
+// for the all-in-one binary, where several control planes share one /readyz:
+// the service is ready only when every one of them is.
+func NewChecker(orchestrators ...ReadinessChecker) *Checker {
+	live := make([]ReadinessChecker, 0, len(orchestrators))
+	for _, o := range orchestrators {
+		if o != nil {
+			live = append(live, o)
+		}
+	}
 	return &Checker{
-		orchestrator: orchestrator,
-		timeout:      5 * time.Second,
+		orchestrators: live,
+		timeout:       5 * time.Second,
 	}
 }
 
@@ -110,9 +118,11 @@ func (c *Checker) Readiness(ctx context.Context) *Response {
 	return response
 }
 
-// checkOrchestrator verifies the orchestrator is ready to accept work.
+// checkOrchestrator verifies every orchestrator is ready to accept work. The
+// first one that is not decides the result: a plane that cannot serve makes the
+// whole process unready, which is what a shared readiness probe has to mean.
 func (c *Checker) checkOrchestrator(ctx context.Context) CheckResult {
-	if c.orchestrator == nil {
+	if len(c.orchestrators) == 0 {
 		return CheckResult{
 			Status:  StatusUnhealthy,
 			Message: "orchestrator not configured",
@@ -122,11 +132,12 @@ func (c *Checker) checkOrchestrator(ctx context.Context) CheckResult {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	err := c.orchestrator.Ready(ctx)
-	if err != nil {
-		return CheckResult{
-			Status:  StatusUnhealthy,
-			Message: err.Error(),
+	for _, orchestrator := range c.orchestrators {
+		if err := orchestrator.Ready(ctx); err != nil {
+			return CheckResult{
+				Status:  StatusUnhealthy,
+				Message: err.Error(),
+			}
 		}
 	}
 

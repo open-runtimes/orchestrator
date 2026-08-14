@@ -25,33 +25,26 @@ type DeploymentsRouterConfig struct {
 // NewDeploymentsRouter creates the management router for the deployments
 // service (the data plane is the activator's own listener).
 func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
-	h := &deploymentsHandler{svc: cfg.Service}
+	return NewOrchestratorRouter(OrchestratorRouterConfig{
+		Metrics:           cfg.Metrics,
+		HealthChecker:     cfg.HealthChecker,
+		APIKey:            cfg.APIKey,
+		DeploymentService: cfg.Service,
+		PoolService:       cfg.PoolService,
+		Dispatcher:        cfg.Dispatcher,
+	})
+}
 
-	mux := http.NewServeMux()
-	registerHealthRoutes(mux, cfg.HealthChecker)
-
-	auth := AuthMiddleware(cfg.APIKey)
+// registerDeploymentRoutes mounts the deployments surface.
+//nolint:dupl // a route table, not logic: the shape it shares with the other planes is the point
+func registerDeploymentRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *deployment.Service) {
+	h := &deploymentsHandler{svc: svc}
 	mux.Handle("POST /v1/deployments", auth(http.HandlerFunc(h.apply)))
 	mux.Handle("GET /v1/deployments", auth(http.HandlerFunc(h.list)))
 	mux.Handle("GET /v1/deployments/{id}", auth(http.HandlerFunc(h.get)))
 	mux.Handle("GET /v1/deployments/{id}/revisions", auth(http.HandlerFunc(h.revisions)))
 	mux.Handle("POST /v1/deployments/{id}/traffic", auth(http.HandlerFunc(h.setTraffic)))
 	mux.Handle("DELETE /v1/deployments/{id}", auth(http.HandlerFunc(h.remove)))
-
-	if cfg.PoolService != nil {
-		registerPoolRoutes(mux, auth, cfg.PoolService, cfg.Dispatcher)
-	}
-
-	var handler http.Handler = mux
-	handler = JSONErrorMiddleware()(handler)
-	handler = ContentTypeMiddleware()(handler)
-	handler = CORSMiddleware()(handler)
-	if cfg.Metrics != nil {
-		handler = MetricsMiddleware(cfg.Metrics, mux)(handler)
-	}
-	handler = LoggingMiddleware()(handler)
-	handler = RecoveryMiddleware()(handler)
-	return handler
 }
 
 type deploymentsHandler struct {
