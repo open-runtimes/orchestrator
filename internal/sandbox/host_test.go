@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -119,6 +120,26 @@ func TestAddressing_URLsCoverEveryPort(t *testing.T) {
 		key := strconv.Itoa(port)
 		if urls[key] != addr.PortURL("abc", port) {
 			t.Errorf("port %d: got %q", port, urls[key])
+		}
+	}
+}
+
+func TestIsToken(t *testing.T) {
+	t.Parallel()
+	minted, err := mintToken()
+	if err != nil {
+		t.Fatalf("mintToken: %v", err)
+	}
+
+	// What the writer mints, the shared-listener tie-break must accept.
+	if !IsToken(minted) {
+		t.Errorf("minted token %q not recognised", minted)
+	}
+	// And what a deployment might reasonably declare, it must not — those hosts
+	// belong to the neighbouring data plane.
+	for _, s := range []string{"", "foo", "abc-dev", strings.Repeat("a", 31), strings.Repeat("a", 33), strings.ToUpper(minted), strings.Repeat("g", 32)} {
+		if IsToken(s) {
+			t.Errorf("%q recognised as a token", s)
 		}
 	}
 }

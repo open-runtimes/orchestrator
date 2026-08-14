@@ -116,12 +116,20 @@ func main() {
 
 	// One data listener carries both data planes: sandbox hosts (s-{token}.…)
 	// go to the sandbox proxy, everything else to the deployments activator.
-	// That is what SandboxProxy.Matches is for, and it keeps a sandbox URL and
-	// a deployment URL on the same port a developer already published.
+	// It keeps a sandbox URL and a deployment URL on the same port a developer
+	// already published.
+	//
+	// The token must look like one for the sandbox proxy to claim the host: a
+	// deployment may declare any host it likes, including one under the sandbox
+	// domain, and only a minted token can actually address a sandbox. Without
+	// that check "s-foo.sandbox.localhost" is swallowed here and 404s on its
+	// own URL — the gateway gives the specific host precedence over a wildcard,
+	// and this listener has to make the same call.
+	sandboxHosts := sandbox.Addressing{Domain: sandboxDomain}
 	dataServer := &http.Server{
 		Addr: ":" + config.GetEnv("DATA_PORT", "8081"),
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if sandboxes.proxy.Matches(r.Host) {
+			if token, _, ok := sandboxHosts.Resolve(r.Host); ok && sandbox.IsToken(token) {
 				sandboxes.proxy.ServeHTTP(w, r)
 				return
 			}

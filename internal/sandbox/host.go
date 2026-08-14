@@ -104,6 +104,23 @@ func (a Addressing) addressed(host string) string {
 	return addr
 }
 
+// IsToken reports whether a label has the shape mintToken emits: lowercase hex
+// of the full token width. Resolve deliberately accepts any label — it is the
+// grammar, not the credential check — but where a listener serves the sandbox
+// wildcard alongside another data plane, a host that cannot be a token is
+// better given to the neighbour than 404'd here.
+func IsToken(s string) bool {
+	if len(s) != tokenBytes*2 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // stripPort drops a :port suffix, leaving an IPv6 literal alone.
 func stripPort(hostport string) string {
 	if i := strings.LastIndex(hostport, ":"); i != -1 && !strings.Contains(hostport[i:], "]") {
