@@ -40,11 +40,11 @@ services:
       DOCKER_NETWORK: orchestrator
       # Sidecars report artifact results back to the service by its DNS name.
       ARTIFACT_ENDPOINT: http://orchestrator:8080
-      # Deployments get hosts like web.localhost; sandboxes get
-      # s-{token}.sandbox.localhost. Distinct domains keep one data listener
-      # able to tell them apart.
+      # Deployments get hosts like web.localhost. Sandboxes default to a
+      # subdomain of it (s-{token}.sandbox.localhost): one data listener serves
+      # both planes, so the domains have to differ. Override SANDBOX_DOMAIN and
+      # it must stay distinct — the service refuses to start otherwise.
       DEPLOYMENTS_DOMAIN: localhost
-      SANDBOX_DOMAIN: sandbox.localhost
       JOB_SIDECAR_IMAGE: ${JOB_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/job-sidecar:latest}
       WORKLOAD_SIDECAR_IMAGE: ${WORKLOAD_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/workload-sidecar:latest}
       # API_KEY_FILE: /run/secrets/api-key   # uncomment to require Bearer auth

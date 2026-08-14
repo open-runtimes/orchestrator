@@ -31,6 +31,7 @@ import (
 	"orchestrator/internal/server"
 	"orchestrator/internal/workload"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -42,6 +43,20 @@ func main() {
 
 	if backend := config.GetEnv("ORCHESTRATOR_BACKEND", "docker"); backend != "docker" {
 		slog.Error("The all-in-one orchestrator runs the Docker backend only; on Kubernetes run the per-service images from the Helm chart", "backend", backend)
+		os.Exit(1)
+	}
+
+	// One listener carries both data planes, so the hostname has to say which
+	// plane a request is for: the domains must differ. Hence the derived
+	// default, and hence refusing to start when they are set the same — a
+	// deployment named "s-foo" under the sandbox domain would be shadowed by
+	// the sandbox grammar and 404 on its own URL, which is worse than not
+	// booting.
+	deploymentsDomain := config.GetEnv("DEPLOYMENTS_DOMAIN", "localhost")
+	sandboxDomain := config.GetEnv("SANDBOX_DOMAIN", "sandbox."+deploymentsDomain)
+	if strings.EqualFold(sandboxDomain, deploymentsDomain) {
+		slog.Error("SANDBOX_DOMAIN and DEPLOYMENTS_DOMAIN must differ: one listener serves both data planes and tells them apart by host",
+			"domain", sandboxDomain)
 		os.Exit(1)
 	}
 
@@ -69,14 +84,14 @@ func main() {
 	}
 	defer jobs.orchestrator.Close()
 
-	deployments, err := startDeployments(ctx, eventDispatcher, metrics)
+	deployments, err := startDeployments(ctx, deploymentsDomain, eventDispatcher, metrics)
 	if err != nil {
 		slog.Error("Failed to start deployments plane", "error", err)
 		os.Exit(1)
 	}
 	defer deployments.orchestrator.Close()
 
-	sandboxes, err := startSandboxes(ctx, metrics)
+	sandboxes, err := startSandboxes(ctx, sandboxDomain, metrics)
 	if err != nil {
 		slog.Error("Failed to start sandboxes plane", "error", err)
 		os.Exit(1)
@@ -189,7 +204,7 @@ type deploymentsPlane struct {
 	activator    *activator.Activator
 }
 
-func startDeployments(ctx context.Context, queue dispatcher.Queue, metrics *observability.Metrics) (*deploymentsPlane, error) {
+func startDeployments(ctx context.Context, domain string, queue dispatcher.Queue, metrics *observability.Metrics) (*deploymentsPlane, error) {
 	dataPort := config.GetEnv("DATA_PORT", "8081")
 
 	cfg := depdocker.LoadConfigFromEnv()
@@ -202,8 +217,7 @@ func startDeployments(ctx context.Context, queue dispatcher.Queue, metrics *obse
 		return nil, err
 	}
 
-	svc := deployment.NewService(orchestrator, metrics, artifact.MountingRegistry(),
-		config.GetEnv("DEPLOYMENTS_DOMAIN", "localhost"),
+	svc := deployment.NewService(orchestrator, metrics, artifact.MountingRegistry(), domain,
 		func(host string) string {
 			if dataPort == "80" {
 				return "http://" + host
@@ -230,7 +244,7 @@ type sandboxesPlane struct {
 	proxy        *activator.SandboxProxy
 }
 
-func startSandboxes(ctx context.Context, metrics *observability.Metrics) (*sandboxesPlane, error) {
+func startSandboxes(ctx context.Context, domain string, metrics *observability.Metrics) (*sandboxesPlane, error) {
 	pools, err := sandbox.LoadPools(config.GetEnv("SANDBOX_POOLS_JSON", ""))
 	if err != nil {
 		return nil, fmt.Errorf("invalid sandbox pool configuration: %w", err)
@@ -239,6 +253,8 @@ func startSandboxes(ctx context.Context, metrics *observability.Metrics) (*sandb
 	cfg := sandboxdocker.LoadConfigFromEnv()
 	cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
 	cfg.Pools = pools
+	// The domain the URLs are minted under must be the one the proxy resolves.
+	cfg.SandboxDomain = domain
 	orchestrator, err := sandboxdocker.NewOrchestrator(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -248,7 +264,7 @@ func startSandboxes(ctx context.Context, metrics *observability.Metrics) (*sandb
 	}
 
 	proxy := activator.NewSandboxProxy(orchestrator, activator.SandboxConfig{
-		Domain: config.GetEnv("SANDBOX_DOMAIN", "localhost"),
+		Domain: domain,
 		Hold:   time.Duration(config.GetIntEnv("SANDBOX_HOLD_SECONDS", 5)) * time.Second,
 	}, metrics)
 
