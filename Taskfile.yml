@@ -53,6 +53,7 @@ tasks:
   build:
     desc: Build all images
     cmds:
+      - task: build-orchestrator
       - task: build-service
       - task: build-sidecar
       - task: build-deployments
@@ -119,6 +120,16 @@ tasks:
       - KO_DOCKER_REPO=ko.local/workload-sidecar {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/workload-sidecar
     sources:
       - cmd/workload-sidecar/**/*.go
+      - internal/**/*.go
+      - go.mod
+
+  build-orchestrator:
+    desc: Build the all-in-one orchestrator image (docker compose / dev)
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/orchestrator {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/orchestrator
+    sources:
+      - cmd/orchestrator/**/*.go
       - internal/**/*.go
       - go.mod
 

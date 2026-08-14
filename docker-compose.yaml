@@ -1,64 +1,60 @@
-# Run the orchestrator against the local Docker daemon — the fastest way to
-# try the API without a Kubernetes cluster. See docs/jobs.md and
-# docs/deployments.md for what to do once it's up.
+# Run the orchestrator against the local Docker daemon — the fastest way to try
+# the API without a Kubernetes cluster. One container serves every control
+# plane: jobs, deployments and sandboxes. See docs/jobs.md, docs/deployments.md
+# and docs/sandboxes.md for what to do once it's up.
 #
 #   docker compose up -d
 #   curl -X POST localhost:8080/v1/jobs -H 'Content-Type: application/json' \
 #     -d '{"id": "hello", "image": "alpine:latest", "command": "echo hi"}'
-#   curl -X POST localhost:8082/v1/deployments -H 'Content-Type: application/json' \
+#   curl -X POST localhost:8080/v1/deployments -H 'Content-Type: application/json' \
 #     -d '{"id": "web", "image": "traefik/whoami", "port": 80}'
 #   curl -H 'Host: web.localhost' localhost:8081/
+#   curl -X POST localhost:8080/v1/sandbox -H 'Content-Type: application/json' \
+#     -d '{"image": "alpine:latest"}'
 #
-# Both services drive the host's Docker daemon through the mounted socket;
-# the workload containers they create join this compose file's network so
-# services and sidecars can reach each other by IP and DNS name.
+# The service drives the host's Docker daemon through the mounted socket; the
+# workload containers it creates join this compose file's network so the service
+# and its sidecars can reach each other by IP and DNS name.
 #
-# The Docker backend is the development profile: single-revision deployments,
-# one replica each, no pools. Production runs the Helm chart — see
-# docs/operations.md and examples/helm-values.yaml.
+# This is the development profile: one process, single-revision deployments, one
+# replica each, no warm pools. Production runs the Helm chart, where each plane
+# is its own image and Deployment — see docs/operations.md and
+# examples/helm-values.yaml.
 
 services:
-  jobs:
-    image: ${JOBS_IMAGE:-ghcr.io/open-runtimes/orchestrator/jobs-service:latest}
+  orchestrator:
+    image: ${ORCHESTRATOR_IMAGE:-ghcr.io/open-runtimes/orchestrator/orchestrator:latest}
     # The images run as uid 65532; root is needed to open the host's Docker
     # socket. Fine for this dev profile — production is the Helm chart, where
     # nothing mounts a container runtime socket.
     user: "0"
     ports:
-      - "8080:8080" # jobs API
+      - "8080:8080" # jobs + deployments + sandbox API
+      - "8081:8081" # data plane: HTTP to your deployments and sandboxes, routed by Host
       - "9090:9090" # Prometheus metrics
     environment:
       ORCHESTRATOR_BACKEND: docker
-      # Workload + sidecar containers join this network.
+      # Workload + sidecar containers join this network. Jobs and the serving
+      # planes read different names for it; both point at the same network.
       ORCHESTRATOR_NETWORK: orchestrator
-      # Sidecars report artifact results back to the service by its DNS name.
-      ARTIFACT_ENDPOINT: http://jobs:8080
-      JOB_SIDECAR_IMAGE: ${JOB_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/job-sidecar:latest}
-      # API_KEY_FILE: /run/secrets/api-key   # uncomment to require Bearer auth
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks: [orchestrator]
-
-  deployments:
-    image: ${DEPLOYMENTS_IMAGE:-ghcr.io/open-runtimes/orchestrator/deployments-service:latest}
-    user: "0" # see jobs
-    ports:
-      - "8082:8080" # deployments + pools API (8080 in-container; 8082 on the host — jobs owns 8080)
-      - "8081:8081" # data plane: HTTP to your deployments, routed by Host header
-    environment:
-      ORCHESTRATOR_BACKEND: docker
       DOCKER_NETWORK: orchestrator
-      # Deployments get hosts like web.localhost, served on the data port.
+      # Sidecars report artifact results back to the service by its DNS name.
+      ARTIFACT_ENDPOINT: http://orchestrator:8080
+      # Deployments get hosts like web.localhost; sandboxes get
+      # s-{token}.sandbox.localhost. Distinct domains keep one data listener
+      # able to tell them apart.
       DEPLOYMENTS_DOMAIN: localhost
+      SANDBOX_DOMAIN: sandbox.localhost
+      JOB_SIDECAR_IMAGE: ${JOB_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/job-sidecar:latest}
       WORKLOAD_SIDECAR_IMAGE: ${WORKLOAD_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/workload-sidecar:latest}
-      ARTIFACT_ENDPOINT: http://deployments:8080
+      # API_KEY_FILE: /run/secrets/api-key   # uncomment to require Bearer auth
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [orchestrator]
 
 networks:
   orchestrator:
-    # Fixed name: the services pass it to the daemon when creating workload
+    # Fixed name: the service passes it to the daemon when creating workload
     # containers, so it must match the real network name, not the
     # compose-project-prefixed default.
     name: orchestrator
