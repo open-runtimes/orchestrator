@@ -79,7 +79,11 @@ func (a Addressing) Resolve(hostport string) (token, port string, ok bool) {
 	if !cut || !strings.EqualFold(domain, a.Domain) {
 		return "", "", false
 	}
-	rest, prefixed := strings.CutPrefix(label, HostPrefix)
+	// DNS is case-insensitive in both labels, and the whole hostname is minted
+	// lowercase, so an uppercase spelling addresses the same sandbox. Fold it
+	// here rather than at each caller: the token goes on to a label selector
+	// and a lowercase-hex check, neither of which would match otherwise.
+	rest, prefixed := strings.CutPrefix(strings.ToLower(label), HostPrefix)
 	if !prefixed || rest == "" {
 		return "", "", false
 	}

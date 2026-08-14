@@ -68,6 +68,7 @@ func TestAddressing_ResolveNormalizes(t *testing.T) {
 		"s-abc.sandboxes.example.com",
 		"s-abc.sandboxes.example.com:8081",
 		"s-abc.SANDBOXES.EXAMPLE.COM",
+		"S-ABC.sandboxes.example.com",
 	} {
 		token, _, ok := addr.Resolve(host)
 		if !ok || token != "abc" {
