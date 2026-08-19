@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -215,18 +216,36 @@ func (a *Clone) cloneCommit(ctx context.Context, workPath string, auth transport
 // destination: the clone root, or the subdir named within it. A subdir that
 // matches nothing fails rather than succeeding with the wrong tree — the same
 // contract unarchive's subdir keeps.
+//
+// The subdir is resolved, not just joined. Joining is lexical, and the tree on
+// the other end is a stranger's: a repository shipping "app" as a symlink to
+// ../data would otherwise have the move take that directory's files out of the
+// workspace path they belong to.
 func sourceRoot(clonePath, subdir string) (string, error) {
 	subdir = cleanSubdir(subdir)
 	if subdir == "" {
 		return clonePath, nil
 	}
 
-	subdirPath := filepath.Join(clonePath, filepath.FromSlash(subdir))
-	info, err := os.Stat(subdirPath)
+	root, err := filepath.EvalSymlinks(clonePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve the cloned tree: %w", err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(filepath.Join(clonePath, filepath.FromSlash(subdir)))
+	if err != nil {
+		return "", fmt.Errorf("subdir %q does not name a directory in the cloned tree", subdir)
+	}
+
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("subdir %q leaves the cloned tree", subdir)
+	}
+
+	info, err := os.Stat(resolved)
 	if err != nil || !info.IsDir() {
 		return "", fmt.Errorf("subdir %q does not name a directory in the cloned tree", subdir)
 	}
-	return subdirPath, nil
+	return resolved, nil
 }
 
 // moveTree moves the contents of src into dst, which it creates if missing.

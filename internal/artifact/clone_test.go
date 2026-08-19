@@ -321,6 +321,60 @@ func TestClone_Apply_WorkspaceRootDestination(t *testing.T) {
 	}
 }
 
+// serveSymlinkFixture serves a repository whose "escape" entry is a symlink
+// pointing out of the tree, the shape a hostile repository would use to aim
+// subdir at something the workspace owns.
+func serveSymlinkFixture(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit() error = %v", err)
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree() error = %v", err)
+	}
+
+	writeFixtureFile(t, dir, "main.txt", "main content")
+	if err := os.Symlink("../outside", filepath.Join(dir, "escape")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	if _, err := worktree.Add("."); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if _, err := worktree.Commit("initial", &git.CommitOptions{
+		Author: &object.Signature{Name: "test", Email: "test@example.com", When: time.Now()},
+	}); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	client.InstallProtocol("http", shaCapableTransport{server.NewClient(server.MapLoader{fixtureURL: repo.Storer})})
+	t.Cleanup(func() {
+		client.InstallProtocol("http", githttp.DefaultClient)
+	})
+}
+
+func TestClone_Apply_SubdirSymlinkOutOfTree(t *testing.T) {
+	serveSymlinkFixture(t)
+	tmpDir := t.TempDir()
+
+	// The scratch directory sits beside this one, so "escape -> ../outside"
+	// resolves onto it.
+	writeFixtureFile(t, filepath.Join(tmpDir, "outside"), "secret.txt", "earlier artifact")
+
+	a := &Clone{noShallow: true, ID: "clone", In: fixtureURL, Out: "src", Subdir: "escape"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error == nil {
+		t.Fatal("Apply() expected an error for a subdir leaving the cloned tree")
+	}
+
+	// The workspace still owns its file, at its own path.
+	assertFile(t, filepath.Join(tmpDir, "outside"), "secret.txt", "earlier artifact")
+	assertAbsent(t, tmpDir, "src/secret.txt")
+}
+
 func TestClone_Apply_MissingSubdir(t *testing.T) {
 	serveFixture(t)
 	tmpDir := t.TempDir()
