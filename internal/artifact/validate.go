@@ -30,6 +30,27 @@ func validateURL(rawURL string) error {
 	return nil
 }
 
+// validateGitURL admits the URLs clone can serve: http or https, and no
+// userinfo — credentials ride a header, never a string that errors and logs
+// echo verbatim.
+func validateGitURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("malformed URL")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("URL scheme must be http or https, got %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("URL must have a host")
+	}
+	if parsed.User != nil {
+		return errors.New("URL must not carry credentials; pass an Authorization header instead")
+	}
+	return nil
+}
+
 func validatePath(path string) error {
 	if path == "" {
 		return nil

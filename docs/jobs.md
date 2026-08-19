@@ -105,6 +105,7 @@ Artifacts handle file operations before and after job execution. An artifact run
 | Type | Description |
 |------|-------------|
 | `download` | Download file from URL |
+| `clone` | Materialize the tree at a git ref |
 | `write` | Write inline content |
 | `unarchive` | Extract a tar (plain/gzip/zstd/lz4), squashfs, or erofs archive |
 | `mount` | Mount a squashfs or erofs image read-only into the workspace |
@@ -124,6 +125,29 @@ All artifacts use standardized `in` and `out` fields:
 | `in` | Input - source URL, path, or content depending on type |
 | `out` | Output - destination URL or path depending on type |
 | `depends` | ID of artifact to wait for, or `"job"` for post-job execution |
+
+### Clone Artifact
+
+Materialize the tree at a git ref — for repositories whose provider hands out no archive URLs, where a `download` + `unarchive` chain has nothing to fetch. The clone is shallow, single-ref, and tagless, and the `.git` directory is removed after checkout: the workspace receives the tree, not a repository.
+
+```json
+{
+  "id": "source",
+  "type": "clone",
+  "in": "https://git.example.com/acme/app.git",
+  "out": "src",
+  "ref": "main",
+  "subdir": "packages/web",
+  "headers": {"Authorization": "Bearer <token>"}
+}
+```
+
+- `in` - Repository URL, http or https (required). Must not carry credentials — pass an `Authorization` header instead, so the token never rides a string that errors and logs echo verbatim.
+- `out` - Directory to materialize the tree into (required). The tree is merged into whatever the directory already holds — directory meets directory merges, a same-named file is replaced, and everything else is left alone — the way `unarchive` extracts into an existing directory. The clone itself runs in a scratch directory, so a failed clone leaves the destination untouched.
+- `ref` - Branch name, tag name, or full 40-hex commit hash (optional; defaults to the remote's default branch). A name is resolved as a branch first and a tag second. A commit hash reaches any commit the server is willing to serve — git forges generally allow reachable commits, not just branch and tag tips.
+- `subdir` - Keep only this subdirectory of the tree (optional). A subdir that matches nothing fails rather than succeeding with the wrong tree, the same contract `unarchive`'s `subdir` keeps.
+- `headers` - Headers sent with every git request (optional), typically `Authorization`
+- `timeoutSeconds` - Timeout for the whole clone (default 300)
 
 ### Download Artifact
 

@@ -148,6 +148,7 @@ func TypedSourcePath[T Artifact](fn func(a T) string) func(a Artifact) string {
 func builtinTypes() []TypeDef {
 	return []TypeDef{
 		DownloadDef,
+		CloneDef,
 		UploadDef,
 		WriteDef,
 		ReadDef,
