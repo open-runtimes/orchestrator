@@ -143,7 +143,7 @@ Materialize the tree at a git ref — for repositories whose provider hands out 
 ```
 
 - `in` - Repository URL, http or https (required). Must not carry credentials — pass an `Authorization` header instead, so the token never rides a string that errors and logs echo verbatim.
-- `out` - Directory to materialize the tree into (required)
+- `out` - Directory to materialize the tree into (required). The tree is merged into whatever the directory already holds — directory meets directory merges, a same-named file is replaced, and everything else is left alone — the way `unarchive` extracts into an existing directory. The clone itself runs in a scratch directory, so a failed clone leaves the destination untouched.
 - `ref` - Branch name, tag name, or full 40-hex commit hash (optional; defaults to the remote's default branch). A name is resolved as a branch first and a tag second. A commit hash reaches any commit the server is willing to serve — git forges generally allow reachable commits, not just branch and tag tips.
 - `subdir` - Keep only this subdirectory of the tree (optional). A subdir that matches nothing fails rather than succeeding with the wrong tree, the same contract `unarchive`'s `subdir` keeps.
 - `headers` - Headers sent with every git request (optional), typically `Authorization`

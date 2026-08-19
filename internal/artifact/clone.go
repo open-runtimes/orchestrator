@@ -68,12 +68,32 @@ func (h cloneAuth) SetAuth(r *http.Request) {
 }
 
 // Apply materializes the tree at the requested ref into Out.
+//
+// The clone lands in a scratch directory under the workspace rather than in
+// the destination itself. Nothing here may erase what the workspace already
+// holds at Out — an earlier artifact's output, or a ref that only resolves on
+// the second attempt would take it with it — so the tree is moved into place
+// at the end, merging the way unarchive extracts into an existing directory.
 func (a *Clone) Apply(ctx context.Context, basePath string) *Result {
 	destPath := filepath.Join(basePath, a.Out)
 
-	if err := os.MkdirAll(destPath, 0o755); err != nil {
+	if err := os.MkdirAll(basePath, 0o755); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
+
+	// The scratch directory hangs off the workspace root rather than the
+	// destination's parent: that parent is the workspace itself when Out is
+	// ".", and a scratch directory above the workspace could land on another
+	// filesystem, where moving the tree into place would stop being a rename.
+	workPath, err := os.MkdirTemp(basePath, ".clone-*")
+	if err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to create the clone directory: %w", err)}
+	}
+	defer func() {
+		if err := os.RemoveAll(workPath); err != nil {
+			slog.Warn("Failed to remove the clone directory", "path", workPath, "error", err)
+		}
+	}()
 
 	timeoutSecs := a.TimeoutSeconds
 	if timeoutSecs <= 0 {
@@ -87,21 +107,25 @@ func (a *Clone) Apply(ctx context.Context, basePath string) *Result {
 		auth = cloneAuth(a.Headers)
 	}
 
-	var err error
 	if isCommitHash(a.Ref) {
-		err = a.cloneCommit(ctx, destPath, auth)
+		err = a.cloneCommit(ctx, workPath, auth)
 	} else {
-		err = a.cloneRef(ctx, destPath, auth)
+		err = a.cloneRef(ctx, workPath, auth)
 	}
 	if err != nil {
 		return &Result{Status: "failed", Error: err}
 	}
 
-	if err := os.RemoveAll(filepath.Join(destPath, git.GitDirName)); err != nil {
+	if err := os.RemoveAll(filepath.Join(workPath, git.GitDirName)); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to remove the .git directory: %w", err)}
 	}
 
-	if err := selectSubdir(destPath, a.Subdir); err != nil {
+	root, err := sourceRoot(workPath, a.Subdir)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+
+	if err := moveTree(root, destPath); err != nil {
 		return &Result{Status: "failed", Error: err}
 	}
 
@@ -112,7 +136,7 @@ func (a *Clone) Apply(ctx context.Context, basePath string) *Result {
 // cloneRef clones a branch, a tag, or the remote's default branch. A name is
 // tried as a branch first and as a tag second — the order every git tool
 // resolves the ambiguity in.
-func (a *Clone) cloneRef(ctx context.Context, destPath string, auth transport.AuthMethod) error {
+func (a *Clone) cloneRef(ctx context.Context, workPath string, auth transport.AuthMethod) error {
 	options := &git.CloneOptions{
 		URL:          a.In,
 		Auth:         auth,
@@ -122,7 +146,7 @@ func (a *Clone) cloneRef(ctx context.Context, destPath string, auth transport.Au
 	}
 
 	if a.Ref == "" {
-		_, err := git.PlainCloneContext(ctx, destPath, false, options)
+		_, err := git.PlainCloneContext(ctx, workPath, false, options)
 		if err != nil {
 			return fmt.Errorf("failed to clone the default branch: %w", err)
 		}
@@ -130,19 +154,21 @@ func (a *Clone) cloneRef(ctx context.Context, destPath string, auth transport.Au
 	}
 
 	options.ReferenceName = plumbing.NewBranchReferenceName(a.Ref)
-	_, branchErr := git.PlainCloneContext(ctx, destPath, false, options)
+	_, branchErr := git.PlainCloneContext(ctx, workPath, false, options)
 	if branchErr == nil {
 		return nil
 	}
 
 	// A failed attempt leaves a partial .git behind, which the retry would
-	// refuse as an existing repository.
-	if err := resetDir(destPath); err != nil {
+	// refuse as an existing repository. Emptying the scratch directory is safe
+	// where emptying the destination would not be: nothing but this attempt
+	// has ever written here.
+	if err := resetDir(workPath); err != nil {
 		return err
 	}
 
 	options.ReferenceName = plumbing.NewTagReferenceName(a.Ref)
-	if _, tagErr := git.PlainCloneContext(ctx, destPath, false, options); tagErr != nil {
+	if _, tagErr := git.PlainCloneContext(ctx, workPath, false, options); tagErr != nil {
 		return fmt.Errorf("failed to clone ref %q as a branch (%w) or a tag (%w)", a.Ref, branchErr, tagErr)
 	}
 	return nil
@@ -151,8 +177,8 @@ func (a *Clone) cloneRef(ctx context.Context, destPath string, auth transport.Au
 // cloneCommit fetches a single commit by hash and checks out its tree. Served
 // only when the remote allows non-tip wants, which the git forges do for
 // reachable commits.
-func (a *Clone) cloneCommit(ctx context.Context, destPath string, auth transport.AuthMethod) error {
-	repo, err := git.PlainInit(destPath, false)
+func (a *Clone) cloneCommit(ctx context.Context, workPath string, auth transport.AuthMethod) error {
+	repo, err := git.PlainInit(workPath, false)
 	if err != nil {
 		return fmt.Errorf("failed to init repository: %w", err)
 	}
@@ -185,31 +211,59 @@ func (a *Clone) cloneCommit(ctx context.Context, destPath string, auth transport
 	return nil
 }
 
-// selectSubdir replaces the tree at destPath with its subdir. An empty subdir
-// keeps the whole tree; one that matches nothing fails rather than succeeding
-// with the wrong tree — the same contract unarchive's subdir keeps.
-func selectSubdir(destPath, subdir string) error {
+// sourceRoot returns the directory in the clone whose contents belong in the
+// destination: the clone root, or the subdir named within it. A subdir that
+// matches nothing fails rather than succeeding with the wrong tree — the same
+// contract unarchive's subdir keeps.
+func sourceRoot(clonePath, subdir string) (string, error) {
 	subdir = cleanSubdir(subdir)
 	if subdir == "" {
-		return nil
+		return clonePath, nil
 	}
 
-	subdirPath := filepath.Join(destPath, filepath.FromSlash(subdir))
+	subdirPath := filepath.Join(clonePath, filepath.FromSlash(subdir))
 	info, err := os.Stat(subdirPath)
 	if err != nil || !info.IsDir() {
-		return fmt.Errorf("subdir %q does not name a directory in the cloned tree", subdir)
+		return "", fmt.Errorf("subdir %q does not name a directory in the cloned tree", subdir)
+	}
+	return subdirPath, nil
+}
+
+// moveTree moves the contents of src into dst, which it creates if missing.
+// Directory meets directory merges; anything else replaces what it lands on,
+// leaving the rest of dst alone. src is a scratch directory on the same
+// filesystem, so every entry moves with a rename rather than a copy.
+func moveTree(src, dst string) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return fmt.Errorf("failed to create %s: %w", dst, err)
 	}
 
-	tempPath := destPath + ".subdir"
-	if err := os.Rename(subdirPath, tempPath); err != nil {
-		return fmt.Errorf("failed to select subdir: %w", err)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("failed to read the cloned tree: %w", err)
 	}
-	if err := os.RemoveAll(destPath); err != nil {
-		return fmt.Errorf("failed to select subdir: %w", err)
+
+	for _, entry := range entries {
+		from := filepath.Join(src, entry.Name())
+		to := filepath.Join(dst, entry.Name())
+
+		if existing, err := os.Lstat(to); err == nil {
+			if entry.IsDir() && existing.IsDir() {
+				if err := moveTree(from, to); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := os.RemoveAll(to); err != nil {
+				return fmt.Errorf("failed to replace %s: %w", to, err)
+			}
+		}
+
+		if err := os.Rename(from, to); err != nil {
+			return fmt.Errorf("failed to move %s into place: %w", to, err)
+		}
 	}
-	if err := os.Rename(tempPath, destPath); err != nil {
-		return fmt.Errorf("failed to select subdir: %w", err)
-	}
+
 	return nil
 }
 

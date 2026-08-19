@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,6 +235,90 @@ func TestClone_Apply_Subdir(t *testing.T) {
 	assertFile(t, dest, "index.txt", "web content")
 	assertAbsent(t, dest, "main.txt")
 	assertAbsent(t, dest, "app")
+}
+
+func TestClone_Apply_KeepsExistingDestination(t *testing.T) {
+	serveFixture(t)
+	tmpDir := t.TempDir()
+
+	// A tag ref only resolves on the second attempt, so this is the case that
+	// used to empty the destination before retrying.
+	dest := filepath.Join(tmpDir, "src")
+	writeFixtureFile(t, dest, "keep.txt", "earlier artifact")
+	writeFixtureFile(t, dest, "app/web/keep.txt", "earlier artifact, nested")
+	writeFixtureFile(t, dest, "main.txt", "stale")
+
+	a := &Clone{noShallow: true, ID: "clone", In: fixtureURL, Out: "src", Ref: "v1"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	// Untouched by the clone, merged beside it, and overwritten by it.
+	assertFile(t, dest, "keep.txt", "earlier artifact")
+	assertFile(t, dest, "app/web/keep.txt", "earlier artifact, nested")
+	assertFile(t, dest, "app/web/index.txt", "web content")
+	assertFile(t, dest, "main.txt", "main content")
+}
+
+func TestClone_Apply_RemovesScratchDirectory(t *testing.T) {
+	serveFixture(t)
+	tmpDir := t.TempDir()
+
+	a := &Clone{noShallow: true, ID: "clone", In: fixtureURL, Out: "src"}
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "src" {
+			t.Errorf("expected only the destination to remain, found %q", entry.Name())
+		}
+	}
+}
+
+func TestClone_Apply_FailedCloneLeavesDestinationAlone(t *testing.T) {
+	serveFixture(t)
+	tmpDir := t.TempDir()
+
+	dest := filepath.Join(tmpDir, "src")
+	writeFixtureFile(t, dest, "keep.txt", "earlier artifact")
+
+	a := &Clone{noShallow: true, ID: "clone", In: fixtureURL, Out: "src", Ref: "no-such-ref"}
+	if result := a.Apply(t.Context(), tmpDir); result.Error == nil {
+		t.Fatal("Apply() expected an error for an unknown ref")
+	}
+
+	assertFile(t, dest, "keep.txt", "earlier artifact")
+}
+
+func TestClone_Apply_WorkspaceRootDestination(t *testing.T) {
+	serveFixture(t)
+	tmpDir := t.TempDir()
+
+	// "." names the workspace itself: the scratch directory must stay inside
+	// it rather than landing beside it.
+	a := &Clone{noShallow: true, ID: "clone", In: fixtureURL, Out: "."}
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+
+	assertFile(t, tmpDir, "main.txt", "main content")
+	assertAbsent(t, tmpDir, ".git")
+
+	entries, err := os.ReadDir(filepath.Dir(tmpDir))
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".clone-") {
+			t.Errorf("scratch directory %q escaped the workspace", entry.Name())
+		}
+	}
 }
 
 func TestClone_Apply_MissingSubdir(t *testing.T) {
