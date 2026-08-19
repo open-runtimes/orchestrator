@@ -28,6 +28,29 @@ var (
 		}),
 	}
 
+	CloneDef = TypeDef{
+		Type: "clone",
+		New:  func() Artifact { return &Clone{} },
+		Validate: TypedValidator(func(field string, a *Clone) error {
+			if a.In == "" {
+				return apperrors.Validation(field+".in", "in (repository url) is required")
+			}
+			if err := validateGitURL(a.In); err != nil {
+				return apperrors.Validation(field+".in", "invalid in (repository url): "+err.Error())
+			}
+			if a.Out == "" {
+				return apperrors.Validation(field+".out", "out (path) is required")
+			}
+			if err := validatePath(a.Out); err != nil {
+				return apperrors.Validation(field+".out", "invalid out (path): "+err.Error())
+			}
+			if err := validatePath(a.Subdir); err != nil {
+				return apperrors.Validation(field+".subdir", "invalid subdir: "+err.Error())
+			}
+			return nil
+		}),
+	}
+
 	UploadDef = TypeDef{
 		Type: "upload",
 		New:  func() Artifact { return &Upload{} },
