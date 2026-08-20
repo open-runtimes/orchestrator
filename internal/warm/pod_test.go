@@ -13,8 +13,8 @@ import (
 )
 
 // mapperPool is testPool plus the resource and env fields buildPod maps.
-func mapperPool() *pool.Pool {
-	p := testPool("std")
+func mapperPool() *pool.Spec {
+	p := testPool("std").Spec
 	p.CPU = 0.5
 	p.Memory = 256
 	p.Environment = map[string]string{"B": "2", "A": "1"}
@@ -33,7 +33,7 @@ func testBuilder(t *testing.T, tune ...func(*Config)) *Manager {
 
 func TestBuildPod_Shape(t *testing.T) {
 	t.Parallel()
-	pod := testBuilder(t).buildPod(mapperPool(), "pool-std-aabbc", "aabbccdd")
+	pod := testBuilder(t).buildPod(mapperPool(), "std", "pool-std-aabbc", "aabbccdd")
 
 	if pod.Name != "pool-std-aabbc" {
 		t.Errorf("want the caller-chosen name (the claim token derives from it), got %q", pod.Name)
@@ -119,7 +119,7 @@ func TestBuildPod_Tolerations(t *testing.T) {
 	builder := testBuilder(t, func(c *Config) {
 		c.Tolerations = []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}
 	})
-	got := builder.buildPod(mapperPool(), "pool-std-x", "tok").Spec.Tolerations
+	got := builder.buildPod(mapperPool(), "std", "pool-std-x", "tok").Spec.Tolerations
 	if len(got) != 1 || got[0].Key != "workload" {
 		t.Errorf("tolerations: want workload=edge-builds:NoSchedule, got %+v", got)
 	}
@@ -127,7 +127,7 @@ func TestBuildPod_Tolerations(t *testing.T) {
 
 func TestBuildPod_Resources(t *testing.T) {
 	t.Parallel()
-	pod := testBuilder(t).buildPod(mapperPool(), "pool-std-x", "tok")
+	pod := testBuilder(t).buildPod(mapperPool(), "std", "pool-std-x", "tok")
 	res := pod.Spec.Containers[0].Resources
 
 	if got := res.Requests.Cpu().MilliValue(); got != 500 {
@@ -142,7 +142,7 @@ func TestBuildPod_Resources(t *testing.T) {
 	}
 
 	// A bare pool keeps no workload resources at all.
-	bare := testBuilder(t).buildPod(&pool.Pool{ID: "bare", Image: "img"}, "pool-bare-x", "tok")
+	bare := testBuilder(t).buildPod(&pool.Spec{Image: "img"}, "bare", "pool-bare-x", "tok")
 	bareRes := bare.Spec.Containers[0].Resources
 	if len(bareRes.Requests) != 0 || len(bareRes.Limits) != 0 {
 		t.Errorf("bare pool resources: got %+v", bareRes)
@@ -151,7 +151,7 @@ func TestBuildPod_Resources(t *testing.T) {
 
 func TestBuildPod_SecurityFloor(t *testing.T) {
 	t.Parallel()
-	pod := testBuilder(t).buildPod(mapperPool(), "pool-std-x", "tok")
+	pod := testBuilder(t).buildPod(mapperPool(), "std", "pool-std-x", "tok")
 	containers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
 	for _, c := range containers {
 		sc := c.SecurityContext
@@ -190,7 +190,7 @@ func TestBuildPod_RuntimeClass(t *testing.T) {
 	} {
 		p := mapperPool()
 		p.RuntimeClass = tier
-		got := builder.buildPod(p, "pool-std-1", "token").Spec.RuntimeClassName
+		got := builder.buildPod(p, "std", "pool-std-1", "token").Spec.RuntimeClassName
 		switch {
 		case want == "" && got != nil:
 			t.Errorf("tier %q: want no runtimeClassName, got %q", tier, *got)
@@ -212,7 +212,7 @@ func TestBuildPod_AgentInstall(t *testing.T) {
 			Dest:   "/workspace/.sandbox-agent",
 		}
 	})
-	pod := builder.buildPod(mapperPool(), "sbx-py-aabbc", "tok")
+	pod := builder.buildPod(mapperPool(), "std", "sbx-py-aabbc", "tok")
 
 	if len(pod.Spec.InitContainers) != 3 {
 		t.Fatalf("want shim-install, agent-install, proxy; got %d", len(pod.Spec.InitContainers))
@@ -237,7 +237,7 @@ func TestBuildPod_AgentInstall(t *testing.T) {
 	}
 
 	// Deployment pools declare no agent and keep two init containers.
-	plain := testBuilder(t).buildPod(mapperPool(), "pool-std-aabbc", "tok")
+	plain := testBuilder(t).buildPod(mapperPool(), "std", "pool-std-aabbc", "tok")
 	if len(plain.Spec.InitContainers) != 2 {
 		t.Errorf("without an Agent: want 2 init containers, got %d", len(plain.Spec.InitContainers))
 	}
@@ -249,7 +249,7 @@ func TestBuildPod_AgentInstall(t *testing.T) {
 // container in every pod of that pool.
 func TestBuildPod_MountCapabilityIsOffUnlessThePoolAsks(t *testing.T) {
 	t.Parallel()
-	plain := podFor(t, pool.Pool{ID: "web", Image: "runtime:latest", Size: 1, Port: 3000})
+	plain := podFor(t, pool.Pool{ID: "web", Size: 1, Spec: pool.Spec{Image: "runtime:latest", Port: 3000}})
 	sidecar := containerNamed(t, plain, ContainerProxy)
 	worker := containerNamed(t, plain, ContainerWorkload)
 
@@ -263,7 +263,7 @@ func TestBuildPod_MountCapabilityIsOffUnlessThePoolAsks(t *testing.T) {
 		t.Error("the sidecar must not be told it can mount")
 	}
 
-	mounting := podFor(t, pool.Pool{ID: "sqfs", Image: "runtime:latest", Size: 1, Port: 3000, Mounts: true})
+	mounting := podFor(t, pool.Pool{ID: "sqfs", Size: 1, Spec: pool.Spec{Image: "runtime:latest", Port: 3000, Mounts: true}})
 	sidecar = containerNamed(t, mounting, ContainerProxy)
 	worker = containerNamed(t, mounting, ContainerWorkload)
 
@@ -290,7 +290,7 @@ func podFor(t *testing.T, p pool.Pool) *corev1.Pod {
 	t.Helper()
 	m := New(nil, []pool.Pool{p}, Config{Namespace: testNS, SidecarImage: "sidecar:latest",
 		ShimImage: "shim:latest", RunAsUser: 65532, Naming: testNaming})
-	return m.buildPod(&m.pools[0], "pool-"+p.ID+"-aaaaa", "tok")
+	return m.buildPod(&m.pools[0].Spec, p.ID, "pool-"+p.ID+"-aaaaa", "tok")
 }
 
 func containerNamed(t *testing.T, pod *corev1.Pod, name string) corev1.Container {

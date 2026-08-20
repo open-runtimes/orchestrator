@@ -105,15 +105,14 @@ func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
 // Create claims a warm pod for the sandbox, stamps it with the sandbox id and
 // its capability token, and waits for the image's contract to answer.
 func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandbox.Status, error) {
-	// A declared pool, or the pool of one a poolless sandbox brings with it. The
-	// claim is the same either way; only where the pod comes from differs, and
-	// the burst policy on an empty pool of one is what creates it.
-	p := o.warm.Pool(req.Pool)
-	if req.Pool == "" {
-		p = sandbox.InlinePool(req)
-	}
-	if p == nil {
-		return nil, apperrors.NotFound("pool", req.Pool)
+	// A declared pool fixes the shape; a poolless sandbox describes its own.
+	shape := req.Shape()
+	var p *pool.Pool
+	if req.Pool != "" {
+		if p = o.warm.Pool(req.Pool); p == nil {
+			return nil, apperrors.NotFound("pool", req.Pool)
+		}
+		shape = p.Spec
 	}
 	if existing, err := o.warm.Claimed(ctx, "", req.ID); err != nil {
 		return nil, err
@@ -121,17 +120,24 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		return nil, apperrors.Conflict("sandbox", req.ID, "sandbox "+req.ID+" already exists")
 	}
 
-	pod, err := o.warm.Claim(ctx, p, claimRequest(p, req))
+	// Claim a warm pod, or — with no pool behind this sandbox — create the one
+	// pod it needs and claim that. The second path skips the warm pass and the
+	// burst policy: there is no standing capacity to scan, and the pod is
+	// labeled with the sandbox's own id so it is never offered to another claim.
+	var pod *corev1.Pod
+	var err error
+	if p == nil {
+		pod, err = o.warm.CreateClaimed(ctx, &shape, req.ID, claimRequest(&shape, req))
+	} else {
+		pod, err = o.warm.Claim(ctx, p, claimRequest(&p.Spec, req))
+	}
 	if err != nil {
 		var poison *claim.Poison
 		if errors.As(err, &poison) {
 			// Artifact materialization failed: the pod is poisoned and this
-			// sandbox has failed. No URL — nothing is serving. A declared pool's
-			// control loop discards the pod; a pool of one has no loop watching
-			// it, so it is discarded here and now.
-			if req.Pool == "" && poison.Unit != "" {
-				_ = o.warm.Delete(ctx, poison.Unit)
-			}
+			// sandbox has failed. No URL — nothing is serving. The pod is
+			// discarded either way: a declared pool's control loop drops it, and
+			// CreateClaimed drops the one it created.
 			return &sandbox.Status{
 				ID: req.ID, PoolID: req.Pool,
 				State: sandbox.StateFailed, Error: poison.Msg,
@@ -142,14 +148,14 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if err := o.warm.Bind(ctx, pod.Name, req.ID, req, map[string]string{LabelToken: req.Token}); err != nil {
 		return nil, err
 	}
-	return o.awaitServing(ctx, p, req, pod)
+	return o.awaitServing(ctx, &shape, req, pod)
 }
 
 // claimRequest maps the sandbox onto the sidecar claim protocol. The command
 // falls back from the request to the pool to the installed agent — so the usual
 // case is that nobody names one, and the image serves the contract by running
 // the agent the shim dropped in its workspace.
-func claimRequest(p *pool.Pool, req *sandbox.Request) *workload.ClaimRequest {
+func claimRequest(p *pool.Spec, req *sandbox.Request) *workload.ClaimRequest {
 	return &workload.ClaimRequest{
 		ActivationID:   req.ID,
 		Command:        cmp.Or(req.Command, p.Command, agentPath),
@@ -164,7 +170,7 @@ func claimRequest(p *pool.Pool, req *sandbox.Request) *workload.ClaimRequest {
 // awaitServing waits for the sandbox's sidecar to report the workload serving,
 // so a 201 means the URL is live. Never ready in time → the sandbox is torn
 // down and reported failed.
-func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Pool, req *sandbox.Request, pod *corev1.Pod) (*sandbox.Status, error) {
+func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Spec, req *sandbox.Request, pod *corev1.Pod) (*sandbox.Status, error) {
 	status := &sandbox.Status{
 		ID:     req.ID,
 		PoolID: req.Pool,

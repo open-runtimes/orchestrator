@@ -67,6 +67,8 @@ Exactly one of `pool` or `image` — both is ambiguous (which image wins?) and n
 | `cpu`, `memory` | number, int | platform default | Size the workload container of a poolless sandbox. |
 | `runtimeClass` | string | platform default | Isolation tier (`runc` \| `gvisor` \| `kata`) for a poolless sandbox. Per-sandbox here, unlike a pool's, because the pod is built for this request. |
 | `volumes` | array | — | Attach existing storage to a poolless sandbox — per-sandbox for the same reason. Same [schema](#persistence) as a pool's. |
+
+Every field above from `image` down to `volumes` describes a pod, so it belongs to a poolless create. Passing one alongside `pool` is a `400`: a warm pod is already running when you claim it, so none of them could be honoured.
 | `id` | string | generated | Caller-chosen for a stable API path and idempotency. RFC-1123 label: lowercase alphanumeric with interior hyphens, ≤63 characters. Re-POSTing a live id → `409`. Generated as `{pool}-{8 hex}` when omitted. **Not** the address — see [the URL is a capability](#the-url-is-a-capability). |
 | `command` | string | the pool's | What the claim execs. With none declared anywhere, the sandbox runs the [agent](#the-sandbox-contract) installed in its workspace — the usual case. |
 | `environment` | object | — | Environment variables for the workload. |
@@ -111,7 +113,7 @@ What you trade:
 
 What you gain: nothing to configure ahead of time, and per-sandbox control over `runtimeClass`, `volumes`, `cpu`/`memory` and [mounting](#mounting-a-filesystem-image) — all of which a pool fixes for every sandbox in it, because its pods are already running when you claim one.
 
-Under the hood it is a **pool of one**: keyed by the sandbox's own id so its pod is never offered to another sandbox, sized zero so nothing replenishes it, and created by the same burst policy that covers an exhausted pool. Which is why every other rule in this guide applies unchanged.
+Under the hood it is not a pool at all: the request describes a pod, the pod is created and claimed directly, and it is labeled with the sandbox's own id so no other claim can ever be offered it. There is no warm scan and no burst policy on this path — nothing was standing in a shape this request invented. Every other rule in this guide applies unchanged.
 
 ### Read, list, and delete
 
@@ -321,7 +323,9 @@ sandbox:
           subPath: tenant-a   # optional: mount a subdirectory of the volume
 ```
 
-Want per-sandbox storage? Declare a pool per storage shape. Accepting `volumes` on the create call would mean cold-starting a pod for it, which silently turns a sub-second create into a slow one — a bad thing to do quietly.
+Naming `volumes` on a create that claims from a pool is a `400`, not a silent drop: a sandbox that asked for storage and quietly ran without it is the worst of the available outcomes. The same goes for the other fields a pool fixes — `image`, `port`, `cpu`, `memory`, `runtimeClass`, `terminationGracePeriodSeconds`.
+
+Want per-sandbox storage? Declare a pool per storage shape, or [create without a pool](#a-sandbox-with-no-pool) and pass `volumes` on the request — that pod is built for the request, so it can mount anything, at the cost of a cold start. What is not on offer is `volumes` *and* a sub-second claim.
 
 Nothing is checkpointed and there is no suspend/resume — a sandbox is either running or gone. Anything worth keeping goes in a pool volume, or gets read out through `/files` before teardown.
 

@@ -146,7 +146,7 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 		c.m.cfg.Metrics.RecordPoolCapacity(ctx, c.m.cfg.Naming.Kind, p.ID, int64(warm), int64(claimed))
 	}
 	for n := warm; n < p.Size; n++ {
-		if _, err := c.m.Create(ctx, p); err != nil {
+		if _, err := c.m.Create(ctx, &p.Spec, p.ID); err != nil {
 			slog.Warn("Warm pod create failed", "poolId", p.ID, "error", err)
 			return
 		}

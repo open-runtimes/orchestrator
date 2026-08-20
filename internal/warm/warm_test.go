@@ -87,7 +87,7 @@ func (f *fakeSidecar) Requests(_ context.Context, podIP string) (int64, error) {
 }
 
 func testPool(id string) pool.Pool {
-	return pool.Pool{ID: id, Image: "runtime:latest", Port: 8080, Size: 1, Burst: pool.BurstReject}
+	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "runtime:latest", Port: 8080}}
 }
 
 func newTestManager(t *testing.T, pools ...pool.Pool) (*Manager, *fake.Clientset, *fakeSidecar) {

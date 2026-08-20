@@ -46,7 +46,7 @@ func (m *Manager) PoolLabels(poolID string) map[string]string {
 	}
 }
 
-// buildPod maps a pool onto one warm pod, named {prefix}-{id}-{suffix} (the
+// buildPod maps a pod shape onto one warm pod, named {prefix}-{id}-{suffix} (the
 // name is chosen by the caller — the claim token derives from it). All
 // containers share an emptyDir workspace:
 //
@@ -64,14 +64,14 @@ func (m *Manager) PoolLabels(poolID string) map[string]string {
 //
 // RestartPolicy Never: when the exec'd workload exits, the pod completes and
 // the kubelet SIGTERMs the sidecar — the pod is discarded, never reused.
-func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
+func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod {
 	autoMount := false
 	podVolumes, _ := kube.PersistentVolumes(p.Volumes)
 	cfg := m.cfg
 	warmPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
-			Labels: m.PoolLabels(p.ID),
+			Labels: m.PoolLabels(poolID),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                 corev1.RestartPolicyNever,
@@ -102,7 +102,7 @@ func (m *Manager) buildPod(p *pool.Pool, name, token string) *corev1.Pod {
 // initContainers builds the pod's init containers in order: the shim install,
 // the optional agent install, then the sidecar (a native sidecar, which the
 // kubelet starts and leaves running).
-func initContainers(p *pool.Pool, cfg Config, token string) []corev1.Container {
+func initContainers(p *pool.Spec, cfg Config, token string) []corev1.Container {
 	containers := []corev1.Container{shimInstallContainer(cfg)}
 	if cfg.Agent.Image != "" {
 		containers = append(containers, agentInstallContainer(cfg))
@@ -141,7 +141,7 @@ func shimInstallContainer(cfg Config) corev1.Container {
 // proxyContainer is the workload-sidecar in pool mode: a native sidecar
 // listening from pod start, holding the claim endpoints. Its kubelet /ready
 // probe gates the pod's Ready condition — warm-ready while unclaimed.
-func proxyContainer(p *pool.Pool, cfg Config, token string) corev1.Container {
+func proxyContainer(p *pool.Spec, cfg Config, token string) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	env := []corev1.EnvVar{
 		{Name: workload.EnvClaimToken, Value: token},
@@ -182,9 +182,9 @@ func proxyContainer(p *pool.Pool, cfg Config, token string) corev1.Container {
 	}
 }
 
-// sidecarSecurityContext hardens the sidecar, unless the pool lets a claim
+// sidecarSecurityContext hardens the sidecar, unless the shape lets a claim
 // mount — then it needs privilege, which is the cost of the capability.
-func sidecarSecurityContext(p *pool.Pool, cfg Config) *corev1.SecurityContext {
+func sidecarSecurityContext(p *pool.Spec, cfg Config) *corev1.SecurityContext {
 	if p.Mounts {
 		return kube.MountingSecurityContext()
 	}
@@ -194,7 +194,7 @@ func sidecarSecurityContext(p *pool.Pool, cfg Config) *corev1.SecurityContext {
 // gracePeriod is how long teardown may take: the drain, the post-phase
 // artifacts, and the unmount all happen inside it. Nil leaves Kubernetes' own
 // default, which is fine for a claim with nothing to do on the way out.
-func gracePeriod(p *pool.Pool) *int64 {
+func gracePeriod(p *pool.Spec) *int64 {
 	if p.TerminationGracePeriodSeconds <= 0 {
 		return nil
 	}
@@ -203,10 +203,10 @@ func gracePeriod(p *pool.Pool) *int64 {
 }
 
 // workspaceMount mounts the shared workspace, carrying propagation only for a
-// pool that mounts: a mount established in the sidecar reaches the workload
+// shape that mounts: a mount established in the sidecar reaches the workload
 // through the shared subtree, and the workload's copy must accept it. Nothing
-// is propagated for a pool without the capability.
-func workspaceMount(p *pool.Pool, propagation corev1.MountPropagationMode) corev1.VolumeMount {
+// is propagated for a shape without the capability.
+func workspaceMount(p *pool.Spec, propagation corev1.MountPropagationMode) corev1.VolumeMount {
 	m := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: workspacePath}
 	if p.Mounts {
 		m.MountPropagation = &propagation
@@ -214,9 +214,9 @@ func workspaceMount(p *pool.Pool, propagation corev1.MountPropagationMode) corev
 	return m
 }
 
-// workloadContainer is the pool image, entrypoint overridden to the installed
+// workloadContainer is the shape's image, entrypoint overridden to the installed
 // shim so the container idles until a claim execs the real payload.
-func workloadContainer(p *pool.Pool, cfg Config) corev1.Container {
+func workloadContainer(p *pool.Spec, cfg Config) corev1.Container {
 	// The consumer's settings come first so the pool can override them: an
 	// operator who sets SANDBOX_PORT explicitly means it.
 	declared := map[string]string{}

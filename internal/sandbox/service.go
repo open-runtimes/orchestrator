@@ -85,17 +85,19 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
 		}
 		req.ID = id
 	}
-	// Either a declared pool, or the shape this request asked for. Everything
-	// downstream takes a pool, so a poolless sandbox brings its own — a pool of
-	// one, created on demand and never offered to anybody else.
-	p, ok := s.pools[req.Pool]
-	if req.Pool == "" {
-		p, ok = InlinePool(req), true
+	// A declared pool fixes the shape; a poolless sandbox describes its own.
+	// Only the pooled path has a pool — p stays nil otherwise, because there is
+	// no standing capacity to have a policy about.
+	shape := req.Shape()
+	var p *pool.Pool
+	if req.Pool != "" {
+		declared, ok := s.pools[req.Pool]
+		if !ok {
+			return nil, apperrors.NotFound("pool", req.Pool)
+		}
+		p, shape = declared, declared.Spec
 	}
-	if !ok {
-		return nil, apperrors.NotFound("pool", req.Pool)
-	}
-	if err := s.validate(req, p); err != nil {
+	if err := s.validate(req, &shape, p); err != nil {
 		return nil, err
 	}
 	token, err := mintToken()
@@ -159,6 +161,14 @@ func (s *Service) validateSource(req *Request) error {
 	case req.Pool == "" && req.Image == "":
 		return apperrors.Validation("pool", "pool or image is required")
 	case req.Pool != "":
+		// These are pool dimensions. Accepting and ignoring them is the worst
+		// outcome: a sandbox that asked for a volume, a CPU limit, or an
+		// isolation tier would run without it and say nothing.
+		if named := req.PoolFixed(); len(named) > 0 {
+			return apperrors.Validation(named[0], fmt.Sprintf(
+				"pool %q fixes the sandbox's pod: drop %s from the request, or give an image instead of a pool to shape it per sandbox",
+				req.Pool, strings.Join(named, ", ")))
+		}
 		return nil
 	}
 	if req.Port <= 0 || req.Port > 65535 {
@@ -186,30 +196,7 @@ func (s *Service) validateSource(req *Request) error {
 	return nil
 }
 
-// InlinePool is the pool of one a poolless sandbox brings with it: sized zero so
-// nothing replenishes it, cold so the claim creates the pod it needs, and keyed
-// by the sandbox's own id so that pod is never offered to another sandbox.
-//
-// Mounting is inferred from the artifacts, as it is for a job or a revision: the
-// pod is built for this request, so the capability need not be declared ahead of
-// it.
-func InlinePool(req *Request) *pool.Pool {
-	return &pool.Pool{
-		ID:                            req.ID,
-		Image:                         req.Image,
-		Port:                          req.Port,
-		CPU:                           req.CPU,
-		Memory:                        req.Memory,
-		RuntimeClass:                  req.RuntimeClass,
-		Volumes:                       req.Volumes,
-		TerminationGracePeriodSeconds: req.TerminationGracePeriodSeconds,
-		Mounts:                        artifact.HasMount(req.Artifacts),
-		Size:                          0,
-		Burst:                         pool.BurstCold,
-	}
-}
-
-func (s *Service) validate(req *Request, p *pool.Pool) error {
+func (s *Service) validate(req *Request, shape *pool.Spec, p *pool.Pool) error {
 	// No command check: a sandbox whose pool names none runs the agent the
 	// backend installs into its workspace, which is the point — the image is
 	// just a runtime, and it serves the contract without implementing it.
@@ -236,7 +223,8 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 	}
 	// A pool's ceiling is operator policy: an abandoned sandbox holds a warm
 	// pod hostage, so "until DELETE" is only honored where the pool allows it.
-	if p.MaxIdleSeconds > 0 {
+	// A poolless sandbox holds nothing standing, so there is no ceiling to apply.
+	if p != nil && p.MaxIdleSeconds > 0 {
 		if req.IdleTimeoutSeconds > p.MaxIdleSeconds {
 			return apperrors.Validation("idleTimeoutSeconds",
 				fmt.Sprintf("idle timeout exceeds pool %q maximum of %ds", p.ID, p.MaxIdleSeconds))
@@ -245,7 +233,7 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 			req.IdleTimeoutSeconds = p.MaxIdleSeconds
 		}
 	}
-	if err := validatePorts(req.Ports, p.Port); err != nil {
+	if err := validatePorts(req.Ports, shape.Port); err != nil {
 		return err
 	}
 	if len(req.Artifacts) > maxArtifacts {
@@ -255,8 +243,9 @@ func (s *Service) validate(req *Request, p *pool.Pool) error {
 	// the sidecar performing it runs privileged and the workspace propagates. So
 	// the pool decides whether its sandboxes may mount, and this is where a
 	// request that cannot be honoured is refused — before a pod is claimed for
-	// it.
-	if !p.Mounts && artifact.HasMount(req.Artifacts) {
+	// it. A poolless sandbox needs no permission: its pod is built for the
+	// request, so the capability follows the artifacts (see Request.Shape).
+	if p != nil && !p.Mounts && artifact.HasMount(req.Artifacts) {
 		return apperrors.Validation("artifacts", fmt.Sprintf(
 			"pool %q does not allow mounts: set mounts on the pool to give its pods the capability", p.ID))
 	}

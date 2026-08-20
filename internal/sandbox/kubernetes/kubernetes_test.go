@@ -7,8 +7,10 @@ import (
 	"orchestrator/internal/claim"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/sandbox"
+	"orchestrator/internal/volume"
 	"orchestrator/internal/warm"
 	"orchestrator/internal/workload"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +19,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const testNS = "orchestrator"
@@ -69,7 +73,7 @@ func (f *fakeSidecar) Requests(_ context.Context, podIP string) (int64, error) {
 // testPool is a pool over a plain runtime image: it names no command, so the
 // sandbox runs the agent the shim installs — the ordinary case.
 func testPool(id string) pool.Pool {
-	return pool.Pool{ID: id, Image: "node:22-slim", Port: 3000, Size: 1, Burst: pool.BurstReject}
+	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "node:22-slim", Port: 3000}}
 }
 
 func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake.Clientset, *fakeSidecar) {
@@ -330,7 +334,7 @@ func TestAgentContract_TheCopyDestinationIsWhatTheSandboxRuns(t *testing.T) {
 	agent := cfg.warmConfig().Agent
 
 	// Nobody names a command: the pool image serves nothing, the agent does.
-	req := claimRequest(&pool.Pool{ID: "py", Port: 3000}, &sandbox.Request{ID: "sbx"})
+	req := claimRequest(&pool.Spec{Port: 3000}, &sandbox.Request{ID: "sbx"})
 	if req.Command != agent.Dest {
 		t.Errorf("the sandbox runs %q but the agent is copied to %q", req.Command, agent.Dest)
 	}
@@ -426,5 +430,100 @@ func TestCreate_CommandOverridesTheAgent(t *testing.T) {
 	}
 	if sidecar2.last.Command != "node server.js" {
 		t.Errorf("request command must win over both, got %q", sidecar2.last.Command)
+	}
+}
+
+// readyOnCreate makes every pod the code creates come up running and warm-ready,
+// which no controller does behind a fake clientset. It is what lets the poolless
+// path — create the pod, then claim it — be tested at all.
+func readyOnCreate(cs *fake.Clientset, ip string) {
+	cs.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		pod, ok := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
+		if !ok {
+			return false, nil, nil
+		}
+		pod.Status = corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			PodIP: ip,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  warm.ContainerWorkload,
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+			}},
+		}
+		return false, nil, nil
+	})
+}
+
+// A poolless sandbox creates the one pod it needs and claims that. The pod takes
+// its shape from the request — including storage a pool could never attach at
+// claim time, because its pods are already running.
+func TestCreate_PoollessTakesItsShapeFromTheRequest(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t)
+	readyOnCreate(cs, "10.0.0.9")
+
+	req := &sandbox.Request{
+		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300),
+		Image: "python:3.12-slim", Port: 8000, CPU: 0.5, Memory: 256,
+		Volumes: []volume.Volume{{Source: "tenant-pvc", Path: "/data", ReadOnly: true}},
+	}
+	status, err := o.Create(t.Context(), req)
+	if err != nil {
+		t.Fatalf("poolless create: %v", err)
+	}
+	if status.State != sandbox.StateReady {
+		t.Fatalf("state %q (%s)", status.State, status.Error)
+	}
+	if status.PoolID != "" {
+		t.Errorf("there was no pool: got poolId %q", status.PoolID)
+	}
+
+	pods, err := cs.CoreV1().Pods(testNS).List(t.Context(), metav1.ListOptions{})
+	if err != nil || len(pods.Items) != 1 {
+		t.Fatalf("want the one pod this sandbox needed, got %d (%v)", len(pods.Items), err)
+	}
+	pod := pods.Items[0]
+	worker := pod.Spec.Containers[0]
+	if worker.Image != "python:3.12-slim" {
+		t.Errorf("worker image %q, want the request's", worker.Image)
+	}
+	if !slices.ContainsFunc(worker.VolumeMounts, func(m corev1.VolumeMount) bool {
+		return m.MountPath == "/data" && m.ReadOnly
+	}) {
+		t.Errorf("the request's volume was not mounted into the worker: %+v", worker.VolumeMounts)
+	}
+	if !slices.ContainsFunc(pod.Spec.Volumes, func(v corev1.Volume) bool {
+		return v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "tenant-pvc"
+	}) {
+		t.Errorf("the PVC was not attached to the pod: %+v", pod.Spec.Volumes)
+	}
+}
+
+// The poolless path must not scan for warm capacity: nothing is standing in a
+// shape that was described by this request, so a list is pure latency on the
+// create path. The one list a create does make is the duplicate-id check.
+func TestCreate_PoollessDoesNotScanForWarmCapacity(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t)
+	readyOnCreate(cs, "10.0.0.9")
+
+	if _, err := o.Create(t.Context(), &sandbox.Request{
+		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300),
+		Image: "python:3.12-slim", Port: 8000,
+	}); err != nil {
+		t.Fatalf("poolless create: %v", err)
+	}
+
+	lists := 0
+	for _, a := range cs.Actions() {
+		if a.GetVerb() == "list" && a.GetResource().Resource == "pods" {
+			lists++
+		}
+	}
+	if lists != 1 {
+		t.Errorf("want only the duplicate-id list, got %d pod lists", lists)
 	}
 }

@@ -80,7 +80,7 @@ func TestCreate_InjectsDerivedTokenNoAnnotation(t *testing.T) {
 	t.Parallel()
 	m, cs, _ := newTestManager(t, testPool("std"))
 
-	created, err := m.Create(t.Context(), m.Pool("std"))
+	created, err := m.Create(t.Context(), &m.Pool("std").Spec, "std")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

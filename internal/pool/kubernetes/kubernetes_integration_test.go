@@ -182,13 +182,15 @@ func requirePodNetwork(t *testing.T, o *Orchestrator, poolID string) {
 
 func itPool(id string) pool.Pool {
 	return pool.Pool{
-		ID:     id,
-		Image:  itPoolImage,
-		Port:   8080,
-		Size:   1,
-		CPU:    0.1,
-		Memory: 64,
-		Burst:  pool.BurstReject,
+		ID:    id,
+		Size:  1,
+		Burst: pool.BurstReject,
+		Spec: pool.Spec{
+			Image:  itPoolImage,
+			Port:   8080,
+			CPU:    0.1,
+			Memory: 64,
+		},
 	}
 }
 

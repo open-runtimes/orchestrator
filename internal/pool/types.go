@@ -17,47 +17,61 @@ import (
 	"orchestrator/internal/volume"
 )
 
-// Pool is the service-config schema for one warm pool (Helm renders it from a
-// `pools:` list). A pool is standing capacity — adding, resizing, or removing
-// one is a config change plus a rollout, not a runtime call, so the API over
-// pools is read-only.
-type Pool struct {
-	ID    string `json:"id"`
+// Spec is the pod shape: what a claimed workload runs in — image, port,
+// resources, isolation tier, storage. A pool declares one and stamps it into
+// every warm pod of its fleet; a workload with no pool behind it (a poolless
+// sandbox) carries its own, because its pod is built for that one request.
+//
+// It is separate from the capacity policy on Pool below (size, burst, idle
+// ceiling) because the two have different audiences: the backends that build
+// pods read only the shape, and the claim protocol reads only the policy.
+// Embedded rather than nested, so the config and API wire formats stay flat.
+type Spec struct {
 	Image string `json:"image"`
 	// Command is the payload a claim execs when the request does not name one.
 	// Sandbox pools set it (their image serves the sandbox contract);
 	// activations late-bind their own command instead.
 	Command string `json:"command,omitempty"`
-	// RuntimeClass is the isolation tier: runc (default) | gvisor | kata. A
-	// pool dimension, not a per-claim field — warm pods are runtime-fixed at
-	// creation, so warm pools are keyed by (image, runtimeClass).
+	// RuntimeClass is the isolation tier: runc (default) | gvisor | kata. Fixed
+	// for a pool, because warm pods are runtime-fixed at creation, so warm pools
+	// are keyed by (image, runtimeClass); per-request for a poolless workload.
 	RuntimeClass string            `json:"runtimeClass,omitempty"`
-	Size         int               `json:"size"` // warm pods kept ready
 	CPU          float64           `json:"cpu"`
 	Memory       int               `json:"memory"`
 	Port         int               `json:"port"` // required — the container port the claimed workload serves HTTP on
 	Environment  map[string]string `json:"environment,omitempty"`
-	Volumes      []volume.Volume   `json:"volumes,omitempty"` // existing K8s PVCs mounted into every warm pod in the pool
+	Volumes      []volume.Volume   `json:"volumes,omitempty"` // existing K8s PVCs mounted into the worker container
 
-	// Burst controls what happens when a claim arrives and no warm pod is
-	// free: "cold" (default) → create a pod on demand and pay the cold start;
-	// "reject" → 429. Always logged either way.
-	Burst string `json:"burst,omitempty"`
-
-	// Mounts lets a claim against this pool establish image mounts (the mount
-	// artifact). It is a POOL dimension because it changes the pod: the sidecar
+	// Mounts lets a claim against this shape establish image mounts (the mount
+	// artifact). It belongs to the SHAPE because it changes the pod: the sidecar
 	// performing the mount runs privileged as root, and the shared workspace
 	// carries mount propagation. Off by default, and worth leaving off — a
-	// privileged container sits in every pod of the pool, beside whatever the
-	// claim runs.
+	// privileged container sits in every pod, beside whatever the claim runs.
 	Mounts bool `json:"mounts,omitempty"`
 
 	// TerminationGracePeriodSeconds bounds teardown: the sidecar drains, runs the
 	// claim's post-phase artifacts, and releases its mounts inside it. Kubernetes
 	// defaults to 30 seconds, which is not enough to archive and upload a
-	// workspace of any size — so a pool whose claims snapshot on shutdown must
+	// workspace of any size — so a shape whose claims snapshot on shutdown must
 	// raise it.
 	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
+}
+
+// Pool is the service-config schema for one warm pool (Helm renders it from a
+// `pools:` list): a Spec plus the capacity policy for the fleet standing in
+// that shape. A pool is standing capacity — adding, resizing, or removing one
+// is a config change plus a rollout, not a runtime call, so the API over pools
+// is read-only.
+type Pool struct {
+	ID   string `json:"id"`
+	Spec        // the pod every warm pod in this pool stands in; flattened on the wire
+
+	Size int `json:"size"` // warm pods kept ready
+
+	// Burst controls what happens when a claim arrives and no warm pod is
+	// free: "cold" (default) → create a pod on demand and pay the cold start;
+	// "reject" → 429. Always logged either way.
+	Burst string `json:"burst,omitempty"`
 
 	// MaxIdleSeconds caps a claim's requested idle timeout (0 = uncapped).
 	// Sandbox pools want one: an abandoned sandbox holds a warm pod hostage.

@@ -119,7 +119,7 @@ func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID
 		}
 		return nil, exhausted(poolID)
 	default:
-		return nil, recordPoison(ctx, rec, poolID, poisonedOrInternal(err, created.ID))
+		return nil, recordPoison(ctx, rec, poolID, Outcome(err, created.ID))
 	}
 }
 
@@ -169,7 +169,12 @@ func exhausted(poolID string) error {
 	return apperrors.Exhausted("pool", "pool "+poolID+" has no free warm capacity")
 }
 
-func poisonedOrInternal(err error, unitID string) error {
+// Outcome maps a failed claim POST onto the protocol's vocabulary, stamping
+// the unit onto a Poison so the caller knows which one to discard. Exported for
+// the consumer that creates a unit for one request and claims it directly: with
+// nothing standing there is no warm pass to fall back to, so the POST's result
+// is the whole outcome.
+func Outcome(err error, unitID string) error {
 	var poison *Poison
 	if errors.As(err, &poison) {
 		poison.Unit = unitID

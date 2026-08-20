@@ -103,7 +103,7 @@ func TestOrphanGC_DiscardsAfterTTL(t *testing.T) {
 func TestTick_ReapsClaimsWithNoConfiguredPool(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset()
-	m := New(cs, []pool.Pool{{ID: "declared", Image: "img", Size: 1}}, Config{
+	m := New(cs, []pool.Pool{{ID: "declared", Size: 1, Spec: pool.Spec{Image: "img"}}}, Config{
 		Namespace: testNS, Naming: testNaming, ReapUnpooled: true, Client: newFakeSidecar(),
 	})
 

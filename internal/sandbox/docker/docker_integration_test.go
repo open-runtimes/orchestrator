@@ -84,7 +84,7 @@ func agentTestImage() string {
 // testPool mirrors what an operator declares for an ordinary runtime image: an
 // image and a port, no command — the agent supplies the contract.
 func testPool() pool.Pool {
-	return pool.Pool{ID: "py", Image: sandboxTestImage(), Port: 3000, Size: 1}
+	return pool.Pool{ID: "py", Size: 1, Spec: pool.Spec{Image: sandboxTestImage(), Port: 3000}}
 }
 
 func newTestOrchestrator(t *testing.T, networkName string) *Orchestrator {
