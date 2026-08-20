@@ -193,19 +193,15 @@ func claimRequest(p *pool.Pool, act *pool.Activation) *workload.ClaimRequest {
 // an idle timeout — beside a Service and route pointing at it.
 func (o *Orchestrator) exposeHTTP(ctx context.Context, p *pool.Pool, act *pool.Activation, pod *corev1.Pod) (_ *pool.ActivationStatus, err error) {
 	host := activationHost(act.Host, act.ID, o.cfg.PoolDomain)
-	// mine grows as objects are published, and bounds the teardown below to
-	// them: a concurrent create carrying the same activation id may own the ones
-	// that were already there.
-	var mine published
 	defer func() {
 		if err != nil {
-			o.tearDown(ctx, act.ID, pod.Name, mine)
+			o.tearDown(ctx, p.ID, act.ID, pod.Name)
 		}
 	}()
-	if mine.service, err = o.createActivationService(ctx, p.ID, act.ID); err != nil {
+	if err = o.createActivationService(ctx, p.ID, act.ID); err != nil {
 		return nil, err
 	}
-	if mine.route, err = o.createActivationRoute(ctx, p.ID, act.ID, host); err != nil {
+	if err = o.createActivationRoute(ctx, p.ID, act.ID, host); err != nil {
 		return nil, err
 	}
 	status := &pool.ActivationStatus{ID: act.ID, PoolID: p.ID, PodID: pod.Name, URL: "http://" + host}
@@ -214,8 +210,8 @@ func (o *Orchestrator) exposeHTTP(ctx context.Context, p *pool.Pool, act *pool.A
 		return nil, err
 	}
 	if unserved != "" {
-		// warm deleted the pod; the objects this request published are ours.
-		o.tearDown(ctx, act.ID, pod.Name, mine)
+		// warm deleted the pod; the route and Service are ours to remove.
+		o.tearDown(ctx, p.ID, act.ID, pod.Name)
 		status.State = pool.StateFailed
 		status.Error = unserved
 		return status, nil
@@ -289,25 +285,55 @@ func activationState(phase warm.Phase) string {
 	return pool.StateActivating
 }
 
-// tearDown removes an activation that was never handed over: the objects this
-// request published, then its pod, in the order Deactivate uses.
+// tearDown removes an activation that was never handed over: its routing
+// objects, if this pod was the last thing claiming them, then the pod itself.
 //
 // It detaches from the caller's context first. The common way to reach here is a
 // client that hung up mid-activation — which cancelled that very context, so
 // every delete issued on it would fail too, and the activation would survive the
 // request that gave up on it. Failures are logged and the teardown continues:
 // each object is worth removing whether or not the last one went.
-func (o *Orchestrator) tearDown(ctx context.Context, activationID, podName string, what published) {
+func (o *Orchestrator) tearDown(ctx context.Context, poolID, activationID, podName string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tearDownTimeout)
 	defer cancel()
-	if err := o.deleteActivationObjects(ctx, activationID, what); err != nil {
-		slog.Warn("Failed to remove an unfinished activation's objects", "activationId", activationID, "error", err)
+	if o.lastClaimant(ctx, poolID, activationID, podName) {
+		if err := o.deleteActivationObjects(ctx, activationID); err != nil {
+			slog.Warn("Failed to remove an unfinished activation's objects", "activationId", activationID, "error", err)
+		}
 	}
 	// Already gone when the serving wait timed out — warm discards the pod
 	// itself there — and Delete tolerates that.
 	if err := o.warm.Delete(ctx, podName); err != nil {
 		slog.Warn("Failed to remove an unfinished activation's pod", "activationId", activationID, "pod", podName, "error", err)
 	}
+}
+
+// lastClaimant reports whether podName is the only pod left claiming this
+// activation id — the condition for removing routing objects, which are keyed by
+// that id alone and therefore shared by anything else claiming it. An id CAN
+// have a second claimant: the duplicate guard is a read taken before the claim,
+// so two concurrent creates both get past it, and the object creates tolerate
+// AlreadyExists, so whichever of them published does not matter.
+//
+// Conservative when it cannot tell. A Service left behind is recoverable — a
+// Deactivate removes it, and it serves nothing once its pods are gone — while a
+// live activation whose route was deleted under it is not.
+func (o *Orchestrator) lastClaimant(ctx context.Context, poolID, activationID, podName string) bool {
+	pods, err := o.warm.Claimed(ctx, poolID, activationID)
+	if err != nil {
+		slog.Warn("Could not tell whether an activation's objects are still in use; leaving them",
+			"activationId", activationID, "error", err)
+		return false
+	}
+	for i := range pods {
+		if pods[i].Name == podName || pods[i].DeletionTimestamp != nil {
+			continue
+		}
+		slog.Warn("Another claim still uses this activation's route; leaving it published",
+			"activationId", activationID, "pod", pods[i].Name)
+		return false
+	}
+	return true
 }
 
 // Deactivate tears the activation down: its route and Service, then the pod —
@@ -324,8 +350,7 @@ func (o *Orchestrator) Deactivate(ctx context.Context, poolID, activationID stri
 	if len(pods) == 0 {
 		return apperrors.NotFound("activation", activationID)
 	}
-	// A deliberate teardown removes both objects, whichever request created them.
-	if err := o.deleteActivationObjects(ctx, activationID, published{service: true, route: true}); err != nil {
+	if err := o.deleteActivationObjects(ctx, activationID); err != nil {
 		return err
 	}
 	for i := range pods {

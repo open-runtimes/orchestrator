@@ -630,39 +630,68 @@ func TestActivate_TearsDownWhenPublishingFails(t *testing.T) {
 }
 
 // The duplicate-id guard is a read taken before the claim, so two concurrent
-// creates carrying the same activation id can both get past it and both find the
-// routing objects already published. If one of them then fails, its teardown
-// must not take the other's URL down with it — the surviving activation is still
-// running and still expects to be reachable.
-func TestActivate_TeardownLeavesAnotherRequestsObjectsAlone(t *testing.T) {
+// creates carrying the same activation id can both get past it, and the object
+// creates tolerate AlreadyExists — so which of them published the Service and
+// route is not knowable, and does not matter. What matters is whether anything
+// still claims the id: if one request fails while the other is serving, the
+// routing must stay, or the survivor is left live at a dead URL.
+func TestTearDown_LeavesRoutingThatAnotherClaimStillUses(t *testing.T) {
 	t.Parallel()
-	o, cs, claims := newTestOrchestrator(t, testPool("web"))
-	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
-
-	// The first request published these and is serving on them.
-	if _, err := o.createActivationService(t.Context(), "web", "site"); err != nil {
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
+	if err := o.createActivationService(t.Context(), "web", "site"); err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	if _, err := o.createActivationRoute(t.Context(), "web", "site", "site.pools.example.com"); err != nil {
+	if err := o.createActivationRoute(t.Context(), "web", "site", "site.pools.example.com"); err != nil {
 		t.Fatalf("route: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(t.Context())
-	claims.notReady["10.0.0.1"] = true
-	claims.onReady = cancel
-
-	if _, err := o.Activate(ctx, "web", &pool.Activation{ID: "site", Command: "serve"}); err == nil {
-		t.Fatal("a cancelled activation must fail")
+	// Two pods claiming one activation id: the failing request's, and the one
+	// that got there first and is serving.
+	for _, name := range []string{"pod-a", "pod-b"} {
+		pod := warmPodFixture("web", name, "10.0.0.1")
+		pod.Labels[LabelActivation] = "site"
+		addPod(t, cs, pod)
 	}
 
-	// Its own pod is its own business.
+	o.tearDown(t.Context(), "web", "site", "pod-a")
+
 	if !podGone(t, cs, "pod-a") {
-		t.Error("the failed activation's pod must still be discarded")
+		t.Error("the failed request's own pod must still go")
+	}
+	if podGone(t, cs, "pod-b") {
+		t.Error("the surviving activation's pod is not this teardown's to delete")
 	}
 	if _, err := cs.CoreV1().Services(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); err != nil {
-		t.Errorf("the other request's service must survive: %v", err)
+		t.Errorf("the service is still in use and must survive: %v", err)
 	}
 	if _, err := o.gateway.GatewayV1().HTTPRoutes(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); err != nil {
-		t.Errorf("the other request's route must survive: %v", err)
+		t.Errorf("the route is still in use and must survive: %v", err)
+	}
+}
+
+// With nothing else claiming the id, the routing goes with the pod — the leak
+// this teardown exists to prevent.
+func TestTearDown_RemovesRoutingOfTheLastClaimant(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
+	if err := o.createActivationService(t.Context(), "web", "site"); err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if err := o.createActivationRoute(t.Context(), "web", "site", "site.pools.example.com"); err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	pod := warmPodFixture("web", "pod-a", "10.0.0.1")
+	pod.Labels[LabelActivation] = "site"
+	addPod(t, cs, pod)
+
+	o.tearDown(t.Context(), "web", "site", "pod-a")
+
+	if !podGone(t, cs, "pod-a") {
+		t.Error("want the pod gone")
+	}
+	if _, err := cs.CoreV1().Services(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("want the service gone, got %v", err)
+	}
+	if _, err := o.gateway.GatewayV1().HTTPRoutes(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("want the route gone, got %v", err)
 	}
 }
