@@ -2,6 +2,7 @@ package warm
 
 import (
 	"context"
+	"errors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
@@ -12,7 +13,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const testNS = "orchestrator"
@@ -87,7 +90,7 @@ func (f *fakeSidecar) Requests(_ context.Context, podIP string) (int64, error) {
 }
 
 func testPool(id string) pool.Pool {
-	return pool.Pool{ID: id, Image: "runtime:latest", Port: 8080, Size: 1, Burst: pool.BurstReject}
+	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "runtime:latest", Port: 8080}}
 }
 
 func newTestManager(t *testing.T, pools ...pool.Pool) (*Manager, *fake.Clientset, *fakeSidecar) {
@@ -103,6 +106,7 @@ func newTestManager(t *testing.T, pools ...pool.Pool) (*Manager, *fake.Clientset
 		Client:       sidecar,
 		Poll:         time.Millisecond,
 		ColdWait:     time.Second,
+		ServeWait:    50 * time.Millisecond,
 	})
 	// Normally get-or-created from the claim-key Secret on Start.
 	m.installKey = testInstallKey
@@ -226,5 +230,67 @@ func TestCounts_WarmExcludesClaimedAndUnready(t *testing.T) {
 	warm, claimed := m.counts([]corev1.Pod{*warmReady, *claimedPod, *starting})
 	if warm != 1 || claimed != 1 {
 		t.Errorf("want 1 warm + 1 claimed (a starting pod is neither), got %d/%d", warm, claimed)
+	}
+}
+
+// A client that hangs up mid-create cancels the request context, and the pod
+// created for that request is already running. Nothing else will ever collect it
+// — its pool id is the request's, so no reconcile selects it, and it carries no
+// claim label for the unpooled reaper to find — so the create path has to clean
+// up after itself, on a context its caller cannot cancel.
+func TestCreateClaimed_DiscardsItsPodWhenTheCallerGoesAway(t *testing.T) {
+	t.Parallel()
+	m, cs, _ := newTestManager(t)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// The pod never turns claimable, so the create is still polling when the
+	// caller goes away.
+	cancelOnPodCreate(cs, cancel)
+
+	if _, err := m.CreateClaimed(ctx, &pool.Spec{Image: "img", Port: 3000}, "solo",
+		&workload.ClaimRequest{ActivationID: "solo", Command: "run"}); err == nil {
+		t.Fatal("a cancelled create must fail")
+	}
+
+	pods, err := cs.CoreV1().Pods(testNS).List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(pods.Items) != 0 {
+		t.Errorf("the abandoned pod must be discarded, got %d still running", len(pods.Items))
+	}
+}
+
+// cancelOnPodCreate fires cancel as soon as the code under test creates a pod:
+// the client hanging up at the worst possible moment, with the pod live and
+// nothing yet recorded about it.
+func cancelOnPodCreate(cs *fake.Clientset, cancel context.CancelFunc) {
+	cs.PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		cancel()
+		return false, nil, nil
+	})
+}
+
+// The serving-wait timeout deletes the pod and hands its caller a reason to
+// report as a failed workload. If that delete fails, the reason is a lie the
+// caller cannot detect and nothing downstream can repair — the pod is claimed, so
+// both sweeps skip it, and a caller told "failed" never deletes it. So a failed
+// delete has to surface as an error instead.
+func TestAwait_UnservingPodThatWillNotDeleteIsAnError(t *testing.T) {
+	t.Parallel()
+	m, cs, sidecar := newTestManager(t)
+	pod := warmPodFixture(m, "std", "pool-std-aaaaa", "10.0.0.1")
+	addPod(t, cs, pod)
+	sidecar.notReady["10.0.0.1"] = true // never turns serving-ready
+	cs.PrependReactor("delete", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("delete refused")
+	})
+
+	unserved, err := m.Await(t.Context(), pod)
+	if err == nil {
+		t.Error("a pod that could not be deleted must not be reported as a plain failure")
+	}
+	if unserved != "" {
+		t.Errorf("no reason may be returned when the pod is still running, got %q", unserved)
 	}
 }

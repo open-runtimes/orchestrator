@@ -1,7 +1,9 @@
 package pool
 
 import (
+	"encoding/json"
 	"orchestrator/internal/claim"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -69,5 +71,45 @@ func TestLoadPools_PortRequired(t *testing.T) {
 	_, err := LoadPools(`[{"id":"a","image":"node:20"}]`)
 	if err == nil || !strings.Contains(err.Error(), "port") {
 		t.Errorf("want port-required error, got %v", err)
+	}
+}
+
+// The pod shape lives in an embedded Spec, which Go flattens on the wire. That
+// is the whole reason it is embedded rather than nested: POOLS_JSON is operator
+// config rendered by the Helm chart, so the split must be invisible to it. A
+// flat value must still parse, and marshalling one back must not grow a "spec"
+// object.
+func TestSpecIsFlatOnTheWire(t *testing.T) {
+	raw := `[{"id":"web","image":"runtime:latest","port":8080,"size":2,"cpu":0.5,"memory":512,
+		"runtimeClass":"gvisor","burst":"reject","mounts":true,"maxIdleSeconds":900,
+		"terminationGracePeriodSeconds":120,"environment":{"K":"v"},
+		"volumes":[{"source":"pvc","path":"/data"}]}]`
+	pools, err := Load(raw, "POOLS_JSON")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := pools[0]
+	if p.Image != "runtime:latest" || p.Port != 8080 || p.CPU != 0.5 || p.Memory != 512 ||
+		p.RuntimeClass != "gvisor" || !p.Mounts || p.TerminationGracePeriodSeconds != 120 ||
+		p.Environment["K"] != "v" || len(p.Volumes) != 1 {
+		t.Errorf("flat shape fields did not land on the embedded Spec: %+v", p)
+	}
+	if p.Size != 2 || p.Burst != BurstReject || p.MaxIdleSeconds != 900 {
+		t.Errorf("capacity policy did not land: %+v", p)
+	}
+
+	out, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), `"Spec"`) || strings.Contains(string(out), `"spec"`) {
+		t.Errorf("the embedded Spec must not surface as a key, got %s", out)
+	}
+	var again Pool
+	if err := json.Unmarshal(out, &again); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	if !reflect.DeepEqual(again, p) {
+		t.Errorf("round trip changed the pool:\n got %+v\nwant %+v", again, p)
 	}
 }

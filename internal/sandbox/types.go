@@ -14,6 +14,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/volume"
+	"slices"
 )
 
 // Request creates a sandbox.
@@ -77,6 +78,50 @@ type Request struct {
 	// Token is the capability the sandbox's hostname carries — minted by the
 	// service, never accepted from or echoed back into a request body.
 	Token string `json:"-"`
+}
+
+// Shape is the pod this request describes, for a sandbox with no pool behind
+// it. It is not a pool: nothing about it stands, replenishes, or is offered to a
+// second claim — the fields below are simply the shape a pool would otherwise
+// have fixed before the request arrived. Mounting is inferred from the
+// artifacts, as it is for a job or a revision, because the pod is built for
+// this request.
+func (r *Request) Shape() pool.Spec {
+	return pool.Spec{
+		Image:                         r.Image,
+		Port:                          r.Port,
+		CPU:                           r.CPU,
+		Memory:                        r.Memory,
+		RuntimeClass:                  r.RuntimeClass,
+		Volumes:                       r.Volumes,
+		TerminationGracePeriodSeconds: r.TerminationGracePeriodSeconds,
+		Mounts:                        artifact.HasMount(r.Artifacts),
+	}
+}
+
+// PoolFixed names the shape fields this request set that a pool fixes before it
+// arrives. A warm pod is already running when it is claimed, so none of these
+// can be honoured on a pooled create — naming one has to be an error, because
+// the alternative is a sandbox that quietly runs with different storage,
+// resources, or isolation than it asked for.
+func (r *Request) PoolFixed() []string {
+	set := map[string]bool{
+		"image":                         r.Image != "",
+		"port":                          r.Port != 0,
+		"cpu":                           r.CPU != 0,
+		"memory":                        r.Memory != 0,
+		"runtimeClass":                  r.RuntimeClass != "",
+		"volumes":                       len(r.Volumes) > 0,
+		"terminationGracePeriodSeconds": r.TerminationGracePeriodSeconds != 0,
+	}
+	named := make([]string, 0, len(set))
+	for field, given := range set {
+		if given {
+			named = append(named, field)
+		}
+	}
+	slices.Sort(named)
+	return named
 }
 
 // Sandbox states.

@@ -7,6 +7,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/pool"
+	"orchestrator/internal/volume"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,7 @@ func (f *fakeOrchestrator) Close() error                           { return nil 
 
 func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 	if len(pools) == 0 {
-		pools = []pool.Pool{{ID: "py", Image: "img", Command: "/usr/local/bin/sandbox", Port: 3000, Size: 1}}
+		pools = []pool.Pool{{ID: "py", Size: 1, Spec: pool.Spec{Image: "img", Command: "/usr/local/bin/sandbox", Port: 3000}}}
 	}
 	orch := &fakeOrchestrator{}
 	return NewService(orch, nil, pools, artifact.MountingRegistry()), orch
@@ -103,7 +104,7 @@ func TestCreate_LeavesTheCommandToTheBackend(t *testing.T) {
 	// A pool that names no command is the ordinary case, not an error: its image
 	// is just a runtime, and the backend runs the agent it installed into the
 	// workspace.
-	bare, _ := testService(pool.Pool{ID: "py", Image: "node:22-slim", Port: 3000})
+	bare, _ := testService(pool.Pool{ID: "py", Spec: pool.Spec{Image: "node:22-slim", Port: 3000}})
 	if _, err := bare.Create(context.Background(), &Request{Pool: "py"}); err != nil {
 		t.Fatalf("a pool without a command must be accepted: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestCreate_ValidatesID(t *testing.T) {
 // pod hostage, so "until DELETE" is only honored where the pool allows it.
 func TestCreate_AppliesThePoolIdleCeiling(t *testing.T) {
 	t.Parallel()
-	svc, orch := testService(pool.Pool{ID: "py", Image: "img", Command: "run", Port: 3000, MaxIdleSeconds: 900})
+	svc, orch := testService(pool.Pool{ID: "py", MaxIdleSeconds: 900, Spec: pool.Spec{Image: "img", Command: "run", Port: 3000}})
 
 	if _, err := svc.Create(context.Background(), &Request{Pool: "py"}); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -217,9 +218,7 @@ func TestCreate_MountNeedsThePoolCapability(t *testing.T) {
 	}
 
 	// Declared: accepted, and the backend gets the mount to perform.
-	capable, orch := testService(pool.Pool{
-		ID: "sqfs", Image: "img", Port: 3000, Size: 1, Mounts: true,
-	})
+	capable, orch := testService(pool.Pool{ID: "sqfs", Size: 1, Spec: pool.Spec{Image: "img", Port: 3000, Mounts: true}})
 	if _, err := capable.Create(t.Context(), &Request{ID: "sbx", Pool: "sqfs", Artifacts: mount()}); err != nil {
 		t.Fatalf("a pool that declares mounts should accept one: %v", err)
 	}
@@ -301,32 +300,54 @@ func TestCreate_PoolOrImageButNotBoth(t *testing.T) {
 	}
 }
 
-// The pool of one is what keeps a poolless sandbox's pod its own: keyed by the
-// sandbox id, so no other claim can be offered it, sized zero so nothing
-// replenishes it, and cold so the claim creates it.
-func TestInlinePool_IsAPoolOfOneKeyedByTheSandbox(t *testing.T) {
+// A poolless sandbox's shape comes straight off its request — no pool of one
+// standing in between, so there is no size or burst policy to get wrong.
+func TestShape_IsTheRequestsOwnPod(t *testing.T) {
 	t.Parallel()
-	p := InlinePool(&Request{ID: "solo", Image: "img", Port: 3000})
+	shape := (&Request{ID: "solo", Image: "img", Port: 3000, CPU: 0.5, Memory: 256,
+		Volumes: []volume.Volume{{Source: "pvc", Path: "/data"}}}).Shape()
 
-	if p.ID != "solo" {
-		t.Errorf("a pool of one must be keyed by its sandbox, got %q", p.ID)
+	if shape.Image != "img" || shape.Port != 3000 || shape.CPU != 0.5 || shape.Memory != 256 {
+		t.Errorf("the shape must carry the request's pod fields, got %+v", shape)
 	}
-	if p.Size != 0 {
-		t.Errorf("nothing should replenish it, got size %d", p.Size)
+	if len(shape.Volumes) != 1 {
+		t.Errorf("a poolless sandbox attaches its own storage, got %+v", shape.Volumes)
 	}
-	if p.Burst != pool.BurstCold {
-		t.Errorf("the claim has to create the pod, got burst %q", p.Burst)
-	}
-	if p.Mounts {
+	if shape.Mounts {
 		t.Error("no mount artifact, so no privilege")
 	}
 
 	// Mounting is inferred per request here, as it is for a job or a revision:
 	// the pod is built for this request, so nothing had to be declared ahead.
-	mounting := InlinePool(&Request{ID: "solo", Image: "img", Port: 3000, Artifacts: artifact.Set{
+	mounting := (&Request{ID: "solo", Image: "img", Port: 3000, Artifacts: artifact.Set{
 		&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"},
-	}})
+	}}).Shape()
 	if !mounting.Mounts {
 		t.Error("a poolless sandbox that mounts must get the capability")
+	}
+}
+
+// Shape fields a pool has already fixed cannot be honoured at claim time. The
+// silent-drop this replaced is the dangerous outcome: a sandbox that asked for a
+// volume or an isolation tier and quietly ran without it.
+func TestCreate_RejectsPoolFixedFields(t *testing.T) {
+	t.Parallel()
+	svc, _ := testService()
+
+	for _, tc := range []struct {
+		name  string
+		req   *Request
+		field string
+	}{
+		{"volumes", &Request{Pool: "py", Volumes: []volume.Volume{{Source: "pvc", Path: "/data"}}}, "volumes"},
+		{"cpu", &Request{Pool: "py", CPU: 2}, "cpu"},
+		{"runtimeClass", &Request{Pool: "py", RuntimeClass: "kata"}, "runtimeClass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.Create(context.Background(), tc.req)
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("want a validation error naming %q, got %v", tc.field, err)
+			}
+		})
 	}
 }

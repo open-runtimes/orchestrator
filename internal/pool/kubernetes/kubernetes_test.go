@@ -203,7 +203,7 @@ func podGone(t *testing.T, cs *fake.Clientset, name string) bool {
 }
 
 func testPool(id string) pool.Pool {
-	return pool.Pool{ID: id, Image: "runtime:latest", Port: 8080, Size: 1, Burst: pool.BurstReject}
+	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "runtime:latest", Port: 8080}}
 }
 
 func TestActivate_ClaimConflictRetriesNextPod(t *testing.T) {

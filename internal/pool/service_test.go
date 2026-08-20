@@ -24,7 +24,7 @@ func TestValidate_MountNeedsThePoolCapability(t *testing.T) {
 		}
 	}
 
-	err := svc.validate(&Pool{ID: "web", Port: 3000}, act())
+	err := svc.validate(&Pool{ID: "web", Spec: Spec{Port: 3000}}, act())
 	if err == nil {
 		t.Fatal("a pool that cannot mount must refuse the activation")
 	}
@@ -35,7 +35,7 @@ func TestValidate_MountNeedsThePoolCapability(t *testing.T) {
 		t.Errorf("the error should name the pool setting, got %q", err)
 	}
 
-	if err := svc.validate(&Pool{ID: "sqfs", Port: 3000, Mounts: true}, act()); err != nil {
+	if err := svc.validate(&Pool{ID: "sqfs", Spec: Spec{Port: 3000, Mounts: true}}, act()); err != nil {
 		t.Errorf("a pool that declares mounts should accept one: %v", err)
 	}
 }
@@ -45,7 +45,7 @@ func TestValidate_AcceptsOrdinaryArtifactsWithoutTheCapability(t *testing.T) {
 	t.Parallel()
 	svc := &Service{artifacts: artifact.MountingRegistry()}
 
-	err := svc.validate(&Pool{ID: "web", Port: 3000}, &Activation{
+	err := svc.validate(&Pool{ID: "web", Spec: Spec{Port: 3000}}, &Activation{
 		ID:      "act",
 		Command: "serve",
 		Artifacts: artifact.Set{

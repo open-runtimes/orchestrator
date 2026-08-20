@@ -59,11 +59,20 @@ func (m *Manager) onLeadership(ctx context.Context, identity string, leading boo
 // the workload answers, or the reason it never did — the pod is deleted first,
 // so an unserving claim never keeps a pool slot, leaving the caller only
 // whatever else it published to remove.
+//
+// The reason is only returned when that delete SUCCEEDED. A delete that failed
+// comes back as an error instead, because the reason is what the caller reports
+// as a failed workload — and a failed workload whose pod is still running is the
+// one thing nothing downstream can fix: the pod is claimed, so both sweeps skip
+// it (a claimed pod is normally live), and the caller, having been told this
+// failed, will never delete it.
 func (m *Manager) Await(ctx context.Context, pod *corev1.Pod) (string, error) {
 	deadline := time.Now().Add(m.cfg.ServeWait)
 	for !m.sc.Ready(ctx, pod.Status.PodIP) {
 		if time.Now().After(deadline) {
-			_ = m.Delete(ctx, pod.Name)
+			if err := m.DiscardErr(ctx, pod.Name); err != nil {
+				return "", err
+			}
 			return fmt.Sprintf("workload not serving within %s", m.cfg.ServeWait), nil
 		}
 		if err := m.sleep(ctx); err != nil {

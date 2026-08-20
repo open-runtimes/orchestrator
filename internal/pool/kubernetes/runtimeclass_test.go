@@ -30,7 +30,7 @@ func TestLoadConfigFromEnv_RuntimeClasses(t *testing.T) {
 func TestStart_MissingRuntimeClassFails(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	o, cs, _ := newTestOrchestrator(t, pool.Pool{ID: "sbx", Image: "runtime:latest", Size: 1, RuntimeClass: deployment.RuntimeClassKata})
+	o, cs, _ := newTestOrchestrator(t, pool.Pool{ID: "sbx", Size: 1, Spec: pool.Spec{Image: "runtime:latest", RuntimeClass: deployment.RuntimeClassKata}})
 
 	// Operator config names an uninstalled RuntimeClass → Start fails loudly.
 	err := o.Start(ctx)

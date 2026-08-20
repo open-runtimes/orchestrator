@@ -67,6 +67,7 @@ func (c *Controller) Tick(ctx context.Context) {
 	}
 	if c.m.cfg.ReapUnpooled {
 		c.reapUnpooled(ctx, seenPods, seenClaims)
+		c.sweepUnclaimed(ctx)
 	}
 	for name := range c.orphanSince {
 		if !seenPods[name] {
@@ -114,6 +115,40 @@ func (c *Controller) reapUnpooled(ctx context.Context, seenPods, seenClaims map[
 	}
 }
 
+// sweepUnclaimed discards pods that were created for one request and never
+// labeled with its claim. Nothing else can see them: no configured pool's
+// reconcile selects a request-keyed pool id, and reapUnpooled lists only pods
+// that carry a claim — so a create that died between the pod and the claim (a
+// crashed replica, a failed delete) would hold capacity forever.
+//
+// Age decides, not loop memory, so a restart does not restart the clock. The
+// threshold is ColdWait (the longest a live create can still be waiting for its
+// pod) plus OrphanTTL of grace, because a pod younger than that may simply be
+// mid-claim — and deleting one of those would fail a create that was going to
+// succeed.
+func (c *Controller) sweepUnclaimed(ctx context.Context) {
+	pods, err := c.m.list(ctx, c.m.managed()+",!"+c.m.cfg.Naming.Claim)
+	if err != nil {
+		slog.Warn("Unclaimed sweep list failed", "error", err)
+		return
+	}
+	stale := c.m.cfg.ColdWait + c.m.cfg.OrphanTTL
+	for i := range pods {
+		pod := &pods[i]
+		poolID := c.m.PoolID(pod)
+		if _, declared := c.m.byID[poolID]; declared {
+			continue // a configured pool's reconcile counts and GCs its own warm pods
+		}
+		if pod.DeletionTimestamp != nil || c.Now().Sub(pod.CreationTimestamp.Time) < stale {
+			continue
+		}
+		slog.Warn("Discarding an unclaimed pod with no pool behind it", "pod", pod.Name, "poolId", poolID)
+		if err := c.m.Delete(ctx, pod.Name); err != nil {
+			slog.Warn("Failed to discard unclaimed pod", "pod", pod.Name, "error", err)
+		}
+	}
+}
+
 // reconcile inspects one pool's pods — handing claimed ones to the consumer's
 // reaper, discarding poisoned and orphaned warm ones — then replenishes the
 // countable warm set up to the pool size.
@@ -146,7 +181,7 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 		c.m.cfg.Metrics.RecordPoolCapacity(ctx, c.m.cfg.Naming.Kind, p.ID, int64(warm), int64(claimed))
 	}
 	for n := warm; n < p.Size; n++ {
-		if _, err := c.m.Create(ctx, p); err != nil {
+		if _, err := c.m.Create(ctx, &p.Spec, p.ID); err != nil {
 			slog.Warn("Warm pod create failed", "poolId", p.ID, "error", err)
 			return
 		}

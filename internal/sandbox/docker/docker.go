@@ -113,15 +113,16 @@ func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
 // sandbox, its artifacts, the worker, and the proxy — then waits for the
 // proxy's health check to report the contract serving.
 func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandbox.Status, error) {
-	// A declared pool, or the pool of one the request describes. Docker creates
+	// A declared pool's shape, or the one the request describes. Docker creates
 	// the container either way — it has no warm capacity — so poolless costs it
 	// nothing extra.
-	p := o.pools[req.Pool]
-	if req.Pool == "" {
-		p = sandbox.InlinePool(req)
-	}
-	if p == nil {
-		return nil, apperrors.NotFound("pool", req.Pool)
+	shape := req.Shape()
+	if req.Pool != "" {
+		p := o.pools[req.Pool]
+		if p == nil {
+			return nil, apperrors.NotFound("pool", req.Pool)
+		}
+		shape = p.Spec
 	}
 	// Mounts are a Kubernetes capability: a pod's containers can share a mount
 	// through propagation on a shared volume, which sibling Docker containers
@@ -147,7 +148,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		return nil, apperrors.Internal("docker.createVolume", err)
 	}
 
-	status, err := o.materialize(ctx, p, req)
+	status, err := o.materialize(ctx, &shape, req)
 	if err != nil {
 		o.cleanup(ctx, req.ID)
 		return nil, err
@@ -161,7 +162,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 }
 
 // materialize runs artifacts, starts the containers, and waits for serving.
-func (o *Orchestrator) materialize(ctx context.Context, p *pool.Pool, req *sandbox.Request) (*sandbox.Status, error) {
+func (o *Orchestrator) materialize(ctx context.Context, p *pool.Spec, req *sandbox.Request) (*sandbox.Status, error) {
 	// Detached context so an HTTP request timeout doesn't cancel image pulls.
 	pullCtx := context.WithoutCancel(ctx)
 	if len(req.Artifacts) > 0 {
@@ -199,7 +200,7 @@ func (o *Orchestrator) materialize(ctx context.Context, p *pool.Pool, req *sandb
 // awaitServing waits for the proxy's health check, so a 201 means the URL is
 // live. The worker exiting first is a failure — a sandbox has no business
 // exiting.
-func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Pool, req *sandbox.Request) (*sandbox.Status, error) {
+func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Spec, req *sandbox.Request) (*sandbox.Status, error) {
 	status := &sandbox.Status{
 		ID:     req.ID,
 		PoolID: req.Pool,
@@ -236,9 +237,10 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Pool, req *sand
 }
 
 const (
-	servingWait  = 120 * time.Second // cold start: image pull plus artifacts
-	pollInterval = 250 * time.Millisecond
-	probeTimeout = 500 * time.Millisecond // bounds one reachability probe
+	servingWait    = 120 * time.Second // cold start: image pull plus artifacts
+	pollInterval   = 250 * time.Millisecond
+	probeTimeout   = 500 * time.Millisecond // bounds one reachability probe
+	cleanupTimeout = 30 * time.Second       // bounds removing a sandbox whose caller may be gone
 )
 
 // serving derives a sandbox's live state from its containers.
@@ -360,7 +362,7 @@ func (o *Orchestrator) installAgent(ctx, pullCtx context.Context, id string) err
 
 // startWorker runs the pool's image with the sandbox's command, returning the
 // container's address on the configured network.
-func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Pool, req *sandbox.Request) (string, error) {
+func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Spec, req *sandbox.Request) (string, error) {
 	// The agent's own settings first, so a pool or request can override them.
 	env := []string{
 		"SANDBOX_PORT=" + strconv.Itoa(p.Port),
@@ -418,7 +420,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Pool, req *sandb
 // startProxy fronts the worker with the workload-sidecar in direct mode: it
 // owns readiness, the per-request timeout, the request counter the idle sweep
 // reads, and the port hint for the sandbox's extra ports.
-func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Pool, req *sandbox.Request, workerIP string) error {
+func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Spec, req *sandbox.Request, workerIP string) error {
 	labels := containerLabels(req.ID, typeProxy)
 	labels[labelToken] = req.Token
 
@@ -635,8 +637,13 @@ func (o *Orchestrator) inspect(ctx context.Context, name string) (*container.Ins
 	return &info, nil
 }
 
-// cleanup removes a sandbox's containers and its workspace volume.
+// cleanup removes a sandbox's containers and its workspace volume. It detaches
+// from the caller's context first: cleanup runs when a create failed or a delete
+// was asked for, and a client that hung up mid-request has cancelled the very
+// context the removals would ride on — which would leave the containers running.
 func (o *Orchestrator) cleanup(ctx context.Context, id string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
 	for _, name := range []string{proxyName(id), workerName(id), artifactsName(id), agentName(id)} {
 		o.removeContainer(ctx, name)
 	}

@@ -183,7 +183,7 @@ func (c *Config) warmConfig() warm.Config {
 		// nothing itself; the agent is told which port to listen on and where the
 		// workspace is.
 		Agent: warm.Agent{Image: c.AgentImage, Source: sandbox.AgentSource, Dest: agentPath},
-		WorkloadEnv: func(p *pool.Pool) map[string]string {
+		WorkloadEnv: func(p *pool.Spec) map[string]string {
 			return map[string]string{
 				"SANDBOX_PORT":      strconv.Itoa(p.Port),
 				"SANDBOX_WORKSPACE": workspacePath,

@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
@@ -50,6 +51,7 @@ const (
 	defaultServeWait = 60 * time.Second  // bound on a claimed pod answering
 	defaultOrphan    = 60 * time.Second
 	controlTick      = 2 * time.Second
+	discardTimeout   = 10 * time.Second // bound on cleaning up a pod whose caller is gone
 )
 
 // Agent describes a binary to install into every warm pod's workspace, copied
@@ -113,7 +115,7 @@ type Config struct {
 	// WorkloadEnv contributes environment to the workload container, on top of
 	// the pool's own — the agent's SANDBOX_* settings, for consumers that
 	// install it.
-	WorkloadEnv func(p *pool.Pool) map[string]string
+	WorkloadEnv func(p *pool.Spec) map[string]string
 
 	// Client is the sidecar-facing surface. Nil uses the real HTTP one; unit
 	// tests inject a fake, since fake-clientset pods have no reachable IPs.
@@ -289,6 +291,94 @@ func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *workload.ClaimRe
 	return inv.byName[unit.ID], nil
 }
 
+// CreateClaimed creates a pod for one request and claims it: the poolless path,
+// where a workload named an image instead of a pool. There is no warm pass and
+// no burst policy — nothing was standing in this shape, and the pod is labeled
+// with a poolID unique to the request, so it can never be offered to another
+// claim. A pod that fails the claim is deleted here: this path created it, so
+// nobody else is watching it.
+func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string, req *workload.ClaimRequest) (_ *corev1.Pod, err error) {
+	key, err := m.claimKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pod, err := m.createClaimable(ctx, s, poolID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			m.Discard(ctx, pod.Name)
+		}
+	}()
+	if err = m.sc.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req); err != nil {
+		return nil, claim.Outcome(err, pod.Name)
+	}
+	return pod, nil
+}
+
+// Discard removes a pod that was created for one request and never handed over.
+// It deletes on a context detached from the caller's, because the caller's is
+// exactly what tends to be cancelled here — a client that hangs up mid-create
+// cancels the request context, and a delete issued on it would fail too.
+//
+// This matters more than it looks: until a pod carries a claim label it is
+// invisible to every control loop. No configured pool's reconcile selects a
+// request-keyed pool id, and the unpooled reaper lists only pods that carry a
+// claim. An undiscarded pod would hold its CPU and memory until the unclaimed
+// sweep catches it a couple of minutes later, or forever on a build without one.
+func (m *Manager) Discard(ctx context.Context, name string) {
+	if err := m.DiscardErr(ctx, name); err != nil {
+		slog.Error("Failed to discard a pod nothing owns; it will hold capacity until the unclaimed sweep",
+			"pod", name, "error", err)
+	}
+}
+
+// DiscardErr is Discard for callers that must know whether the pod really went.
+// A caller about to report a failure needs this: saying "failed" of a workload
+// whose pod is still running is worse than returning an error, because a claimed
+// pod is invisible to the sweeps — they skip claimed pods, since a claimed pod is
+// normally a live workload somebody wants.
+func (m *Manager) DiscardErr(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardTimeout)
+	defer cancel()
+	return m.Delete(ctx, name)
+}
+
+// createClaimable creates a pod and waits (bounded) for it to turn warm-ready.
+// A pod that never warms is deleted, so a cold start cannot leak capacity.
+func (m *Manager) createClaimable(ctx context.Context, s *pool.Spec, poolID string) (_ *corev1.Pod, err error) {
+	created, err := m.Create(ctx, s, poolID)
+	if err != nil {
+		return nil, err
+	}
+	// Every failure from here on — a lost API server, a cancelled request, a pod
+	// that never warms — leaves a pod nobody asked for. One cleanup covers them
+	// all, including the ones added later.
+	defer func() {
+		if err != nil {
+			m.Discard(ctx, created.Name)
+		}
+	}()
+	deadline := time.Now().Add(m.cfg.ColdWait)
+	for {
+		pod, getErr := m.client.CoreV1().Pods(m.cfg.Namespace).Get(ctx, created.Name, metav1.GetOptions{})
+		if getErr != nil {
+			return nil, apperrors.Internal("kubernetes.getPod", getErr)
+		}
+		if m.Claimable(pod) {
+			return pod, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, apperrors.Internal("kubernetes.coldClaim",
+				fmt.Errorf("cold pod %s not warm-ready within %s", created.Name, m.cfg.ColdWait))
+		}
+		if sleepErr := m.sleep(ctx); sleepErr != nil {
+			return nil, sleepErr
+		}
+	}
+}
+
 // Bind stamps the accepted claim onto the pod: the claim label (the status,
 // list, and GC key), the spec annotation (status reconstruction), and any
 // consumer labels the claim routes by. Callers must strip secret material from
@@ -315,9 +405,10 @@ func (m *Manager) Bind(ctx context.Context, podName, claimID string, spec any, l
 	return nil
 }
 
-// Create creates one warm pod. The name is chosen client-side (not
-// GenerateName) so the claim token can be derived from it before creation.
-func (m *Manager) Create(ctx context.Context, f *pool.Pool) (*corev1.Pod, error) {
+// Create creates one warm pod in the given shape, labeled for poolID. The name
+// is chosen client-side (not GenerateName) so the claim token can be derived
+// from it before creation.
+func (m *Manager) Create(ctx context.Context, s *pool.Spec, poolID string) (*corev1.Pod, error) {
 	key, err := m.claimKey(ctx)
 	if err != nil {
 		return nil, err
@@ -326,8 +417,8 @@ func (m *Manager) Create(ctx context.Context, f *pool.Pool) (*corev1.Pod, error)
 	if err != nil {
 		return nil, apperrors.Internal("kubernetes.podName", err)
 	}
-	name := m.cfg.Naming.NamePrefix + "-" + f.ID + "-" + suffix
-	created, err := m.client.CoreV1().Pods(m.cfg.Namespace).Create(ctx, m.buildPod(f, name, deriveClaimToken(key, name)), metav1.CreateOptions{})
+	name := m.cfg.Naming.NamePrefix + "-" + poolID + "-" + suffix
+	created, err := m.client.CoreV1().Pods(m.cfg.Namespace).Create(ctx, m.buildPod(s, poolID, name, deriveClaimToken(key, name)), metav1.CreateOptions{})
 	if err != nil {
 		return nil, apperrors.Internal("kubernetes.createPod", err)
 	}
@@ -408,34 +499,16 @@ func (inv *inventory) Free(ctx context.Context) ([]claim.Unit, error) {
 	return units, nil
 }
 
-// Create creates a pod and waits for it to turn warm-ready (bounded). A pod
-// that never warms is deleted so the burst does not leak capacity beyond the
-// pool size.
+// Create pays the burst cold start: a pod in the pool's shape, waited into
+// claimable.
 func (inv *inventory) Create(ctx context.Context) (*claim.Unit, error) {
-	created, err := inv.m.Create(ctx, inv.f)
+	pod, err := inv.m.createClaimable(ctx, &inv.f.Spec, inv.f.ID)
 	if err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(inv.m.cfg.ColdWait)
-	for {
-		pod, err := inv.m.client.CoreV1().Pods(inv.m.cfg.Namespace).Get(ctx, created.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil, apperrors.Internal("kubernetes.getPod", err)
-		}
-		if inv.m.Claimable(pod) {
-			inv.byName[pod.Name] = pod
-			unit := inv.unitFor(pod)
-			return &unit, nil
-		}
-		if time.Now().After(deadline) {
-			_ = inv.m.Delete(ctx, created.Name)
-			return nil, apperrors.Internal("kubernetes.coldClaim",
-				fmt.Errorf("cold pod %s not warm-ready within %s", created.Name, inv.m.cfg.ColdWait))
-		}
-		if err := inv.m.sleep(ctx); err != nil {
-			return nil, err
-		}
-	}
+	inv.byName[pod.Name] = pod
+	unit := inv.unitFor(pod)
+	return &unit, nil
 }
 
 func (inv *inventory) unitFor(pod *corev1.Pod) claim.Unit {
