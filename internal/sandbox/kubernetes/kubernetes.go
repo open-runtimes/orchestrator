@@ -186,6 +186,13 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Spec, req *sand
 	}
 	unserved, err := o.warm.Await(ctx, pod)
 	if err != nil {
+		// The wait itself broke — a cancelled request, a lost API server — so no
+		// URL was ever handed out and nothing may be left holding the pod. Await
+		// deletes it when the workload merely fails to serve in time; this is the
+		// same rule for the case where we stop waiting. A sandbox with no pool
+		// behind it has no idle ceiling to collect it later, and a pooled one has
+		// one only if its pool declares maxIdleSeconds.
+		o.warm.Discard(ctx, pod.Name)
 		return nil, err
 	}
 	if unserved != "" {

@@ -34,6 +34,10 @@ type fakeSidecar struct {
 	notReady map[string]bool
 	requests map[string]int64
 	last     *workload.ClaimRequest
+	// onReady runs on every readiness poll, so a test can act at a moment it
+	// could not otherwise reach — mid-wait, with the pod claimed and serving
+	// nothing yet.
+	onReady func()
 }
 
 func newFakeSidecar() *fakeSidecar {
@@ -61,6 +65,9 @@ func (f *fakeSidecar) State(_ context.Context, podIP string) (*workload.ClaimSta
 func (f *fakeSidecar) Ready(_ context.Context, podIP string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.onReady != nil {
+		f.onReady()
+	}
 	return !f.notReady[podIP]
 }
 
@@ -525,5 +532,34 @@ func TestCreate_PoollessDoesNotScanForWarmCapacity(t *testing.T) {
 	}
 	if lists != 1 {
 		t.Errorf("want only the duplicate-id list, got %d pod lists", lists)
+	}
+}
+
+// The window after the claim is the last one: the pod is bound and warming up
+// its workload, and a client that hangs up here leaves it running. Await deletes
+// a pod whose workload never serves in time, so stopping the wait early must do
+// the same — a poolless sandbox has no idle ceiling to collect it, because it has
+// no pool to declare one.
+func TestCreate_DiscardsThePodWhenTheCallerGoesAwayMidReadiness(t *testing.T) {
+	t.Parallel()
+	o, cs, sidecar := newTestOrchestrator(t)
+	readyOnCreate(cs, "10.0.0.9")
+	ctx, cancel := context.WithCancel(t.Context())
+	sidecar.notReady["10.0.0.9"] = true // the workload never answers
+	sidecar.onReady = cancel            // ...and the client gives up while we wait
+
+	if _, err := o.Create(ctx, &sandbox.Request{
+		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300),
+		Image: "python:3.12-slim", Port: 8000,
+	}); err == nil {
+		t.Fatal("a cancelled create must fail")
+	}
+
+	pods, err := cs.CoreV1().Pods(testNS).List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(pods.Items) != 0 {
+		t.Errorf("the claimed pod must be torn down, got %d still running", len(pods.Items))
 	}
 }
