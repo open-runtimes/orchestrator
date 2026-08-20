@@ -137,7 +137,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		return nil, apperrors.Internal("docker.inspectVolume", err)
 	}
 
-	spec, err := json.Marshal(req)
+	spec, err := json.Marshal(req.Recorded(shape))
 	if err != nil {
 		return nil, apperrors.Internal("docker.marshalSpec", err)
 	}
@@ -520,13 +520,10 @@ func (o *Orchestrator) statusFrom(ctx context.Context, labels map[string]string)
 		status.URL = o.addr.URL(token)
 		status.URLs = o.addr.URLs(token, primary, spec.Ports)
 	}
-	// The shape comes off the pool for a claimed sandbox and off the stored
-	// request for a poolless one — the same places the primary port came from.
-	if p := o.pools[labels[labelPool]]; p != nil {
-		status.Image, status.CPU, status.Memory = p.Image, p.CPU, p.Memory
-	} else {
-		status.Image, status.CPU, status.Memory = spec.Image, spec.CPU, spec.Memory
-	}
+	// Recorded at create, so this describes the pod that is running rather than
+	// whatever its pool says today — the pool may have been re-imaged or removed
+	// since. Absent for a sandbox created before the shape was recorded.
+	status.Image, status.CPU, status.Memory = spec.Image, spec.CPU, spec.Memory
 	state, err := o.serving(ctx, id)
 	if err != nil {
 		return status, err

@@ -281,6 +281,56 @@ func TestStatusAndList_ReconstructFromPods(t *testing.T) {
 	}
 }
 
+func TestShape_CreateMatchesReadAndSurvivesThePool(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, testPool("py"))
+	addPod(t, cs, warmPodFixture(o, "py", "sbx-py-aaaaa", "10.0.0.1"))
+
+	created, err := o.Create(t.Context(), request("agent"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A create that reports less than a read of the same sandbox would make the
+	// POST response the odd one out.
+	if created.Image != "node:22-slim" {
+		t.Errorf("create image: got %q, want the pool's", created.Image)
+	}
+
+	read, err := o.Status(t.Context(), "agent")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if read.Image != created.Image || read.CPU != created.CPU || read.Memory != created.Memory {
+		t.Errorf("read shape %+v does not match created %+v", read, created)
+	}
+
+	// Re-image the pool under the running sandbox. The pod did not change, so
+	// neither may its reported shape.
+	repooled, _, _ := newTestOrchestrator(t, pool.Pool{
+		ID: "py", Size: 1, Burst: pool.BurstReject,
+		Spec: pool.Spec{Image: "node:24-slim", Port: 3000},
+	})
+	repooled.warm = o.warm
+	after, err := repooled.Status(t.Context(), "agent")
+	if err != nil {
+		t.Fatalf("Status after re-image: %v", err)
+	}
+	if after.Image != "node:22-slim" {
+		t.Errorf("image: got %q, want the image the pod is running", after.Image)
+	}
+
+	// And with the pool gone entirely, the shape is still the pod's.
+	unpooled, _, _ := newTestOrchestrator(t)
+	unpooled.warm = o.warm
+	orphan, err := unpooled.Status(t.Context(), "agent")
+	if err != nil {
+		t.Fatalf("Status without pool: %v", err)
+	}
+	if orphan.Image != "node:22-slim" {
+		t.Errorf("image: got %q, want the image the pod is running", orphan.Image)
+	}
+}
+
 func TestStatus_UnknownSandboxNotFound(t *testing.T) {
 	t.Parallel()
 	o, _, _ := newTestOrchestrator(t, testPool("py"))
