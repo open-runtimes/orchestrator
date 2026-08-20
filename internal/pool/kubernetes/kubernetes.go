@@ -193,15 +193,19 @@ func claimRequest(p *pool.Pool, act *pool.Activation) *workload.ClaimRequest {
 // an idle timeout — beside a Service and route pointing at it.
 func (o *Orchestrator) exposeHTTP(ctx context.Context, p *pool.Pool, act *pool.Activation, pod *corev1.Pod) (_ *pool.ActivationStatus, err error) {
 	host := activationHost(act.Host, act.ID, o.cfg.PoolDomain)
+	// mine grows as objects are published, and bounds the teardown below to
+	// them: a concurrent create carrying the same activation id may own the ones
+	// that were already there.
+	var mine published
 	defer func() {
 		if err != nil {
-			o.tearDown(ctx, act.ID, pod.Name)
+			o.tearDown(ctx, act.ID, pod.Name, mine)
 		}
 	}()
-	if err = o.createActivationService(ctx, p.ID, act.ID); err != nil {
+	if mine.service, err = o.createActivationService(ctx, p.ID, act.ID); err != nil {
 		return nil, err
 	}
-	if err = o.createActivationRoute(ctx, p.ID, act.ID, host); err != nil {
+	if mine.route, err = o.createActivationRoute(ctx, p.ID, act.ID, host); err != nil {
 		return nil, err
 	}
 	status := &pool.ActivationStatus{ID: act.ID, PoolID: p.ID, PodID: pod.Name, URL: "http://" + host}
@@ -210,8 +214,8 @@ func (o *Orchestrator) exposeHTTP(ctx context.Context, p *pool.Pool, act *pool.A
 		return nil, err
 	}
 	if unserved != "" {
-		// warm deleted the pod; the route and Service are ours to remove.
-		o.tearDown(ctx, act.ID, pod.Name)
+		// warm deleted the pod; the objects this request published are ours.
+		o.tearDown(ctx, act.ID, pod.Name, mine)
 		status.State = pool.StateFailed
 		status.Error = unserved
 		return status, nil
@@ -285,18 +289,18 @@ func activationState(phase warm.Phase) string {
 	return pool.StateActivating
 }
 
-// tearDown removes an activation that was never handed over: its published
-// objects, then its pod, in the order Deactivate uses.
+// tearDown removes an activation that was never handed over: the objects this
+// request published, then its pod, in the order Deactivate uses.
 //
 // It detaches from the caller's context first. The common way to reach here is a
 // client that hung up mid-activation — which cancelled that very context, so
 // every delete issued on it would fail too, and the activation would survive the
 // request that gave up on it. Failures are logged and the teardown continues:
 // each object is worth removing whether or not the last one went.
-func (o *Orchestrator) tearDown(ctx context.Context, activationID, podName string) {
+func (o *Orchestrator) tearDown(ctx context.Context, activationID, podName string, what published) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tearDownTimeout)
 	defer cancel()
-	if err := o.deleteActivationObjects(ctx, activationID); err != nil {
+	if err := o.deleteActivationObjects(ctx, activationID, what); err != nil {
 		slog.Warn("Failed to remove an unfinished activation's objects", "activationId", activationID, "error", err)
 	}
 	// Already gone when the serving wait timed out — warm discards the pod
@@ -320,7 +324,8 @@ func (o *Orchestrator) Deactivate(ctx context.Context, poolID, activationID stri
 	if len(pods) == 0 {
 		return apperrors.NotFound("activation", activationID)
 	}
-	if err := o.deleteActivationObjects(ctx, activationID); err != nil {
+	// A deliberate teardown removes both objects, whichever request created them.
+	if err := o.deleteActivationObjects(ctx, activationID, published{service: true, route: true}); err != nil {
 		return err
 	}
 	for i := range pods {
