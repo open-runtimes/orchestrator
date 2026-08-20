@@ -2,6 +2,7 @@ package warm
 
 import (
 	"context"
+	"errors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
@@ -105,6 +106,7 @@ func newTestManager(t *testing.T, pools ...pool.Pool) (*Manager, *fake.Clientset
 		Client:       sidecar,
 		Poll:         time.Millisecond,
 		ColdWait:     time.Second,
+		ServeWait:    50 * time.Millisecond,
 	})
 	// Normally get-or-created from the claim-key Secret on Start.
 	m.installKey = testInstallKey
@@ -267,4 +269,28 @@ func cancelOnPodCreate(cs *fake.Clientset, cancel context.CancelFunc) {
 		cancel()
 		return false, nil, nil
 	})
+}
+
+// The serving-wait timeout deletes the pod and hands its caller a reason to
+// report as a failed workload. If that delete fails, the reason is a lie the
+// caller cannot detect and nothing downstream can repair — the pod is claimed, so
+// both sweeps skip it, and a caller told "failed" never deletes it. So a failed
+// delete has to surface as an error instead.
+func TestAwait_UnservingPodThatWillNotDeleteIsAnError(t *testing.T) {
+	t.Parallel()
+	m, cs, sidecar := newTestManager(t)
+	pod := warmPodFixture(m, "std", "pool-std-aaaaa", "10.0.0.1")
+	addPod(t, cs, pod)
+	sidecar.notReady["10.0.0.1"] = true // never turns serving-ready
+	cs.PrependReactor("delete", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("delete refused")
+	})
+
+	unserved, err := m.Await(t.Context(), pod)
+	if err == nil {
+		t.Error("a pod that could not be deleted must not be reported as a plain failure")
+	}
+	if unserved != "" {
+		t.Errorf("no reason may be returned when the pod is still running, got %q", unserved)
+	}
 }

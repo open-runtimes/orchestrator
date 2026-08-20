@@ -328,12 +328,21 @@ func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string
 // claim. An undiscarded pod would hold its CPU and memory until the unclaimed
 // sweep catches it a couple of minutes later, or forever on a build without one.
 func (m *Manager) Discard(ctx context.Context, name string) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardTimeout)
-	defer cancel()
-	if err := m.Delete(ctx, name); err != nil {
+	if err := m.DiscardErr(ctx, name); err != nil {
 		slog.Error("Failed to discard a pod nothing owns; it will hold capacity until the unclaimed sweep",
 			"pod", name, "error", err)
 	}
+}
+
+// DiscardErr is Discard for callers that must know whether the pod really went.
+// A caller about to report a failure needs this: saying "failed" of a workload
+// whose pod is still running is worse than returning an error, because a claimed
+// pod is invisible to the sweeps — they skip claimed pods, since a claimed pod is
+// normally a live workload somebody wants.
+func (m *Manager) DiscardErr(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardTimeout)
+	defer cancel()
+	return m.Delete(ctx, name)
 }
 
 // createClaimable creates a pod and waits (bounded) for it to turn warm-ready.
