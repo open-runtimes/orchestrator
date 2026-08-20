@@ -42,6 +42,10 @@ type fakeClaims struct {
 	claimed   []string                       // successful claim IPs, in order
 	tokens    []string                       // bearer tokens presented with them
 	lastClaim *workload.ClaimRequest
+	// onReady runs on every serving-readiness poll, so a test can act at a
+	// moment it could not otherwise reach: mid-wait, with the activation
+	// published and its workload not answering yet.
+	onReady func()
 }
 
 func newFakeClaims() *fakeClaims {
@@ -79,6 +83,9 @@ func (f *fakeClaims) State(_ context.Context, podIP string) (*workload.ClaimStat
 func (f *fakeClaims) Ready(_ context.Context, podIP string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.onReady != nil {
+		f.onReady()
+	}
 	return !f.notReady[podIP]
 }
 
@@ -572,5 +579,119 @@ func TestDeactivate_NotFound(t *testing.T) {
 	o, _, _ := newTestOrchestrator(t, testPool("std"))
 	if err := o.Deactivate(t.Context(), "std", "ghost"); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// A client that hangs up during the serving wait cancels the context the
+// activation is riding on. The pod is claimed and labeled by then — permanently
+// out of the warm set — and its Service and route are published, so returning
+// the error alone would leave a whole activation nobody asked for and nobody
+// knows the id of.
+func TestActivate_TearsDownWhenTheCallerGoesAwayMidServingWait(t *testing.T) {
+	t.Parallel()
+	o, cs, claims := newTestOrchestrator(t, testPool("web"))
+	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
+	ctx, cancel := context.WithCancel(t.Context())
+	claims.notReady["10.0.0.1"] = true // the workload never answers
+	claims.onReady = cancel            // ...and the client gives up while we wait
+
+	if _, err := o.Activate(ctx, "web", &pool.Activation{ID: "site", Command: "serve"}); err == nil {
+		t.Fatal("a cancelled activation must fail")
+	}
+
+	if !podGone(t, cs, "pod-a") {
+		t.Error("the claimed pod must be discarded: labeled, it will never count as warm again")
+	}
+	if _, err := cs.CoreV1().Services(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("want the service torn down, got %v", err)
+	}
+	if _, err := o.gateway.GatewayV1().HTTPRoutes(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("want the route torn down, got %v", err)
+	}
+}
+
+// The publish step itself can fail — a conflicting Service, an API server that
+// went away — and it happens with the pod already claimed and labeled. What was
+// published before the failure goes with it.
+func TestActivate_TearsDownWhenPublishingFails(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
+	addPod(t, cs, warmPodFixture("web", "pod-a", "10.0.0.1"))
+	cs.PrependReactor("create", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("service create refused")
+	})
+
+	if _, err := o.Activate(t.Context(), "web", &pool.Activation{ID: "site", Command: "serve"}); err == nil {
+		t.Fatal("a failed publish must fail the activation")
+	}
+	if !podGone(t, cs, "pod-a") {
+		t.Error("the claimed pod must not be left behind by a failed publish")
+	}
+}
+
+// The duplicate-id guard is a read taken before the claim, so two concurrent
+// creates carrying the same activation id can both get past it, and the object
+// creates tolerate AlreadyExists — so which of them published the Service and
+// route is not knowable, and does not matter. What matters is whether anything
+// still claims the id: if one request fails while the other is serving, the
+// routing must stay, or the survivor is left live at a dead URL.
+func TestTearDown_LeavesRoutingThatAnotherClaimStillUses(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
+	if err := o.createActivationService(t.Context(), "web", "site"); err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if err := o.createActivationRoute(t.Context(), "web", "site", "site.pools.example.com"); err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	// Two pods claiming one activation id: the failing request's, and the one
+	// that got there first and is serving.
+	for _, name := range []string{"pod-a", "pod-b"} {
+		pod := warmPodFixture("web", name, "10.0.0.1")
+		pod.Labels[LabelActivation] = "site"
+		addPod(t, cs, pod)
+	}
+
+	o.tearDown(t.Context(), "web", "site", "pod-a")
+
+	if !podGone(t, cs, "pod-a") {
+		t.Error("the failed request's own pod must still go")
+	}
+	if podGone(t, cs, "pod-b") {
+		t.Error("the surviving activation's pod is not this teardown's to delete")
+	}
+	if _, err := cs.CoreV1().Services(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); err != nil {
+		t.Errorf("the service is still in use and must survive: %v", err)
+	}
+	if _, err := o.gateway.GatewayV1().HTTPRoutes(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); err != nil {
+		t.Errorf("the route is still in use and must survive: %v", err)
+	}
+}
+
+// With nothing else claiming the id, the routing goes with the pod — the leak
+// this teardown exists to prevent.
+func TestTearDown_RemovesRoutingOfTheLastClaimant(t *testing.T) {
+	t.Parallel()
+	o, cs, _ := newTestOrchestrator(t, testPool("web"))
+	if err := o.createActivationService(t.Context(), "web", "site"); err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if err := o.createActivationRoute(t.Context(), "web", "site", "site.pools.example.com"); err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	pod := warmPodFixture("web", "pod-a", "10.0.0.1")
+	pod.Labels[LabelActivation] = "site"
+	addPod(t, cs, pod)
+
+	o.tearDown(t.Context(), "web", "site", "pod-a")
+
+	if !podGone(t, cs, "pod-a") {
+		t.Error("want the pod gone")
+	}
+	if _, err := cs.CoreV1().Services(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("want the service gone, got %v", err)
+	}
+	if _, err := o.gateway.GatewayV1().HTTPRoutes(testNS).Get(t.Context(), "act-site", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("want the route gone, got %v", err)
 	}
 }

@@ -61,6 +61,8 @@ curl -X POST http://localhost:8080/v1/deployment-pools/py/activations \
 
 If artifact materialization fails, the activation is reported `failed` with the reason, and the pod is **poisoned** — discarded and replaced, never handed to another activation.
 
+An activation that ERRORS rather than reporting `failed` leaves nothing behind either: the pod, the Service, and the route are all removed before the error returns, including when the error is your own client hanging up. There is no id to clean up afterwards, which is the point — you never received one.
+
 A [`mount`](jobs.md#mount-artifact) also works, on a pool that declares the capability:
 
 ```yaml
