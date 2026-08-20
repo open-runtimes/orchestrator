@@ -146,6 +146,13 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		return nil, err
 	}
 	if err := o.warm.Bind(ctx, pod.Name, req.ID, req, map[string]string{LabelToken: req.Token}); err != nil {
+		// The claim label is what makes a pod discoverable. A poolless pod that
+		// never got one belongs to no pool the control loop reconciles, so if the
+		// bind is what failed — a cancelled request, a lost API server — this is
+		// the last place that can reclaim it.
+		if p == nil {
+			o.warm.Discard(ctx, pod.Name)
+		}
 		return nil, err
 	}
 	return o.awaitServing(ctx, &shape, req, pod)

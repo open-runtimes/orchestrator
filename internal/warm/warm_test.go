@@ -12,7 +12,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const testNS = "orchestrator"
@@ -227,4 +229,42 @@ func TestCounts_WarmExcludesClaimedAndUnready(t *testing.T) {
 	if warm != 1 || claimed != 1 {
 		t.Errorf("want 1 warm + 1 claimed (a starting pod is neither), got %d/%d", warm, claimed)
 	}
+}
+
+// A client that hangs up mid-create cancels the request context, and the pod
+// created for that request is already running. Nothing else will ever collect it
+// — its pool id is the request's, so no reconcile selects it, and it carries no
+// claim label for the unpooled reaper to find — so the create path has to clean
+// up after itself, on a context its caller cannot cancel.
+func TestCreateClaimed_DiscardsItsPodWhenTheCallerGoesAway(t *testing.T) {
+	t.Parallel()
+	m, cs, _ := newTestManager(t)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// The pod never turns claimable, so the create is still polling when the
+	// caller goes away.
+	cancelOnPodCreate(cs, cancel)
+
+	if _, err := m.CreateClaimed(ctx, &pool.Spec{Image: "img", Port: 3000}, "solo",
+		&workload.ClaimRequest{ActivationID: "solo", Command: "run"}); err == nil {
+		t.Fatal("a cancelled create must fail")
+	}
+
+	pods, err := cs.CoreV1().Pods(testNS).List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(pods.Items) != 0 {
+		t.Errorf("the abandoned pod must be discarded, got %d still running", len(pods.Items))
+	}
+}
+
+// cancelOnPodCreate fires cancel as soon as the code under test creates a pod:
+// the client hanging up at the worst possible moment, with the pod live and
+// nothing yet recorded about it.
+func cancelOnPodCreate(cs *fake.Clientset, cancel context.CancelFunc) {
+	cs.PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		cancel()
+		return false, nil, nil
+	})
 }

@@ -51,6 +51,7 @@ const (
 	defaultServeWait = 60 * time.Second  // bound on a claimed pod answering
 	defaultOrphan    = 60 * time.Second
 	controlTick      = 2 * time.Second
+	discardTimeout   = 10 * time.Second // bound on cleaning up a pod whose caller is gone
 )
 
 // Agent describes a binary to install into every warm pod's workspace, copied
@@ -296,7 +297,7 @@ func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *workload.ClaimRe
 // with a poolID unique to the request, so it can never be offered to another
 // claim. A pod that fails the claim is deleted here: this path created it, so
 // nobody else is watching it.
-func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string, req *workload.ClaimRequest) (*corev1.Pod, error) {
+func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string, req *workload.ClaimRequest) (_ *corev1.Pod, err error) {
 	key, err := m.claimKey(ctx)
 	if err != nil {
 		return nil, err
@@ -305,38 +306,66 @@ func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string
 	if err != nil {
 		return nil, err
 	}
-	if err := m.sc.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req); err != nil {
-		if delErr := m.Delete(ctx, pod.Name); delErr != nil {
-			slog.Warn("Failed to delete unclaimed pod", "pod", pod.Name, "error", delErr)
+	defer func() {
+		if err != nil {
+			m.Discard(ctx, pod.Name)
 		}
+	}()
+	if err = m.sc.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req); err != nil {
 		return nil, claim.Outcome(err, pod.Name)
 	}
 	return pod, nil
 }
 
+// Discard removes a pod that was created for one request and never handed over.
+// It deletes on a context detached from the caller's, because the caller's is
+// exactly what tends to be cancelled here — a client that hangs up mid-create
+// cancels the request context, and a delete issued on it would fail too.
+//
+// This matters more than it looks: until a pod carries a claim label it is
+// invisible to every control loop. No configured pool's reconcile selects a
+// request-keyed pool id, and the unpooled reaper lists only pods that carry a
+// claim. An undiscarded pod would hold its CPU and memory until the unclaimed
+// sweep catches it a couple of minutes later, or forever on a build without one.
+func (m *Manager) Discard(ctx context.Context, name string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardTimeout)
+	defer cancel()
+	if err := m.Delete(ctx, name); err != nil {
+		slog.Error("Failed to discard a pod nothing owns; it will hold capacity until the unclaimed sweep",
+			"pod", name, "error", err)
+	}
+}
+
 // createClaimable creates a pod and waits (bounded) for it to turn warm-ready.
 // A pod that never warms is deleted, so a cold start cannot leak capacity.
-func (m *Manager) createClaimable(ctx context.Context, s *pool.Spec, poolID string) (*corev1.Pod, error) {
+func (m *Manager) createClaimable(ctx context.Context, s *pool.Spec, poolID string) (_ *corev1.Pod, err error) {
 	created, err := m.Create(ctx, s, poolID)
 	if err != nil {
 		return nil, err
 	}
+	// Every failure from here on — a lost API server, a cancelled request, a pod
+	// that never warms — leaves a pod nobody asked for. One cleanup covers them
+	// all, including the ones added later.
+	defer func() {
+		if err != nil {
+			m.Discard(ctx, created.Name)
+		}
+	}()
 	deadline := time.Now().Add(m.cfg.ColdWait)
 	for {
-		pod, err := m.client.CoreV1().Pods(m.cfg.Namespace).Get(ctx, created.Name, metav1.GetOptions{})
-		if err != nil {
-			return nil, apperrors.Internal("kubernetes.getPod", err)
+		pod, getErr := m.client.CoreV1().Pods(m.cfg.Namespace).Get(ctx, created.Name, metav1.GetOptions{})
+		if getErr != nil {
+			return nil, apperrors.Internal("kubernetes.getPod", getErr)
 		}
 		if m.Claimable(pod) {
 			return pod, nil
 		}
 		if time.Now().After(deadline) {
-			_ = m.Delete(ctx, created.Name)
 			return nil, apperrors.Internal("kubernetes.coldClaim",
 				fmt.Errorf("cold pod %s not warm-ready within %s", created.Name, m.cfg.ColdWait))
 		}
-		if err := m.sleep(ctx); err != nil {
-			return nil, err
+		if sleepErr := m.sleep(ctx); sleepErr != nil {
+			return nil, sleepErr
 		}
 	}
 }

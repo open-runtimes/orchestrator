@@ -168,3 +168,61 @@ func TestTick_LeavesUnpooledClaimsAloneWhenNotOptedIn(t *testing.T) {
 		t.Errorf("nothing should have been reaped, got %v", reaped)
 	}
 }
+
+// A pod created for one request and never claimed is invisible to every other
+// loop: its pool id is the request's, which no config declares, and the unpooled
+// reaper lists only pods that carry a claim. Without this sweep it would hold its
+// CPU and memory until someone noticed by hand.
+func TestSweepUnclaimed_DiscardsAbandonedPoollessPods(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset()
+	m := New(cs, []pool.Pool{{ID: "declared", Size: 1, Spec: pool.Spec{Image: "img"}}}, Config{
+		Namespace: testNS, Naming: testNaming, ReapUnpooled: true, Client: newFakeSidecar(),
+		ColdWait: 120 * time.Second, OrphanTTL: 60 * time.Second,
+	})
+	now := time.Now()
+
+	// Three unclaimed pods: one abandoned poolless pod well past the threshold,
+	// one still inside it (a create that may yet succeed), and a warm pod of a
+	// declared pool, which its own reconcile owns.
+	for _, tc := range []struct {
+		name, poolID string
+		age          time.Duration
+	}{
+		{"pool-solo-aaaaa", "solo", 10 * time.Minute},
+		{"pool-fresh-aaaaa", "fresh", 30 * time.Second},
+		{"pool-declared-aaaaa", "declared", 10 * time.Minute},
+	} {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name:              tc.name,
+			Namespace:         testNS,
+			Labels:            m.PoolLabels(tc.poolID),
+			CreationTimestamp: metav1.NewTime(now.Add(-tc.age)),
+		}}
+		if _, err := cs.CoreV1().Pods(testNS).Create(t.Context(), pod, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create %s: %v", tc.name, err)
+		}
+	}
+
+	c := m.Controller(Hooks{})
+	c.Now = func() time.Time { return now }
+	c.sweepUnclaimed(t.Context())
+
+	live := map[string]bool{}
+	pods, err := cs.CoreV1().Pods(testNS).List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for i := range pods.Items {
+		live[pods.Items[i].Name] = true
+	}
+	if live["pool-solo-aaaaa"] {
+		t.Error("the abandoned poolless pod must be discarded — nothing else can see it")
+	}
+	if !live["pool-fresh-aaaaa"] {
+		t.Error("a pod still inside the cold-start window may be mid-claim; deleting it fails a live create")
+	}
+	if !live["pool-declared-aaaaa"] {
+		t.Error("a declared pool's warm pod is its reconcile's business, not the sweep's")
+	}
+}

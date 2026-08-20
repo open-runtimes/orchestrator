@@ -237,9 +237,10 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Spec, req *sand
 }
 
 const (
-	servingWait  = 120 * time.Second // cold start: image pull plus artifacts
-	pollInterval = 250 * time.Millisecond
-	probeTimeout = 500 * time.Millisecond // bounds one reachability probe
+	servingWait    = 120 * time.Second // cold start: image pull plus artifacts
+	pollInterval   = 250 * time.Millisecond
+	probeTimeout   = 500 * time.Millisecond // bounds one reachability probe
+	cleanupTimeout = 30 * time.Second       // bounds removing a sandbox whose caller may be gone
 )
 
 // serving derives a sandbox's live state from its containers.
@@ -636,8 +637,13 @@ func (o *Orchestrator) inspect(ctx context.Context, name string) (*container.Ins
 	return &info, nil
 }
 
-// cleanup removes a sandbox's containers and its workspace volume.
+// cleanup removes a sandbox's containers and its workspace volume. It detaches
+// from the caller's context first: cleanup runs when a create failed or a delete
+// was asked for, and a client that hung up mid-request has cancelled the very
+// context the removals would ride on — which would leave the containers running.
 func (o *Orchestrator) cleanup(ctx context.Context, id string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
 	for _, name := range []string{proxyName(id), workerName(id), artifactsName(id), agentName(id)} {
 		o.removeContainer(ctx, name)
 	}

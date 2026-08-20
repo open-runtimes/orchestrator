@@ -115,6 +115,8 @@ What you gain: nothing to configure ahead of time, and per-sandbox control over 
 
 Under the hood it is not a pool at all: the request describes a pod, the pod is created and claimed directly, and it is labeled with the sandbox's own id so no other claim can ever be offered it. There is no warm scan and no burst policy on this path — nothing was standing in a shape this request invented. Every other rule in this guide applies unchanged.
 
+A create that fails or is abandoned takes its pod with it, including one abandoned by a client that hung up: the removal runs on a context of its own, precisely because the caller's is the one that just died. A create that dies with its replica instead is caught by a sweep, which discards pods that never reached a claim once they are older than any live create could be.
+
 ### Read, list, and delete
 
 ```bash
