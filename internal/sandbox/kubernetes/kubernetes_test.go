@@ -266,6 +266,11 @@ func TestStatusAndList_ReconstructFromPods(t *testing.T) {
 	if status.URL == "" {
 		t.Error("status must carry the URL — the caller cannot derive it from the id")
 	}
+	// A claimed sandbox reports the shape of the pool it came from, so a caller
+	// that never saw the operator's config can still see what it is running in.
+	if status.Image != "node:22-slim" {
+		t.Errorf("image: got %q, want the pool's", status.Image)
+	}
 
 	list, err := o.List(t.Context())
 	if err != nil {

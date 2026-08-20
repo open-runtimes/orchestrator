@@ -149,8 +149,15 @@ type Status struct {
 	// URLs addresses every port the sandbox serves, keyed by port number
 	// (including the pool's own). Present so callers never build a hostname
 	// themselves — the token in it is not derivable from the id.
-	URLs  map[string]string `json:"urls,omitempty"`
-	Error string            `json:"error,omitempty"`
+	URLs map[string]string `json:"urls,omitempty"`
+	// Image, CPU and Memory are the shape the sandbox is running in — read
+	// back off the pool it was claimed from, or off the request that built its
+	// pod. A caller that did not create this sandbox, or has forgotten what it
+	// asked for, can see what it got without keeping a record of its own.
+	Image  string  `json:"image,omitempty"`
+	CPU    float64 `json:"cpu,omitempty"`
+	Memory int     `json:"memory,omitempty"`
+	Error  string  `json:"error,omitempty"`
 }
 
 // ListResponse is the response for listing live sandboxes.

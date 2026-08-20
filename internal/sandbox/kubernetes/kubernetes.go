@@ -249,8 +249,13 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 		State:  sandboxState(obs.Phase),
 		Error:  obs.Error,
 	}
+	// The shape comes off the pool for a claimed sandbox and off the stored
+	// request for a poolless one — the same places the primary port comes from.
 	if p := o.warm.Pool(status.PoolID); p != nil {
 		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
+		status.Image, status.CPU, status.Memory = p.Image, p.CPU, p.Memory
+	} else {
+		status.Image, status.CPU, status.Memory = spec.Image, spec.CPU, spec.Memory
 	}
 	return status
 }

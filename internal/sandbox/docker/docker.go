@@ -206,6 +206,9 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Spec, req *sand
 		PoolID: req.Pool,
 		URL:    o.addr.URL(req.Token),
 		URLs:   o.addr.URLs(req.Token, p.Port, req.Ports),
+		Image:  p.Image,
+		CPU:    p.CPU,
+		Memory: p.Memory,
 	}
 	deadline := o.now().Add(servingWait)
 	for {
@@ -516,6 +519,13 @@ func (o *Orchestrator) statusFrom(ctx context.Context, labels map[string]string)
 	if primary > 0 {
 		status.URL = o.addr.URL(token)
 		status.URLs = o.addr.URLs(token, primary, spec.Ports)
+	}
+	// The shape comes off the pool for a claimed sandbox and off the stored
+	// request for a poolless one — the same places the primary port came from.
+	if p := o.pools[labels[labelPool]]; p != nil {
+		status.Image, status.CPU, status.Memory = p.Image, p.CPU, p.Memory
+	} else {
+		status.Image, status.CPU, status.Memory = spec.Image, spec.CPU, spec.Memory
 	}
 	state, err := o.serving(ctx, id)
 	if err != nil {

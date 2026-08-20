@@ -86,6 +86,7 @@ The response is a **sandbox status**, the same shape every read returns:
 | `status` | string | `creating` \| `ready` \| `failed` \| `deleting` — see [lifecycle](#lifecycle). |
 | `url` | string | The sandbox's address on its pool's port. Absent when nothing is serving (a `failed` sandbox has no URL). |
 | `urls` | object | Every port it serves, keyed by port number as a string, including the pool's own. Read addresses from here rather than building them. |
+| `image`, `cpu`, `memory` | string, number, int | The shape it is running in — off its pool, or off the request that built its pod. |
 | `error` | string | Why it failed, when it did. |
 
 ### A sandbox with no pool
