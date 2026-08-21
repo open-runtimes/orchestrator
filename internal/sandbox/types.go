@@ -99,6 +99,22 @@ func (r *Request) Shape() pool.Spec {
 	}
 }
 
+// Recorded returns a copy of the request carrying the shape the sandbox was
+// actually built in, so what is stored describes the pod rather than the ask.
+// A pooled sandbox names no shape of its own — its pool holds one — and that
+// pool may be re-imaged or dropped while the pod keeps running, which would
+// leave a reader with the replacement or with nothing at all.
+func (r *Request) Recorded(shape pool.Spec) *Request {
+	recorded := *r
+	recorded.Image = shape.Image
+	recorded.Port = shape.Port
+	recorded.CPU = shape.CPU
+	recorded.Memory = shape.Memory
+	recorded.RuntimeClass = shape.RuntimeClass
+
+	return &recorded
+}
+
 // PoolFixed names the shape fields this request set that a pool fixes before it
 // arrives. A warm pod is already running when it is claimed, so none of these
 // can be honoured on a pooled create — naming one has to be an error, because
@@ -149,8 +165,15 @@ type Status struct {
 	// URLs addresses every port the sandbox serves, keyed by port number
 	// (including the pool's own). Present so callers never build a hostname
 	// themselves — the token in it is not derivable from the id.
-	URLs  map[string]string `json:"urls,omitempty"`
-	Error string            `json:"error,omitempty"`
+	URLs map[string]string `json:"urls,omitempty"`
+	// Image, CPU and Memory are the shape the sandbox is running in — read
+	// back off the pool it was claimed from, or off the request that built its
+	// pod. A caller that did not create this sandbox, or has forgotten what it
+	// asked for, can see what it got without keeping a record of its own.
+	Image  string  `json:"image,omitempty"`
+	CPU    float64 `json:"cpu,omitempty"`
+	Memory int     `json:"memory,omitempty"`
+	Error  string  `json:"error,omitempty"`
 }
 
 // ListResponse is the response for listing live sandboxes.

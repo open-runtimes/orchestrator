@@ -145,7 +145,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		}
 		return nil, err
 	}
-	if err := o.warm.Bind(ctx, pod.Name, req.ID, req, map[string]string{LabelToken: req.Token}); err != nil {
+	if err := o.warm.Bind(ctx, pod.Name, req.ID, req.Recorded(shape), map[string]string{LabelToken: req.Token}); err != nil {
 		// The claim label is what makes a pod discoverable. A poolless pod that
 		// never got one belongs to no pool the control loop reconciles, so if the
 		// bind is what failed — a cancelled request, a lost API server — this is
@@ -183,6 +183,9 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Spec, req *sand
 		PoolID: req.Pool,
 		URL:    o.addr.URL(req.Token),
 		URLs:   o.addr.URLs(req.Token, p.Port, req.Ports),
+		Image:  p.Image,
+		CPU:    p.CPU,
+		Memory: p.Memory,
 	}
 	unserved, err := o.warm.Await(ctx, pod)
 	if err != nil {
@@ -252,6 +255,10 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 	if p := o.warm.Pool(status.PoolID); p != nil {
 		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
 	}
+	// Recorded at create, so this describes the pod that is running rather than
+	// whatever its pool says today — the pool may have been re-imaged or removed
+	// since. Absent for a sandbox created before the shape was recorded.
+	status.Image, status.CPU, status.Memory = spec.Image, spec.CPU, spec.Memory
 	return status
 }
 
