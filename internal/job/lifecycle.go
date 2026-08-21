@@ -33,7 +33,7 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 	case Exited:
 		emitExitCallback(em, jobID, image, dest, ev.ExitCode, ev.Reason, ev.Duration.Seconds())
 	case Failed:
-		emitExitCallback(em, jobID, image, dest, -1, "", 0)
+		emitExitCallback(em, jobID, image, dest, -1, ev.Reason, 0)
 	case Completed:
 		if dest == nil || !MatchesCallbackFilter(CallbackTypeComplete, dest.Events) {
 			return

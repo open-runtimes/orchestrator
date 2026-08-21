@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // fakeWatcher replays a fixed sequence of events with no Docker daemon.
@@ -338,5 +339,31 @@ func TestLifecycle_ContextCancelled(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Watch did not return after context cancellation")
+	}
+}
+
+func TestTruncateDetail(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		s    string
+		max  int
+		want string
+	}{
+		{"under the cap", "short", 10, "short"},
+		{"exactly at the cap", "12345", 5, "12345"},
+		{"ascii over the cap", "1234567890", 5, "12345"},
+		{"cut lands mid-rune", "abécd", 3, "ab"}, // é is 2 bytes starting at index 2
+		{"cut lands on a rune boundary", "abécd", 4, "abé"},
+		{"multibyte only", "日本語", 4, "日"}, // 3-byte runes; 4 cuts mid-second
+	}
+	for _, tt := range tests {
+		got := truncateDetail(tt.s, tt.max)
+		if got != tt.want {
+			t.Errorf("%s: truncateDetail(%q, %d) = %q, want %q", tt.name, tt.s, tt.max, got, tt.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: truncateDetail(%q, %d) = %q is not valid UTF-8", tt.name, tt.s, tt.max, got)
+		}
 	}
 }

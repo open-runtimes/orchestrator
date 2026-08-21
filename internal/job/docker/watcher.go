@@ -8,6 +8,7 @@ import (
 	"orchestrator/internal/job"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -104,8 +105,9 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 	if !sidecar.State.Running {
 		switch {
 		case !state.isWorkerStarted:
-			logger.Error("Sidecar exited before inputs completed")
-			out(job.Failed{Reason: "sidecar exited before inputs completed"})
+			reason := w.sidecarFailureReason(ctx, sidecarID)
+			logger.Error("Sidecar exited before inputs completed", "reason", reason)
+			out(job.Failed{Reason: reason})
 		case state.isWorkerExited:
 			// Sidecar exit missed during a stream disconnect; the worker exit
 			// was already emitted, so only the completion is outstanding.
@@ -241,8 +243,9 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 			case event.Actor.ID == sidecarID && event.Action == "die":
 				switch {
 				case !state.isWorkerStarted:
-					logger.Error("Sidecar exited before inputs completed")
-					out(job.Failed{Reason: "sidecar exited before inputs completed"})
+					reason := w.sidecarFailureReason(ctx, sidecarID)
+					logger.Error("Sidecar exited before inputs completed", "reason", reason)
+					out(job.Failed{Reason: reason})
 				case !state.isWorkerExited:
 					logger.Warn("Sidecar exited while worker still running")
 				default:
@@ -313,6 +316,76 @@ func (w *dockerLifecycleWatcher) streamLogs(ctx context.Context, logger *slog.Lo
 
 		if lines := splitLines(string(payload)); len(lines) > 0 {
 			out(job.LogLine{Stream: stream, Lines: lines})
+		}
+	}
+}
+
+// maxFailureDetail bounds the log line carried in a Failed reason — the
+// reason lands in the job status and the exit callback, not in a log store.
+const maxFailureDetail = 512
+
+// sidecarFailureReason builds the Failed reason for a sidecar that died
+// before the worker started, carrying the sidecar's last log line — the
+// fatal error would otherwise die with the container.
+func (w *dockerLifecycleWatcher) sidecarFailureReason(ctx context.Context, sidecarID string) string {
+	reason := "sidecar exited before inputs completed"
+	detail := w.lastLogLine(ctx, sidecarID)
+	if detail == "" {
+		return reason
+	}
+	return reason + ": " + truncateDetail(detail, maxFailureDetail)
+}
+
+// truncateDetail caps s at limit bytes without splitting a UTF-8 rune — a
+// mid-rune cut would be replaced with U+FFFD downstream, corrupting the
+// diagnostic the cap is protecting.
+func truncateDetail(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// lastLogLine returns the last non-empty line the container wrote, or "" if
+// its logs are unavailable.
+func (w *dockerLifecycleWatcher) lastLogLine(ctx context.Context, containerID string) string {
+	logCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	logs, err := w.client.ContainerLogs(logCtx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       "10",
+	})
+	if err != nil {
+		return ""
+	}
+	defer logs.Close()
+
+	// Same 8-byte multiplexing header as streamLogs; here the frames are
+	// drained to completion and only the final non-empty line is kept.
+	var last string
+	header := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(logs, header); err != nil {
+			return last
+		}
+		size := int(header[4])<<24 | int(header[5])<<16 | int(header[6])<<8 | int(header[7])
+		if size == 0 {
+			continue
+		}
+		payload := make([]byte, size)
+		if _, err := io.ReadFull(logs, payload); err != nil {
+			return last
+		}
+		for _, line := range splitLines(string(payload)) {
+			if line != "" {
+				last = line
+			}
 		}
 	}
 }
