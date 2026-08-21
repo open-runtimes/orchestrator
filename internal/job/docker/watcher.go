@@ -8,6 +8,7 @@ import (
 	"orchestrator/internal/job"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
@@ -332,10 +333,21 @@ func (w *dockerLifecycleWatcher) sidecarFailureReason(ctx context.Context, sidec
 	if detail == "" {
 		return reason
 	}
-	if len(detail) > maxFailureDetail {
-		detail = detail[:maxFailureDetail]
+	return reason + ": " + truncateDetail(detail, maxFailureDetail)
+}
+
+// truncateDetail caps s at max bytes without splitting a UTF-8 rune — a
+// mid-rune cut would be replaced with U+FFFD downstream, corrupting the
+// diagnostic the cap is protecting.
+func truncateDetail(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	return reason + ": " + detail
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // lastLogLine returns the last non-empty line the container wrote, or "" if
