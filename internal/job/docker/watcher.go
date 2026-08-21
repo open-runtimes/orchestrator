@@ -336,14 +336,14 @@ func (w *dockerLifecycleWatcher) sidecarFailureReason(ctx context.Context, sidec
 	return reason + ": " + truncateDetail(detail, maxFailureDetail)
 }
 
-// truncateDetail caps s at max bytes without splitting a UTF-8 rune — a
+// truncateDetail caps s at limit bytes without splitting a UTF-8 rune — a
 // mid-rune cut would be replaced with U+FFFD downstream, corrupting the
 // diagnostic the cap is protecting.
-func truncateDetail(s string, max int) string {
-	if len(s) <= max {
+func truncateDetail(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	cut := max
+	cut := limit
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
