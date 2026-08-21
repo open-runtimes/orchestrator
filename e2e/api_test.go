@@ -18,6 +18,7 @@ import (
 	"orchestrator/internal/job/docker"
 	"orchestrator/internal/testutil"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -473,6 +474,57 @@ func TestAPI_JobWithCallbacks(t *testing.T) {
 	// Should receive at least start and exit events
 	if count < 2 {
 		t.Errorf("Expected at least 2 callback events (start, exit), got %d", count)
+	}
+}
+
+// TestAPI_SidecarFailureCarriesReason verifies that a job whose sidecar dies
+// before the worker starts reports why: the job error carries the sidecar's
+// last log line, not just the generic failure marker.
+func TestAPI_SidecarFailureCarriesReason(t *testing.T) {
+	testClient := newTestAPI(t)
+
+	jobID := fmt.Sprintf("e2e-sidecar-reason-%d", time.Now().UnixNano())
+
+	reqBody := map[string]any{
+		"id":             jobID,
+		"image":          "alpine:latest",
+		"command":        "echo 'never runs'",
+		"cpu":            1,
+		"memory":         128,
+		"timeoutSeconds": 60,
+		"artifacts": []map[string]any{{
+			// The sidecar's own loopback: refused instantly, failing the
+			// pre-job artifacts before the worker ever starts.
+			"id":   "source",
+			"type": "download",
+			"in":   "http://127.0.0.1:1/unreachable.tar.gz",
+			"out":  "source.tar.gz",
+		}},
+	}
+	resp := testClient.createJob(t, reqBody)
+	resp.Body.Close()
+
+	var statusResp map[string]any
+	testutil.MustWaitFor(t, func() bool {
+		r, e := http.Get(testClient.baseURL + "/v1/jobs/" + jobID)
+		if e != nil {
+			return false
+		}
+		defer r.Body.Close()
+
+		if r.StatusCode != http.StatusOK {
+			return false
+		}
+		json.NewDecoder(r.Body).Decode(&statusResp)
+		return statusResp["status"] == "failed"
+	}, testutil.WithTimeout(60*time.Second), testutil.WithInterval(time.Second))
+
+	errMsg, _ := statusResp["error"].(string)
+	if !strings.Contains(errMsg, "sidecar exited before inputs completed: ") {
+		t.Errorf("Expected the failure marker with a detail suffix, got %q", errMsg)
+	}
+	if !strings.Contains(errMsg, "failed to download file") {
+		t.Errorf("Expected the sidecar's error line in the job error, got %q", errMsg)
 	}
 }
 

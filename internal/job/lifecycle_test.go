@@ -106,6 +106,9 @@ func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
 	if len(captured) != 1 || captured[0].Payload.Data["exitCode"] != -1 {
 		t.Errorf("want exit event with code -1, got %v", captured)
 	}
+	if captured[0].Payload.Data["reason"] != "sidecar died" {
+		t.Errorf("want failure reason on the exit event, got %v", captured[0].Payload.Data["reason"])
+	}
 }
 
 func TestEmitCallback_Completed_EmitsCompleteEvent(t *testing.T) {
