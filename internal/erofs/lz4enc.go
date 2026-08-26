@@ -122,11 +122,23 @@ func (e *lz4HCEncoder) widerMatch(src []byte, i, minStart int) (int, int, int) {
 		// must extend past the best match's endpoint to matter.
 		viable := bestLen == 0 || (cand != 0 && src[cand-1] == src[i-1]) ||
 			(i+bestLen < srcEnd && src[cand+bestLen] == src[i+bestLen])
+		// Kept inline rather than extracted: this is the encoder's hottest
+		// loop and the body has loops of its own, so a helper cannot inline
+		// (measured ~3% on whole-image builds).
 		if viable && load32(src, cand) == first {
-			if s, r, l := evalWiderCandidate(src, i, cand, srcEnd, maxBack, bestLen); l > 0 {
-				bestStart, bestRef, bestLen = s, r, l
-				if bestLen >= lz4GoodEnough {
-					break // long matches saturate the token economics
+			fwd := matchLen(src[cand:min(cand+srcEnd-i, srcEnd)], src[i:srcEnd])
+			if fwd >= lz4MinMatch && fwd+maxBack > bestLen {
+				back := 0
+				for back < maxBack && cand-back > 0 && src[i-back-1] == src[cand-back-1] {
+					back++
+				}
+				if fwd+back > bestLen {
+					bestLen = fwd + back
+					bestStart = i - back
+					bestRef = cand - back
+					if bestLen >= lz4GoodEnough {
+						break // long matches saturate the token economics
+					}
 				}
 			}
 		}
@@ -140,24 +152,6 @@ func (e *lz4HCEncoder) widerMatch(src []byte, i, minStart int) (int, int, int) {
 		return 0, 0, 0
 	}
 	return bestStart, bestRef, bestLen
-}
-
-// evalWiderCandidate measures one chain candidate: the forward match length
-// from i, extended backwards up to maxBack bytes. Returns the adjusted start,
-// reference, and total length, or length 0 when it cannot beat bestLen.
-func evalWiderCandidate(src []byte, i, cand, srcEnd, maxBack, bestLen int) (int, int, int) {
-	fwd := matchLen(src[cand:min(cand+srcEnd-i, srcEnd)], src[i:srcEnd])
-	if fwd < lz4MinMatch || fwd+maxBack <= bestLen {
-		return 0, 0, 0
-	}
-	back := 0
-	for back < maxBack && cand-back > 0 && src[i-back-1] == src[cand-back-1] {
-		back++
-	}
-	if fwd+back <= bestLen {
-		return 0, 0, 0
-	}
-	return i - back, cand - back, fwd + back
 }
 
 // CompressBlock compresses src into dst as one raw LZ4 block. It returns 0
