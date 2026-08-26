@@ -41,16 +41,7 @@ func init() {
 	// kernel driver and unsquashfs expect, paired with the compressor-options
 	// record the forked writer emits.
 	squashfs.RegisterCompHandler(squashfs.LZ4, &squashfs.CompHandler{
-		Decompress: func(buf []byte) ([]byte, error) {
-			// A squashfs block never exceeds the 1 MiB format maximum, so a
-			// buffer of that size always holds the decompressed output.
-			dst := make([]byte, 1<<20)
-			n, err := lz4.UncompressBlock(buf, dst)
-			if err != nil {
-				return nil, err
-			}
-			return dst[:n], nil
-		},
+		Decompress: lz4DecompressBlock,
 		Compress: func(buf []byte) ([]byte, error) {
 			dst := make([]byte, lz4.CompressBlockBound(len(buf)))
 			var c lz4.Compressor
@@ -66,6 +57,38 @@ func init() {
 			return dst[:n], nil
 		},
 	})
+
+	// lz4hc emits the same raw block format through the high-compression
+	// encoder: a better ratio for more compress-time CPU, identical
+	// decompression. Images serialize as LZ4, so reads always resolve to the
+	// handler above; the decompressor here is only for symmetry.
+	squashfs.RegisterCompHandler(squashfs.LZ4HC, &squashfs.CompHandler{
+		Decompress: lz4DecompressBlock,
+		Compress: func(buf []byte) ([]byte, error) {
+			dst := make([]byte, lz4.CompressBlockBound(len(buf)))
+			c := lz4.CompressorHC{Level: lz4.Level9}
+			n, err := c.CompressBlock(buf, dst)
+			if err != nil {
+				return nil, err
+			}
+			if n == 0 {
+				return buf, nil
+			}
+			return dst[:n], nil
+		},
+	})
+}
+
+// lz4DecompressBlock inflates one raw lz4 block. A squashfs block never
+// exceeds the 1 MiB format maximum, so a buffer of that size always holds the
+// decompressed output.
+func lz4DecompressBlock(buf []byte) ([]byte, error) {
+	dst := make([]byte, 1<<20)
+	n, err := lz4.UncompressBlock(buf, dst)
+	if err != nil {
+		return nil, err
+	}
+	return dst[:n], nil
 }
 
 // squashfsMagic is the 4-byte signature at the start of every squashfs image.
@@ -87,8 +110,10 @@ func squashfsCompression(name string) (squashfs.Compression, error) {
 		return squashfs.ZSTD, nil
 	case "lz4":
 		return squashfs.LZ4, nil
+	case "lz4hc":
+		return squashfs.LZ4HC, nil
 	default:
-		return 0, fmt.Errorf("unsupported squashfs compression: %q (supported: gzip, zstd, lz4)", name)
+		return 0, fmt.Errorf("unsupported squashfs compression: %q (supported: gzip, zstd, lz4, lz4hc)", name)
 	}
 }
 
