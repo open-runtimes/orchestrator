@@ -3,6 +3,7 @@ package erofs
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"io/fs"
 	"math/rand"
 	"os"
@@ -101,6 +102,14 @@ func TestCompressedRoundTrip(t *testing.T) {
 		{"lz4hc", CompressionOptions{Algorithm: "lz4hc"}},
 		{"lz4hc big pcluster", CompressionOptions{Algorithm: "lz4hc", PClusterSize: 131072}},
 		{"lz4hc fragments", CompressionOptions{Algorithm: "lz4hc", Fragments: true}},
+		{"lz4hc split profiles", CompressionOptions{
+			Algorithm:           "lz4hc",
+			PClusterSize:        128 << 10,
+			MaxExtentSize:       4 << 20,
+			Fragments:           true,
+			PackedPClusterSize:  32 << 10,
+			PackedMaxExtentSize: 256 << 10,
+		}},
 		{"lz4hc dedupe", CompressionOptions{Algorithm: "lz4hc", Dedupe: true}},
 		{"lz4hc fragments dedupe", CompressionOptions{Algorithm: "lz4hc", Fragments: true, Dedupe: true}},
 	} {
@@ -108,6 +117,78 @@ func TestCompressedRoundTrip(t *testing.T) {
 			assertImageMatches(t, buildImage(t, src, WithCompression(tc.opts)), src)
 		})
 	}
+}
+
+func TestFragmentOrder(t *testing.T) {
+	src := fstest.MapFS{
+		"a": {Data: []byte("aaaa")},
+		"b": {Data: []byte("bbbbbb")},
+		"c": {Data: []byte("cc")},
+	}
+	out, err := os.Create(filepath.Join(t.TempDir(), "ordered.img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := Create(out, WithCompression(CompressionOptions{
+		Algorithm:     "lz4hc",
+		Fragments:     true,
+		FragmentOrder: []string{"c", "/a", "c"},
+	}))
+	if err := w.CopyFrom(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	offsets := make(map[string]uint64)
+	for _, e := range collectRegular(w.root) {
+		if e.z == nil || !e.z.wholeFragment {
+			t.Fatalf("%s was not packed", e.path)
+		}
+		offsets[e.path] = e.z.fragOff
+	}
+	if offsets["/c"] != 0 || offsets["/a"] != 2 || offsets["/b"] != 6 {
+		t.Fatalf("fragment offsets = %#v, want c=0 a=2 b=6", offsets)
+	}
+	assertImageMatches(t, out.Name(), src)
+}
+
+func TestWholeFileDedupeBeforeCompression(t *testing.T) {
+	duplicate := bytes.Repeat([]byte("large shared input "), 40_000)
+	src := fstest.MapFS{
+		"a":      {Data: duplicate},
+		"b":      {Data: bytes.Clone(duplicate)},
+		"unique": {Data: bytes.Repeat([]byte("different input "), 40_000)},
+	}
+	out, err := os.Create(filepath.Join(t.TempDir(), "whole-file-dedupe.img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := Create(out, WithCompression(CompressionOptions{Algorithm: "lz4", Dedupe: true}))
+	if err := w.CopyFrom(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries := make(map[string]*fsEntry)
+	for _, e := range collectRegular(w.root) {
+		entries[e.path] = e
+	}
+	if entries["/a"].z == nil || entries["/a"].z != entries["/b"].z {
+		t.Fatal("large duplicate did not reuse the canonical compressed layout")
+	}
+	if entries["/unique"].z == entries["/a"].z {
+		t.Fatal("different file reused the duplicate layout")
+	}
+	assertImageMatches(t, out.Name(), src)
 }
 
 // TestCompressedShrinks pins that compression actually reduces the image and
@@ -139,6 +220,20 @@ func TestCompressedRejectsInvalidOptions(t *testing.T) {
 		"unaligned pcluster":    {Algorithm: "lz4", PClusterSize: 5000},
 		"oversized pcluster":    {Algorithm: "lz4", PClusterSize: 2 << 20},
 		"negative-ish pcluster": {Algorithm: "lz4", PClusterSize: -4096},
+		"unaligned extent":      {Algorithm: "lz4", MaxExtentSize: 5000},
+		"oversized extent":      {Algorithm: "lz4", MaxExtentSize: 13 << 20},
+		"unaligned packed pcluster": {
+			Algorithm: "lz4", PackedPClusterSize: 5000,
+		},
+		"oversized packed pcluster": {
+			Algorithm: "lz4", PackedPClusterSize: 2 << 20,
+		},
+		"unaligned packed extent": {
+			Algorithm: "lz4", PackedMaxExtentSize: 5000,
+		},
+		"oversized packed extent": {
+			Algorithm: "lz4", PackedMaxExtentSize: 13 << 20,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := os.Create(filepath.Join(t.TempDir(), "img"))
@@ -173,6 +268,161 @@ func TestCompressedLargeFile(t *testing.T) {
 	src := fstest.MapFS{"large.txt": {Data: []byte(b.String())}}
 	img := buildImage(t, src, WithCompression(CompressionOptions{Algorithm: "lz4", PClusterSize: 65536}))
 	assertImageMatches(t, img, src)
+}
+
+// TestCompressedMaximumExtent exercises a pcluster spanning more than 2048
+// logical blocks. NONHEAD indexes beyond that point must use bounded backward
+// hops because bit 11 is reserved for the compressed-block-count marker.
+func TestCompressedMaximumExtent(t *testing.T) {
+	src := fstest.MapFS{
+		"ten-megabytes": {Data: bytes.Repeat([]byte("highly compressible module body\n"), 350000)},
+	}
+	img := buildImage(t, src, WithCompression(CompressionOptions{
+		Algorithm:     "lz4",
+		PClusterSize:  1 << 20,
+		MaxExtentSize: 12 << 20,
+	}))
+	assertImageMatches(t, img, src)
+}
+
+// TestPackedProfileBoundsDecodedExtents pins the random-read amplification
+// contract of the independent packed-inode profile.
+func TestPackedProfileBoundsDecodedExtents(t *testing.T) {
+	src := fstest.MapFS{
+		"a": {Data: bytes.Repeat([]byte("small module a\n"), 20000)},
+		"b": {Data: bytes.Repeat([]byte("small module b\n"), 20000)},
+	}
+	const maxDecoded = 64 << 10
+	path := buildImage(t, src, WithCompression(CompressionOptions{
+		Algorithm:           "lz4",
+		PClusterSize:        128 << 10,
+		MaxExtentSize:       4 << 20,
+		Fragments:           true,
+		PackedPClusterSize:  32 << 10,
+		PackedMaxExtentSize: maxDecoded,
+	}))
+	assertImageMatches(t, path, src)
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	opened, err := Open(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := opened.(*image)
+	packed, err := img.zPackedInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for lcn := 0; lcn < packed.z.nIdx; {
+		advise, _, blkaddr, err := img.zIndex(packed, lcn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch advise & 0x3 {
+		case zLclusterPlain:
+			lcn++
+		case zLclusterHead1:
+			data, err := img.zExtentData(packed, lcn, blkaddr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(data) > maxDecoded {
+				t.Fatalf("packed extent decodes to %d bytes, limit %d", len(data), maxDecoded)
+			}
+			blockSize := int(img.blockSize())
+			lcn += (len(data) + blockSize - 1) / blockSize
+		default:
+			t.Fatalf("walk landed on NONHEAD index at lcn %d", lcn)
+		}
+	}
+}
+
+// TestCompressedMetadataFirst keeps inode and directory metadata ahead of
+// the compressed payload, avoiding long seeks during cold path lookup.
+func TestCompressedMetadataFirst(t *testing.T) {
+	path := buildImage(t, compressTestTree(), WithCompression(CompressionOptions{Algorithm: "lz4"}))
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	opened, err := Open(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opened.(*image).sb.MetaBlkAddr; got != 1 {
+		t.Fatalf("metadata starts at block %d, want block 1", got)
+	}
+}
+
+type countingReaderAt struct {
+	io.ReaderAt
+	reads int
+}
+
+func (r *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	r.reads++
+	return r.ReaderAt.ReadAt(p, off)
+}
+
+// TestPackedExtentCacheSharedAcrossReads verifies that fragment reads reuse
+// both the parsed packed inode and its decompressed extent.
+func TestPackedExtentCacheSharedAcrossReads(t *testing.T) {
+	src := fstest.MapFS{
+		"a": {Data: bytes.Repeat([]byte("cached fragment a\n"), 200)},
+		"b": {Data: bytes.Repeat([]byte("cached fragment b\n"), 200)},
+	}
+	path := buildImage(t, src, WithCompression(CompressionOptions{
+		Algorithm: "lz4", Fragments: true,
+	}))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter := &countingReaderAt{ReaderAt: bytes.NewReader(raw)}
+	opened, err := Open(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := opened.(*image)
+	f, err := img.Open("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := f.(*file).readInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := img.zInit(fi); err != nil {
+		t.Fatal(err)
+	}
+	if !fi.z.wholeFragment {
+		t.Fatal("test file was not stored as a whole fragment")
+	}
+
+	want := src["a"].Data[:128]
+	got := make([]byte, len(want))
+	if err := img.zReadPacked(fi.z.fragOff, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("first packed read returned the wrong data")
+	}
+	reads := counter.reads
+	clear(got)
+	if err := img.zReadPacked(fi.z.fragOff, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("cached packed read returned the wrong data")
+	}
+	if counter.reads != reads {
+		t.Fatalf("cached packed read issued %d additional ReaderAt calls", counter.reads-reads)
+	}
 }
 
 // TestCompressedRejectsHostilePClusterSizes regresses the reader allocating
@@ -223,5 +473,89 @@ func TestCompressedRejectsHostilePClusterSizes(t *testing.T) {
 	}
 	if _, err := fs.ReadFile(img2, "big.txt"); err == nil || !strings.Contains(err.Error(), "format limit") {
 		t.Fatalf("hostile block count: got err %v, want format-limit rejection", err)
+	}
+}
+
+func TestCompressedResultBufferPools(t *testing.T) {
+	packed := zProfile{pclusterSize: 4096, maxExtentSize: 16384}
+	data := zProfile{pclusterSize: 8192, maxExtentSize: 32768}
+	z := &zState{
+		packedProfile:  packed,
+		dataProfile:    data,
+		packedCompBufs: make(chan []byte, 1),
+		dataCompBufs:   make(chan []byte, 1),
+	}
+
+	scratch := []byte("completed compressed block")
+	staged := z.stageCompressed(packed, scratch)
+	if !bytes.Equal(staged, scratch) {
+		t.Fatalf("staged bytes = %q, want %q", staged, scratch)
+	}
+	if cap(staged) != packed.pclusterSize {
+		t.Fatalf("packed staged capacity = %d, want %d", cap(staged), packed.pclusterSize)
+	}
+	// The result must not alias compressor scratch while it waits for ordered
+	// collection.
+	scratch[0] ^= 0xff
+	if bytes.Equal(staged, scratch) {
+		t.Fatal("staged result aliases compressor scratch")
+	}
+
+	first := &staged[:cap(staged)][0]
+	z.releaseCompressed(packed, staged)
+	reused := z.stageCompressed(packed, []byte("next block"))
+	if &reused[:cap(reused)][0] != first {
+		t.Fatal("packed result buffer was not reused")
+	}
+
+	dataResult := z.stageCompressed(data, []byte("data profile block"))
+	if cap(dataResult) != data.pclusterSize {
+		t.Fatalf("data staged capacity = %d, want %d", cap(dataResult), data.pclusterSize)
+	}
+	spans := []packedSpan{{comp: reused}, {comp: nil}, {comp: dataResult}}
+	// Release each span through its owning profile, as the real collectors do.
+	z.releasePackedSpans(packed, spans[:2])
+	z.releasePackedSpans(data, spans[2:])
+	for i := range spans {
+		if spans[i].comp != nil {
+			t.Fatalf("span %d retained released result buffer", i)
+		}
+	}
+	if len(z.packedCompBufs) != 1 || len(z.dataCompBufs) != 1 {
+		t.Fatalf("pooled buffers: packed=%d data=%d, want one each", len(z.packedCompBufs), len(z.dataCompBufs))
+	}
+}
+
+func TestStreamPackerCloseReleasesQueuedResults(t *testing.T) {
+	profile := zProfile{pclusterSize: 4096, maxExtentSize: 16384}
+	z := &zState{
+		packedProfile:  profile,
+		packedCompBufs: make(chan []byte, 2),
+		segmentBufs:    make(chan []byte, 2),
+	}
+	comp := z.stageCompressed(profile, []byte("queued compressed block"))
+	segment := make([]byte, 128, zSegmentSize)
+	result := make(chan zStreamResult, 1)
+	result <- zStreamResult{
+		packedSegment: packedSegment{spans: []packedSpan{{comp: comp}}},
+		buf:           segment,
+	}
+	p := &zStreamPacker{
+		z:       z,
+		profile: profile,
+		queue:   []chan zStreamResult{result},
+		tail:    make([]byte, 64, zSegmentSize),
+		closed:  true, // no worker goroutines in this focused ownership test
+	}
+
+	p.Close()
+	if len(p.queue) != 0 || p.tail != nil {
+		t.Fatalf("close retained queue=%d tail=%v", len(p.queue), p.tail != nil)
+	}
+	if len(z.packedCompBufs) != 1 {
+		t.Fatalf("pooled compressed buffers = %d, want 1", len(z.packedCompBufs))
+	}
+	if len(z.segmentBufs) != 2 {
+		t.Fatalf("pooled segment buffers = %d, want 2", len(z.segmentBufs))
 	}
 }

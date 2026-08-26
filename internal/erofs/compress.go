@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"runtime"
 	"sync"
 
@@ -23,17 +24,33 @@ type CompressionOptions struct {
 	// Algorithm selects the block compressor: "lz4" (fast encoder) or
 	// "lz4hc" (high-compression encoder, identical decompression).
 	Algorithm string
-	// PClusterSize is the maximum uncompressed byte span encoded into one
-	// physical cluster. Must be a multiple of the block size, at most 1 MiB.
+	// PClusterSize is the maximum compressed size of a physical cluster.
+	// Must be a multiple of the block size, at most 1 MiB.
 	// 0 defaults to 65536.
 	PClusterSize int
-	// Fragments packs each regular file smaller than PClusterSize whole into
-	// the shared packed inode, so many small files compress together instead
-	// of each paying block-alignment padding.
+	// MaxExtentSize bounds the decompressed bytes represented by one physical
+	// cluster. Smaller extents reduce read amplification for random access;
+	// larger extents generally improve compression and sequential throughput.
+	// Must be a multiple of the block size, at most 12 MiB. 0 defaults to 4 MiB.
+	MaxExtentSize int
+	// Fragments packs small regular files whole into the shared packed inode,
+	// so they compress together instead of each paying block-alignment padding.
 	Fragments bool
+	// PackedPClusterSize overrides PClusterSize for the shared packed inode.
+	// A smaller value limits the physical I/O caused by random small-file
+	// reads without changing the large-file layout. 0 uses PClusterSize.
+	PackedPClusterSize int
+	// PackedMaxExtentSize overrides MaxExtentSize for the shared packed inode.
+	// This gives small-file reads a strict decompression-amplification bound
+	// while large files retain larger sequential extents. 0 uses MaxExtentSize.
+	PackedMaxExtentSize int
 	// Dedupe reuses identical pclusters and fragments across files, keyed by
 	// content hash.
 	Dedupe bool
+	// FragmentOrder optionally lists hot paths in desired packed-inode order.
+	// Paths may be absolute or relative to the image root. Unlisted fragments
+	// retain deterministic tree order after the listed working set.
+	FragmentOrder []string
 }
 
 // zExtent describes one physical cluster of a compressed file: `lclusters`
@@ -70,15 +87,43 @@ type zState struct {
 	// fragDedupe maps whole-file content hash to a packed inode offset.
 	fragDedupe map[[sha256.Size]byte]uint64
 	packedSize uint64
-	packedTmp  *os.File // raw fragment bytes until the packed inode is built
+	fragBuf    []byte // reused while hashing and forwarding one fragment
 	blockSize  int
-	// newCompressor returns a block compressor; instances are not safe for
-	// concurrent use, so each packing goroutine takes its own.
-	newCompressor func() func(src, dst []byte) (int, error)
-	// newFinalizer, when set, returns a slower, stronger compressor used to
-	// re-encode each chosen span once (span sizing probes use newCompressor).
-	newFinalizer func() func(src, dst []byte) (int, error)
-	workers      int
+	// newPackers returns a probe and optional stronger finalizer for the worker
+	// pool. LZ4HC shares one encoder's large hash-chain allocation between the
+	// serial probe and finalization phases.
+	newPackers     func(maxExtentSize int) (zCompressor, zFinalizer)
+	workers        int
+	packedWorkersN int
+	dataProfile    zProfile
+	packedProfile  zProfile
+	dataWorkers    chan *zPackWorker
+	packedWorkers  chan *zPackWorker
+	segmentBufs    chan []byte
+	dataCompBufs   chan []byte
+	packedCompBufs chan []byte
+}
+
+// zProfile controls the two independent costs of a compressed extent: bytes
+// fetched from storage and bytes inflated to satisfy a read.
+type zProfile struct {
+	pclusterSize  int
+	maxExtentSize int
+}
+
+type zCompressor func(src, dst []byte) (int, error)
+type zFinalizer func(src, dst []byte, limit int) (int, bool, error)
+
+// zPackWorker owns the relatively large encoder tables and scratch buffers
+// needed to pack one extent. Keeping a bounded pool per profile lets the
+// packed stream, regular-file pool, and large-file packer reuse the same
+// allocations instead of each phase rebuilding equivalent state.
+type zPackWorker struct {
+	compress  zCompressor
+	finalize  zFinalizer
+	probe     []byte
+	kept      []byte
+	maxExtent int
 }
 
 // zSelfCheck decompresses every stored span and compares it against the
@@ -87,7 +132,9 @@ type zState struct {
 const zSelfCheck = false
 
 const (
-	zDefaultPClusterSize = 65536
+	zDefaultPClusterSize  = 65536
+	zDefaultMaxExtentSize = 4 << 20
+	zFormatMaxExtentSize  = 12 << 20
 	// lcluster index di_advise types.
 	zLclusterPlain   = 0
 	zLclusterHead1   = 1
@@ -123,32 +170,70 @@ func newZState(opts CompressionOptions, blockSize int, tempDir string) (*zState,
 	if opts.PClusterSize == 0 {
 		opts.PClusterSize = zDefaultPClusterSize
 	}
-	if opts.PClusterSize%blockSize != 0 || opts.PClusterSize <= 0 || opts.PClusterSize > 1<<20 {
-		return nil, fmt.Errorf("erofs: pcluster size %d must be a positive multiple of block size %d, at most 1 MiB", opts.PClusterSize, blockSize)
+	if opts.MaxExtentSize == 0 {
+		opts.MaxExtentSize = zDefaultMaxExtentSize
+	}
+	if opts.PackedPClusterSize == 0 {
+		opts.PackedPClusterSize = opts.PClusterSize
+	}
+	if opts.PackedMaxExtentSize == 0 {
+		opts.PackedMaxExtentSize = opts.MaxExtentSize
+	}
+	validatePCluster := func(name string, size int) error {
+		if size%blockSize != 0 || size <= 0 || size > 1<<20 {
+			return fmt.Errorf("erofs: %s %d must be a positive multiple of block size %d, at most 1 MiB", name, size, blockSize)
+		}
+		return nil
+	}
+	validateExtent := func(name string, size int) error {
+		if size%blockSize != 0 || size <= 0 || size > zFormatMaxExtentSize {
+			return fmt.Errorf("erofs: %s %d must be a positive multiple of block size %d, at most 12 MiB", name, size, blockSize)
+		}
+		return nil
+	}
+	if err := validatePCluster("pcluster size", opts.PClusterSize); err != nil {
+		return nil, err
+	}
+	if err := validatePCluster("packed pcluster size", opts.PackedPClusterSize); err != nil {
+		return nil, err
+	}
+	if err := validateExtent("max extent size", opts.MaxExtentSize); err != nil {
+		return nil, err
+	}
+	if err := validateExtent("packed max extent size", opts.PackedMaxExtentSize); err != nil {
+		return nil, err
 	}
 	z := &zState{
-		opts:      opts,
-		blockSize: blockSize,
+		opts:          opts,
+		blockSize:     blockSize,
+		dataProfile:   zProfile{pclusterSize: opts.PClusterSize, maxExtentSize: opts.MaxExtentSize},
+		packedProfile: zProfile{pclusterSize: opts.PackedPClusterSize, maxExtentSize: opts.PackedMaxExtentSize},
 	}
 	switch opts.Algorithm {
 	case "", "lz4":
-		z.newCompressor = func() func(src, dst []byte) (int, error) {
+		z.newPackers = func(_ int) (zCompressor, zFinalizer) {
 			var c lz4.Compressor
-			return c.CompressBlock
+			return c.CompressBlock, nil
 		}
 	case "lz4hc":
-		z.newCompressor = func() func(src, dst []byte) (int, error) {
-			var c lz4HCEncoder
-			return c.CompressBlock
-		}
-		z.newFinalizer = func() func(src, dst []byte) (int, error) {
-			var c lz4HCEncoder
-			return c.CompressBlockOpt
+		z.newPackers = func(maxExtentSize int) (zCompressor, zFinalizer) {
+			c := &lz4HCEncoder{chain: make([]uint16, maxExtentSize)}
+			return c.CompressBlock, c.CompressBlockOptLimit
 		}
 	default:
 		return nil, fmt.Errorf("erofs: unsupported compression algorithm %q (supported: lz4, lz4hc)", opts.Algorithm)
 	}
 	z.workers = min(runtime.GOMAXPROCS(0), 8)
+	z.packedWorkersN = min(runtime.GOMAXPROCS(0), 12)
+	maxWorkers := max(z.workers, z.packedWorkersN)
+	z.dataWorkers = make(chan *zPackWorker, maxWorkers)
+	z.segmentBufs = make(chan []byte, maxWorkers*2)
+	z.dataCompBufs = make(chan []byte, maxWorkers*4)
+	z.packedCompBufs = make(chan []byte, maxWorkers*4)
+	// Packed and normal-file compression are consecutive phases. Share the
+	// pool so normal-file workers grow and reuse the packed workers' encoder
+	// state instead of retaining a second profile-specific set.
+	z.packedWorkers = z.dataWorkers
 	if opts.Dedupe {
 		z.dedupe = make(map[[sha256.Size]byte]zExtent)
 		z.fragDedupe = make(map[[sha256.Size]byte]uint64)
@@ -158,56 +243,294 @@ func newZState(opts CompressionOptions, blockSize int, tempDir string) (*zState,
 		return nil, err
 	}
 	os.Remove(z.compSpool.Name())
-	if opts.Fragments {
-		if z.packedTmp, err = os.CreateTemp(tempDir, "erofs-packed-*"); err != nil {
-			z.compSpool.Close()
-			return nil, err
-		}
-		os.Remove(z.packedTmp.Name())
-	}
 	return z, nil
+}
+
+func (z *zState) packWorkerPool(profile zProfile) chan *zPackWorker {
+	if profile == z.packedProfile {
+		return z.packedWorkers
+	}
+	return z.dataWorkers
+}
+
+func (z *zState) workerCount(profile zProfile) int {
+	if profile == z.packedProfile {
+		return z.packedWorkersN
+	}
+	return z.workers
+}
+
+func (z *zState) getPackWorker(profile zProfile) *zPackWorker {
+	pool := z.packWorkerPool(profile)
+	select {
+	case worker := <-pool:
+		if worker.maxExtent >= profile.maxExtentSize {
+			return worker
+		}
+	default:
+	}
+	compress, finalize := z.newPackers(profile.maxExtentSize)
+	scratchSize := lz4.CompressBlockBound(profile.maxExtentSize)
+	return &zPackWorker{
+		compress:  compress,
+		finalize:  finalize,
+		probe:     make([]byte, scratchSize),
+		kept:      make([]byte, scratchSize),
+		maxExtent: profile.maxExtentSize,
+	}
+}
+
+func (z *zState) putPackWorker(profile zProfile, worker *zPackWorker) {
+	z.packWorkerPool(profile) <- worker
+}
+
+func (z *zState) getSegmentBuffer() []byte {
+	select {
+	case buf := <-z.segmentBufs:
+		return buf[:0]
+	default:
+		return make([]byte, 0, zSegmentSize)
+	}
+}
+
+func (z *zState) putSegmentBuffer(buf []byte) {
+	if buf == nil {
+		return
+	}
+	select {
+	case z.segmentBufs <- buf[:0]:
+	default:
+	}
+}
+
+func (z *zState) compBufferPool(profile zProfile) chan []byte {
+	if profile == z.packedProfile {
+		return z.packedCompBufs
+	}
+	return z.dataCompBufs
+}
+
+// stageCompressed copies a completed encoding out of worker-owned scratch.
+// The returned buffer belongs to one packedSpan until its ordered collector
+// has stored (or deduped) that span and calls releaseCompressed.
+func (z *zState) stageCompressed(profile zProfile, comp []byte) []byte {
+	if len(comp) == 0 {
+		return nil
+	}
+	pool := z.compBufferPool(profile)
+	select {
+	case buf := <-pool:
+		if cap(buf) >= len(comp) {
+			return append(buf[:0], comp...)
+		}
+	default:
+	}
+	return append(make([]byte, 0, profile.pclusterSize), comp...)
+}
+
+func (z *zState) releaseCompressed(profile zProfile, comp []byte) {
+	if comp == nil {
+		return
+	}
+	select {
+	case z.compBufferPool(profile) <- comp[:0]:
+	default:
+	}
+}
+
+func (z *zState) releasePackedSpans(profile zProfile, spans []packedSpan) {
+	for i := range spans {
+		z.releaseCompressed(profile, spans[i].comp)
+		spans[i].comp = nil
+	}
 }
 
 func (z *zState) close() {
 	if z.compSpool != nil {
 		z.compSpool.Close()
 	}
-	if z.packedTmp != nil {
-		z.packedTmp.Close()
-	}
 }
 
-// compressAll runs the compression pass over every eligible regular file,
-// replacing its flat data with compressed extents (or a packed-inode
-// fragment), then builds the packed inode itself. Small files pack whole
-// into the packed inode inline; mid-size files fan out to a worker pool
-// (collected in tree order, so output stays deterministic); large files
-// stream through the segment-parallel packer one at a time.
+// compressAll runs the compression pass over every eligible regular file.
+// Small files feed the packed-inode compressor as they are read, overlapping
+// source I/O with compression and avoiding a raw packed-inode temporary file.
+// Remaining mid-size files fan out to a worker pool (collected in tree order,
+// so output stays deterministic); large files use the segment-parallel packer.
 func (fsys *Writer) compressAll() error {
 	z := fsys.z
+	entries := collectRegular(fsys.root)
+	remaining := make([]*fsEntry, 0, len(entries))
+
+	readerFor := func(e *fsEntry) io.Reader {
+		if e.directData != nil {
+			return e.directData
+		}
+		if fsys.spool != nil {
+			return io.NewSectionReader(fsys.spool, e.spoolOff, int64(e.size))
+		}
+		return nil
+	}
+	closeDirect := func(e *fsEntry) {
+		if closer, ok := e.directData.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		e.directData = nil
+	}
+
+	// Build the packed inode first. Its segments are compressed concurrently
+	// while this goroutine reads, hashes, and concatenates source fragments.
+	if z.opts.Fragments {
+		packed := newZStreamPacker(z, z.packedProfile)
+		defer packed.Close()
+		fragments := make([]*fsEntry, 0, len(entries))
+		for _, e := range entries {
+			if e.size >= 4*uint64(z.opts.PClusterSize) {
+				remaining = append(remaining, e)
+				continue
+			}
+			fragments = append(fragments, e)
+		}
+		var fragmentSizeCounts map[uint64]int
+		if z.fragDedupe != nil {
+			fragmentSizeCounts = make(map[uint64]int)
+			for _, e := range fragments {
+				fragmentSizeCounts[e.size]++
+			}
+			var maxDedupeSize uint64
+			for _, e := range fragments {
+				if fragmentSizeCounts[e.size] > 1 {
+					maxDedupeSize = max(maxDedupeSize, e.size)
+				}
+			}
+			if maxDedupeSize > 0 {
+				z.fragBuf = make([]byte, int(maxDedupeSize))
+			}
+		}
+		if len(z.opts.FragmentOrder) > 0 {
+			byPath := make(map[string]*fsEntry, len(fragments))
+			for _, e := range fragments {
+				byPath[e.path] = e
+			}
+			ordered := make([]*fsEntry, 0, len(fragments))
+			for _, hotPath := range z.opts.FragmentOrder {
+				hotPath = path.Clean("/" + hotPath)
+				if e := byPath[hotPath]; e != nil {
+					ordered = append(ordered, e)
+					delete(byPath, hotPath)
+				}
+			}
+			for _, e := range fragments {
+				if byPath[e.path] != nil {
+					ordered = append(ordered, e)
+				}
+			}
+			fragments = ordered
+		}
+		for _, e := range fragments {
+			r := readerFor(e)
+			if r == nil {
+				continue
+			}
+			var off uint64
+			var err error
+			if z.fragDedupe == nil || fragmentSizeCounts[e.size] == 1 {
+				// Equal content implies equal size. A globally unique-sized
+				// fragment cannot dedupe, so stream it straight into the packed
+				// tail instead of hashing and copying it through fragBuf.
+				off = z.packedSize
+				err = packed.ReadFull(r, int(e.size))
+				if err == nil {
+					z.packedSize += e.size
+				}
+			} else {
+				off, err = z.addFragment(r, packed, int(e.size))
+			}
+			if err != nil {
+				return fmt.Errorf("erofs: pack %s: %w", e.path, err)
+			}
+			e.z = &zInfo{wholeFragment: true, fragOff: off}
+			closeDirect(e)
+		}
+		zi, err := packed.Finish()
+		if err != nil {
+			return fmt.Errorf("erofs: compress packed inode: %w", err)
+		}
+		if z.packedSize > 0 {
+			z.packed = &erofsEntry{
+				mode:  disk.StatTypeReg | 0o600,
+				nlink: 1,
+				size:  z.packedSize,
+				name:  "packed",
+				path:  "(packed)",
+				mtime: fsys.buildTime,
+				z:     zi,
+			}
+		}
+	} else {
+		remaining = entries
+	}
 
 	type fileResult struct {
 		spans []packedSpan
 		err   error
 	}
 	type fileJob struct {
-		e   *fsEntry
-		buf []byte
-		res chan fileResult
+		e          *fsEntry
+		buf        []byte
+		res        chan fileResult
+		duplicates []*fsEntry
 	}
 	jobs := make(chan *fileJob)
+	var fileDedupe map[[sha256.Size]byte]*fileJob
+	var fileDedupeSizes map[uint64]int
+	if z.dedupe != nil {
+		fileDedupe = make(map[[sha256.Size]byte]*fileJob)
+		fileDedupeSizes = make(map[uint64]int)
+		for _, e := range remaining {
+			if e.size >= 4*uint64(z.opts.PClusterSize) && e.size < 2*zSegmentSize {
+				fileDedupeSizes[e.size]++
+			}
+		}
+	}
+	freeFileBuffers := make([][]byte, 0, z.workers*2)
+	getFileBuffer := func(size int) []byte {
+		best := -1
+		for i, buf := range freeFileBuffers {
+			if cap(buf) >= size && (best < 0 || cap(buf) < cap(freeFileBuffers[best])) {
+				best = i
+			}
+		}
+		if best < 0 {
+			return make([]byte, size)
+		}
+		buf := freeFileBuffers[best]
+		freeFileBuffers[best] = freeFileBuffers[len(freeFileBuffers)-1]
+		freeFileBuffers = freeFileBuffers[:len(freeFileBuffers)-1]
+		return buf[:size]
+	}
+	putFileBuffer := func(buf []byte) {
+		buf = buf[:0]
+		if len(freeFileBuffers) < cap(freeFileBuffers) {
+			freeFileBuffers = append(freeFileBuffers, buf)
+			return
+		}
+		smallest := 0
+		for i := 1; i < len(freeFileBuffers); i++ {
+			if cap(freeFileBuffers[i]) < cap(freeFileBuffers[smallest]) {
+				smallest = i
+			}
+		}
+		if cap(buf) > cap(freeFileBuffers[smallest]) {
+			freeFileBuffers[smallest] = buf
+		}
+	}
 	var wg sync.WaitGroup
 	for range z.workers {
 		wg.Go(func() {
-			compress := z.newCompressor()
-			var finalize func(src, dst []byte) (int, error)
-			if z.newFinalizer != nil {
-				finalize = z.newFinalizer()
-			}
-			probe := make([]byte, lz4.CompressBlockBound(zMaxSpan))
-			kept := make([]byte, lz4.CompressBlockBound(zMaxSpan))
 			for job := range jobs {
-				spans, err := z.packBuffer(job.buf, compress, finalize, &probe, &kept)
+				worker := z.getPackWorker(z.dataProfile)
+				spans, err := z.packBuffer(job.buf, z.dataProfile, worker.compress, worker.finalize, &worker.probe, &worker.kept)
+				z.putPackWorker(z.dataProfile, worker)
 				job.res <- fileResult{spans: spans, err: err}
 			}
 		})
@@ -221,6 +544,10 @@ func (fsys *Writer) compressAll() error {
 	pending := make([]*fileJob, 0, z.workers*2)
 	collect := func(job *fileJob) error {
 		res := <-job.res
+		defer func() {
+			z.releasePackedSpans(z.dataProfile, res.spans)
+			putFileBuffer(job.buf)
+		}()
 		if res.err != nil {
 			return fmt.Errorf("erofs: compress %s: %w", job.e.path, res.err)
 		}
@@ -234,104 +561,113 @@ func (fsys *Writer) compressAll() error {
 			zi.totalBlocks += uint32(ext.blocks)
 		}
 		job.e.z = zi
+		for _, duplicate := range job.duplicates {
+			duplicate.z = zi
+		}
 		return nil
 	}
-	drain := func() error {
+	discard := func(job *fileJob) {
+		res := <-job.res
+		z.releasePackedSpans(z.dataProfile, res.spans)
+		putFileBuffer(job.buf)
+	}
+	// Any source, compressor, or spool error can leave already-submitted jobs
+	// behind. Their result buffers still have owners, so receive and release
+	// them before the worker pool is stopped.
+	defer func() {
 		for _, job := range pending {
+			discard(job)
+		}
+	}()
+	drain := func() error {
+		for len(pending) > 0 {
+			job := pending[0]
+			pending = pending[:copy(pending, pending[1:])]
 			if err := collect(job); err != nil {
 				return err
 			}
 		}
-		pending = pending[:0]
 		return nil
 	}
 
-	for _, e := range collectRegular(fsys.root) {
-		var r io.Reader
-		switch {
-		case e.directData != nil:
-			r = e.directData
-		case fsys.spool != nil:
-			r = io.NewSectionReader(fsys.spool, e.spoolOff, int64(e.size))
-		default:
+	for _, e := range remaining {
+		r := readerFor(e)
+		if r == nil {
 			continue
 		}
 		switch {
-		case z.opts.Fragments && e.size < 4*uint64(z.opts.PClusterSize):
-			off, err := z.addFragment(r, int(e.size))
-			if err != nil {
-				return fmt.Errorf("erofs: pack %s: %w", e.path, err)
-			}
-			e.z = &zInfo{wholeFragment: true, fragOff: off}
 		case e.size >= 2*zSegmentSize:
 			// Large file: extents must land in stream order, so drain the
 			// pool first; the stream packer parallelizes internally.
 			if err := drain(); err != nil {
 				return err
 			}
-			zi, err := z.compressStream(r, e.size)
+			zi, err := z.compressStream(r, e.size, z.dataProfile)
 			if err != nil {
 				return fmt.Errorf("erofs: compress %s: %w", e.path, err)
 			}
 			e.z = zi
 		default:
-			buf := make([]byte, e.size)
+			buf := getFileBuffer(int(e.size))
 			if _, err := io.ReadFull(r, buf); err != nil {
 				return fmt.Errorf("erofs: read %s: %w", e.path, err)
 			}
 			job := &fileJob{e: e, buf: buf, res: make(chan fileResult, 1)}
+			// Extent dedupe would discover a duplicate only after running both
+			// compression passes. For substantial whole-file duplicates, hash
+			// the already-resident input first and share the canonical zInfo.
+			// The cutoff keeps tiny-file workloads from growing a large map;
+			// with fragments enabled those files are deduped during packing.
+			if fileDedupeSizes[e.size] > 1 {
+				key := sha256.Sum256(buf)
+				if canonical := fileDedupe[key]; canonical != nil {
+					if canonical.e.z != nil {
+						e.z = canonical.e.z
+					} else {
+						canonical.duplicates = append(canonical.duplicates, e)
+					}
+					putFileBuffer(buf)
+					closeDirect(e)
+					continue
+				}
+				fileDedupe[key] = job
+			}
 			if len(pending) == cap(pending) {
-				if err := collect(pending[0]); err != nil {
+				job := pending[0]
+				pending = pending[:copy(pending, pending[1:])]
+				if err := collect(job); err != nil {
 					return err
 				}
-				pending = pending[:copy(pending, pending[1:])]
 			}
 			pending = append(pending, job)
 			jobs <- job
 		}
-		if c, ok := e.directData.(io.Closer); ok {
-			_ = c.Close()
-		}
-		e.directData = nil
+		closeDirect(e)
 	}
 	if err := drain(); err != nil {
 		return err
-	}
-
-	if z.packedTmp != nil && z.packedSize > 0 {
-		zi, err := z.compressStream(io.NewSectionReader(z.packedTmp, 0, int64(z.packedSize)), z.packedSize)
-		if err != nil {
-			return fmt.Errorf("erofs: compress packed inode: %w", err)
-		}
-		z.packed = &erofsEntry{
-			mode:  disk.StatTypeReg | 0o600,
-			nlink: 1,
-			size:  z.packedSize,
-			name:  "packed",
-			path:  "(packed)",
-			mtime: fsys.buildTime,
-			z:     zi,
-		}
 	}
 	return nil
 }
 
 // packBuffer packs one whole in-memory stream into spans, hashing them for
 // dedupe when enabled. Used by the per-file worker pool.
-func (z *zState) packBuffer(buf []byte, compress, finalize func(src, dst []byte) (int, error), probe, kept *[]byte) ([]packedSpan, error) {
+func (z *zState) packBuffer(buf []byte, profile zProfile, compress zCompressor, finalize zFinalizer, probe, kept *[]byte) ([]packedSpan, error) {
 	var spans []packedSpan
 	window := buf
 	ratio := 0.5
 	for len(window) > 0 {
-		span, comp, err := z.packSpan(compress, window, probe, kept, true, &ratio)
+		candidate := window[:min(len(window), profile.maxExtentSize)]
+		final := len(candidate) == len(window)
+		span, comp, err := z.packSpan(compress, candidate, profile, probe, kept, final, &ratio)
 		if err != nil {
-			return nil, err
+			return spans, err
 		}
 		comp, err = refineSpan(finalize, window[:span], comp, *probe, z.blockSize)
 		if err != nil {
-			return nil, err
+			return spans, err
 		}
-		ps := packedSpan{raw: window[:span], comp: append([]byte(nil), comp...)}
+		ps := packedSpan{raw: window[:span], comp: z.stageCompressed(profile, comp)}
 		if z.dedupe != nil {
 			ps.key = sha256.Sum256(ps.raw)
 		}
@@ -365,8 +701,11 @@ func collectRegular(root *fsEntry) []*fsEntry {
 // addFragment appends a whole small file to the packed inode data, reusing
 // an identical earlier fragment when dedupe is on. Returns the fragment's
 // byte offset within the packed inode.
-func (z *zState) addFragment(r io.Reader, size int) (uint64, error) {
-	buf := make([]byte, size)
+func (z *zState) addFragment(r io.Reader, dst io.Writer, size int) (uint64, error) {
+	if cap(z.fragBuf) < size {
+		z.fragBuf = make([]byte, size)
+	}
+	buf := z.fragBuf[:size]
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return 0, err
 	}
@@ -378,7 +717,7 @@ func (z *zState) addFragment(r io.Reader, size int) (uint64, error) {
 		}
 	}
 	off := z.packedSize
-	if _, err := z.packedTmp.WriteAt(buf, int64(off)); err != nil {
+	if _, err := dst.Write(buf); err != nil {
 		return 0, err
 	}
 	z.packedSize += uint64(size)
@@ -388,37 +727,24 @@ func (z *zState) addFragment(r io.Reader, size int) (uint64, error) {
 	return off, nil
 }
 
-// zMaxSpan caps the uncompressed bytes one pcluster may decode to. Larger
-// spans improve the ratio on compressible data (more input amortizes each
-// pcluster's block padding) but raise the decompression cost of a random
-// read; 4 MiB stays far under the kernel's 12 MiB limit and keeps extents
-// under the 2048-lcluster bound where NONHEAD deltas would collide with the
-// CBLKCNT flag bit.
-const zMaxSpan = 4 << 20
-
 // compressStream packs a file into pclusters mkfs.erofs-style: each pcluster
-// holds as much input as compresses into PClusterSize bytes (found with a
+// holds as much input as compresses into the profile's pcluster size (found with a
 // ratio-guided search rather than a destsize codec), storing raw blocks when
 // compression saves less than one block. Span boundaries are always
 // lcluster-aligned, so extents never start mid-lcluster.
-func (z *zState) compressStream(r io.Reader, size uint64) (*zInfo, error) {
+func (z *zState) compressStream(r io.Reader, size uint64, profile zProfile) (*zInfo, error) {
 	if size >= 2*zSegmentSize && z.workers > 1 {
-		return z.compressParallel(r, size)
+		return z.compressParallel(r, size, profile)
 	}
 	zi := &zInfo{}
-	compress := z.newCompressor()
-	var finalize func(src, dst []byte) (int, error)
-	if z.newFinalizer != nil {
-		finalize = z.newFinalizer()
-	}
-	window := make([]byte, 0, min(size, zMaxSpan))
-	probe := make([]byte, lz4.CompressBlockBound(zMaxSpan))
-	kept := make([]byte, lz4.CompressBlockBound(zMaxSpan))
+	worker := z.getPackWorker(profile)
+	defer z.putPackWorker(profile, worker)
+	window := make([]byte, 0, min(size, uint64(profile.maxExtentSize)))
 	remaining := size
 	ratio := 0.5 // running compressed/uncompressed estimate for this stream
 	for remaining > 0 || len(window) > 0 {
-		// Refill the window up to zMaxSpan.
-		if want := int(min(zMaxSpan, uint64(len(window))+remaining)); len(window) < want {
+		// Refill the window up to the decompressed-extent limit.
+		if want := int(min(uint64(profile.maxExtentSize), uint64(len(window))+remaining)); len(window) < want {
 			off := len(window)
 			window = window[:want]
 			if _, err := io.ReadFull(r, window[off:]); err != nil {
@@ -428,11 +754,11 @@ func (z *zState) compressStream(r io.Reader, size uint64) (*zInfo, error) {
 		}
 
 		final := remaining == 0
-		span, comp, err := z.packSpan(compress, window, &probe, &kept, final, &ratio)
+		span, comp, err := z.packSpan(worker.compress, window, profile, &worker.probe, &worker.kept, final, &ratio)
 		if err != nil {
 			return nil, err
 		}
-		comp, err = refineSpan(finalize, window[:span], comp, probe, z.blockSize)
+		comp, err = refineSpan(worker.finalize, window[:span], comp, worker.probe, z.blockSize)
 		if err != nil {
 			return nil, err
 		}
@@ -454,9 +780,9 @@ func (z *zState) compressStream(r io.Reader, size uint64) (*zInfo, error) {
 // means store the span raw). Probes land in *probe; a fitting result is kept
 // by swapping *probe and *kept so later probes never clobber it. Non-final
 // spans are lcluster-aligned.
-func (z *zState) packSpan(compress func(src, dst []byte) (int, error), window []byte, probe, kept *[]byte, final bool, ratio *float64) (int, []byte, error) {
+func (z *zState) packSpan(compress zCompressor, window []byte, profile zProfile, probe, kept *[]byte, final bool, ratio *float64) (int, []byte, error) {
 	bs := z.blockSize
-	pc := z.opts.PClusterSize
+	pc := profile.pclusterSize
 
 	// clamp aligns a candidate span: at least one pcluster's worth, at most
 	// the window, and lcluster-aligned unless it reaches the window end of a
@@ -485,12 +811,13 @@ func (z *zState) packSpan(compress func(src, dst []byte) (int, error), window []
 
 	// tooBig == 0 means no overflowing candidate seen yet.
 	cand := clamp(int(float64(pc) / max(*ratio, 0.02) * 0.98))
-	best, bestLen, tooBig := 0, 0, 0
+	best, bestLen, tooBig, lastCand := 0, 0, 0, 0
 	for range 5 {
 		n, err := compress(window[:cand], *probe)
 		if err != nil {
 			return 0, nil, err
 		}
+		lastCand = cand
 		if fits(cand, n) {
 			best, bestLen = cand, n
 			*probe, *kept = *kept, *probe
@@ -530,6 +857,9 @@ func (z *zState) packSpan(compress func(src, dst []byte) (int, error), window []
 	if best == 0 {
 		// Last resort: a single-pcluster input span.
 		cand = clamp(pc)
+		if cand == lastCand {
+			return cand, nil, nil // the identical failed probe already ran
+		}
 		n, err := compress(window[:cand], *probe)
 		if err != nil {
 			return 0, nil, err
@@ -547,7 +877,7 @@ func (z *zState) packSpan(compress func(src, dst []byte) (int, error), window []
 // refineSpan re-encodes a chosen span with the stronger finalizer, keeping
 // the probe encoding when the finalizer does not improve on it. Raw spans
 // stay raw: the probe already proved compression cannot save a block.
-func refineSpan(finalize func(src, dst []byte) (int, error), span, comp, scratch []byte, blockSize int) ([]byte, error) {
+func refineSpan(finalize zFinalizer, span, comp, scratch []byte, blockSize int) ([]byte, error) {
 	if finalize == nil || comp == nil {
 		return comp, nil
 	}
@@ -556,9 +886,16 @@ func refineSpan(finalize func(src, dst []byte) (int, error), span, comp, scratch
 		// to justify a second pass.
 		return comp, nil
 	}
-	n, err := finalize(span, scratch)
+	fastBlocks := (len(comp) + blockSize - 1) / blockSize
+	if fastBlocks == 1 {
+		return comp, nil // no stronger encoding can occupy fewer blocks
+	}
+	n, withinLimit, err := finalize(span, scratch, (fastBlocks-1)*blockSize)
 	if err != nil {
 		return nil, err
+	}
+	if !withinLimit {
+		return comp, nil
 	}
 	if n > 0 && n < len(comp) && n <= len(span)-blockSize {
 		return scratch[:n], nil
@@ -723,6 +1060,11 @@ func (w *erofsWriter) writeZTrailing(buf io.Writer, e *erofsEntry) (int, error) 
 			d0 := uint32(i)
 			if i == 1 {
 				d0 = zCblkcntBit | uint32(ext.blocks)
+			} else if d0 >= zCblkcntBit {
+				// The flag bit is reserved for CBLKCNT. Long extents use
+				// bounded backward hops, as mkfs.erofs does, rather than
+				// letting a large HEAD distance alias the flag.
+				d0 = zCblkcntBit - 1
 			}
 			d1 := uint32(ext.lclusters - i)
 			if err := emit(zLclusterNonhead, 0, d0|d1<<16); err != nil {
@@ -757,7 +1099,8 @@ func (w *erofsWriter) zSuperblockCfgs() []byte {
 	buf := make([]byte, 2+14)
 	binary.LittleEndian.PutUint16(buf[0:2], 14)
 	binary.LittleEndian.PutUint16(buf[2:4], 65535) // lz4 max match distance
-	binary.LittleEndian.PutUint16(buf[4:6], uint16(w.z.opts.PClusterSize/w.blockSize))
+	maxPClusterSize := max(w.z.dataProfile.pclusterSize, w.z.packedProfile.pclusterSize)
+	binary.LittleEndian.PutUint16(buf[4:6], uint16(maxPClusterSize/w.blockSize))
 	return buf
 }
 
@@ -769,6 +1112,7 @@ const zSegmentSize = 8 << 20
 // packedSegment is one segment's packing result, produced by a worker.
 type packedSegment struct {
 	spans []packedSpan
+	buf   []byte
 	err   error
 }
 
@@ -785,7 +1129,7 @@ type packedSpan struct {
 // contents, and dedupe behavior stay deterministic. In-flight segments are
 // bounded by a semaphore the collector replenishes, so memory stays at
 // O(workers) segments regardless of stream size.
-func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
+func (z *zState) compressParallel(r io.Reader, size uint64, profile zProfile) (*zInfo, error) {
 	segments := int((size + zSegmentSize - 1) / zSegmentSize)
 	type segJob struct {
 		idx int
@@ -805,10 +1149,10 @@ func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
 		for idx := range segments {
 			inflight <- struct{}{}
 			segLen := int(min(zSegmentSize, size-uint64(idx)*zSegmentSize))
-			buf := make([]byte, segLen)
+			buf := z.getSegmentBuffer()[:segLen]
 			if _, err := io.ReadFull(r, buf); err != nil {
 				readErr = err
-				results[idx] <- packedSegment{err: err}
+				results[idx] <- packedSegment{buf: buf, err: err}
 				return
 			}
 			jobs <- segJob{idx: idx, buf: buf}
@@ -818,38 +1162,34 @@ func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
 	var wg sync.WaitGroup
 	for range z.workers {
 		wg.Go(func() {
-			compress := z.newCompressor()
-			var finalize func(src, dst []byte) (int, error)
-			if z.newFinalizer != nil {
-				finalize = z.newFinalizer()
-			}
-			probe := make([]byte, lz4.CompressBlockBound(zMaxSpan))
-			kept := make([]byte, lz4.CompressBlockBound(zMaxSpan))
 			for job := range jobs {
+				worker := z.getPackWorker(profile)
 				final := job.idx == segments-1
 				ratio := 0.5
 				var spans []packedSpan
 				window := job.buf
 				var err error
 				for len(window) > 0 {
+					candidate := window[:min(len(window), profile.maxExtentSize)]
 					var span int
 					var comp []byte
-					span, comp, err = z.packSpan(compress, window, &probe, &kept, final, &ratio)
+					span, comp, err = z.packSpan(worker.compress, candidate, profile, &worker.probe, &worker.kept, final && len(candidate) == len(window), &ratio)
 					if err != nil {
 						break
 					}
-					comp, err = refineSpan(finalize, window[:span], comp, probe, z.blockSize)
+					comp, err = refineSpan(worker.finalize, window[:span], comp, worker.probe, z.blockSize)
 					if err != nil {
 						break
 					}
-					ps := packedSpan{raw: window[:span], comp: append([]byte(nil), comp...)}
+					ps := packedSpan{raw: window[:span], comp: z.stageCompressed(profile, comp)}
 					if z.dedupe != nil {
 						ps.key = sha256.Sum256(ps.raw)
 					}
 					spans = append(spans, ps)
 					window = window[span:]
 				}
-				results[job.idx] <- packedSegment{spans: spans, err: err}
+				z.putPackWorker(profile, worker)
+				results[job.idx] <- packedSegment{spans: spans, buf: job.buf, err: err}
 			}
 		})
 	}
@@ -858,11 +1198,13 @@ func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
 	var firstErr error
 	for idx := range segments {
 		res := <-results[idx]
-		<-inflight
 		if res.err != nil && firstErr == nil {
 			firstErr = res.err
 		}
 		if firstErr != nil {
+			z.releasePackedSpans(profile, res.spans)
+			z.putSegmentBuffer(res.buf)
+			<-inflight
 			if readErr != nil {
 				break // the reader stopped; later segments never arrive
 			}
@@ -877,6 +1219,9 @@ func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
 			zi.extents = append(zi.extents, ext)
 			zi.totalBlocks += uint32(ext.blocks)
 		}
+		z.releasePackedSpans(profile, res.spans)
+		z.putSegmentBuffer(res.buf)
+		<-inflight
 	}
 	wg.Wait()
 	if firstErr != nil {

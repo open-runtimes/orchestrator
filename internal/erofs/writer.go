@@ -73,7 +73,31 @@ func (w *erofsWriter) minChunkBits(size uint64) uint8 {
 
 func (w *erofsWriter) write(out io.WriteSeeker) error {
 	w.copyBuf = make([]byte, 256*1024) // shared io.CopyBuffer buffer
+	if w.z != nil {
+		return w.writeMetadataFirst(out)
+	}
 	return w.writeSeekable(out)
+}
+
+// writeMetadataFirst concentrates inodes and directory data ahead of the
+// compressed payload. Random path lookup otherwise bounces between directory
+// blocks at the start of a data-first image and inodes at its far end. This is
+// the same locality principle as mkfs.erofs's metadata-zone layout.
+func (w *erofsWriter) writeMetadataFirst(out io.WriteSeeker) error {
+	w.metaBlkAddr = uint32(w.sbAreaBlocks())
+	w.assignDataBlocks()
+
+	if err := w.writeBlock0(out); err != nil {
+		return err
+	}
+	meta := w.newMetaBuffer()
+	if err := w.writeMetadataInodes(meta); err != nil {
+		return err
+	}
+	if _, err := meta.WriteTo(out); err != nil {
+		return err
+	}
+	return w.writeDataBlocks(out)
 }
 
 // writeSeekable uses a data-first on-disk layout: block0 (placeholder),
@@ -114,18 +138,11 @@ func (w *erofsWriter) writeSeekable(out io.WriteSeeker) error {
 
 // newMetaBuffer returns a pre-sized bytes.Buffer for metadata serialization.
 func (w *erofsWriter) newMetaBuffer() *bytes.Buffer {
-	totalMetaBytes := 0
-	for _, e := range w.entries {
-		isz := disk.SizeInodeExtended
-		if e.compact {
-			isz = disk.SizeInodeCompact
-		}
-		sz := isz + e.xattrSize + e.trailingSize
-		if sz%32 != 0 {
-			sz = (sz + 31) & ^31
-		}
-		totalMetaBytes += sz
-	}
+	// Include deliberate NID gaps (for example, padding that lets a small
+	// directory inline at the next metadata block) in the initial capacity.
+	// Omitting them forces bytes.Buffer to grow and copy the entire metadata
+	// area during serialization.
+	totalMetaBytes := w.metadataBytes()
 	// SB area + metadata padded to block boundary.
 	capacity := w.blockSize + ((totalMetaBytes + w.blockSize - 1) & ^(w.blockSize - 1))
 	buf := bytes.NewBuffer(make([]byte, 0, capacity))
@@ -158,6 +175,9 @@ func (w *erofsWriter) assignDataBlocks() {
 				e.dataBlkAddr = addr
 				addr += uint32((ds + w.blockSize - 1) / w.blockSize)
 			}
+		}
+		if w.z != nil {
+			w.z.compBase = addr
 		}
 	} else {
 		// Data-first: data starts after superblock area.

@@ -234,6 +234,9 @@ type image struct {
 	longPrefixes []string // cached long xattr prefixes
 	prefixesOnce sync.Once
 	prefixesErr  error
+	packedOnce   sync.Once
+	packedInfo   *inode
+	packedErr    error
 }
 
 // start physical offset of the separate metadata zone

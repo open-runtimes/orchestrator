@@ -3,6 +3,7 @@ package erofs
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"orchestrator/internal/erofs/disk"
 
@@ -32,8 +33,11 @@ type zRead struct {
 	idxStart      int64 // absolute byte offset of the lcluster index array
 	nIdx          int
 
-	// cached decompressed extent
+	// cached decompressed extent. The packed inode is shared by all fragment
+	// readers, so protect its cache while allowing concurrent cache hits.
+	extMu       sync.RWMutex
 	extStartLcn int
+	extEndLcn   int
 	extData     []byte
 }
 
@@ -129,14 +133,9 @@ func (img *image) zLoadBlock(fi *inode, pos int64) (*block, error) {
 
 // zReadPacked reads bytes from the packed inode's decompressed data.
 func (img *image) zReadPacked(off uint64, dst []byte) error {
-	packedNid := img.sb.PackedNid
-	if packedNid == 0 {
-		return fmt.Errorf("fragment read without a packed inode: %w", ErrInvalid)
-	}
-	f := &file{img: img, name: "(packed)", nid: packedNid}
-	fi, err := f.readInfo()
+	fi, err := img.zPackedInfo()
 	if err != nil {
-		return fmt.Errorf("read packed inode: %w", err)
+		return err
 	}
 	for len(dst) > 0 {
 		if int64(off) >= fi.size {
@@ -154,10 +153,34 @@ func (img *image) zReadPacked(off uint64, dst []byte) error {
 	return nil
 }
 
+// zPackedInfo parses the hidden packed inode once. Fragment-heavy trees can
+// route tens of thousands of files through this inode; rebuilding it for each
+// logical block discarded the decompressed-extent cache between every read.
+func (img *image) zPackedInfo() (*inode, error) {
+	img.packedOnce.Do(func() {
+		if img.sb.PackedNid == 0 {
+			img.packedErr = fmt.Errorf("fragment read without a packed inode: %w", ErrInvalid)
+			return
+		}
+		f := &file{img: img, name: "(packed)", nid: img.sb.PackedNid}
+		img.packedInfo, img.packedErr = f.readInfo()
+		if img.packedErr == nil {
+			img.packedErr = img.zInit(img.packedInfo)
+		}
+		if img.packedErr != nil {
+			img.packedErr = fmt.Errorf("read packed inode: %w", img.packedErr)
+		}
+	})
+	return img.packedInfo, img.packedErr
+}
+
 // zReadIndexed fills dst with logical block bn of an indexed compressed
 // inode, decompressing (and caching) the extent that contains it.
 func (img *image) zReadIndexed(fi *inode, bn int64, dst []byte) error {
 	lcn := int(bn)
+	if fi.z.copyCachedBlock(lcn, int(img.blockSize()), dst) {
+		return nil
+	}
 
 	// Walk back to the extent HEAD.
 	head := lcn
@@ -219,13 +242,31 @@ func (img *image) zReadIndexed(fi *inode, bn int64, dst []byte) error {
 	}
 }
 
+func (z *zRead) copyCachedBlock(lcn, blockSize int, dst []byte) bool {
+	z.extMu.RLock()
+	defer z.extMu.RUnlock()
+	if lcn < z.extStartLcn || lcn >= z.extEndLcn {
+		return false
+	}
+	start := (lcn - z.extStartLcn) * blockSize
+	if start < 0 || start+len(dst) > len(z.extData) {
+		return false
+	}
+	copy(dst, z.extData[start:start+len(dst)])
+	return true
+}
+
 // zExtentData decompresses (or returns the cached copy of) the extent whose
 // HEAD lcluster is head, stored at block address blkaddr.
 func (img *image) zExtentData(fi *inode, head int, blkaddr uint32) ([]byte, error) {
 	z := fi.z
+	z.extMu.RLock()
 	if z.extStartLcn == head {
-		return z.extData, nil
+		data := z.extData
+		z.extMu.RUnlock()
+		return data, nil
 	}
+	z.extMu.RUnlock()
 
 	// Scan forward to size the extent and find the compressed block count.
 	blockSize := int64(img.blockSize())
@@ -292,7 +333,10 @@ func (img *image) zExtentData(fi *inode, head int, blkaddr uint32) ([]byte, erro
 		return nil, fmt.Errorf("pcluster at block %d for nid %d decompressed to %d bytes, want %d: %w",
 			blkaddr, fi.nid, n, decompressed, ErrInvalid)
 	}
+	z.extMu.Lock()
 	z.extStartLcn = head
+	z.extEndLcn = head + lclusters
 	z.extData = out
+	z.extMu.Unlock()
 	return out, nil
 }

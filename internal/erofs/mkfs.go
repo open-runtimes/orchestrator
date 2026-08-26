@@ -460,17 +460,24 @@ func (fsys *Writer) CopyFrom(src fs.FS, opts ...CopyOpt) error {
 					}
 				}
 			}
-			f, err := src.Open(fpath)
-			if err != nil {
-				return fmt.Errorf("open %s: %w", fpath, err)
-			}
 			if be == nil {
 				be = entryFromSys(info)
 				if be == nil {
 					be = &builder.Entry{}
 				}
 			}
-			be.Data = f.(io.Reader)
+			if fsys.compression != nil {
+				// Compression consumes data during Close. Defer opening until
+				// then rather than holding every file in a large tree open at
+				// once; overwritten merge entries are never opened at all.
+				be.Data = &lazyFileReader{fsys: src, path: fpath}
+			} else {
+				f, err := src.Open(fpath)
+				if err != nil {
+					return fmt.Errorf("open %s: %w", fpath, err)
+				}
+				be.Data = f.(io.Reader)
+			}
 			return fsys.add(p, &entryFileInfo{info: info, sys: be})
 		}
 
@@ -868,6 +875,35 @@ type readFile struct {
 	entry  *fsEntry
 	reader *io.SectionReader // nil for empty files or non-regular types
 	closed bool
+}
+
+// lazyFileReader defers fs.Open until the compression pass reads the file.
+// CopyFrom can therefore describe very large trees without opening every
+// regular file simultaneously.
+type lazyFileReader struct {
+	fsys fs.FS
+	path string
+	file fs.File
+}
+
+func (r *lazyFileReader) Read(p []byte) (int, error) {
+	if r.file == nil {
+		file, err := r.fsys.Open(r.path)
+		if err != nil {
+			return 0, fmt.Errorf("open %s: %w", r.path, err)
+		}
+		r.file = file
+	}
+	return r.file.Read(p)
+}
+
+func (r *lazyFileReader) Close() error {
+	if r.file == nil {
+		return nil
+	}
+	err := r.file.Close()
+	r.file = nil
+	return err
 }
 
 func (f *readFile) Stat() (fs.FileInfo, error) {
