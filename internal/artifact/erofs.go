@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	erofs "github.com/erofs/go-erofs"
+	erofs "orchestrator/internal/erofs"
 )
 
 // erofs writes its superblock magic at a fixed offset rather than the start of

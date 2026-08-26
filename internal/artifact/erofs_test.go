@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	erofs "github.com/erofs/go-erofs"
+	erofs "orchestrator/internal/erofs"
 )
 
 // assertErofsContents opens the image (test-only; production mounts, never
