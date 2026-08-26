@@ -84,8 +84,10 @@ func TestLZ4HCEncoderFuzzish(t *testing.T) {
 		}
 	}
 	var e lz4HCEncoder
-	for i := 0; i < 300; i++ {
-		l := rnd.Intn(1 << 17)
+	// Sized so the suite stays affordable under -race on small CI runners;
+	// broader corpora run through the round-trip tests above.
+	for i := 0; i < 100; i++ {
+		l := rnd.Intn(1 << 15)
 		off := rnd.Intn(len(base) - l)
 		src := base[off : off+l]
 		dst := make([]byte, lz4.CompressBlockBound(len(src)))

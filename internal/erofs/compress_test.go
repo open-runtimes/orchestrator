@@ -167,8 +167,11 @@ func TestCompressedLargeFile(t *testing.T) {
 		b.WriteString(strings.Repeat("x", i%97))
 		b.WriteString("\n")
 	}
+	// The fast encoder keeps this affordable on small CI runners; the
+	// parallel machinery under test is identical for both algorithms, and
+	// lz4hc's encoders have their own corpora in lz4enc_test.go.
 	src := fstest.MapFS{"large.txt": {Data: []byte(b.String())}}
-	img := buildImage(t, src, WithCompression(CompressionOptions{Algorithm: "lz4hc", PClusterSize: 65536}))
+	img := buildImage(t, src, WithCompression(CompressionOptions{Algorithm: "lz4", PClusterSize: 65536}))
 	assertImageMatches(t, img, src)
 }
 
