@@ -578,8 +578,40 @@ func (fsys *Writer) Close() error {
 
 	ew.planLayout(root)
 	fixParentNids(root, root)
+	if fsys.z != nil {
+		stats := &fsys.z.stats
+		metadataBytes := ew.metadataBytes()
+		stats.MetadataBytes = uint64((metadataBytes + ew.blockSize - 1) / ew.blockSize * ew.blockSize)
+		stats.SuperblockBytes = uint64(ew.sbAreaSize())
+		for _, e := range ew.entries {
+			if e.z != nil && !e.z.wholeFragment {
+				nidx := (e.size + uint64(ew.blockSize) - 1) / uint64(ew.blockSize)
+				if e.layout == disk.LayoutCompressedCompact {
+					headerEnd := int(e.nid)*disk.SizeInodeCompact + inodeCoreSize(e) + e.xattrSize
+					indexStart := (headerEnd+7)&^7 + zMapHeaderSize
+					stats.CompressedIndexBytes += uint64(zCompactIndexSize(indexStart, int(nidx)))
+				} else {
+					stats.CompressedIndexBytes += nidx * zLclusterIdxSize
+				}
+			}
+			if size := ew.flatPlainDataSize(e); size > 0 {
+				stats.FlatDataBytes += uint64((size + ew.blockSize - 1) / ew.blockSize * ew.blockSize)
+			}
+		}
+		stats.ImageBytes = stats.SuperblockBytes + stats.MetadataBytes + stats.FlatDataBytes + stats.PhysicalBytes
+	}
 
 	return ew.write(fsys.out)
+}
+
+// CompressionStats returns byte-level accounting for a completed compressed
+// image build. It returns the zero value before compression has been
+// initialized or for an uncompressed writer.
+func (fsys *Writer) CompressionStats() CompressionStats {
+	if fsys.z == nil {
+		return CompressionStats{}
+	}
+	return fsys.z.stats
 }
 
 // Stat returns file info for the named path. The name is cleaned the same

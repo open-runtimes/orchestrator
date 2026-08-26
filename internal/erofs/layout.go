@@ -73,7 +73,11 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 		case disk.StatTypeReg:
 			switch {
 			case e.z != nil:
-				e.layout = disk.LayoutCompressedFull
+				if w.zCanCompact(e) {
+					e.layout = disk.LayoutCompressedCompact
+				} else {
+					e.layout = disk.LayoutCompressedFull
+				}
 			case e.size == 0 && len(e.chunks) == 0 && e.data == nil && !e.metadataOnly:
 				e.layout = disk.LayoutFlatPlain
 			case len(e.chunks) > 0 || e.metadataOnly:
@@ -164,7 +168,7 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 func (w *erofsWriter) calcTrailingSize(e *erofsEntry) int {
 	switch e.mode & disk.StatTypeMask {
 	case disk.StatTypeReg:
-		if e.layout == disk.LayoutCompressedFull {
+		if e.layout == disk.LayoutCompressedFull || e.layout == disk.LayoutCompressedCompact {
 			return w.zTrailingSize(e)
 		}
 		if e.layout == disk.LayoutChunkBased {

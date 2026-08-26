@@ -127,4 +127,20 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("bytes=%d elapsed=%s\n", st.Size(), time.Since(start))
+	stats := w.CompressionStats()
+	fmt.Printf("input_files=%d input_bytes=%d fragment_files=%d fragment_bytes=%d packed_logical_bytes=%d packed_physical_bytes=%d\n",
+		stats.InputFiles, stats.InputBytes, stats.FragmentFiles, stats.FragmentBytes,
+		stats.PackedLogicalBytes, stats.PackedPhysicalBytes)
+	fmt.Printf("stored_extents=%d compressed_extents=%d raw_extents=%d encoded_bytes=%d raw_bytes=%d physical_bytes=%d padding_bytes=%d\n",
+		stats.StoredExtents, stats.CompressedExtents, stats.RawExtents, stats.EncodedBytes,
+		stats.RawBytes, stats.PhysicalBytes, stats.PaddingBytes)
+	fmt.Printf("fragment_dedupe_files=%d fragment_dedupe_bytes=%d whole_file_dedupe_files=%d whole_file_dedupe_bytes=%d extent_dedupe_refs=%d extent_dedupe_logical_bytes=%d extent_dedupe_physical_bytes=%d\n",
+		stats.FragmentDedupeFiles, stats.FragmentDedupeBytes,
+		stats.WholeFileDedupeFiles, stats.WholeFileDedupeBytes,
+		stats.ExtentDedupeReferences, stats.ExtentDedupeLogicalBytes,
+		stats.ExtentDedupePhysicalBytes)
+	fmt.Printf("segment_boundary_extents=%d segment_boundary_slack_bytes=%d compressed_index_bytes=%d metadata_bytes=%d flat_data_bytes=%d superblock_bytes=%d accounted_image_bytes=%d\n",
+		stats.SegmentBoundaryExtents, stats.SegmentBoundarySlackBytes,
+		stats.CompressedIndexBytes, stats.MetadataBytes, stats.FlatDataBytes,
+		stats.SuperblockBytes, stats.ImageBytes)
 }

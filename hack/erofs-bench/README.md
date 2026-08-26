@@ -66,13 +66,15 @@ metadata-layout change also reduces image size:
 | Writer | Image bytes | Build median | Cumulative allocation |
 |---|---:|---:|---:|
 | Initial split-profile writer | 311,484,416 | 46.42 s | 2.23 GiB |
-| Current profiler-guided writer | 308,035,584 | 30.82 s | 0.87 GiB |
+| Profiler-guided writer, full indexes | 308,035,584 | 30.82 s | 0.87 GiB |
+| Current writer, compacted-2B indexes | 307,073,024 | 30.35 s | 0.87 GiB |
 
-That is 33.6% less build time and 61% less allocation than the initial
-optimized writer, and 60.9% less build time than tuned `mkfs.erofs`. The final
-CPU profile attributes 66.9% of sampled CPU to the strong optimal parse; the
-namespace walk is no longer a meaningful build-time hot path. The image-size
-gap to tuned `mkfs.erofs` narrowed from 4.31% to approximately 3.16%.
+The current writer is 1.42% smaller, about 35% faster, and uses 61% less
+allocation than the initial optimized writer. It is about 61% faster than
+tuned `mkfs.erofs`. The final CPU profile attributes 66.9% of sampled CPU to
+the strong optimal parse; the namespace walk is no longer a meaningful
+build-time hot path. The image-size gap to tuned `mkfs.erofs` narrowed from
+4.31% to 2.84%.
 
 On this corpus, size-prefiltering reduced whole-file hashing to 55 candidates
 and found 32 redundant files representing 70,099,961 logical bytes. Skipping
@@ -84,6 +86,59 @@ build median. Its directory planner also spends metadata padding only when it
 eliminates a larger external directory-data block. Across the corpus this
 inlined enough small directories to remove 3,448,832 image bytes (1.11%) while
 retaining the Linux 6.1-compatible format.
+
+### Size attribution and compact indexes
+
+A matched `mkfs.erofs` feature ablation on the same tree shows exactly where
+upstream gets its size advantage. Every row uses LZ4HC level 12, a 64 KiB
+pcluster, a 1 MiB decoded-extent limit, ten workers, and deterministic inode
+metadata; only the named format features differ.
+
+| `mkfs.erofs` configuration | Image bytes | Incremental effect |
+|---|---:|---:|
+| Legacy indexes, no fragments or dedupe | 424,734,720 | baseline |
+| Compact indexes, no fragments or dedupe | 423,788,544 | -946,176 |
+| Compact indexes + fragments, fragment dedupe disabled | 313,643,008 | -110,145,536 |
+| Compact indexes + fragments | 302,559,232 | -11,083,776 |
+| Compact indexes + fragments + global dedupe | 298,606,592 | -3,952,640 |
+| Same + ztailpacking | 298,606,592 | 0 |
+| Same, forcing every file into fragments | 303,321,088 | +4,714,496 |
+
+Compact indexes account for only about 0.9 MiB of upstream's advantage, but
+they are a pure metadata win. The writer now emits compacted-2B indexes whenever
+its pclusters are physically contiguous and falls back to full indexes for the
+few layouts where extent dedupe creates a physical jump. Compressed index bytes
+fell from 1,303,352 to 335,800; the complete image fell by 962,560 bytes (0.31%)
+with identical compressed payload bytes and extent budgets.
+
+The remaining 8,466,432-byte gap to tuned `mkfs.erofs` is therefore not
+ztailpacking or index overhead. On this corpus the in-tree writer packs 159,188
+files whole and leaves only 137 non-empty regular files on the normal data path.
+The most plausible remaining sources are upstream's different fragment-stream
+parse/dedupe decisions and its `LZ4_compress_HC_destSize` fixed-output-budget
+parser. Those require a genuine compression-ratio/build-CPU tradeoff; the
+layout-only wins are now accounted for.
+
+Kernel loop-device counters provide a less noisy cross-check than wall time in
+the VM. Compact indexes reduce metadata work in all three target workloads,
+while interleaved latency medians remain effectively flat:
+
+| Workload | Full-index reads / sectors | Compact-index reads / sectors | Latency, full -> compact |
+|---|---:|---:|---:|
+| Random 50k | 8,167 / 162,744 | 8,027 / 161,624 | 693.92 -> 687.40 ms |
+| Node import | 545 / 20,720 | 499 / 20,352 | 412.81 -> 409.62 ms |
+| Sequential | 25,520 / 601,720 | 25,282 / 599,744 | 2,570.87 -> 2,567.25 ms |
+
+For independent implementations, the most useful differential target is
+[`rust-fs-erofs`](https://github.com/antimatter-studios/rust-fs-erofs), whose
+writer has both legacy and compacted-2B indexes plus LZ4 compression. The
+[`composefs-rs`](https://github.com/composefs/composefs-rs) writer and
+[`Nydus`](https://github.com/dragonflyoss/nydus) RAFS v6 builder are valuable
+for metadata-only and chunk-addressed EROFS layout ideas, but are not direct
+compressed-image size competitors. Outside EROFS, `mksquashfs` and
+`gensquashfs` are useful format-level baselines for the same mounted workloads;
+their results should be kept separate because their metadata and decompression
+semantics differ.
 
 The packed-inode phase uses up to 12 workers because its 1 MiB scratch is
 cheap, while normal 4 MiB extents remain capped at eight workers. On this
@@ -146,9 +201,9 @@ mkfs.erofs --quiet -zlz4hc,level=12 -C65536 \
 ```
 
 That deliberately uses current upstream size and locality features. The
-in-tree writer uses whole-file fragment packing and full indexes for reader
-compatibility; upstream's compact indexes and tail packing explain part of its
-remaining size advantage.
+in-tree writer uses whole-file fragment packing and compacted-2B indexes where
+possible. The matched ablation above shows that tail packing is inactive for
+this profile and that upstream's remaining advantage is in payload encoding.
 
 ## Helpers
 

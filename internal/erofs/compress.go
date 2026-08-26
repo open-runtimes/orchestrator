@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path"
 	"runtime"
@@ -17,9 +18,9 @@ import (
 )
 
 // CompressionOptions configures z_erofs compressed output. Compressed images
-// use the COMPRESSED_FULL (non-compact index) inode layout with 0-padded lz4
-// pclusters, matching what mkfs.erofs -E legacy-compress emits and what every
-// kernel since 5.4 mounts.
+// use compacted-2B indexes when physical extents are contiguous, with an
+// automatic full-index fallback for deduplicated layouts that need explicit
+// addresses. Both layouts use 0-padded lz4 pclusters.
 type CompressionOptions struct {
 	// Algorithm selects the block compressor: "lz4" (fast encoder) or
 	// "lz4hc" (high-compression encoder, identical decompression).
@@ -51,6 +52,41 @@ type CompressionOptions struct {
 	// Paths may be absolute or relative to the image root. Unlisted fragments
 	// retain deterministic tree order after the listed working set.
 	FragmentOrder []string
+}
+
+// CompressionStats describes the byte-level output of a completed compressed
+// image build. It is intended for profiling and regression benchmarks: all
+// physical byte counts include filesystem-block rounding, while encoded byte
+// counts exclude zero padding.
+type CompressionStats struct {
+	InputFiles                uint64
+	InputBytes                uint64
+	FragmentFiles             uint64
+	FragmentBytes             uint64
+	FragmentDedupeFiles       uint64
+	FragmentDedupeBytes       uint64
+	WholeFileDedupeFiles      uint64
+	WholeFileDedupeBytes      uint64
+	ExtentReferences          uint64
+	StoredExtents             uint64
+	CompressedExtents         uint64
+	RawExtents                uint64
+	ExtentDedupeReferences    uint64
+	ExtentDedupeLogicalBytes  uint64
+	ExtentDedupePhysicalBytes uint64
+	EncodedBytes              uint64
+	RawBytes                  uint64
+	PhysicalBytes             uint64
+	PaddingBytes              uint64
+	PackedLogicalBytes        uint64
+	PackedPhysicalBytes       uint64
+	SegmentBoundaryExtents    uint64
+	SegmentBoundarySlackBytes uint64
+	CompressedIndexBytes      uint64
+	MetadataBytes             uint64
+	FlatDataBytes             uint64
+	SuperblockBytes           uint64
+	ImageBytes                uint64
 }
 
 // zExtent describes one physical cluster of a compressed file: `lclusters`
@@ -102,6 +138,7 @@ type zState struct {
 	segmentBufs    chan []byte
 	dataCompBufs   chan []byte
 	packedCompBufs chan []byte
+	stats          CompressionStats
 }
 
 // zProfile controls the two independent costs of a compressed extent: bytes
@@ -142,7 +179,9 @@ const (
 	// delta[0] flag on the first NONHEAD carrying the compressed block count.
 	zCblkcntBit = 1 << 11
 	// h_advise: physical clusters may span more than one block.
+	zAdviseCompacted2B  = 0x0001
 	zAdviseBigPcluster1 = 0x0002
+	zAdviseBigPcluster2 = 0x0004
 	// map header size plus the 8 reserved bytes before full indexes.
 	zMapHeaderSize   = 8
 	zFullIndexExtra  = 8
@@ -359,6 +398,10 @@ func (z *zState) close() {
 func (fsys *Writer) compressAll() error {
 	z := fsys.z
 	entries := collectRegular(fsys.root)
+	z.stats.InputFiles = uint64(len(entries))
+	for _, e := range entries {
+		z.stats.InputBytes += e.size
+	}
 	remaining := make([]*fsEntry, 0, len(entries))
 
 	readerFor := func(e *fsEntry) io.Reader {
@@ -449,6 +492,8 @@ func (fsys *Writer) compressAll() error {
 				return fmt.Errorf("erofs: pack %s: %w", e.path, err)
 			}
 			e.z = &zInfo{wholeFragment: true, fragOff: off}
+			z.stats.FragmentFiles++
+			z.stats.FragmentBytes += e.size
 			closeDirect(e)
 		}
 		zi, err := packed.Finish()
@@ -456,6 +501,8 @@ func (fsys *Writer) compressAll() error {
 			return fmt.Errorf("erofs: compress packed inode: %w", err)
 		}
 		if z.packedSize > 0 {
+			z.stats.PackedLogicalBytes = z.packedSize
+			z.stats.PackedPhysicalBytes = uint64(zi.totalBlocks) * uint64(z.blockSize)
 			z.packed = &erofsEntry{
 				mode:  disk.StatTypeReg | 0o600,
 				nlink: 1,
@@ -553,7 +600,7 @@ func (fsys *Writer) compressAll() error {
 		}
 		zi := &zInfo{}
 		for _, ps := range res.spans {
-			ext, err := z.storeSpanKeyed(ps.raw, ps.comp, ps.key)
+			ext, err := z.storeSpanKeyed(ps.raw, ps.comp, ps.key, ps.segmentEnd)
 			if err != nil {
 				return err
 			}
@@ -621,6 +668,8 @@ func (fsys *Writer) compressAll() error {
 			if fileDedupeSizes[e.size] > 1 {
 				key := sha256.Sum256(buf)
 				if canonical := fileDedupe[key]; canonical != nil {
+					z.stats.WholeFileDedupeFiles++
+					z.stats.WholeFileDedupeBytes += e.size
 					if canonical.e.z != nil {
 						e.z = canonical.e.z
 					} else {
@@ -713,6 +762,8 @@ func (z *zState) addFragment(r io.Reader, dst io.Writer, size int) (uint64, erro
 	if z.fragDedupe != nil {
 		key = sha256.Sum256(buf)
 		if off, ok := z.fragDedupe[key]; ok {
+			z.stats.FragmentDedupeFiles++
+			z.stats.FragmentDedupeBytes += uint64(size)
 			return off, nil
 		}
 	}
@@ -911,12 +962,13 @@ func (z *zState) storeSpan(span, comp []byte) (zExtent, error) {
 	if z.dedupe != nil {
 		key = sha256.Sum256(span)
 	}
-	return z.storeSpanKeyed(span, comp, key)
+	return z.storeSpanKeyed(span, comp, key, false)
 }
 
 // storeSpanKeyed is storeSpan with the dedupe key already computed (workers
 // hash in parallel; the collector stores single-threaded).
-func (z *zState) storeSpanKeyed(span, comp []byte, key [sha256.Size]byte) (zExtent, error) {
+func (z *zState) storeSpanKeyed(span, comp []byte, key [sha256.Size]byte, segmentEnd bool) (zExtent, error) {
+	z.stats.ExtentReferences++
 	if zSelfCheck && len(comp) > 0 {
 		out := make([]byte, len(span))
 		n, err := lz4.UncompressBlock(comp, out)
@@ -926,6 +978,9 @@ func (z *zState) storeSpanKeyed(span, comp []byte, key [sha256.Size]byte) (zExte
 	}
 	if z.dedupe != nil {
 		if ext, ok := z.dedupe[key]; ok {
+			z.stats.ExtentDedupeReferences++
+			z.stats.ExtentDedupeLogicalBytes += uint64(len(span))
+			z.stats.ExtentDedupePhysicalBytes += uint64(ext.blocks * z.blockSize)
 			return ext, nil
 		}
 	}
@@ -933,7 +988,12 @@ func (z *zState) storeSpanKeyed(span, comp []byte, key [sha256.Size]byte) (zExte
 	bs := z.blockSize
 	lclusters := (len(span) + bs - 1) / bs
 	ext := zExtent{lclusters: lclusters, blkOff: z.compBlocks}
+	z.stats.StoredExtents++
+	var payloadBytes int
 	if len(comp) > 0 {
+		z.stats.CompressedExtents++
+		z.stats.EncodedBytes += uint64(len(comp))
+		payloadBytes = len(comp)
 		ext.blocks = (len(comp) + bs - 1) / bs
 		// LZ4_0PADDING: compressed data is right-aligned within its blocks;
 		// the decompressor skips the leading zeros.
@@ -942,12 +1002,22 @@ func (z *zState) storeSpanKeyed(span, comp []byte, key [sha256.Size]byte) (zExte
 			return zExtent{}, err
 		}
 	} else {
+		z.stats.RawExtents++
+		z.stats.RawBytes += uint64(len(span))
+		payloadBytes = len(span)
 		ext.plain = true
 		ext.blocks = lclusters
 		pad := ext.blocks*bs - len(span)
 		if err := z.writeSpoolBlocks(span, make([]byte, pad)); err != nil {
 			return zExtent{}, err
 		}
+	}
+	physicalBytes := ext.blocks * bs
+	z.stats.PhysicalBytes += uint64(physicalBytes)
+	z.stats.PaddingBytes += uint64(physicalBytes - payloadBytes)
+	if segmentEnd {
+		z.stats.SegmentBoundaryExtents++
+		z.stats.SegmentBoundarySlackBytes += uint64(physicalBytes - payloadBytes)
 	}
 	z.compBlocks += uint32(ext.blocks)
 	if z.dedupe != nil {
@@ -967,10 +1037,46 @@ func (z *zState) writeSpoolBlocks(parts ...[]byte) error {
 
 // --- layout helpers ---
 
+// zCanCompact reports whether e can use implicit-address compact indexes.
+// Every pcluster after the first must be physically contiguous; an extent
+// dedupe hit can break that property and therefore falls back to full indexes.
+func (w *erofsWriter) zCanCompact(e *erofsEntry) bool {
+	if e.z.wholeFragment {
+		return e.z.fragOff <= math.MaxUint32
+	}
+	// Compacted-2B indexes reserve 12 bits for the offset within a logical
+	// cluster. Larger filesystem blocks need compacted-4B indexes, which this
+	// writer intentionally does not emit yet.
+	if w.blockSize > 1<<12 || len(e.z.extents) == 0 {
+		return false
+	}
+	for i := 1; i < len(e.z.extents); i++ {
+		prev := e.z.extents[i-1]
+		if e.z.extents[i].blkOff != prev.blkOff+uint32(prev.blocks) {
+			return false
+		}
+	}
+	return true
+}
+
+// zCompactIndexSize returns the compacted-2B index bytes for nIdx logical
+// clusters. Initial 4-byte indexes align the 16-entry packs to 32 bytes; a
+// short tail uses 4-byte indexes in two-entry packs.
+func zCompactIndexSize(indexStart, nIdx int) int {
+	initial := ((32 - indexStart%32) / 4) & 7
+	if initial > nIdx {
+		initial = 0
+	}
+	middle := 0
+	if initial < nIdx {
+		middle = (nIdx - initial) &^ 15
+	}
+	tail := nIdx - initial - middle
+	return initial*4 + middle*2 + ((tail + 1) / 2 * 8)
+}
+
 // zTrailingSize returns the metadata bytes that follow the inode core and
-// xattr area for a compressed entry: alignment padding, the 8-byte map
-// header, and (unless the whole file is a fragment) 8 reserved bytes plus
-// one 8-byte index per logical cluster.
+// xattr area for a compressed entry.
 func (w *erofsWriter) zTrailingSize(e *erofsEntry) int {
 	headerEnd := inodeCoreSize(e) + e.xattrSize // nid*32 is 8-aligned, so this decides the padding
 	pad := (8 - headerEnd%8) % 8
@@ -978,7 +1084,49 @@ func (w *erofsWriter) zTrailingSize(e *erofsEntry) int {
 		return pad + zMapHeaderSize
 	}
 	nIdx := int((e.size + uint64(w.blockSize) - 1) / uint64(w.blockSize))
+	if e.layout == disk.LayoutCompressedCompact {
+		indexStart := int(e.nid)*disk.SizeInodeCompact + headerEnd + pad + zMapHeaderSize
+		return pad + zMapHeaderSize + zCompactIndexSize(indexStart, nIdx)
+	}
 	return pad + zMapHeaderSize + zFullIndexExtra + nIdx*zLclusterIdxSize
+}
+
+type zIndexEntry struct {
+	typ        uint16
+	clusterofs uint16
+	u          uint32
+}
+
+func (w *erofsWriter) zIndexEntries(e *erofsEntry, eofMarker bool) []zIndexEntry {
+	nIdx := int((e.size + uint64(w.blockSize) - 1) / uint64(w.blockSize))
+	entries := make([]zIndexEntry, 0, nIdx)
+	tailOfs := uint16(e.size % uint64(w.blockSize))
+	for extIdx, ext := range e.z.extents {
+		blkaddr := w.z.compBase + ext.blkOff
+		if ext.plain {
+			for i := range ext.lclusters {
+				entries = append(entries, zIndexEntry{typ: zLclusterPlain, u: blkaddr + uint32(i)})
+			}
+			continue
+		}
+		entries = append(entries, zIndexEntry{typ: zLclusterHead1, u: blkaddr})
+		marker := eofMarker && extIdx == len(e.z.extents)-1 && tailOfs != 0
+		for i := 1; i < ext.lclusters; i++ {
+			if marker && i == ext.lclusters-1 {
+				entries = append(entries, zIndexEntry{typ: zLclusterPlain, clusterofs: tailOfs})
+				continue
+			}
+			d0 := uint32(i)
+			if i == 1 {
+				d0 = zCblkcntBit | uint32(ext.blocks)
+			} else if d0 >= zCblkcntBit {
+				d0 = zCblkcntBit - 1
+			}
+			d1 := uint32(ext.lclusters - i)
+			entries = append(entries, zIndexEntry{typ: zLclusterNonhead, u: d0 | d1<<16})
+		}
+	}
+	return entries
 }
 
 // writeZTrailing emits the map header and lcluster index array for a
@@ -1005,13 +1153,20 @@ func (w *erofsWriter) writeZTrailing(buf io.Writer, e *erofsEntry) (int, error) 
 		return written + zMapHeaderSize, nil
 	}
 
-	// h_fragmentoff=0, h_advise=BIG_PCLUSTER_1, h_algorithmtype=lz4 for
-	// HEAD1, h_clusterbits=0 (lcluster == block).
-	binary.LittleEndian.PutUint16(hdr[4:6], zAdviseBigPcluster1)
+	advise := uint16(zAdviseBigPcluster1)
+	if e.layout == disk.LayoutCompressedCompact {
+		advise |= zAdviseCompacted2B | zAdviseBigPcluster2
+	}
+	// h_fragmentoff=0, h_algorithmtype=lz4 for HEAD1, h_clusterbits=0.
+	binary.LittleEndian.PutUint16(hdr[4:6], advise)
 	if _, err := buf.Write(hdr[:]); err != nil {
 		return written, err
 	}
 	written += zMapHeaderSize
+	if e.layout == disk.LayoutCompressedCompact {
+		n, err := w.writeZCompactIndexes(buf, e, w.zIndexEntries(e, false))
+		return written + n, err
+	}
 	if _, err := buf.Write(w.zeroBuf[:zFullIndexExtra]); err != nil {
 		return written, err
 	}
@@ -1029,48 +1184,101 @@ func (w *erofsWriter) writeZTrailing(buf io.Writer, e *erofsEntry) (int, error) 
 		return err
 	}
 
-	tailOfs := uint16(e.size % uint64(w.blockSize))
-	for extIdx, ext := range e.z.extents {
-		blkaddr := w.z.compBase + ext.blkOff
-		if ext.plain {
-			// Raw blocks map one lcluster each. A partial final block is
-			// simply short; PLAIN ("shifted") extents copy literally.
-			for i := range ext.lclusters {
-				if err := emit(zLclusterPlain, 0, blkaddr+uint32(i)); err != nil {
-					return written, err
-				}
-			}
-			continue
-		}
-		// The final lcluster of a compressed extent that ends mid-lcluster
-		// (only possible at EOF, since chunking is lcluster-aligned) becomes
-		// a boundary marker: a PLAIN entry whose clusterofs records where
-		// the extent's decompressed data ends.
-		marker := extIdx == len(e.z.extents)-1 && tailOfs != 0
-		if err := emit(zLclusterHead1, 0, blkaddr); err != nil {
+	for _, entry := range w.zIndexEntries(e, true) {
+		if err := emit(entry.typ, entry.clusterofs, entry.u); err != nil {
 			return written, err
 		}
-		for i := 1; i < ext.lclusters; i++ {
-			if marker && i == ext.lclusters-1 {
-				if err := emit(zLclusterPlain, tailOfs, 0); err != nil {
-					return written, err
-				}
-				continue
-			}
-			d0 := uint32(i)
-			if i == 1 {
-				d0 = zCblkcntBit | uint32(ext.blocks)
-			} else if d0 >= zCblkcntBit {
-				// The flag bit is reserved for CBLKCNT. Long extents use
-				// bounded backward hops, as mkfs.erofs does, rather than
-				// letting a large HEAD distance alias the flag.
-				d0 = zCblkcntBit - 1
-			}
-			d1 := uint32(ext.lclusters - i)
-			if err := emit(zLclusterNonhead, 0, d0|d1<<16); err != nil {
-				return written, err
-			}
+	}
+	return written, nil
+}
+
+func putCompactBits(dst []byte, bitpos, bits int, value uint32) {
+	for i := range bits {
+		if value&(1<<i) != 0 {
+			pos := bitpos + i
+			dst[pos/8] |= 1 << (pos & 7)
 		}
+	}
+}
+
+func (w *erofsWriter) writeZCompactIndexes(buf io.Writer, e *erofsEntry, entries []zIndexEntry) (int, error) {
+	indexStart := int(e.nid)*disk.SizeInodeCompact + inodeCoreSize(e) + e.xattrSize
+	indexStart = (indexStart + 7) &^ 7
+	indexStart += zMapHeaderSize
+	initial := ((32 - indexStart%32) / 4) & 7
+	if initial > len(entries) {
+		initial = 0
+	}
+	middle := 0
+	if initial < len(entries) {
+		middle = (len(entries) - initial) &^ 15
+	}
+
+	blkaddr := w.z.compBase + e.z.extents[0].blkOff
+	dummyHead := false
+	written := 0
+	writePack := func(packEntries []zIndexEntry, vcnt, destSize int) error {
+		pack := make([]byte, vcnt*destSize)
+		encodeBits := (len(pack)*8 - 32) / vcnt
+		base := blkaddr
+		updateBase := true
+		for i := range vcnt {
+			entry := zIndexEntry{}
+			if i < len(packEntries) {
+				entry = packEntries[i]
+			}
+			var offset uint32
+			if entry.typ == zLclusterNonhead {
+				d0 := entry.u & 0xffff
+				if d0&zCblkcntBit != 0 {
+					blkaddr += d0 &^ zCblkcntBit
+					dummyHead = false
+					offset = d0
+				} else if i+1 == vcnt {
+					offset = min(entry.u>>16, zCblkcntBit-1)
+				} else {
+					offset = d0
+				}
+			} else {
+				offset = uint32(entry.clusterofs)
+				if dummyHead {
+					blkaddr++
+					if updateBase {
+						base = blkaddr
+					}
+				}
+				dummyHead = true
+				updateBase = false
+			}
+			putCompactBits(pack, encodeBits*i, encodeBits, uint32(entry.typ)<<12|offset)
+		}
+		binary.LittleEndian.PutUint32(pack[len(pack)-4:], base)
+		if _, err := buf.Write(pack); err != nil {
+			return err
+		}
+		written += len(pack)
+		return nil
+	}
+
+	pos := 0
+	for pos < initial {
+		if err := writePack(entries[pos:min(pos+2, initial)], 2, 4); err != nil {
+			return written, err
+		}
+		pos += 2
+	}
+	middleEnd := initial + middle
+	for pos < middleEnd {
+		if err := writePack(entries[pos:pos+16], 16, 2); err != nil {
+			return written, err
+		}
+		pos += 16
+	}
+	for pos < len(entries) {
+		if err := writePack(entries[pos:min(pos+2, len(entries))], 2, 4); err != nil {
+			return written, err
+		}
+		pos += 2
 	}
 	return written, nil
 }
@@ -1119,9 +1327,10 @@ type packedSegment struct {
 // packedSpan is one extent-to-be: the input span it covers and its
 // compressed bytes (nil comp means store raw).
 type packedSpan struct {
-	raw  []byte
-	comp []byte
-	key  [sha256.Size]byte
+	raw        []byte
+	comp       []byte
+	key        [sha256.Size]byte
+	segmentEnd bool
 }
 
 // compressParallel packs a large stream by splitting it into segments packed
@@ -1188,6 +1397,9 @@ func (z *zState) compressParallel(r io.Reader, size uint64, profile zProfile) (*
 					spans = append(spans, ps)
 					window = window[span:]
 				}
+				if !final && len(spans) > 0 {
+					spans[len(spans)-1].segmentEnd = true
+				}
 				z.putPackWorker(profile, worker)
 				results[job.idx] <- packedSegment{spans: spans, buf: job.buf, err: err}
 			}
@@ -1211,7 +1423,7 @@ func (z *zState) compressParallel(r io.Reader, size uint64, profile zProfile) (*
 			continue // drain remaining segments
 		}
 		for _, ps := range res.spans {
-			ext, err := z.storeSpanKeyed(ps.raw, ps.comp, ps.key)
+			ext, err := z.storeSpanKeyed(ps.raw, ps.comp, ps.key, ps.segmentEnd)
 			if err != nil {
 				firstErr = err
 				break

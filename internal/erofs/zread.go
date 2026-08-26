@@ -11,9 +11,8 @@ import (
 )
 
 // Read support for z_erofs compressed inodes, covering the subset this
-// package writes: COMPRESSED_FULL (non-compact) lcluster indexes, lz4 with
-// 0-padded (big) pclusters, and packed-inode fragments including whole-file
-// packing. Compact indexes and other algorithms remain unsupported.
+// package writes: compacted-2B or full lcluster indexes, lz4 with 0-padded
+// (big) pclusters, and packed-inode fragments including whole-file packing.
 
 // Format-level pcluster bounds (Z_EROFS_PCLUSTER_MAX_SIZE and
 // Z_EROFS_PCLUSTER_MAX_DSIZE in the kernel): the compressed and decompressed
@@ -32,6 +31,8 @@ type zRead struct {
 	fragOff       uint64
 	idxStart      int64 // absolute byte offset of the lcluster index array
 	nIdx          int
+	compact       bool
+	advise        uint16
 
 	// cached decompressed extent. The packed inode is shared by all fragment
 	// readers, so protect its cache while allowing concurrent cache hits.
@@ -82,7 +83,17 @@ func (img *image) zInit(fi *inode) error {
 		return fmt.Errorf("unsupported z inode (advise=0x%x algo=%d clusterbits=%d) for nid %d: %w",
 			advise, algo, clusterbits, fi.nid, ErrNotImplemented)
 	}
-	z.idxStart = pos + zMapHeaderSize + zFullIndexExtra
+	z.advise = advise
+	z.compact = fi.inodeLayout == disk.LayoutCompressedCompact
+	if z.compact {
+		if advise&(zAdviseCompacted2B|zAdviseBigPcluster1|zAdviseBigPcluster2) !=
+			zAdviseCompacted2B|zAdviseBigPcluster1|zAdviseBigPcluster2 {
+			return fmt.Errorf("unsupported compact z advise 0x%x for nid %d: %w", advise, fi.nid, ErrNotImplemented)
+		}
+		z.idxStart = pos + zMapHeaderSize
+	} else {
+		z.idxStart = pos + zMapHeaderSize + zFullIndexExtra
+	}
 	z.nIdx = int((fi.size + int64(img.blockSize()) - 1) >> img.sb.BlkSizeBits)
 	fi.z = z
 	return nil
@@ -93,6 +104,9 @@ func (img *image) zIndex(fi *inode, lcn int) (advise, clusterofs uint16, u uint3
 	if lcn < 0 || lcn >= fi.z.nIdx {
 		return 0, 0, 0, fmt.Errorf("lcluster %d out of range for nid %d: %w", lcn, fi.nid, ErrInvalid)
 	}
+	if fi.z.compact {
+		return img.zCompactIndex(fi, lcn)
+	}
 	var buf [zLclusterIdxSize]byte
 	if _, err := img.meta.ReadAt(buf[:], fi.z.idxStart+int64(lcn)*zLclusterIdxSize); err != nil {
 		return 0, 0, 0, err
@@ -100,6 +114,95 @@ func (img *image) zIndex(fi *inode, lcn int) (advise, clusterofs uint16, u uint3
 	return binary.LittleEndian.Uint16(buf[0:2]),
 		binary.LittleEndian.Uint16(buf[2:4]),
 		binary.LittleEndian.Uint32(buf[4:8]), nil
+}
+
+func decodeCompactBits(pack []byte, bitpos, bits int) (uint16, uint32) {
+	bytepos := bitpos / 8
+	var word [4]byte
+	copy(word[:], pack[bytepos:min(bytepos+4, len(pack))])
+	value := binary.LittleEndian.Uint32(word[:]) >> (bitpos & 7)
+	value &= 1<<bits - 1
+	return uint16(value >> 12 & 3), value & ((1 << 12) - 1)
+}
+
+// zCompactIndex expands one compacted-2B/4B index into the same logical
+// record shape used by the full-index read path. Physical addresses are
+// reconstructed from the pack's base address and preceding records.
+func (img *image) zCompactIndex(fi *inode, lcn int) (advise, clusterofs uint16, u uint32, err error) {
+	z := fi.z
+	initial := ((32 - int(z.idxStart%32)) / 4) & 7
+	if initial > z.nIdx {
+		initial = 0
+	}
+	middle := 0
+	if initial < z.nIdx {
+		middle = (z.nIdx - initial) &^ 15
+	}
+
+	var packStart int64
+	var idx, vcnt, destSize int
+	switch {
+	case lcn < initial:
+		vcnt, destSize = 2, 4
+		idx = lcn
+		packStart = z.idxStart
+	case lcn < initial+middle:
+		vcnt, destSize = 16, 2
+		idx = lcn - initial
+		packStart = z.idxStart + int64(initial*4)
+	default:
+		vcnt, destSize = 2, 4
+		idx = lcn - initial - middle
+		packStart = z.idxStart + int64(initial*4+middle*2)
+	}
+	packBytes := vcnt * destSize
+	packStart += int64(idx/vcnt) * int64(packBytes)
+	i := idx % vcnt
+	pack := make([]byte, packBytes)
+	if _, err := img.meta.ReadAt(pack, packStart); err != nil {
+		return 0, 0, 0, err
+	}
+	encodeBits := (packBytes*8 - 32) / vcnt
+	typ, lo := decodeCompactBits(pack, encodeBits*i, encodeBits)
+	if typ == zLclusterNonhead {
+		if lo&zCblkcntBit != 0 {
+			return typ, 0, lo, nil
+		}
+		d0 := lo
+		if i+1 == vcnt {
+			prevType, prevLo := decodeCompactBits(pack, encodeBits*(i-1), encodeBits)
+			switch {
+			case prevType != zLclusterNonhead:
+				d0 = 1
+			case prevLo&zCblkcntBit != 0:
+				d0 = 2
+			default:
+				d0 = prevLo + 1
+			}
+		}
+		return typ, 0, d0, nil
+	}
+
+	nblk := uint32(0)
+	for j := i; j > 0; {
+		j--
+		prevType, prevLo := decodeCompactBits(pack, encodeBits*j, encodeBits)
+		if prevType != zLclusterNonhead {
+			nblk++
+			continue
+		}
+		if prevLo&zCblkcntBit != 0 {
+			nblk += prevLo &^ zCblkcntBit
+			j--
+			continue
+		}
+		if prevLo <= 1 {
+			return 0, 0, 0, fmt.Errorf("invalid compact NONHEAD delta %d for nid %d: %w", prevLo, fi.nid, ErrInvalid)
+		}
+		j -= int(prevLo) - 2
+	}
+	base := binary.LittleEndian.Uint32(pack[packBytes-4:])
+	return typ, uint16(lo), base + nblk, nil
 }
 
 // zLoadBlock returns the logical block containing pos for a compressed inode.

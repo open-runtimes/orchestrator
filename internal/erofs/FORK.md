@@ -10,8 +10,9 @@ open roadmap item there. Orchestrator artifacts need z_erofs compressed
 images (small archives that stay fast under random small-file reads), so this
 fork adds, in `compress.go` and `zread.go`:
 
-- **Compressed write**: `WithCompression` produces COMPRESSED_FULL
-  (non-compact index) inodes with lz4 or lz4hc 0-padded (big) pclusters,
+- **Compressed write**: `WithCompression` produces compacted-2B compressed
+  inodes with lz4 or lz4hc 0-padded (big) pclusters, automatically falling
+  back to full indexes when deduplicated extents are not physically contiguous,
   optional packed-inode fragments for whole small files, and content-hash
   dedupe of pclusters and fragments. Data and the shared packed inode can use
   independent physical-cluster and decoded-extent limits, bounding small-file
@@ -30,12 +31,13 @@ fork adds, in `compress.go` and `zread.go`:
   only when inlining it removes more external data, reducing both image bytes
   and lookup I/O. Verified against `fsck.erofs`, `dump.erofs`, and Linux kernel
   mounts.
-- **Compressed read**: `Open` handles the same subset (full indexes, lz4,
-  fragments), including images produced by `mkfs.erofs -E legacy-compress`.
+- **Compressed read**: `Open` handles the same subset (compacted-2B and full
+  indexes, lz4, fragments), including images produced by both current
+  `mkfs.erofs` and `mkfs.erofs -E legacy-compress`.
   It caches parsed packed-inode state and complete decompressed extents, so a
   sequential read does not repeat index walks, physical reads, or decompression
-  for every logical block. Compact (COMPRESSED_COMPACT) indexes and other
-  algorithms remain unsupported.
+  for every logical block. Other compact encodings and algorithms remain
+  unsupported.
 
 The artifact profile uses 128 KiB / 4 MiB physical/decoded limits for normal
 files and 64 KiB / 1 MiB for the packed inode. See

@@ -364,6 +364,9 @@ func (w *erofsWriter) writeMetadataInodes(buf io.Writer) error {
 			if err != nil {
 				return err
 			}
+			if n != e.trailingSize {
+				return fmt.Errorf("write trailing metadata for %s: wrote %d bytes, planned %d", e.path, n, e.trailingSize)
+			}
 			metaStart += n
 		case disk.StatTypeDir:
 			if e.layout == disk.LayoutFlatInline {
@@ -413,7 +416,7 @@ func (w *erofsWriter) writeMetadataInodes(buf io.Writer) error {
 // returns the bytes written.
 func (w *erofsWriter) writeRegTrailing(buf io.Writer, e *erofsEntry) (int, error) {
 	switch {
-	case e.layout == disk.LayoutCompressedFull:
+	case e.layout == disk.LayoutCompressedFull || e.layout == disk.LayoutCompressedCompact:
 		n, err := w.writeZTrailing(buf, e)
 		if err != nil {
 			return 0, fmt.Errorf("write compressed indexes for %s: %w", e.path, err)
@@ -443,7 +446,7 @@ func (w *erofsWriter) writeInode(buf io.Writer, e *erofsEntry) error {
 
 	switch e.mode & disk.StatTypeMask {
 	case disk.StatTypeReg:
-		if e.layout == disk.LayoutCompressedFull {
+		if e.layout == disk.LayoutCompressedFull || e.layout == disk.LayoutCompressedCompact {
 			inodeData = e.z.totalBlocks // i_u.blocks_lo: compressed blocks for stat
 		} else if e.layout == disk.LayoutChunkBased {
 			inodeData = disk.LayoutChunkFormatIndexes | uint32(w.entryChunkBits(e))

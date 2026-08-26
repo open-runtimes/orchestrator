@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"orchestrator/internal/erofs/disk"
 )
 
 // compressTestTree exercises every write path: empty and tiny files (flat),
@@ -116,6 +118,132 @@ func TestCompressedRoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assertImageMatches(t, buildImage(t, src, WithCompression(tc.opts)), src)
 		})
+	}
+}
+
+func TestCompressedUsesCompactIndexes(t *testing.T) {
+	src := fstest.MapFS{
+		// A one-lcluster non-fragment exercises the short-array alignment rule.
+		"one-cluster":   {Data: bytes.Repeat([]byte("compact "), 300)},
+		"many-clusters": {Data: bytes.Repeat([]byte("compact indexes "), 12000)},
+	}
+	imgPath := buildImage(t, src, WithCompression(CompressionOptions{Algorithm: "lz4hc"}))
+	f, err := os.Open(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	imgFS, err := Open(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := imgFS.(*image)
+	for name := range src {
+		opened, err := img.Open(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fi, err := opened.(*file).readInfo()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.inodeLayout != disk.LayoutCompressedCompact {
+			t.Fatalf("%s layout = %d, want compact", name, fi.inodeLayout)
+		}
+	}
+	assertImageMatches(t, imgPath, src)
+}
+
+func TestCompactIndexEligibility(t *testing.T) {
+	entry := &erofsEntry{z: &zInfo{extents: []zExtent{
+		{blkOff: 10, blocks: 2},
+		{blkOff: 12, blocks: 1},
+	}}}
+	if !(&erofsWriter{blockSize: 4096}).zCanCompact(entry) {
+		t.Fatal("contiguous 4 KiB extents should use compact indexes")
+	}
+	entry.z.extents[1].blkOff = 20
+	if (&erofsWriter{blockSize: 4096}).zCanCompact(entry) {
+		t.Fatal("non-contiguous deduplicated extents need full indexes")
+	}
+	entry.z.extents[1].blkOff = 12
+	if (&erofsWriter{blockSize: 8192}).zCanCompact(entry) {
+		t.Fatal("8 KiB blocks need compacted-4B or full indexes")
+	}
+}
+
+func TestCompressedFullIndexDedupeFallback(t *testing.T) {
+	blockA := bytes.Repeat([]byte{'a'}, 4096)
+	blockB := bytes.Repeat([]byte{'b'}, 4096)
+	src := fstest.MapFS{
+		"dedupe-gap": {Data: append(append(append([]byte{}, blockA...), blockB...), blockA...)},
+	}
+	imgPath := buildImage(t, src, WithCompression(CompressionOptions{
+		Algorithm:     "lz4hc",
+		PClusterSize:  4096,
+		MaxExtentSize: 4096,
+		Dedupe:        true,
+	}))
+	f, err := os.Open(imgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	imgFS, err := Open(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := imgFS.Open("dedupe-gap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := opened.(*file).readInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.inodeLayout != disk.LayoutCompressedFull {
+		t.Fatalf("deduplicated non-contiguous layout = %d, want full", fi.inodeLayout)
+	}
+	assertImageMatches(t, imgPath, src)
+}
+
+func TestCompressionStats(t *testing.T) {
+	src := compressTestTree()
+	out, err := os.Create(filepath.Join(t.TempDir(), "stats.img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := Create(out, WithCompactInodes(), WithCompression(CompressionOptions{
+		Algorithm: "lz4hc",
+		Fragments: true,
+		Dedupe:    true,
+	}))
+	if err := w.CopyFrom(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stats := w.CompressionStats()
+	if stats.InputFiles == 0 || stats.InputBytes == 0 || stats.StoredExtents == 0 {
+		t.Fatalf("missing basic compression accounting: %+v", stats)
+	}
+	if stats.PhysicalBytes != stats.EncodedBytes+stats.RawBytes+stats.PaddingBytes {
+		t.Fatalf("physical bytes = %d, encoded + raw + padding = %d",
+			stats.PhysicalBytes, stats.EncodedBytes+stats.RawBytes+stats.PaddingBytes)
+	}
+	if stats.PackedLogicalBytes == 0 || stats.PackedPhysicalBytes == 0 {
+		t.Fatalf("missing packed-inode accounting: %+v", stats)
+	}
+	if stats.FragmentDedupeFiles == 0 || stats.FragmentDedupeBytes == 0 {
+		t.Fatalf("expected duplicate fragments in test corpus: %+v", stats)
+	}
+	if stats.CompressedIndexBytes == 0 || stats.MetadataBytes == 0 {
+		t.Fatalf("missing metadata accounting: %+v", stats)
 	}
 }
 
@@ -463,9 +591,42 @@ func TestCompressedRejectsHostilePClusterSizes(t *testing.T) {
 	// The first NONHEAD (index 1) carries CBLKCNT|blocks in delta[0]; claim
 	// the pcluster spans 2047 blocks (8 MiB at 4 KiB blocks — over the 1 MiB
 	// format limit).
-	firstNonhead := fi.z.idxStart + zLclusterIdxSize
 	hostile := append([]byte(nil), raw...)
-	binary.LittleEndian.PutUint16(hostile[firstNonhead+4:], zCblkcntBit|0x7ff)
+	if fi.z.compact {
+		initial := ((32 - int(fi.z.idxStart%32)) / 4) & 7
+		middle := 0
+		if initial < fi.z.nIdx {
+			middle = (fi.z.nIdx - initial) &^ 15
+		}
+		lcn := 1
+		var packStart int64
+		var idx, vcnt, destSize int
+		switch {
+		case lcn < initial:
+			vcnt, destSize, idx, packStart = 2, 4, lcn, fi.z.idxStart
+		case lcn < initial+middle:
+			vcnt, destSize, idx = 16, 2, lcn-initial
+			packStart = fi.z.idxStart + int64(initial*4)
+		default:
+			vcnt, destSize, idx = 2, 4, lcn-initial-middle
+			packStart = fi.z.idxStart + int64(initial*4+middle*2)
+		}
+		packBytes := vcnt * destSize
+		packStart += int64(idx/vcnt) * int64(packBytes)
+		encodeBits := (packBytes*8 - 32) / vcnt
+		bitpos := encodeBits * (idx % vcnt)
+		value := uint32(zLclusterNonhead<<12 | zCblkcntBit | 0x7ff)
+		for bit := range encodeBits {
+			pos := int(packStart)*8 + bitpos + bit
+			hostile[pos/8] &^= 1 << (pos & 7)
+			if value&(1<<bit) != 0 {
+				hostile[pos/8] |= 1 << (pos & 7)
+			}
+		}
+	} else {
+		firstNonhead := fi.z.idxStart + zLclusterIdxSize
+		binary.LittleEndian.PutUint16(hostile[firstNonhead+4:], zCblkcntBit|0x7ff)
+	}
 
 	img2, err := Open(bytes.NewReader(hostile))
 	if err != nil {

@@ -116,7 +116,7 @@ func (p *zStreamPacker) collectOne() error {
 		return res.err
 	}
 	for _, span := range res.spans {
-		ext, err := p.z.storeSpanKeyed(span.raw, span.comp, span.key)
+		ext, err := p.z.storeSpanKeyed(span.raw, span.comp, span.key, span.segmentEnd)
 		if err != nil {
 			return err
 		}
@@ -204,6 +204,9 @@ func (z *zState) packStreamSegment(buf []byte, profile zProfile, compress zCompr
 		}
 		spans = append(spans, packed)
 		window = window[span:]
+	}
+	if !final && len(spans) > 0 {
+		spans[len(spans)-1].segmentEnd = true
 	}
 	return spans, nil
 }

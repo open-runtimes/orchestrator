@@ -185,7 +185,7 @@ func Open(r io.ReaderAt, opts ...OpenOpt) (fs.FS, error) {
 	}
 
 	// Error out filesystems using compressed features beyond the lz4
-	// full-index subset this package reads and writes.
+	// compacted-2B/full-index subset this package reads and writes.
 	if !zSupported(&i.sb) {
 		return nil, fmt.Errorf("unsupported compressed filesystem (FeatureIncompat=0x%x, ComprAlgs=0x%x): %w",
 			i.sb.FeatureIncompat, i.sb.ComprAlgs, ErrNotImplemented)
@@ -662,7 +662,7 @@ func (img *image) loadBlock(fi *inode, pos int64) (*block, error) {
 	case disk.LayoutCompressedFull:
 		return img.zLoadBlock(fi, pos)
 	case disk.LayoutCompressedCompact:
-		return nil, fmt.Errorf("inode layout (%d) for %d: %w", fi.inodeLayout, fi.nid, ErrNotImplemented)
+		return img.zLoadBlock(fi, pos)
 	default:
 		return nil, fmt.Errorf("inode layout (%d) for %d: %w", fi.inodeLayout, fi.nid, ErrInvalid)
 	}
