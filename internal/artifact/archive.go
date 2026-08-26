@@ -2,7 +2,6 @@ package artifact
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/klauspost/pgzip"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -83,7 +83,7 @@ func sourceFS(srcPath string) (fs.FS, error) {
 // gzipLevel maps an unset level (0) to the gzip default; otherwise returns it.
 func gzipLevel(level int) int {
 	if level == 0 {
-		return gzip.DefaultCompression
+		return pgzip.DefaultCompression
 	}
 	return level
 }
@@ -124,7 +124,7 @@ func (a *Archive) applyTar(srcPath, destPath string) *Result {
 	case "", "none":
 		// plain tar, no compression
 	case "gzip":
-		gzWriter, err := gzip.NewWriterLevel(outFile, gzipLevel(a.Level))
+		gzWriter, err := pgzip.NewWriterLevel(outFile, gzipLevel(a.Level))
 		if err != nil {
 			return &Result{Status: "failed", Error: fmt.Errorf("failed to create gzip writer: %w", err)}
 		}

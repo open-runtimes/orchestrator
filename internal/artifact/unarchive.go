@@ -2,7 +2,6 @@ package artifact
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/klauspost/pgzip"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -167,7 +167,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 	var src io.Reader = file
 	switch compression {
 	case "gzip":
-		gzReader, err := gzip.NewReader(file)
+		gzReader, err := pgzip.NewReader(file)
 		if err != nil {
 			return &Result{Status: "failed", Error: fmt.Errorf("failed to create gzip reader: %w", err)}
 		}
