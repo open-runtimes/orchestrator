@@ -2,6 +2,7 @@ package erofs
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io/fs"
 	"math/rand"
 	"os"
@@ -169,4 +170,55 @@ func TestCompressedLargeFile(t *testing.T) {
 	src := fstest.MapFS{"large.txt": {Data: []byte(b.String())}}
 	img := buildImage(t, src, WithCompression(CompressionOptions{Algorithm: "lz4hc", PClusterSize: 65536}))
 	assertImageMatches(t, img, src)
+}
+
+// TestCompressedRejectsHostilePClusterSizes regresses the reader allocating
+// attacker-controlled amounts of memory: the compressed block count and the
+// decompressed extent size both come from on-disk indexes, and a crafted
+// image must be rejected before allocation, not trusted.
+func TestCompressedRejectsHostilePClusterSizes(t *testing.T) {
+	src := fstest.MapFS{"big.txt": {Data: bytes.Repeat([]byte("compressible line\n"), 20000)}}
+	path := buildImage(t, src, WithCompression(CompressionOptions{Algorithm: "lz4"}))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Locate the file's first lcluster index the same way the reader does.
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := Open(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := img.Open("big.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := opened.(*file).readInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := img.(*image)
+	if err := i.zInit(fi); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// The first NONHEAD (index 1) carries CBLKCNT|blocks in delta[0]; claim
+	// the pcluster spans 2047 blocks (8 MiB at 4 KiB blocks — over the 1 MiB
+	// format limit).
+	firstNonhead := fi.z.idxStart + zLclusterIdxSize
+	hostile := append([]byte(nil), raw...)
+	binary.LittleEndian.PutUint16(hostile[firstNonhead+4:], zCblkcntBit|0x7ff)
+
+	img2, err := Open(bytes.NewReader(hostile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ReadFile(img2, "big.txt"); err == nil || !strings.Contains(err.Error(), "format limit") {
+		t.Fatalf("hostile block count: got err %v, want format-limit rejection", err)
+	}
 }

@@ -13,6 +13,15 @@ import (
 // 0-padded (big) pclusters, and packed-inode fragments including whole-file
 // packing. Compact indexes and other algorithms remain unsupported.
 
+// Format-level pcluster bounds (Z_EROFS_PCLUSTER_MAX_SIZE and
+// Z_EROFS_PCLUSTER_MAX_DSIZE in the kernel): the compressed and decompressed
+// size any one physical cluster may reach. Reads reject indexes beyond them
+// before allocating.
+const (
+	zMaxPClusterSize  = 1 << 20
+	zMaxPClusterDSize = 12 << 20
+)
+
 // zRead is the lazily-parsed compressed-layout state of one inode, plus a
 // one-extent decompression cache: module-style access decompresses each
 // pcluster once for a sequential read instead of once per block.
@@ -247,6 +256,17 @@ func (img *image) zExtentData(fi *inode, head int, blkaddr uint32) ([]byte, erro
 		if end := int64(head)<<img.sb.BlkSizeBits + decompressed; end > fi.size {
 			decompressed = fi.size - int64(head)<<img.sb.BlkSizeBits
 		}
+	}
+	// Both sizes come from untrusted on-disk indexes; bound them by the
+	// format's pcluster limits before allocating, so a crafted image cannot
+	// demand arbitrary memory.
+	if int64(blocks)*blockSize > zMaxPClusterSize {
+		return nil, fmt.Errorf("pcluster at block %d for nid %d spans %d blocks, exceeding the format limit: %w",
+			blkaddr, fi.nid, blocks, ErrInvalid)
+	}
+	if decompressed <= 0 || decompressed > zMaxPClusterDSize {
+		return nil, fmt.Errorf("pcluster at block %d for nid %d decodes to %d bytes, exceeding the format limit: %w",
+			blkaddr, fi.nid, decompressed, ErrInvalid)
 	}
 
 	comp := make([]byte, int64(blocks)*blockSize)
