@@ -359,7 +359,7 @@ Create a tar, squashfs, or erofs archive from a file or directory:
 - `in` - Source file or directory (required)
 - `out` - Destination archive path (required)
 - `format` - Container format, one of `"tar"`, `"squashfs"`, or `"erofs"` (required)
-- `compression` - Compression algorithm: `gzip`, `zstd`, `lz4`, or `lz4hc` (LZ4 high-compression encoder: better ratio for more compress-time CPU, decompresses identically to `lz4`). Defaults to no compression for `tar`; `squashfs` is always compressed (defaults to `gzip`); `erofs` images are always uncompressed and take no compression (optional)
+- `compression` - Compression algorithm. `tar`: `gzip`, `zstd`, `lz4`, or `lz4hc` (defaults to none); `squashfs`: `gzip`, `zstd`, `lz4`, or `lz4hc` (always compressed, defaults to `gzip`); `erofs`: `lz4` or `lz4hc` (defaults to none; compressed erofs also packs small files into a shared fragment area and dedupes identical data). `lz4hc` is the LZ4 high-compression encoder: better ratio for more compress-time CPU, identical decompression (optional)
 - `level` - gzip compression level, `1`-`9`. Only valid when `compression` is `gzip` (optional)
 - `blockSize` - squashfs block size in bytes, a power of 2 from `4096` (4 KiB) to `1048576` (1 MiB). Only valid for `squashfs`; defaults to `1048576` (optional)
 

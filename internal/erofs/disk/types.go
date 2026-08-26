@@ -5,13 +5,15 @@ const (
 	SuperBlockOffset = 1024
 
 	FeatureIncompatLZ4_0Padding         = 0x1
+	FeatureIncompatComprCfgs            = 0x2 // shared with BIG_PCLUSTER
 	FeatureIncompatChunkedFile          = 0x4
 	FeatureIncompatDeviceTable          = 0x8
 	FeatureIncompatFragments            = 0x20
 	FeatureIncompatXattrPrefixes        = 0x40
 	FeatureIncompatAll           uint32 = FeatureIncompatLZ4_0Padding |
-		FeatureIncompatChunkedFile | FeatureIncompatDeviceTable |
-		FeatureIncompatFragments | FeatureIncompatXattrPrefixes
+		FeatureIncompatComprCfgs | FeatureIncompatChunkedFile |
+		FeatureIncompatDeviceTable | FeatureIncompatFragments |
+		FeatureIncompatXattrPrefixes
 
 	SizeSuperBlock      = 128
 	SizeInodeCompact    = 32
@@ -31,6 +33,9 @@ const (
 	LayoutChunkFormatBits    = 0x001F
 	LayoutChunkFormatIndexes = 0x0020
 	LayoutChunkFormat48Bit   = 0x0040
+
+	// h_algorithmtype / available_compr_algs values.
+	ComprAlgLZ4 = 0
 )
 
 // SuperBlock represents the EROFS on-disk superblock.

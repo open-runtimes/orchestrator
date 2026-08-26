@@ -184,9 +184,9 @@ func Open(r io.ReaderAt, opts ...OpenOpt) (fs.FS, error) {
 		}
 	}
 
-	// Error out filesystems with unsupported compressed inodes
-	if i.sb.FeatureIncompat&disk.FeatureIncompatLZ4_0Padding != 0 ||
-		i.sb.ComprAlgs != 0 {
+	// Error out filesystems using compressed features beyond the lz4
+	// full-index subset this package reads and writes.
+	if !zSupported(&i.sb) {
 		return nil, fmt.Errorf("unsupported compressed filesystem (FeatureIncompat=0x%x, ComprAlgs=0x%x): %w",
 			i.sb.FeatureIncompat, i.sb.ComprAlgs, ErrNotImplemented)
 	}
@@ -657,7 +657,9 @@ func (img *image) loadBlock(fi *inode, pos int64) (*block, error) {
 		b.offset = int32(blockOffset)
 		b.end = int32(blockEnd)
 		return b, nil
-	case disk.LayoutCompressedFull, disk.LayoutCompressedCompact:
+	case disk.LayoutCompressedFull:
+		return img.zLoadBlock(fi, pos)
+	case disk.LayoutCompressedCompact:
 		return nil, fmt.Errorf("inode layout (%d) for %d: %w", fi.inodeLayout, fi.nid, ErrNotImplemented)
 	default:
 		return nil, fmt.Errorf("inode layout (%d) for %d: %w", fi.inodeLayout, fi.nid, ErrInvalid)
@@ -1441,6 +1443,7 @@ type inode struct {
 	mtime       uint64
 	mtimeNs     uint32
 	cached      *block
+	z           *zRead // compressed-inode state, parsed lazily by zInit
 }
 
 func (ino *inode) flatDataOffset() int64 {

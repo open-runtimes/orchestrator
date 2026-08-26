@@ -37,6 +37,9 @@ type Writer struct {
 	copyMerge        bool   // merge mode: apply whiteouts
 	copyDeviceID     uint16 // device ID assigned to current MetadataOnly CopyFrom
 
+	compression *CompressionOptions // from WithCompression
+	z           *zState             // compressed-output state, built in Close
+
 	dataFile *os.File // external data file (nil = spool mode)
 	dataOff  int64    // current byte offset in data file
 	spool    *os.File // temp spool (created lazily)
@@ -85,6 +88,7 @@ func Create(out io.WriteSeeker, opts ...CreateOpt) *Writer {
 		byPath:       map[string]*fsEntry{"/": root},
 		dataFile:     o.dataFile,
 		tempDir:      o.tempDir,
+		compression:  o.compression,
 	}
 
 	if o.dataFile != nil {
@@ -527,6 +531,22 @@ func (fsys *Writer) Close() error {
 		buildTime = uint64(time.Now().Unix())
 	}
 
+	if fsys.compression != nil {
+		if fsys.dataFile != nil || len(fsys.devices) > 0 {
+			return fmt.Errorf("erofs: compression is not supported with external data files or extra devices")
+		}
+		z, err := newZState(*fsys.compression, fsys.resolveBlockSize(), fsys.tempDir)
+		if err != nil {
+			return err
+		}
+		defer z.close()
+		fsys.z = z
+		fsys.buildTime = buildTime // the packed inode stamps this
+		if err := fsys.compressAll(); err != nil {
+			return err
+		}
+	}
+
 	// Build erofsEntry tree from the fsEntry tree via BFS.
 	root := fsys.buildErofsTree()
 
@@ -542,6 +562,7 @@ func (fsys *Writer) Close() error {
 		blockSize:   fsys.blockSize,
 		chunkBits:   chunkBits,
 		zeroBuf:     make([]byte, fsys.blockSize),
+		z:           fsys.z,
 	}
 
 	ew.planLayout(root)
@@ -700,6 +721,8 @@ type fsEntry struct {
 
 	removed      bool // true if removed by a whiteout in a merge layer
 	metadataOnly bool // from a metadata-only CopyFrom; use chunk-based layout
+
+	z *zInfo // compressed layout, set by the compression pass
 }
 
 // createOptions holds the parsed option values for Create.
@@ -709,6 +732,7 @@ type createOptions struct {
 	hasBuildTime bool
 	dataFile     *os.File // external data file for metadata-only mode
 	tempDir      string   // temp directory for spool file
+	compression  *CompressionOptions
 }
 
 // blockSizer may be implemented by an fs.FS to declare its block size.
@@ -777,6 +801,9 @@ type erofsEntry struct {
 
 	// Data block address for flat-plain files (full-image mode)
 	dataBlkAddr uint32
+
+	// Compressed layout, set by the compression pass
+	z *zInfo
 }
 
 // --- Internal helpers ---
@@ -1196,7 +1223,7 @@ func (fsys *Writer) fsToErofs(e *fsEntry) *erofsEntry {
 	}
 
 	var data io.Reader
-	if fsys.dataFile == nil && len(e.chunks) == 0 && !e.metadataOnly &&
+	if e.z == nil && fsys.dataFile == nil && len(e.chunks) == 0 && !e.metadataOnly &&
 		e.mode&disk.StatTypeMask == disk.StatTypeReg && e.size > 0 {
 		if e.directData != nil {
 			data = e.directData
@@ -1223,6 +1250,7 @@ func (fsys *Writer) fsToErofs(e *fsEntry) *erofsEntry {
 		data:          data,
 		xattrs:        e.xattrs,
 		erofsFileType: modeToFileType(e.mode),
+		z:             e.z,
 	}
 }
 

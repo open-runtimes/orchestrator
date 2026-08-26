@@ -281,7 +281,17 @@ func TestValidate_Archive(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "erofs rejects compression",
+			name:    "erofs lz4",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs", Compression: "lz4"},
+			wantErr: false,
+		},
+		{
+			name:    "erofs lz4hc",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs", Compression: "lz4hc"},
+			wantErr: false,
+		},
+		{
+			name:    "erofs rejects unknown compression",
 			art:     &Archive{ID: "a1", In: "src", Out: "src.erofs", Format: "erofs", Compression: "zstd"},
 			wantErr: true,
 		},

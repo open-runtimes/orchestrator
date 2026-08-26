@@ -34,6 +34,7 @@ type erofsWriter struct {
 	copyBuf     []byte                       // reusable buffer for io.CopyBuffer
 	zeroBuf     []byte                       // blockSize-length zero buffer for padding
 	inodeBuf    [disk.SizeInodeExtended]byte // scratch buffer for writeInode
+	z           *zState                      // compressed-output state (nil = uncompressed)
 }
 
 // inodeSize returns the on-disk inode header size for e.
@@ -165,6 +166,11 @@ func (w *erofsWriter) assignDataBlocks() {
 				addr += uint32((ds + w.blockSize - 1) / w.blockSize)
 			}
 		}
+		if w.z != nil {
+			// The compressed data region follows the flat data blocks.
+			w.z.compBase = addr
+			addr += w.z.compBlocks
+		}
 		w.metaBlkAddr = addr // metadata follows data
 	}
 }
@@ -217,11 +223,16 @@ func (w *erofsWriter) writeBlock0(buf io.Writer) error {
 			dataBlocks += (ds + w.blockSize - 1) / w.blockSize
 		}
 	}
+	if w.z != nil {
+		dataBlocks += int(w.z.compBlocks)
+	}
 	totalBlocks := w.sbAreaBlocks() + metaBlocks + dataBlocks
 
 	var featureIncompat uint32
 	var extraDevices uint16
 	var devtSlotOff uint16
+	var comprAlgs uint16
+	var packedNid uint64
 
 	if len(w.devices) > 0 {
 		featureIncompat |= disk.FeatureIncompatDeviceTable
@@ -232,6 +243,16 @@ func (w *erofsWriter) writeBlock0(buf io.Writer) error {
 		if len(e.chunks) > 0 {
 			featureIncompat |= disk.FeatureIncompatChunkedFile
 			break
+		}
+	}
+	if w.z != nil {
+		featureIncompat |= disk.FeatureIncompatLZ4_0Padding | disk.FeatureIncompatComprCfgs
+		if w.z.opts.Fragments || w.z.opts.Dedupe {
+			featureIncompat |= disk.FeatureIncompatFragments
+		}
+		comprAlgs = 1 << disk.ComprAlgLZ4
+		if w.z.packed != nil {
+			packedNid = w.z.packed.nid
 		}
 	}
 
@@ -245,8 +266,10 @@ func (w *erofsWriter) writeBlock0(buf io.Writer) error {
 		Blocks:          uint32(totalBlocks),
 		MetaBlkAddr:     w.metaBlkAddr,
 		FeatureIncompat: featureIncompat,
+		ComprAlgs:       comprAlgs,
 		ExtraDevices:    extraDevices,
 		DevtSlotOff:     devtSlotOff,
+		PackedNid:       packedNid,
 	}
 
 	sbBuf := &bytes.Buffer{}
@@ -254,6 +277,13 @@ func (w *erofsWriter) writeBlock0(buf io.Writer) error {
 		return fmt.Errorf("write superblock: %w", err)
 	}
 	copy(sbArea[disk.SuperBlockOffset:], sbBuf.Bytes())
+
+	// COMPR_CFGS: the per-algorithm configuration records follow the
+	// superblock directly (mutually exclusive with device slots, which
+	// Close rejects when compression is enabled).
+	if w.z != nil {
+		copy(sbArea[disk.SuperBlockOffset+disk.SizeSuperBlock:], w.zSuperblockCfgs())
+	}
 
 	// Write device slots right after superblock.
 	for i, blocks := range w.devices {
@@ -308,7 +338,13 @@ func (w *erofsWriter) writeMetadataInodes(buf io.Writer) error {
 		// Write trailing data
 		switch e.mode & disk.StatTypeMask {
 		case disk.StatTypeReg:
-			if e.layout == disk.LayoutChunkBased && (e.size > 0 || len(e.chunks) > 0) {
+			if e.layout == disk.LayoutCompressedFull {
+				n, err := w.writeZTrailing(buf, e)
+				if err != nil {
+					return fmt.Errorf("write compressed indexes for %s: %w", e.path, err)
+				}
+				metaStart += n
+			} else if e.layout == disk.LayoutChunkBased && (e.size > 0 || len(e.chunks) > 0) {
 				if err := w.writeChunkIndexes(buf, e); err != nil {
 					return fmt.Errorf("write chunks for %s: %w", e.path, err)
 				}
@@ -371,7 +407,9 @@ func (w *erofsWriter) writeInode(buf io.Writer, e *erofsEntry) error {
 
 	switch e.mode & disk.StatTypeMask {
 	case disk.StatTypeReg:
-		if e.layout == disk.LayoutChunkBased {
+		if e.layout == disk.LayoutCompressedFull {
+			inodeData = e.z.totalBlocks // i_u.blocks_lo: compressed blocks for stat
+		} else if e.layout == disk.LayoutChunkBased {
 			inodeData = disk.LayoutChunkFormatIndexes | uint32(w.entryChunkBits(e))
 		} else if e.layout == disk.LayoutFlatPlain && e.size > 0 {
 			inodeData = e.dataBlkAddr
@@ -651,7 +689,7 @@ func (w *erofsWriter) writeDataBlocks(out io.Writer) error {
 			}
 		}
 	}
-	return nil
+	return w.writeCompressedData(out)
 }
 
 // flatPlainDataSize returns the data size for a flat-plain entry, or 0.

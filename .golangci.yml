@@ -211,6 +211,8 @@ linters:
       # Vendored fork of github.com/KarpelesLab/squashfs (see internal/squashfs/FORK.md);
       # keep it close to upstream, don't hold it to our lint rules.
       - internal/squashfs
+      # Vendored fork of github.com/erofs/go-erofs (see internal/erofs/FORK.md); same policy.
+      - internal/erofs
     rules:
       - linters:
           - dupl
