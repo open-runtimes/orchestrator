@@ -659,9 +659,7 @@ func (img *image) loadBlock(fi *inode, pos int64) (*block, error) {
 		b.offset = int32(blockOffset)
 		b.end = int32(blockEnd)
 		return b, nil
-	case disk.LayoutCompressedFull:
-		return img.zLoadBlock(fi, pos)
-	case disk.LayoutCompressedCompact:
+	case disk.LayoutCompressedFull, disk.LayoutCompressedCompact:
 		return img.zLoadBlock(fi, pos)
 	default:
 		return nil, fmt.Errorf("inode layout (%d) for %d: %w", fi.inodeLayout, fi.nid, ErrInvalid)
