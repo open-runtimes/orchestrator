@@ -693,10 +693,7 @@ func (fsys *Writer) compressAll() error {
 		}
 		closeDirect(e)
 	}
-	if err := drain(); err != nil {
-		return err
-	}
-	return nil
+	return drain()
 }
 
 // packBuffer packs one whole in-memory stream into spans, hashing them for

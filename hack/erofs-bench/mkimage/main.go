@@ -42,7 +42,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				fragmentOrder = append(fragmentOrder, line)
 			}

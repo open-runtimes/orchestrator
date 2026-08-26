@@ -11,8 +11,8 @@ import (
 // lz4encCorpora produces inputs spanning the encoder's edge cases: empty,
 // tiny, incompressible, highly repetitive (overlap matches), long matches
 // with extended lengths, and realistic mixed content.
-func lz4encCorpora(t testing.TB) map[string][]byte {
-	t.Helper()
+func lz4encCorpora(tb testing.TB) map[string][]byte {
+	tb.Helper()
 	rnd := rand.New(rand.NewSource(11))
 	random := make([]byte, 300000)
 	rnd.Read(random)
