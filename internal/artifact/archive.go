@@ -25,7 +25,7 @@ type Archive struct {
 	In          string `json:"in"`                    // Source file or directory
 	Out         string `json:"out"`                   // Destination archive path
 	Format      string `json:"format"`                // "tar", "squashfs", or "erofs"
-	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd, lz4; squashfs: gzip, zstd, lz4
+	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd, lz4, lz4hc; squashfs: gzip, zstd, lz4, lz4hc
 	Level       int    `json:"level,omitempty"`       // gzip compression level 1-9 (tar only)
 	BlockSize   int    `json:"blockSize,omitempty"`   // squashfs block size in bytes, power of 2 from 4 KiB to 1 MiB (default 1 MiB)
 	Depends     string `json:"depends,omitempty"`
@@ -141,8 +141,17 @@ func (a *Archive) applyTar(srcPath, destPath string) *Result {
 		lz4Writer := lz4.NewWriter(outFile)
 		defer lz4Writer.Close()
 		w = lz4Writer
+	case "lz4hc":
+		// Same lz4 frame format, high-compression encoder: better ratio for
+		// more compress-time CPU, identical decompression.
+		lz4Writer := lz4.NewWriter(outFile)
+		if err := lz4Writer.Apply(lz4.CompressionLevelOption(lz4.Level9)); err != nil {
+			return &Result{Status: "failed", Error: fmt.Errorf("failed to configure lz4hc writer: %w", err)}
+		}
+		defer lz4Writer.Close()
+		w = lz4Writer
 	default:
-		return &Result{Status: "failed", Error: fmt.Errorf("unsupported tar compression: %q (supported: gzip, zstd, lz4, none)", a.Compression)}
+		return &Result{Status: "failed", Error: fmt.Errorf("unsupported tar compression: %q (supported: gzip, zstd, lz4, lz4hc, none)", a.Compression)}
 	}
 
 	tarWriter := tar.NewWriter(w)

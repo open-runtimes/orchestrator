@@ -523,7 +523,7 @@ func (w *Writer) Finalize() error {
 	// lz4 requires a compressor-options record right after the superblock; the
 	// offset is still SuperblockSize here (nothing is written to the output until
 	// writeFileData below), so this reserves the 10 bytes before any data.
-	if w.comp == LZ4 {
+	if w.comp.onDisk() == LZ4 {
 		if err := w.writeCompressorOptions(); err != nil {
 			return err
 		}
@@ -616,16 +616,24 @@ func (w *Writer) Finalize() error {
 // squashfs images require, immediately after the superblock. It is a single
 // uncompressed metadata block (2-byte header with the 0x8000 "stored
 // uncompressed" bit set) carrying struct{ version, flags uint32 }: version is
-// LZ4_LEGACY (1, the only defined value) and flags is 0 (standard, not
-// high-compression). The kernel driver and unsquashfs both reject an lz4 image
-// without this record, so buildSuperblock pairs it with the COMPRESSOR_OPTIONS
-// flag.
+// LZ4_LEGACY (1, the only defined value) and flags carries the LZ4_HC bit when
+// the high-compression encoder produced the blocks (informational: decompression
+// is identical either way). The kernel driver and unsquashfs both reject an lz4
+// image without this record, so buildSuperblock pairs it with the
+// COMPRESSOR_OPTIONS flag.
 func (w *Writer) writeCompressorOptions() error {
-	const lz4Legacy = 1
+	const (
+		lz4Legacy = 1
+		lz4HCFlag = 1
+	)
+	var flags uint32
+	if w.comp == LZ4HC {
+		flags = lz4HCFlag
+	}
 	block := make([]byte, 2+8)
 	binary.LittleEndian.PutUint16(block[0:2], 8|0x8000)
 	binary.LittleEndian.PutUint32(block[2:6], lz4Legacy)
-	binary.LittleEndian.PutUint32(block[6:10], 0)
+	binary.LittleEndian.PutUint32(block[6:10], flags)
 	return w.write(block)
 }
 
@@ -1292,10 +1300,10 @@ func (w *Writer) buildSuperblock() {
 	w.sb.ModTime = w.modTime
 	w.sb.BlockSize = w.blockSize
 	w.sb.FragCount = uint32(len(w.fragEntries))
-	w.sb.Comp = w.comp
+	w.sb.Comp = w.comp.onDisk()
 	w.sb.BlockLog = blockLog
 	w.sb.Flags = w.flags
-	if w.comp == LZ4 {
+	if w.comp.onDisk() == LZ4 {
 		w.sb.Flags |= COMPRESSOR_OPTIONS
 	}
 	w.sb.IdCount = uint16(len(w.idList))

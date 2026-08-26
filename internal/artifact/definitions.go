@@ -128,7 +128,7 @@ var (
 			switch a.Format {
 			case "tar":
 				switch a.Compression {
-				case "", "none", "zstd", "lz4":
+				case "", "none", "zstd", "lz4", "lz4hc":
 					if a.Level != 0 {
 						return apperrors.Validation(field+".level", "level is only valid with gzip compression")
 					}
@@ -137,7 +137,7 @@ var (
 						return apperrors.Validation(field+".level", "level must be between 0 and 9 (0 means default)")
 					}
 				default:
-					return apperrors.Validation(field+".compression", "compression must be \"gzip\", \"zstd\", \"lz4\", or \"none\" for tar")
+					return apperrors.Validation(field+".compression", "compression must be \"gzip\", \"zstd\", \"lz4\", \"lz4hc\", or \"none\" for tar")
 				}
 				if a.BlockSize != 0 {
 					return apperrors.Validation(field+".blockSize", "blockSize is only valid for squashfs")

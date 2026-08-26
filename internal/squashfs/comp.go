@@ -22,6 +22,23 @@ const (
 	ZSTD                        // Zstandard compression (enabled with "zstd" build tag)
 )
 
+// LZ4HC selects the LZ4 algorithm with a high-compression encoder. The
+// squashfs format has no separate algorithm ID for it — HC is a compress-side
+// effort knob producing standard LZ4 blocks — so images serialize as LZ4 (with
+// the LZ4_HC flag in the compressor-options record) and read back through the
+// LZ4 decompressor. The value is out of the on-disk ID range on purpose; it
+// only keys the compressor registry at write time.
+const LZ4HC Compression = 0x8000 | LZ4
+
+// onDisk maps a write-time compression selection to the algorithm ID that
+// squashfs serializes: LZ4HC is stored as LZ4.
+func (s Compression) onDisk() Compression {
+	if s == LZ4HC {
+		return LZ4
+	}
+	return s
+}
+
 type Decompressor func(buf []byte) ([]byte, error)
 type Compressor func(buf []byte) ([]byte, error)
 
@@ -50,6 +67,8 @@ func (s Compression) String() string {
 		return "XZ"
 	case LZ4:
 		return "LZ4"
+	case LZ4HC:
+		return "LZ4HC"
 	case ZSTD:
 		return "ZSTD"
 	}

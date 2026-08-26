@@ -206,6 +206,16 @@ func TestValidate_Archive(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "tar lz4hc",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.tar.lz4", Format: "tar", Compression: "lz4hc"},
+			wantErr: false,
+		},
+		{
+			name:    "squashfs lz4hc",
+			art:     &Archive{ID: "a1", In: "src", Out: "src.sqfs", Format: "squashfs", Compression: "lz4hc"},
+			wantErr: false,
+		},
+		{
 			name:    "tar invalid compression",
 			art:     &Archive{ID: "a1", In: "src", Out: "src.tar", Format: "tar", Compression: "brotli"},
 			wantErr: true,

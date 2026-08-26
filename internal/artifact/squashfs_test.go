@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"encoding/binary"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func assertSquashfsContents(t *testing.T, image string) {
 }
 
 func TestArchive_Squashfs_Compressors(t *testing.T) {
-	for _, comp := range []string{"", "gzip", "zstd", "lz4"} {
+	for _, comp := range []string{"", "gzip", "zstd", "lz4", "lz4hc"} {
 		t.Run("comp="+comp, func(t *testing.T) {
 			image := archiveSquashfs(t, comp)
 
@@ -57,6 +58,34 @@ func TestArchive_Squashfs_Compressors(t *testing.T) {
 			}
 			assertSquashfsContents(t, image)
 		})
+	}
+}
+
+// TestArchive_Squashfs_LZ4HCOnDisk pins the compatibility contract: lz4hc is a
+// compress-side choice only, so the image must serialize as algorithm LZ4
+// (kernel drivers know no separate HC ID) with the LZ4_HC bit set in the
+// compressor-options record that follows the superblock.
+func TestArchive_Squashfs_LZ4HCOnDisk(t *testing.T) {
+	image := archiveSquashfs(t, "lz4hc")
+	raw, err := os.ReadFile(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Superblock: compression ID is the uint16 at offset 20.
+	if comp := binary.LittleEndian.Uint16(raw[20:22]); comp != uint16(squashfs.LZ4) {
+		t.Fatalf("on-disk compression ID = %d, want %d (LZ4)", comp, uint16(squashfs.LZ4))
+	}
+	// Compressor options at offset 96 (right after the 96-byte superblock):
+	// 2-byte metadata header (8 | 0x8000), then version=1 (LZ4_LEGACY) and
+	// flags=1 (LZ4_HC).
+	if header := binary.LittleEndian.Uint16(raw[96:98]); header != 8|0x8000 {
+		t.Fatalf("compressor-options header = %#x, want %#x", header, 8|0x8000)
+	}
+	if version := binary.LittleEndian.Uint32(raw[98:102]); version != 1 {
+		t.Fatalf("lz4 options version = %d, want 1 (LZ4_LEGACY)", version)
+	}
+	if flags := binary.LittleEndian.Uint32(raw[102:106]); flags != 1 {
+		t.Fatalf("lz4 options flags = %d, want 1 (LZ4_HC)", flags)
 	}
 }
 
@@ -256,6 +285,7 @@ func TestTar_RoundTrip(t *testing.T) {
 		{"gzip with level", "gzip", 5},
 		{"zstd", "zstd", 0},
 		{"lz4", "lz4", 0},
+		{"lz4hc", "lz4hc", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
