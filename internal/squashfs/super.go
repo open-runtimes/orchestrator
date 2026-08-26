@@ -43,13 +43,13 @@ type Superblock struct {
 	Comp              Compression // Compression used, usually GZip
 	BlockLog          uint16
 	Flags             Flags // squashfs flags
-	IdCount           uint16
+	IDCount           uint16
 	VMajor            uint16
 	VMinor            uint16
 	RootInode         inodeRef // inode number/reference of root
 	BytesUsed         uint64
-	IdTableStart      uint64
-	XattrIdTableStart uint64
+	IDTableStart      uint64
+	XattrIDTableStart uint64
 	InodeTableStart   uint64
 	DirTableStart     uint64
 	FragTableStart    uint64
@@ -62,13 +62,13 @@ var _ fs.StatFS = (*Superblock)(nil)
 
 // New returns a new instance of superblock for a given io.ReaderAt that can
 // be used to access files inside squashfs.
-func New(fs io.ReaderAt, options ...Option) (*Superblock, error) {
-	sb := &Superblock{fs: fs,
+func New(r io.ReaderAt, options ...Option) (*Superblock, error) {
+	sb := &Superblock{fs: r,
 		inoIdx: make(map[uint32]inodeRef),
 	}
 	head := make([]byte, SuperblockSize)
 
-	_, err := fs.ReadAt(head, 0)
+	_, err := r.ReadAt(head, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func New(fs io.ReaderAt, options ...Option) (*Superblock, error) {
 
 	sb.rootInoN = uint64(sb.rootIno.Ino)
 
-	err = sb.readIdTable()
+	err = sb.readIDTable()
 	if err != nil {
 		return nil, err
 	}
@@ -127,14 +127,14 @@ func Open(file string, options ...Option) (*Superblock, error) {
 	return sb, nil
 }
 
-func (sb *Superblock) readIdTable() error {
+func (sb *Superblock) readIDTable() error {
 	// read id table
-	idtable, err := sb.newIndirectTableReader(int64(sb.IdTableStart), 0)
+	idtable, err := sb.newIndirectTableReader(int64(sb.IDTableStart), 0)
 	if err != nil {
 		return err
 	}
 	var id uint32
-	sb.idTable = make([]uint32, sb.IdCount)
+	sb.idTable = make([]uint32, sb.IDCount)
 	for i := range sb.idTable {
 		err := binary.Read(idtable, sb.order, &id)
 		if err != nil {
@@ -142,120 +142,116 @@ func (sb *Superblock) readIdTable() error {
 		}
 		sb.idTable[i] = id
 	}
-	//log.Printf("sqashfs: id table = %+v", sb.idTable)
 	return nil
 }
 
 // Bytes serializes the Superblock to a byte slice
-func (s *Superblock) Bytes() []byte {
-	sb := make([]byte, SuperblockSize)
-	order := s.order
+func (sb *Superblock) Bytes() []byte {
+	buf := make([]byte, SuperblockSize)
+	order := sb.order
 	if order == nil {
 		order = binary.LittleEndian
 	}
 
 	// Magic
-	order.PutUint32(sb[0:4], s.Magic)
+	order.PutUint32(buf[0:4], sb.Magic)
 	// Inode count
-	order.PutUint32(sb[4:8], s.InodeCnt)
+	order.PutUint32(buf[4:8], sb.InodeCnt)
 	// Mod time
-	order.PutUint32(sb[8:12], uint32(s.ModTime))
+	order.PutUint32(buf[8:12], uint32(sb.ModTime))
 	// Block size
-	order.PutUint32(sb[12:16], s.BlockSize)
+	order.PutUint32(buf[12:16], sb.BlockSize)
 	// Fragment count
-	order.PutUint32(sb[16:20], s.FragCount)
+	order.PutUint32(buf[16:20], sb.FragCount)
 	// Compression
-	order.PutUint16(sb[20:22], uint16(s.Comp))
+	order.PutUint16(buf[20:22], uint16(sb.Comp))
 	// Block log
-	order.PutUint16(sb[22:24], s.BlockLog)
+	order.PutUint16(buf[22:24], sb.BlockLog)
 	// Flags
-	order.PutUint16(sb[24:26], uint16(s.Flags))
+	order.PutUint16(buf[24:26], uint16(sb.Flags))
 	// ID count
-	order.PutUint16(sb[26:28], s.IdCount)
+	order.PutUint16(buf[26:28], sb.IDCount)
 	// Version
-	order.PutUint16(sb[28:30], s.VMajor)
-	order.PutUint16(sb[30:32], s.VMinor)
+	order.PutUint16(buf[28:30], sb.VMajor)
+	order.PutUint16(buf[30:32], sb.VMinor)
 	// Root inode
-	order.PutUint64(sb[32:40], uint64(s.RootInode))
+	order.PutUint64(buf[32:40], uint64(sb.RootInode))
 	// Bytes used
-	order.PutUint64(sb[40:48], s.BytesUsed)
+	order.PutUint64(buf[40:48], sb.BytesUsed)
 	// ID table start
-	order.PutUint64(sb[48:56], s.IdTableStart)
+	order.PutUint64(buf[48:56], sb.IDTableStart)
 	// Xattr ID table start
-	order.PutUint64(sb[56:64], s.XattrIdTableStart)
+	order.PutUint64(buf[56:64], sb.XattrIDTableStart)
 	// Inode table start
-	order.PutUint64(sb[64:72], s.InodeTableStart)
+	order.PutUint64(buf[64:72], sb.InodeTableStart)
 	// Directory table start
-	order.PutUint64(sb[72:80], s.DirTableStart)
+	order.PutUint64(buf[72:80], sb.DirTableStart)
 	// Fragment table start
-	order.PutUint64(sb[80:88], s.FragTableStart)
+	order.PutUint64(buf[80:88], sb.FragTableStart)
 	// Export table start
-	order.PutUint64(sb[88:96], s.ExportTableStart)
+	order.PutUint64(buf[88:96], sb.ExportTableStart)
 
-	return sb
+	return buf
 }
 
 // UnmarshalBinary reads a binary header values into Superblock
-func (s *Superblock) UnmarshalBinary(data []byte) error {
+func (sb *Superblock) UnmarshalBinary(data []byte) error {
 	if len(data) != SuperblockSize {
 		return ErrInvalidSuper
 	}
 
 	switch string(data[:4]) {
 	case "hsqs":
-		s.order = binary.LittleEndian
+		sb.order = binary.LittleEndian
 	case "sqsh":
-		s.order = binary.BigEndian
+		sb.order = binary.BigEndian
 	default:
 		return ErrInvalidFile
 	}
 
-	s.Magic = s.order.Uint32(data[0:4])
-	s.InodeCnt = s.order.Uint32(data[4:8])
-	s.ModTime = int32(s.order.Uint32(data[8:12]))
-	s.BlockSize = s.order.Uint32(data[12:16])
-	s.FragCount = s.order.Uint32(data[16:20])
-	s.Comp = Compression(s.order.Uint16(data[20:22]))
-	s.BlockLog = s.order.Uint16(data[22:24])
-	s.Flags = Flags(s.order.Uint16(data[24:26]))
-	s.IdCount = s.order.Uint16(data[26:28])
-	s.VMajor = s.order.Uint16(data[28:30])
-	s.VMinor = s.order.Uint16(data[30:32])
-	s.RootInode = inodeRef(s.order.Uint64(data[32:40]))
-	s.BytesUsed = s.order.Uint64(data[40:48])
-	s.IdTableStart = s.order.Uint64(data[48:56])
-	s.XattrIdTableStart = s.order.Uint64(data[56:64])
-	s.InodeTableStart = s.order.Uint64(data[64:72])
-	s.DirTableStart = s.order.Uint64(data[72:80])
-	s.FragTableStart = s.order.Uint64(data[80:88])
-	s.ExportTableStart = s.order.Uint64(data[88:96])
+	sb.Magic = sb.order.Uint32(data[0:4])
+	sb.InodeCnt = sb.order.Uint32(data[4:8])
+	sb.ModTime = int32(sb.order.Uint32(data[8:12]))
+	sb.BlockSize = sb.order.Uint32(data[12:16])
+	sb.FragCount = sb.order.Uint32(data[16:20])
+	sb.Comp = Compression(sb.order.Uint16(data[20:22]))
+	sb.BlockLog = sb.order.Uint16(data[22:24])
+	sb.Flags = Flags(sb.order.Uint16(data[24:26]))
+	sb.IDCount = sb.order.Uint16(data[26:28])
+	sb.VMajor = sb.order.Uint16(data[28:30])
+	sb.VMinor = sb.order.Uint16(data[30:32])
+	sb.RootInode = inodeRef(sb.order.Uint64(data[32:40]))
+	sb.BytesUsed = sb.order.Uint64(data[40:48])
+	sb.IDTableStart = sb.order.Uint64(data[48:56])
+	sb.XattrIDTableStart = sb.order.Uint64(data[56:64])
+	sb.InodeTableStart = sb.order.Uint64(data[64:72])
+	sb.DirTableStart = sb.order.Uint64(data[72:80])
+	sb.FragTableStart = sb.order.Uint64(data[80:88])
+	sb.ExportTableStart = sb.order.Uint64(data[88:96])
 
-	if s.Magic != 0x73717368 {
+	if sb.Magic != 0x73717368 {
 		// shouldn't happen
 		return ErrInvalidFile
 	}
 
-	if uint32(1)<<s.BlockLog != s.BlockSize {
+	if uint32(1)<<sb.BlockLog != sb.BlockSize {
 		return ErrInvalidSuper
 	}
-
-	//log.Printf("parsed SquashFS %d.%d blocksize=%d bytes=%d comp=%s flags=%s", s.VMajor, s.VMinor, s.BlockSize, s.BytesUsed, s.Comp, s.Flags)
-	//log.Printf("inode table at 0x%x, export at 0x%x, count=%d, root=%s", s.InodeTableStart, s.ExportTableStart, s.InodeCnt, s.RootInode)
 
 	return nil
 }
 
 // SetInodeOffset allows setting the inode offset used for interacting with fuse. This can be safely ignored if not using fuse
 // or when mounting only a single squashfs via fuse.
-func (s *Superblock) SetInodeOffset(offt uint64) {
-	s.inoOfft = offt
+func (sb *Superblock) SetInodeOffset(offt uint64) {
+	sb.inoOfft = offt
 }
 
 // FindInode returns the inode for a given path. If followSymlink is false and
 // a symlink is found in the path, it will be followed anyway. If however the
 // target file is a symlink, then its inode will be returned.
-func (s *Superblock) FindInode(name string, followSymlinks bool) (*Inode, error) {
-	return s.FindInodeUnder(s.rootIno, name, followSymlinks)
+func (sb *Superblock) FindInode(name string, followSymlinks bool) (*Inode, error) {
+	return sb.FindInodeUnder(sb.rootIno, name, followSymlinks)
 }
 
 // FindInodeUnder returns an inode for a path starting at a given different inode
@@ -263,7 +259,7 @@ func (s *Superblock) FindInode(name string, followSymlinks bool) (*Inode, error)
 // Note that it is not possible to access directories outside the given path,
 // including using symlinks, as this effectively acts as a chroot. This can be
 // useful to implement fs.Sub
-func (s *Superblock) FindInodeUnder(cur *Inode, name string, followSymlinks bool) (*Inode, error) {
+func (sb *Superblock) FindInodeUnder(cur *Inode, name string, followSymlinks bool) (*Inode, error) {
 	// similar to lookup, but handles slashes in name and returns an inode
 	parents := make(map[uint32]*Inode)
 	parents[cur.Ino] = cur
@@ -292,7 +288,7 @@ func (s *Superblock) FindInodeUnder(cur *Inode, name string, followSymlinks bool
 			if symlinkRedirects == 0 {
 				return nil, ErrTooManySymlinks
 			}
-			symlinkRedirects -= 1
+			symlinkRedirects--
 			sym, err := res.Readlink()
 			if err != nil {
 				return nil, err
@@ -333,7 +329,7 @@ func (s *Superblock) FindInodeUnder(cur *Inode, name string, followSymlinks bool
 			if symlinkRedirects == 0 {
 				return nil, ErrTooManySymlinks
 			}
-			symlinkRedirects -= 1
+			symlinkRedirects--
 
 			sym, err := t.Readlink()
 			if err != nil {

@@ -2,6 +2,7 @@ package squashfs
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"io/fs"
 )
@@ -105,7 +106,7 @@ func (dr *dirReader) nextfull() (string, Type, inodeRef, error) {
 		return "", 0, 0, err
 	}
 
-	dr.count -= 1
+	dr.count--
 
 	inoRef := inodeRef((uint64(dr.startBlock) << 16) | uint64(offset))
 	return string(name), typ, inoRef, nil
@@ -126,8 +127,8 @@ func (dr *dirReader) readHeader() error {
 		return err
 	}
 
-	//log.Printf("read header, count=0x%x+1 startBlock=%x inodeNum=%x", dr.count, dr.startBlock, dr.inodeNum)
-	dr.count += 1
+	// log.Printf("read header, count=0x%x+1 startBlock=%x inodeNum=%x", dr.count, dr.startBlock, dr.inodeNum)
+	dr.count++
 
 	return nil
 }
@@ -138,7 +139,7 @@ func (dr *dirReader) ReadDir(n int) ([]fs.DirEntry, error) {
 	for {
 		ename, typ, inoR, err := dr.nextfull()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return res, nil
 			}
 			return res, err

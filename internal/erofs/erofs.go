@@ -460,7 +460,7 @@ func (img *image) loadLongPrefixes() error {
 		}
 
 		img.longPrefixes = make([]string, img.sb.XattrPrefixCount)
-		for i := 0; i < int(img.sb.XattrPrefixCount); i++ {
+		for i := range int(img.sb.XattrPrefixCount) {
 			data, err := img.readMetadata(r)
 			if err != nil {
 				img.prefixesErr =
@@ -501,14 +501,13 @@ func (img *image) loadAt(addr, size int64) (*block, error) {
 	}
 
 	b := img.getBlock()
-	if n, err := img.meta.ReadAt(b.buf[:size], addr); err != nil {
+	n, err := img.meta.ReadAt(b.buf[:size], addr)
+	if err != nil {
 		img.putBlock(b)
 		return nil, fmt.Errorf("failed to read %d bytes at %d: %w", size, addr, err)
-	} else {
-		b.offset = 0
-		b.end = int32(n)
 	}
-
+	b.offset = 0
+	b.end = int32(n)
 	return b, nil
 }
 
@@ -520,8 +519,8 @@ func (img *image) loadBlock(fi *inode, pos int64) (*block, error) {
 		return nil, fmt.Errorf("block position larger than number of blocks for inode: %w", io.EOF)
 	}
 	var addr int64
+	var blockOffset int
 	blockSize := int(1 << img.sb.BlkSizeBits)
-	blockOffset := 0
 	blockEnd := blockSize
 	switch fi.inodeLayout {
 	case disk.LayoutFlatPlain:
@@ -697,9 +696,9 @@ const maxSymlinks = 255
 // Linux PATH_MAX is 4096; we use the same limit.
 const maxSymlinkSize = 4096
 
-// readLink reads the symlink target for the given nid.
-func (i *image) readLink(nid uint64, name string) (string, error) {
-	f := &file{img: i, name: name, nid: nid, ftype: fs.ModeSymlink}
+// readLinkTarget reads the symlink target for the given nid.
+func (img *image) readLinkTarget(nid uint64, name string) (string, error) {
+	f := &file{img: img, name: name, nid: nid, ftype: fs.ModeSymlink}
 	fi, err := f.readInfo()
 	if err != nil {
 		return "", err
@@ -709,7 +708,7 @@ func (i *image) readLink(nid uint64, name string) (string, error) {
 	}
 	buf := make([]byte, fi.size)
 	if fi.size > 0 {
-		if _, err = f.Read(buf); err != nil && err != io.EOF {
+		if _, err = f.Read(buf); err != nil && !errors.Is(err, io.EOF) {
 			return "", err
 		}
 	}
@@ -720,7 +719,7 @@ func (i *image) readLink(nid uint64, name string) (string, error) {
 // When follow is true, symlinks are followed (including the final component).
 // When follow is false, the final component is not followed (for Lstat/ReadLink).
 // Intermediate symlinks are always followed.
-func (i *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.FileMode, basename string, err error) {
+func (img *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.FileMode, basename string, err error) {
 	original := name
 	if path.IsAbs(name) {
 		name = name[1:]
@@ -730,7 +729,7 @@ func (i *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.File
 		name = ""
 	}
 
-	nid = uint64(i.sb.RootNid)
+	nid = uint64(img.sb.RootNid)
 	ftype = fs.ModeDir
 
 	// curPath tracks the full resolved path of the current directory
@@ -757,7 +756,7 @@ func (i *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.File
 		}
 		d := &dir{
 			file: file{
-				img:   i,
+				img:   img,
 				name:  basename,
 				nid:   nid,
 				ftype: ftype,
@@ -778,7 +777,7 @@ func (i *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.File
 			if linksFollowed > maxSymlinks {
 				return 0, 0, "", &fs.PathError{Op: op, Path: original, Err: ErrLoop}
 			}
-			target, err := i.readLink(nid, basename)
+			target, err := img.readLinkTarget(nid, basename)
 			if err != nil {
 				return 0, 0, "", err
 			}
@@ -795,7 +794,7 @@ func (i *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.File
 			if len(target) > 0 && target[0] == '/' {
 				target = target[1:]
 			}
-			nid = uint64(i.sb.RootNid)
+			nid = uint64(img.sb.RootNid)
 			ftype = fs.ModeDir
 			curPath = ""
 			name = target
@@ -820,39 +819,39 @@ func (i *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.File
 	return nid, ftype, basename, nil
 }
 
-func (i *image) Open(name string) (fs.File, error) {
-	nid, ftype, basename, err := i.resolve("open", name, true)
+func (img *image) Open(name string) (fs.File, error) {
+	nid, ftype, basename, err := img.resolve("open", name, true)
 	if err != nil {
 		return nil, err
 	}
-	b := file{img: i, name: basename, nid: nid, ftype: ftype}
+	b := file{img: img, name: basename, nid: nid, ftype: ftype}
 	if ftype.IsDir() {
 		return &dir{file: b}, nil
 	}
 	return &b, nil
 }
 
-func (i *image) Stat(name string) (fs.FileInfo, error) {
-	nid, ftype, basename, err := i.resolve("stat", name, true)
+func (img *image) Stat(name string) (fs.FileInfo, error) {
+	nid, ftype, basename, err := img.resolve("stat", name, true)
 	if err != nil {
 		return nil, err
 	}
-	f := &file{img: i, name: basename, nid: nid, ftype: ftype}
+	f := &file{img: img, name: basename, nid: nid, ftype: ftype}
 	return f.statInfo()
 }
 
 // ReadFile reads the named file and returns its contents.
 // Files larger than maxReadFileSize (128 MiB) are rejected;
 // use Open and io.Copy for larger files.
-func (i *image) ReadFile(name string) ([]byte, error) {
-	nid, ftype, basename, err := i.resolve("readfile", name, true)
+func (img *image) ReadFile(name string) ([]byte, error) {
+	nid, ftype, basename, err := img.resolve("readfile", name, true)
 	if err != nil {
 		return nil, err
 	}
 	if ftype.IsDir() {
 		return nil, &fs.PathError{Op: "read", Path: name, Err: ErrIsDirectory}
 	}
-	f := &file{img: i, name: basename, nid: nid, ftype: ftype}
+	f := &file{img: img, name: basename, nid: nid, ftype: ftype}
 	fi, err := f.readInfo()
 	if err != nil {
 		return nil, err
@@ -862,22 +861,22 @@ func (i *image) ReadFile(name string) ([]byte, error) {
 	}
 	buf := make([]byte, fi.size)
 	if fi.size > 0 {
-		if _, err = f.Read(buf); err != nil && err != io.EOF {
+		if _, err = f.Read(buf); err != nil && !errors.Is(err, io.EOF) {
 			return nil, err
 		}
 	}
 	return buf, nil
 }
 
-func (i *image) ReadDir(name string) ([]fs.DirEntry, error) {
-	nid, ftype, basename, err := i.resolve("readdir", name, true)
+func (img *image) ReadDir(name string) ([]fs.DirEntry, error) {
+	nid, ftype, basename, err := img.resolve("readdir", name, true)
 	if err != nil {
 		return nil, err
 	}
 	if !ftype.IsDir() {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: ErrNotDirectory}
 	}
-	d := &dir{file: file{img: i, name: basename, nid: nid, ftype: ftype}}
+	d := &dir{file: file{img: img, name: basename, nid: nid, ftype: ftype}}
 	entries, err := d.ReadDir(-1)
 	if err != nil {
 		return nil, err
@@ -888,23 +887,23 @@ func (i *image) ReadDir(name string) ([]fs.DirEntry, error) {
 	return entries, nil
 }
 
-func (i *image) ReadLink(name string) (string, error) {
-	nid, ftype, basename, err := i.resolve("readlink", name, false)
+func (img *image) ReadLink(name string) (string, error) {
+	nid, ftype, basename, err := img.resolve("readlink", name, false)
 	if err != nil {
 		return "", err
 	}
 	if ftype&fs.ModeSymlink == 0 {
 		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
 	}
-	return i.readLink(nid, basename)
+	return img.readLinkTarget(nid, basename)
 }
 
-func (i *image) Lstat(name string) (fs.FileInfo, error) {
-	nid, ftype, basename, err := i.resolve("lstat", name, false)
+func (img *image) Lstat(name string) (fs.FileInfo, error) {
+	nid, ftype, basename, err := img.resolve("lstat", name, false)
 	if err != nil {
 		return nil, err
 	}
-	f := &file{img: i, name: basename, nid: nid, ftype: ftype}
+	f := &file{img: img, name: basename, nid: nid, ftype: ftype}
 	return f.statInfo()
 }
 
@@ -935,7 +934,6 @@ func (b *file) readInfo() (ino *inode, err error) {
 		blk.offset = 0
 		blk.end = disk.SizeInodeExtended
 	}
-
 	defer func() {
 		v := recover()
 		if v != nil {
@@ -944,7 +942,6 @@ func (b *file) readInfo() (ino *inode, err error) {
 		if err != nil {
 			b.img.putBlock(blk)
 		}
-
 	}()
 
 	buf := blk.bytes()
@@ -1172,7 +1169,7 @@ func (d *dir) ReadDir(n int) ([]fs.DirEntry, error) {
 			return ents, fmt.Errorf("invalid dirent name offset %d (buf size %d): %w", dirents[0].NameOff, bufLen, ErrInvalid)
 		}
 
-		for i := uint16(0); i < entryN; i++ {
+		for i := range entryN {
 			var name string
 			if i < entryN-1 {
 				start := int(disk.SizeDirent) * (int(i) + 1)

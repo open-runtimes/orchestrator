@@ -13,5 +13,5 @@ func getDevIno(sys any) (devIno, bool) {
 	if !ok {
 		return devIno{}, false
 	}
-	return devIno{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true
+	return devIno{dev: uint64(st.Dev), ino: st.Ino}, true
 }

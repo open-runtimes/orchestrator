@@ -2,7 +2,7 @@ package erofs
 
 import (
 	"io/fs"
-	"sort"
+	"slices"
 	"strings"
 
 	"orchestrator/internal/erofs/disk"
@@ -67,7 +67,7 @@ func sortedXattrKeys(m map[string]string) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
@@ -109,6 +109,8 @@ func goModeToUnixMode(m fs.FileMode) uint16 {
 		mode |= disk.StatTypeFifo
 	case fs.ModeSocket:
 		mode |= disk.StatTypeSock
+	default:
+		// Irregular types have no EROFS representation; the caller skips them.
 	}
 
 	return mode

@@ -4,8 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/pierrec/lz4/v4"
 	"orchestrator/internal/erofs/disk"
+
+	"github.com/pierrec/lz4/v4"
 )
 
 // Read support for z_erofs compressed inodes, covering the subset this

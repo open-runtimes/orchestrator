@@ -76,17 +76,17 @@ func TestLZ4HCEncoderFuzzish(t *testing.T) {
 	base := make([]byte, 1<<20)
 	rnd.Read(base)
 	// overlay compressible runs
-	for i := 0; i < 3000; i++ {
+	for range 3000 {
 		off := rnd.Intn(len(base) - 300)
 		b := byte(rnd.Intn(256))
-		for j := 0; j < 100+rnd.Intn(200); j++ {
+		for j := range 100 + rnd.Intn(200) {
 			base[off+j] = b
 		}
 	}
 	var e lz4HCEncoder
 	// Sized so the suite stays affordable under -race on small CI runners;
 	// broader corpora run through the round-trip tests above.
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		l := rnd.Intn(1 << 15)
 		off := rnd.Intn(len(base) - l)
 		src := base[off : off+l]
@@ -140,7 +140,7 @@ func TestLZ4HCEncoderOptBatchFlush(t *testing.T) {
 	words := []string{"config", "handler", "router", "parse", "validate", "schema"}
 	var b bytes.Buffer
 	for b.Len() < 400_000 {
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			b.WriteString(words[rnd.Intn(len(words))])
 			b.WriteByte(byte('0' + rnd.Intn(10)))
 		}

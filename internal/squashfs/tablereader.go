@@ -1,6 +1,7 @@
 package squashfs
 
 import (
+	"errors"
 	"fmt"
 	"io"
 )
@@ -25,7 +26,7 @@ func (sb *Superblock) newTableReader(base int64, start int) (*tableReader, error
 
 	err := ir.readBlock()
 	if err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			err = io.ErrUnexpectedEOF
 		}
 		return nil, fmt.Errorf("failed to read initial block at base=%d: %w", base, err)
@@ -97,13 +98,13 @@ func (i *tableReader) readBlock() error {
 		// decompress
 		buf, err = i.sb.Comp.decompress(buf)
 		if err != nil {
-			//log.Printf("squashfs: failed to read compressed data: %s", err)
+			// log.Printf("squashfs: failed to read compressed data: %s", err)
 			return err
 		}
 	}
 
 	i.buf = buf
-	//fmt.Printf("readBlock: offset=%d, compressedSize=%d, decompressedSize=%d\n", i.offt-int64(lenN)-2, lenN, len(buf))
+	// fmt.Printf("readBlock: offset=%d, compressedSize=%d, decompressedSize=%d\n", i.offt-int64(lenN)-2, lenN, len(buf))
 
 	return nil
 }

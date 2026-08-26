@@ -5,58 +5,58 @@ import "strings"
 type Flags uint16
 
 const (
-	UNCOMPRESSED_INODES Flags = 1 << iota
-	UNCOMPRESSED_DATA
-	CHECK
-	UNCOMPRESSED_FRAGMENTS
-	NO_FRAGMENTS
-	ALWAYS_FRAGMENTS
-	DUPLICATES
-	EXPORTABLE
-	UNCOMPRESSED_XATTRS
-	NO_XATTRS
-	COMPRESSOR_OPTIONS
-	UNCOMPRESSED_IDS
+	FlagUncompressedInodes Flags = 1 << iota
+	FlagUncompressedData
+	FlagCheck
+	FlagUncompressedFragments
+	FlagNoFragments
+	FlagAlwaysFragments
+	FlagDuplicates
+	FlagExportable
+	FlagUncompressedXattrs
+	FlagNoXattrs
+	FlagCompressorOptions
+	FlagUncompressedIDs
 )
 
 func (f Flags) String() string {
 	var opt []string
 
-	if f&UNCOMPRESSED_INODES != 0 {
-		opt = append(opt, "UNCOMPRESSED_INODES")
+	if f&FlagUncompressedInodes != 0 {
+		opt = append(opt, "FlagUncompressedInodes")
 	}
-	if f&UNCOMPRESSED_DATA != 0 {
-		opt = append(opt, "UNCOMPRESSED_DATA")
+	if f&FlagUncompressedData != 0 {
+		opt = append(opt, "FlagUncompressedData")
 	}
-	if f&CHECK != 0 {
-		opt = append(opt, "CHECK")
+	if f&FlagCheck != 0 {
+		opt = append(opt, "FlagCheck")
 	}
-	if f&UNCOMPRESSED_FRAGMENTS != 0 {
-		opt = append(opt, "UNCOMPRESSED_FRAGMENTS")
+	if f&FlagUncompressedFragments != 0 {
+		opt = append(opt, "FlagUncompressedFragments")
 	}
-	if f&NO_FRAGMENTS != 0 {
-		opt = append(opt, "NO_FRAGMENTS")
+	if f&FlagNoFragments != 0 {
+		opt = append(opt, "FlagNoFragments")
 	}
-	if f&ALWAYS_FRAGMENTS != 0 {
-		opt = append(opt, "ALWAYS_FRAGMENTS")
+	if f&FlagAlwaysFragments != 0 {
+		opt = append(opt, "FlagAlwaysFragments")
 	}
-	if f&DUPLICATES != 0 {
-		opt = append(opt, "DUPLICATES")
+	if f&FlagDuplicates != 0 {
+		opt = append(opt, "FlagDuplicates")
 	}
-	if f&EXPORTABLE != 0 {
-		opt = append(opt, "EXPORTABLE")
+	if f&FlagExportable != 0 {
+		opt = append(opt, "FlagExportable")
 	}
-	if f&UNCOMPRESSED_XATTRS != 0 {
-		opt = append(opt, "UNCOMPRESSED_XATTRS")
+	if f&FlagUncompressedXattrs != 0 {
+		opt = append(opt, "FlagUncompressedXattrs")
 	}
-	if f&NO_XATTRS != 0 {
-		opt = append(opt, "NO_XATTRS")
+	if f&FlagNoXattrs != 0 {
+		opt = append(opt, "FlagNoXattrs")
 	}
-	if f&COMPRESSOR_OPTIONS != 0 {
-		opt = append(opt, "COMPRESSOR_OPTIONS")
+	if f&FlagCompressorOptions != 0 {
+		opt = append(opt, "FlagCompressorOptions")
 	}
-	if f&UNCOMPRESSED_IDS != 0 {
-		opt = append(opt, "UNCOMPRESSED_IDS")
+	if f&FlagUncompressedIDs != 0 {
+		opt = append(opt, "FlagUncompressedIDs")
 	}
 
 	return strings.Join(opt, "|")

@@ -21,7 +21,7 @@ type Inode struct {
 
 	Type    Type   // file type (regular file, directory, symlink, etc.)
 	Perm    uint16 // permission bits
-	UidIdx  uint16 // user ID index (in the ID table)
+	UIDIdx  uint16 // user ID index (in the ID table)
 	GidIdx  uint16 // group ID index (in the ID table)
 	ModTime int32  // modification time (Unix timestamp)
 	Ino     uint32 // inode number (unique identifier)
@@ -65,7 +65,7 @@ func (sb *Superblock) GetInode(ino uint64) (*Inode, error) {
 	}
 
 	// we do not use the flags here, but only see if the table is present. If absent it will be all f's
-	//if !sb.Flags.Has(EXPORTABLE) {
+	// if !sb.Flags.Has(FlagExportable) {
 	if sb.ExportTableStart == ^uint64(0) {
 		return nil, ErrInodeNotExported
 	}
@@ -104,7 +104,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = binary.Read(r, sb.order, &ino.UidIdx)
+	err = binary.Read(r, sb.order, &ino.UIDIdx)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 		return nil, err
 	}
 
-	//log.Printf("read inode #%d type=%d", ino.Ino, ino.Type)
+	// log.Printf("read inode #%d type=%d", ino.Ino, ino.Type)
 
 	switch ino.Type {
 	case 1: // Basic Directory
@@ -155,7 +155,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 			return nil, err
 		}
 
-		//log.Printf("squashfs: read basic directory success, parent=%d", ino.ParentIno)
+		// log.Printf("squashfs: read basic directory success, parent=%d", ino.ParentIno)
 	case 8: // Extended dir
 		var u32 uint32
 		var u16 uint16
@@ -222,7 +222,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 			di.Name = string(name)
 			ino.DirIndex[n] = di
 		}
-		//log.Printf("squashfs: read extended directory success, parent=%d indexes=%d size=%d", ino.ParentIno, ino.IdxCount, ino.Size)
+		// log.Printf("squashfs: read extended directory success, parent=%d indexes=%d size=%d", ino.ParentIno, ino.IdxCount, ino.Size)
 	case 2: // Basic file
 		var u32 uint32
 		err = binary.Read(r, sb.order, &u32)
@@ -251,10 +251,10 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 		if ino.FragBlock == 0xffffffff {
 			// file does not end in a fragment
 			if ino.Size%uint64(sb.BlockSize) != 0 {
-				blocks += 1
+				blocks++
 			}
 		}
-		//log.Printf("estimated %d blocks", blocks)
+		// log.Printf("estimated %d blocks", blocks)
 
 		ino.Blocks = make([]uint32, blocks)
 		ino.BlocksOfft = make([]uint64, blocks)
@@ -262,7 +262,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 		offt := uint64(0)
 
 		// read blocks
-		for i := 0; i < blocks; i += 1 {
+		for i := range blocks {
 			err = binary.Read(r, sb.order, &u32)
 			if err != nil {
 				return nil, err
@@ -318,10 +318,10 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 		if ino.FragBlock == 0xffffffff {
 			// file does not end in a fragment
 			if ino.Size%uint64(sb.BlockSize) != 0 {
-				blocks += 1
+				blocks++
 			}
 		}
-		//log.Printf("estimated %d blocks", blocks)
+		// log.Printf("estimated %d blocks", blocks)
 
 		ino.Blocks = make([]uint32, blocks)
 		ino.BlocksOfft = make([]uint64, blocks)
@@ -330,7 +330,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 		offt := uint64(0)
 
 		// read blocks
-		for i := 0; i < blocks; i += 1 {
+		for i := range blocks {
 			err = binary.Read(r, sb.order, &u32)
 			if err != nil {
 				return nil, err
@@ -346,7 +346,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 			ino.Blocks = append(ino.Blocks, 0xffffffff) // special code
 		}
 
-		//log.Printf("squashfs: read extended file success, sparse=%d size=%d fragblock=%x", ino.Sparse, ino.Size, ino.FragBlock)
+		// log.Printf("squashfs: read extended file success, sparse=%d size=%d fragblock=%x", ino.Sparse, ino.Size, ino.FragBlock)
 	case 3: // basic symlink
 		err = binary.Read(r, sb.order, &ino.NLink)
 		if err != nil {
@@ -374,7 +374,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 		}
 		ino.SymTarget = buf
 
-		//log.Printf("squashfs: read symlink to %s", ino.SymTarget)
+		// log.Printf("squashfs: read symlink to %s", ino.SymTarget)
 	case 4, 5: // Basic block device, basic char device
 		err = binary.Read(r, sb.order, &ino.NLink)
 		if err != nil {
@@ -422,7 +422,7 @@ func (sb *Superblock) GetInodeRef(inor inodeRef) (*Inode, error) {
 func (i *Inode) ReadAt(p []byte, off int64) (int, error) {
 	switch i.Type {
 	case 2, 9: // Basic file
-		//log.Printf("read request off=%d len=%d", off, len(p))
+		// log.Printf("read request off=%d len=%d", off, len(p))
 
 		if uint64(off) >= i.Size {
 			// no read
@@ -445,7 +445,7 @@ func (i *Inode) ReadAt(p []byte, off int64) (int, error) {
 			switch i.Blocks[block] {
 			case 0xffffffff:
 				// this is a fragment, need to decode fragment
-				//log.Printf("frag table offset=%d", i.sb.FragTableStart)
+				// log.Printf("frag table offset=%d", i.sb.FragTableStart)
 
 				// read table offset
 				sub := int64(i.FragBlock) / 512 * 8
@@ -461,7 +461,7 @@ func (i *Inode) ReadAt(p []byte, off int64) (int, error) {
 					return n, err
 				}
 
-				//log.Printf("fragment blinfo=%v", blInfo)
+				// log.Printf("fragment blinfo=%v", blInfo)
 				var start uint64
 				var size uint32
 				err = binary.Read(t, i.sb.order, &start)
@@ -473,7 +473,7 @@ func (i *Inode) ReadAt(p []byte, off int64) (int, error) {
 					return n, err
 				}
 
-				//log.Printf("fragment at %d:%d => start=0x%x (size=0x%x) len=%d", i.FragBlock, i.FragOfft, start, size, len(p))
+				// log.Printf("fragment at %d:%d => start=0x%x (size=0x%x) len=%d", i.FragBlock, i.FragOfft, start, size, len(p))
 
 				if size&0x1000000 == 0x1000000 {
 					// no compression
@@ -537,11 +537,12 @@ func (i *Inode) ReadAt(p []byte, off int64) (int, error) {
 			p = p[l:]
 
 			// next block
-			block += 1
+			block++
 			offset = 0
 		}
+	default:
+		return 0, fs.ErrInvalid
 	}
-	return 0, fs.ErrInvalid
 }
 
 // lookupRelativeInode finds the given inode in the directory
@@ -570,7 +571,7 @@ func (i *Inode) lookupRelativeInode(name string) (*Inode, error) {
 		for {
 			ename, inoR, err := dr.next()
 			if err != nil {
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					return nil, fs.ErrNotExist
 				}
 				return nil, err
@@ -592,6 +593,7 @@ func (i *Inode) lookupRelativeInode(name string) (*Inode, error) {
 				return found, nil
 			}
 		}
+	default:
 	}
 	return nil, fs.ErrInvalid
 }
@@ -606,8 +608,9 @@ func (i *Inode) IsDir() bool {
 	switch i.Type {
 	case 1, 8:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // Readlink returns the inode's link
@@ -615,8 +618,9 @@ func (i *Inode) Readlink() ([]byte, error) {
 	switch i.Type {
 	case 3, 10:
 		return i.SymTarget, nil
+	default:
+		return nil, fs.ErrInvalid
 	}
-	return nil, fs.ErrInvalid
 }
 
 // AddRef atomatically increments the inode's refcount and returns the new value. This is mainly useful when
@@ -631,10 +635,10 @@ func (i *Inode) DelRef(count uint64) uint64 {
 	return atomic.AddUint64(&i.refcnt, ^(count - 1))
 }
 
-// GetUid returns inode's owner uid, or zero if an error happens
-func (i *Inode) GetUid() uint32 {
-	if len(i.sb.idTable) >= int(i.UidIdx) {
-		return i.sb.idTable[i.UidIdx]
+// GetUID returns inode's owner uid, or zero if an error happens
+func (i *Inode) GetUID() uint32 {
+	if len(i.sb.idTable) >= int(i.UIDIdx) {
+		return i.sb.idTable[i.UIDIdx]
 	}
 	return 0
 }

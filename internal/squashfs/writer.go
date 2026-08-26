@@ -3,11 +3,13 @@ package squashfs
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"path"
-	"sort"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -273,16 +275,16 @@ func (w *Writer) AddFS(srcFS fs.FS) error {
 	})
 }
 
-func getParentPath(path string) string {
-	if path == "" || path == "." {
+func getParentPath(p string) string {
+	if p == "" || p == "." {
 		return ""
 	}
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' {
 			if i == 0 {
 				return "."
 			}
-			return path[:i]
+			return p[:i]
 		}
 	}
 	return "."
@@ -292,7 +294,7 @@ func getParentPath(path string) string {
 // directories as needed.
 func (w *Writer) addInode(p string, inode *writerInode) error {
 	if p == "" || p == "." {
-		return fmt.Errorf("cannot add root inode")
+		return errors.New("cannot add root inode")
 	}
 	if _, exists := w.inodeMap[p]; exists {
 		return fmt.Errorf("path already exists: %s", p)
@@ -376,7 +378,7 @@ func (w *Writer) AddDevice(p string, mode fs.FileMode, rdev uint32) error {
 	case mode&fs.ModeDevice != 0:
 		ft = BlockDevType
 	default:
-		return fmt.Errorf("mode must include ModeDevice or ModeCharDevice")
+		return errors.New("mode must include ModeDevice or ModeCharDevice")
 	}
 	inode := &writerInode{
 		mode:     mode,
@@ -495,6 +497,7 @@ func (w *Writer) promoteExtendedTypes() {
 			inode.fileType = XFifoType
 		case SocketType:
 			inode.fileType = XSocketType
+		default:
 			// DirType → XDirType is handled by calcDirectorySizes
 		}
 	}
@@ -510,7 +513,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (w *Writer) write(data []byte) error {
+func (w *Writer) writeAll(data []byte) error {
 	_, err := w.Write(data)
 	return err
 }
@@ -620,7 +623,7 @@ func (w *Writer) Finalize() error {
 // the high-compression encoder produced the blocks (informational: decompression
 // is identical either way). The kernel driver and unsquashfs both reject an lz4
 // image without this record, so buildSuperblock pairs it with the
-// COMPRESSOR_OPTIONS flag.
+// FlagCompressorOptions flag.
 func (w *Writer) writeCompressorOptions() error {
 	const (
 		lz4Legacy = 1
@@ -634,7 +637,7 @@ func (w *Writer) writeCompressorOptions() error {
 	binary.LittleEndian.PutUint16(block[0:2], 8|0x8000)
 	binary.LittleEndian.PutUint32(block[2:6], lz4Legacy)
 	binary.LittleEndian.PutUint32(block[6:10], flags)
-	return w.write(block)
+	return w.writeAll(block)
 }
 
 // calcDirectorySizes recursively calculates directory sizes and detects XDirType.
@@ -714,10 +717,7 @@ func (w *Writer) serializeTree(node *writerInode, inodeMeta *streamingMetaWriter
 		physOffset, offset := dirMeta.Position()
 		node.dirBlockIdx = uint32(physOffset) // Physical byte offset into dir table
 		node.dirOffset = offset
-		actualSize, err := w.writeDirEntries(node, inodeMeta, dirMeta)
-		if err != nil {
-			return err
-		}
+		actualSize := w.writeDirEntries(node, inodeMeta, dirMeta)
 		// The squashfs spec stores directory size as actual_data + 3
 		// (the reader stops when exactly 3 bytes remain).
 		node.size = uint64(actualSize) + 3
@@ -730,13 +730,13 @@ func (w *Writer) serializeTree(node *writerInode, inodeMeta *streamingMetaWriter
 
 // writeDirEntries writes directory entries to the buffered directory meta.
 // Returns the number of bytes written.
-func (w *Writer) writeDirEntries(node *writerInode, inodeMeta *streamingMetaWriter, dirMeta *bufferedMetaWriter) (int, error) {
+func (w *Writer) writeDirEntries(node *writerInode, inodeMeta *streamingMetaWriter, dirMeta *bufferedMetaWriter) int {
 	bytesWritten := 0
 
 	if len(node.entries) == 0 {
 		// Empty directory - no data to write.
 		// Size will be set to 3 (the squashfs convention) by the caller.
-		return 0, nil
+		return 0
 	}
 
 	currentIdx := 0
@@ -779,7 +779,7 @@ func (w *Writer) writeDirEntries(node *writerInode, inodeMeta *streamingMetaWrit
 			_ = binary.Write(entryBuf, binary.LittleEndian, int16(int32(child.ino)-int32(baseChild.ino)))
 			_ = binary.Write(entryBuf, binary.LittleEndian, child.fileType.Basic())
 			_ = binary.Write(entryBuf, binary.LittleEndian, uint16(len(child.name)-1))
-			_, _ = entryBuf.Write([]byte(child.name))
+			_, _ = entryBuf.WriteString(child.name)
 			n, _ := dirMeta.Write(entryBuf.Bytes())
 			bytesWritten += n
 		}
@@ -787,7 +787,7 @@ func (w *Writer) writeDirEntries(node *writerInode, inodeMeta *streamingMetaWrit
 		currentIdx = endIdx
 	}
 
-	return bytesWritten, nil
+	return bytesWritten
 }
 
 // writeInode writes a single inode to the streaming inode meta.
@@ -853,12 +853,12 @@ func (w *Writer) writeInode(node *writerInode, inodeMeta *streamingMetaWriter) e
 	case SymlinkType:
 		_ = binary.Write(buf, order, node.nlink)
 		_ = binary.Write(buf, order, uint32(len(node.symTarget)))
-		_, _ = buf.Write([]byte(node.symTarget))
+		_, _ = buf.WriteString(node.symTarget)
 
 	case XSymlinkType:
 		_ = binary.Write(buf, order, node.nlink)
 		_ = binary.Write(buf, order, uint32(len(node.symTarget)))
-		_, _ = buf.Write([]byte(node.symTarget))
+		_, _ = buf.WriteString(node.symTarget)
 		_ = binary.Write(buf, order, node.xattrIdx)
 
 	case CharDevType, BlockDevType:
@@ -897,7 +897,7 @@ func (w *Writer) buildIDTable() error {
 			w.idList = append(w.idList, inode.gid)
 		}
 	}
-	sort.Slice(w.idList, func(i, j int) bool { return w.idList[i] < w.idList[j] })
+	slices.Sort(w.idList)
 	for i, id := range w.idList {
 		w.idTable[id] = uint32(i)
 	}
@@ -914,10 +914,10 @@ func (w *Writer) writeIDTable() error {
 	blockStart := w.offset
 	header := make([]byte, 2)
 	binary.LittleEndian.PutUint16(header, uint16(len(idData))|0x8000) // Uncompressed
-	if err := w.write(header); err != nil {
+	if err := w.writeAll(header); err != nil {
 		return err
 	}
-	if err := w.write(idData); err != nil {
+	if err := w.writeAll(idData); err != nil {
 		return err
 	}
 
@@ -925,7 +925,7 @@ func (w *Writer) writeIDTable() error {
 	w.idTableStart = w.offset
 	pointer := make([]byte, 8)
 	binary.LittleEndian.PutUint64(pointer, blockStart)
-	return w.write(pointer)
+	return w.writeAll(pointer)
 }
 
 func (w *Writer) writeFileData() error {
@@ -933,7 +933,7 @@ func (w *Writer) writeFileData() error {
 	for p := range w.inodeMap {
 		paths = append(paths, p)
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 
 	blockSize := int(w.blockSize)
 
@@ -963,16 +963,16 @@ func (w *Writer) writeFileData() error {
 		tailSize := len(data) % blockSize
 
 		// Write full blocks
-		for i := 0; i < fullBlocks; i++ {
+		for i := range fullBlocks {
 			block := data[i*blockSize : (i+1)*blockSize]
 			compressed, _ := w.comp.compress(block)
 			if compressed != nil && len(compressed) < len(block) {
-				if err := w.write(compressed); err != nil {
+				if err := w.writeAll(compressed); err != nil {
 					return err
 				}
 				inode.dataBlocks = append(inode.dataBlocks, uint32(len(compressed)))
 			} else {
-				if err := w.write(block); err != nil {
+				if err := w.writeAll(block); err != nil {
 					return err
 				}
 				inode.dataBlocks = append(inode.dataBlocks, uint32(len(block))|0x01000000)
@@ -1029,12 +1029,12 @@ func (w *Writer) flushFragmentBlock() error {
 	compressed, _ := w.comp.compress(w.fragBuf)
 	var size uint32
 	if compressed != nil && len(compressed) < len(w.fragBuf) {
-		if err := w.write(compressed); err != nil {
+		if err := w.writeAll(compressed); err != nil {
 			return err
 		}
 		size = uint32(len(compressed))
 	} else {
-		if err := w.write(w.fragBuf); err != nil {
+		if err := w.writeAll(w.fragBuf); err != nil {
 			return err
 		}
 		size = uint32(len(w.fragBuf)) | 0x01000000
@@ -1053,6 +1053,35 @@ func (w *Writer) flushFragmentBlock() error {
 }
 
 // writeFragmentTable writes the fragment table and its indirect pointer table.
+
+// writeMetaBlocks writes data as squashfs metadata blocks (2-byte header plus
+// up-to-8KiB payload, compressed when that saves space) and returns the output
+// offset each block started at.
+func (w *Writer) writeMetaBlocks(data []byte) ([]uint64, error) {
+	var blockOffsets []uint64
+	for pos := 0; pos < len(data); pos += metaBlockSize {
+		end := min(pos+metaBlockSize, len(data))
+		block := data[pos:end]
+
+		blockOffsets = append(blockOffsets, w.offset)
+		compressed, _ := w.comp.compress(block)
+		header := make([]byte, 2)
+		payload := block
+		if compressed != nil && len(compressed) < len(block) {
+			binary.LittleEndian.PutUint16(header, uint16(len(compressed)))
+			payload = compressed
+		} else {
+			binary.LittleEndian.PutUint16(header, uint16(len(block))|0x8000)
+		}
+		if err := w.writeAll(header); err != nil {
+			return nil, err
+		}
+		if err := w.writeAll(payload); err != nil {
+			return nil, err
+		}
+	}
+	return blockOffsets, nil
+}
 func (w *Writer) writeFragmentTable() error {
 	if len(w.fragEntries) == 0 {
 		w.fragTableStart = 0xFFFFFFFFFFFFFFFF
@@ -1068,34 +1097,9 @@ func (w *Writer) writeFragmentTable() error {
 	}
 
 	// Write as compressed metadata blocks (8KB each), track block offsets
-	var blockOffsets []uint64
-	for pos := 0; pos < len(entryData); pos += metaBlockSize {
-		end := pos + metaBlockSize
-		if end > len(entryData) {
-			end = len(entryData)
-		}
-		block := entryData[pos:end]
-
-		blockOffsets = append(blockOffsets, w.offset)
-		compressed, _ := w.comp.compress(block)
-		header := make([]byte, 2)
-		if compressed != nil && len(compressed) < len(block) {
-			binary.LittleEndian.PutUint16(header, uint16(len(compressed)))
-			if err := w.write(header); err != nil {
-				return err
-			}
-			if err := w.write(compressed); err != nil {
-				return err
-			}
-		} else {
-			binary.LittleEndian.PutUint16(header, uint16(len(block))|0x8000)
-			if err := w.write(header); err != nil {
-				return err
-			}
-			if err := w.write(block); err != nil {
-				return err
-			}
-		}
+	blockOffsets, err := w.writeMetaBlocks(entryData)
+	if err != nil {
+		return err
 	}
 
 	// Write indirect pointer table
@@ -1103,7 +1107,7 @@ func (w *Writer) writeFragmentTable() error {
 	for _, off := range blockOffsets {
 		pointer := make([]byte, 8)
 		binary.LittleEndian.PutUint64(pointer, off)
-		if err := w.write(pointer); err != nil {
+		if err := w.writeAll(pointer); err != nil {
 			return err
 		}
 	}
@@ -1145,7 +1149,7 @@ func (w *Writer) collectXattrSets() []xattrSet {
 		for k := range inode.xattrs {
 			keys = append(keys, k)
 		}
-		sort.Strings(keys)
+		slices.Sort(keys)
 
 		for _, key := range keys {
 			val := inode.xattrs[key]
@@ -1155,7 +1159,7 @@ func (w *Writer) collectXattrSets() []xattrSet {
 			}
 			_ = binary.Write(&kvBuf, binary.LittleEndian, typ)
 			_ = binary.Write(&kvBuf, binary.LittleEndian, uint16(len(name)))
-			kvBuf.Write([]byte(name))
+			kvBuf.WriteString(name)
 			_ = binary.Write(&kvBuf, binary.LittleEndian, uint32(len(val)))
 			kvBuf.Write(val)
 			count++
@@ -1220,34 +1224,9 @@ func (w *Writer) writeXattrTable() error {
 		binary.LittleEndian.PutUint32(idData[i*16+12:], e.size)
 	}
 
-	var idBlockOffsets []uint64
-	for pos := 0; pos < len(idData); pos += metaBlockSize {
-		end := pos + metaBlockSize
-		if end > len(idData) {
-			end = len(idData)
-		}
-		block := idData[pos:end]
-
-		idBlockOffsets = append(idBlockOffsets, w.offset)
-		compressed, _ := w.comp.compress(block)
-		header := make([]byte, 2)
-		if compressed != nil && len(compressed) < len(block) {
-			binary.LittleEndian.PutUint16(header, uint16(len(compressed)))
-			if err := w.write(header); err != nil {
-				return err
-			}
-			if err := w.write(compressed); err != nil {
-				return err
-			}
-		} else {
-			binary.LittleEndian.PutUint16(header, uint16(len(block))|0x8000)
-			if err := w.write(header); err != nil {
-				return err
-			}
-			if err := w.write(block); err != nil {
-				return err
-			}
-		}
+	idBlockOffsets, err := w.writeMetaBlocks(idData)
+	if err != nil {
+		return err
 	}
 
 	// Write xattr table header
@@ -1255,25 +1234,25 @@ func (w *Writer) writeXattrTable() error {
 	// u64 kv_start
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, kvStart)
-	if err := w.write(buf); err != nil {
+	if err := w.writeAll(buf); err != nil {
 		return err
 	}
 	// u32 count
 	buf = make([]byte, 4)
 	binary.LittleEndian.PutUint32(buf, uint32(len(idEntries)))
-	if err := w.write(buf); err != nil {
+	if err := w.writeAll(buf); err != nil {
 		return err
 	}
 	// u32 unused
 	buf = make([]byte, 4)
-	if err := w.write(buf); err != nil {
+	if err := w.writeAll(buf); err != nil {
 		return err
 	}
 	// u64[] id block locations
 	for _, off := range idBlockOffsets {
 		buf := make([]byte, 8)
 		binary.LittleEndian.PutUint64(buf, off)
-		if err := w.write(buf); err != nil {
+		if err := w.writeAll(buf); err != nil {
 			return err
 		}
 	}
@@ -1282,14 +1261,14 @@ func (w *Writer) writeXattrTable() error {
 }
 
 func sortInodes(inodes []*writerInode) {
-	sort.Slice(inodes, func(i, j int) bool {
-		return inodes[i].name < inodes[j].name
+	slices.SortFunc(inodes, func(a, b *writerInode) int {
+		return strings.Compare(a.name, b.name)
 	})
 }
 
 func (w *Writer) buildSuperblock() {
 	blockLog := uint16(0)
-	for i := uint16(0); i < 32; i++ {
+	for i := range uint16(32) {
 		if (1 << i) == w.blockSize {
 			blockLog = i
 			break
@@ -1304,14 +1283,14 @@ func (w *Writer) buildSuperblock() {
 	w.sb.BlockLog = blockLog
 	w.sb.Flags = w.flags
 	if w.comp.onDisk() == LZ4 {
-		w.sb.Flags |= COMPRESSOR_OPTIONS
+		w.sb.Flags |= FlagCompressorOptions
 	}
-	w.sb.IdCount = uint16(len(w.idList))
+	w.sb.IDCount = uint16(len(w.idList))
 	w.sb.VMajor = 4
 	w.sb.VMinor = 0
 	w.sb.BytesUsed = w.bytesUsed
-	w.sb.IdTableStart = w.idTableStart
-	w.sb.XattrIdTableStart = w.xattrTableStart
+	w.sb.IDTableStart = w.idTableStart
+	w.sb.XattrIDTableStart = w.xattrTableStart
 	w.sb.InodeTableStart = w.inodeTableStart
 	w.sb.DirTableStart = w.dirTableStart
 	w.sb.FragTableStart = w.fragTableStart
