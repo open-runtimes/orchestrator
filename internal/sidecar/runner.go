@@ -369,6 +369,7 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 		if err == nil {
 			err = os.MkdirAll(target, 0o755)
 		}
+		start := time.Now()
 		if err == nil {
 			err = r.mounter.Mount(image, target, MountOpts{
 				Writable: m.Writable, SizeMiB: m.Size,
@@ -378,13 +379,13 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 			})
 		}
 		if err != nil {
-			r.emitArtifact(a, "failed", nil, err)
+			r.emitArtifact(a, "failed", nil, err, time.Since(start))
 			slog.With("artifactId", m.ID, "error", err).Error("Mount failed")
 			return fmt.Errorf("mount %s: %w", m.ID, err)
 		}
 
 		r.mounted = append(r.mounted, target)
-		r.emitArtifact(a, "success", nil, nil)
+		r.emitArtifact(a, "success", nil, nil, time.Since(start))
 		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out).Info("Mounted image")
 	}
 	return nil
@@ -426,15 +427,16 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 				cancel()
 				if err != nil {
 					err = fmt.Errorf("%s did not appear within %s of worker exit: %w", srcPath, time.Since(start).Round(time.Millisecond), err)
-					r.emitArtifact(a, "failed", nil, err)
+					r.emitArtifact(a, "failed", nil, err, time.Since(start))
 					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
 					return err
 				}
 			}
 		}
 
+		start := time.Now()
 		result := a.Apply(ctx, r.sharedVolumePath)
-		r.emitArtifact(a, result.Status, result.Content, result.Error)
+		r.emitArtifact(a, result.Status, result.Content, result.Error, time.Since(start))
 
 		logger := slog.With("artifactId", a.ArtifactID(), "type", a.ArtifactType(), "status", result.Status)
 		if result.Error != nil {
@@ -446,12 +448,13 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 	})
 }
 
-func (r *Runner) emitArtifact(a artifact.Artifact, status string, content any, err error) {
+func (r *Runner) emitArtifact(a artifact.Artifact, status string, content any, err error, duration time.Duration) {
 	report := job.ArtifactReport{
-		ID:      a.ArtifactID(),
-		Type:    a.ArtifactType(),
-		Status:  status,
-		Content: content,
+		ID:              a.ArtifactID(),
+		Type:            a.ArtifactType(),
+		Status:          status,
+		Content:         content,
+		DurationSeconds: duration.Seconds(),
 	}
 	if err != nil {
 		report.FailureReason = err.Error()

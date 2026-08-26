@@ -76,6 +76,10 @@ type ArtifactReport struct {
 	Status        string `json:"status"`
 	Content       any    `json:"content,omitempty"`
 	FailureReason string `json:"failureReason,omitempty"`
+	// DurationSeconds is how long the operation itself took (the download, the
+	// extraction, the mount) — not queueing or dependency waits. Consumers use
+	// it to attribute cold-start time per artifact without scraping logs.
+	DurationSeconds float64 `json:"durationSeconds,omitempty"`
 
 	CallbackURL    string            `json:"callbackUrl,omitempty"`
 	CallbackKey    string            `json:"callbackKey,omitempty"`
