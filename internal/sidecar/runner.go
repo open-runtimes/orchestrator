@@ -365,6 +365,7 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 		image := filepath.Join(r.sharedVolumePath, m.In)
 		target := filepath.Join(r.sharedVolumePath, m.Out)
 
+		start := time.Now()
 		err := r.waitForPath(ctx, image)
 		if err == nil {
 			err = os.MkdirAll(target, 0o755)
@@ -378,13 +379,13 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 			})
 		}
 		if err != nil {
-			r.emitArtifact(a, "failed", nil, err)
+			r.emitArtifact(a, "failed", nil, start, err)
 			slog.With("artifactId", m.ID, "error", err).Error("Mount failed")
 			return fmt.Errorf("mount %s: %w", m.ID, err)
 		}
 
 		r.mounted = append(r.mounted, target)
-		r.emitArtifact(a, "success", nil, nil)
+		r.emitArtifact(a, "success", nil, start, nil)
 		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out).Info("Mounted image")
 	}
 	return nil
@@ -411,6 +412,7 @@ type s3Configurable interface {
 
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
+		start := time.Now()
 		if c, ok := a.(s3Configurable); ok {
 			c.SetS3Credentials(r.s3)
 		}
@@ -420,13 +422,12 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 				// In Run() the parent ctx carries the job timeout, so the
 				// actual window is min(remaining job time, grace) — report the
 				// measured wait, not the configured grace.
-				start := time.Now()
 				waitCtx, cancel := context.WithTimeout(ctx, r.postFileGrace)
 				err := r.waitForPath(waitCtx, fullPath)
 				cancel()
 				if err != nil {
 					err = fmt.Errorf("%s did not appear within %s of worker exit: %w", srcPath, time.Since(start).Round(time.Millisecond), err)
-					r.emitArtifact(a, "failed", nil, err)
+					r.emitArtifact(a, "failed", nil, start, err)
 					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
 					return err
 				}
@@ -434,7 +435,7 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 		}
 
 		result := a.Apply(ctx, r.sharedVolumePath)
-		r.emitArtifact(a, result.Status, result.Content, result.Error)
+		r.emitArtifact(a, result.Status, result.Content, start, result.Error)
 
 		logger := slog.With("artifactId", a.ArtifactID(), "type", a.ArtifactType(), "status", result.Status)
 		if result.Error != nil {
@@ -446,12 +447,13 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 	})
 }
 
-func (r *Runner) emitArtifact(a artifact.Artifact, status string, content any, err error) {
+func (r *Runner) emitArtifact(a artifact.Artifact, status string, content any, start time.Time, err error) {
 	report := job.ArtifactReport{
-		ID:      a.ArtifactID(),
-		Type:    a.ArtifactType(),
-		Status:  status,
-		Content: content,
+		ID:              a.ArtifactID(),
+		Type:            a.ArtifactType(),
+		Status:          status,
+		Content:         content,
+		DurationSeconds: time.Since(start).Seconds(),
 	}
 	if err != nil {
 		report.FailureReason = err.Error()
