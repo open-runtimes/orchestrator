@@ -57,13 +57,14 @@ func (b *EventBuilder) BuildStartEvent() *cloudevent.Event {
 }
 
 // BuildArtifactEvent creates an artifact event.
-func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status string, content any, err error) *cloudevent.Event {
+func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status string, content any, durationSeconds float64, err error) *cloudevent.Event {
 	data := map[string]any{
-		"jobId":        b.subject,
-		"artifactId":   artifactID,
-		"artifactType": artifactType,
-		"status":       status,
-		"meta":         b.meta,
+		"jobId":           b.subject,
+		"artifactId":      artifactID,
+		"artifactType":    artifactType,
+		"status":          status,
+		"durationSeconds": durationSeconds,
+		"meta":            b.meta,
 	}
 	if content != nil {
 		data["content"] = content

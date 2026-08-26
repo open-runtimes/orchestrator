@@ -56,7 +56,7 @@ X-Signature-256: sha256=ab12...
 | --- | --- | --- |
 | `orchestrator.job.start` | Worker container started | `{"jobId", "meta"}` |
 | `orchestrator.job.log` | Batch of stdout/stderr lines | `{"jobId", "lines": [...], "stream": "stdout\|stderr", "meta"}` |
-| `orchestrator.job.artifact` | One artifact finished | `{"jobId", "artifactId", "artifactType", "status": "success\|failed", "content", "error", "meta"}` |
+| `orchestrator.job.artifact` | One artifact finished | `{"jobId", "artifactId", "artifactType", "status": "success\|failed", "content", "durationSeconds", "error", "meta"}` |
 | `orchestrator.job.exit` | Worker exited | `{"jobId", "exitCode", "reason", "image", "durationSeconds", "error", "meta"}` |
 | `orchestrator.job.complete` | Post-job artifacts finished | `{"jobId", "meta"}` |
 

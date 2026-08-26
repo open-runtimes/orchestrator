@@ -77,6 +77,8 @@ type ArtifactReport struct {
 	Content       any    `json:"content,omitempty"`
 	FailureReason string `json:"failureReason,omitempty"`
 
+	DurationSeconds float64 `json:"durationSeconds"`
+
 	CallbackURL    string            `json:"callbackUrl,omitempty"`
 	CallbackKey    string            `json:"callbackKey,omitempty"`
 	CallbackEvents []string          `json:"callbackEvents,omitempty"`
