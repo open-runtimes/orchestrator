@@ -10,8 +10,9 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/pierrec/lz4/v4"
 	"orchestrator/internal/erofs/disk"
+
+	"github.com/pierrec/lz4/v4"
 )
 
 // CompressionOptions configures z_erofs compressed output. Compressed images
@@ -196,10 +197,8 @@ func (fsys *Writer) compressAll() error {
 	}
 	jobs := make(chan *fileJob)
 	var wg sync.WaitGroup
-	for w := 0; w < z.workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range z.workers {
+		wg.Go(func() {
 			compress := z.newCompressor()
 			var finalize func(src, dst []byte) (int, error)
 			if z.newFinalizer != nil {
@@ -211,7 +210,7 @@ func (fsys *Writer) compressAll() error {
 				spans, err := z.packBuffer(job.buf, compress, finalize, &probe, &kept)
 				job.res <- fileResult{spans: spans, err: err}
 			}
-		}()
+		})
 	}
 	defer func() {
 		close(jobs)
@@ -472,7 +471,7 @@ func (z *zState) packSpan(compress func(src, dst []byte) (int, error), window []
 		if n < pc {
 			n = min(pc, len(window))
 		}
-		if aligned := n &^ (bs - 1); aligned > 0 && !(final && n == len(window)) {
+		if aligned := n &^ (bs - 1); aligned > 0 && (!final || n != len(window)) {
 			n = aligned
 		}
 		return n
@@ -487,7 +486,7 @@ func (z *zState) packSpan(compress func(src, dst []byte) (int, error), window []
 	// tooBig == 0 means no overflowing candidate seen yet.
 	cand := clamp(int(float64(pc) / max(*ratio, 0.02) * 0.98))
 	best, bestLen, tooBig := 0, 0, 0
-	for try := 0; try < 5; try++ {
+	for range 5 {
 		n, err := compress(window[:cand], *probe)
 		if err != nil {
 			return 0, nil, err
@@ -585,7 +584,7 @@ func (z *zState) storeSpanKeyed(span, comp []byte, key [sha256.Size]byte) (zExte
 		out := make([]byte, len(span))
 		n, err := lz4.UncompressBlock(comp, out)
 		if err != nil || n != len(span) || !bytes.Equal(out[:n], span) {
-			return zExtent{}, fmt.Errorf("erofs: self-check failed: span=%d comp=%d decoded=%d err=%v", len(span), len(comp), n, err)
+			return zExtent{}, fmt.Errorf("erofs: self-check failed: span=%d comp=%d decoded=%d err=%w", len(span), len(comp), n, err)
 		}
 	}
 	if z.dedupe != nil {
@@ -699,7 +698,7 @@ func (w *erofsWriter) writeZTrailing(buf io.Writer, e *erofsEntry) (int, error) 
 		if ext.plain {
 			// Raw blocks map one lcluster each. A partial final block is
 			// simply short; PLAIN ("shifted") extents copy literally.
-			for i := 0; i < ext.lclusters; i++ {
+			for i := range ext.lclusters {
 				if err := emit(zLclusterPlain, 0, blkaddr+uint32(i)); err != nil {
 					return written, err
 				}
@@ -803,7 +802,7 @@ func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
 	var readErr error
 	go func() {
 		defer close(jobs)
-		for idx := 0; idx < segments; idx++ {
+		for idx := range segments {
 			inflight <- struct{}{}
 			segLen := int(min(zSegmentSize, size-uint64(idx)*zSegmentSize))
 			buf := make([]byte, segLen)
@@ -817,10 +816,8 @@ func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
 	}()
 
 	var wg sync.WaitGroup
-	for w := 0; w < z.workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range z.workers {
+		wg.Go(func() {
 			compress := z.newCompressor()
 			var finalize func(src, dst []byte) (int, error)
 			if z.newFinalizer != nil {
@@ -854,12 +851,12 @@ func (z *zState) compressParallel(r io.Reader, size uint64) (*zInfo, error) {
 				}
 				results[job.idx] <- packedSegment{spans: spans, err: err}
 			}
-		}()
+		})
 	}
 
 	zi := &zInfo{}
 	var firstErr error
-	for idx := 0; idx < segments; idx++ {
+	for idx := range segments {
 		res := <-results[idx]
 		<-inflight
 		if res.err != nil && firstErr == nil {

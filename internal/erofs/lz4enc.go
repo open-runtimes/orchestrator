@@ -118,13 +118,14 @@ func (e *lz4HCEncoder) widerMatch(src []byte, i, minStart int) (int, int, int) {
 	first := load32(src, i)
 	for attempts := lz4Attempts; attempts > 0 && cand >= 0 && cand >= limit; attempts-- {
 		// Cheap rejects: the 16-bit hash collides often, so filter on the
-		// real 4-byte prefix; a candidate with no backward potential must
-		// extend past the best match's endpoint to matter; then skip the
-		// backward byte loop unless the forward part can possibly win.
-		if bestLen > 0 && (cand == 0 || src[cand-1] != src[i-1]) &&
-			(i+bestLen >= srcEnd || src[cand+bestLen] != src[i+bestLen]) {
-			// cannot beat bestLen forwards and cannot extend backwards
-		} else if load32(src, cand) == first {
+		// real 4-byte prefix; and a candidate with no backward potential
+		// must extend past the best match's endpoint to matter.
+		viable := bestLen == 0 || (cand != 0 && src[cand-1] == src[i-1]) ||
+			(i+bestLen < srcEnd && src[cand+bestLen] == src[i+bestLen])
+		// Kept inline rather than extracted: this is the encoder's hottest
+		// loop and the body has loops of its own, so a helper cannot inline
+		// (measured ~3% on whole-image builds).
+		if viable && load32(src, cand) == first {
 			fwd := matchLen(src[cand:min(cand+srcEnd-i, srcEnd)], src[i:srcEnd])
 			if fwd >= lz4MinMatch && fwd+maxBack > bestLen {
 				back := 0
@@ -236,7 +237,7 @@ func (e *lz4HCEncoder) emitTail(src, dst []byte, d, anchor int) (int, error) {
 	if d+need > len(dst) {
 		return 0, nil
 	}
-	token := byte(0)
+	var token byte
 	if lit >= 15 {
 		token = 15 << 4
 	} else {

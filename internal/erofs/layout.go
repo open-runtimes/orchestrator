@@ -1,9 +1,9 @@
 package erofs
 
 import (
-	"sort"
-
 	"orchestrator/internal/erofs/disk"
+	"slices"
+	"strings"
 )
 
 // planLayout assigns NIDs and determines trailing data sizes for all entries.
@@ -16,8 +16,8 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 	walk = func(e *erofsEntry) {
 		w.entries = append(w.entries, e)
 		if e.mode&disk.StatTypeMask == disk.StatTypeDir {
-			sort.Slice(e.children, func(i, j int) bool {
-				return e.children[i].name < e.children[j].name
+			slices.SortFunc(e.children, func(a, b *erofsEntry) int {
+				return strings.Compare(a.name, b.name)
 			})
 			for _, c := range e.children {
 				walk(c)
@@ -185,7 +185,7 @@ func direntNames(e *erofsEntry) []string {
 	for _, c := range e.children {
 		names = append(names, c.name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

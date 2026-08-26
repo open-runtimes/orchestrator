@@ -68,10 +68,7 @@ func (m *streamingMetaWriter) Write(data []byte) (int, error) {
 			remaining = metaBlockSize
 		}
 
-		toWrite := len(data)
-		if toWrite > remaining {
-			toWrite = remaining
-		}
+		toWrite := min(len(data), remaining)
 
 		n, err := m.current.Write(data[:toWrite])
 		if err != nil {
@@ -171,9 +168,7 @@ func (m *bufferedMetaWriter) Position() (physOffset uint64, offset uint16) {
 	// If current block is full, the next write will trigger a flush.
 	// We need to flush now to know the correct physical offset for the next write.
 	if m.current.Len() == metaBlockSize {
-		// flushBlock only fails on compression errors which shouldn't happen
-		// for valid data. If it does fail, physicalOffset will be stale.
-		_ = m.flushBlock()
+		m.flushBlock()
 	}
 	return m.physicalOffset, uint16(m.current.Len())
 }
@@ -185,16 +180,11 @@ func (m *bufferedMetaWriter) Write(data []byte) (int, error) {
 		remaining := metaBlockSize - m.current.Len()
 		if remaining == 0 {
 			// Current block is full, compress and store it
-			if err := m.flushBlock(); err != nil {
-				return written, err
-			}
+			m.flushBlock()
 			remaining = metaBlockSize
 		}
 
-		toWrite := len(data)
-		if toWrite > remaining {
-			toWrite = remaining
-		}
+		toWrite := min(len(data), remaining)
 
 		n, err := m.current.Write(data[:toWrite])
 		if err != nil {
@@ -207,9 +197,9 @@ func (m *bufferedMetaWriter) Write(data []byte) (int, error) {
 }
 
 // flushBlock compresses the current block and adds it to the buffer.
-func (m *bufferedMetaWriter) flushBlock() error {
+func (m *bufferedMetaWriter) flushBlock() {
 	if m.current.Len() == 0 {
-		return nil
+		return
 	}
 
 	blockData := m.current.Bytes()
@@ -236,7 +226,6 @@ func (m *bufferedMetaWriter) flushBlock() error {
 
 	// Reset current buffer
 	m.current = bytes.NewBuffer(make([]byte, 0, metaBlockSize))
-	return nil
 }
 
 // WriteToOutput writes all buffered blocks to the output.
@@ -244,9 +233,7 @@ func (m *bufferedMetaWriter) flushBlock() error {
 func (m *bufferedMetaWriter) WriteToOutput(w io.Writer) (uint64, error) {
 	// Flush any remaining data
 	if m.current.Len() > 0 {
-		if err := m.flushBlock(); err != nil {
-			return 0, err
-		}
+		m.flushBlock()
 	}
 
 	var totalSize uint64

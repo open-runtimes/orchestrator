@@ -7,7 +7,8 @@ import (
 	"io"
 	"math"
 	"os"
-	"sort"
+	"slices"
+	"strings"
 
 	"orchestrator/internal/erofs/disk"
 )
@@ -339,27 +340,11 @@ func (w *erofsWriter) writeMetadataInodes(buf io.Writer) error {
 		// Write trailing data
 		switch e.mode & disk.StatTypeMask {
 		case disk.StatTypeReg:
-			if e.layout == disk.LayoutCompressedFull {
-				n, err := w.writeZTrailing(buf, e)
-				if err != nil {
-					return fmt.Errorf("write compressed indexes for %s: %w", e.path, err)
-				}
-				metaStart += n
-			} else if e.layout == disk.LayoutChunkBased && (e.size > 0 || len(e.chunks) > 0) {
-				if err := w.writeChunkIndexes(buf, e); err != nil {
-					return fmt.Errorf("write chunks for %s: %w", e.path, err)
-				}
-				metaStart += e.trailingSize
-			} else if e.layout == disk.LayoutFlatInline && e.size > 0 && e.data != nil {
-				n, err := io.CopyBuffer(onlyWriter{buf}, io.LimitReader(e.data, int64(e.size)), w.copyBuf)
-				if c, ok := e.data.(io.Closer); ok {
-					_ = c.Close()
-				}
-				if err != nil {
-					return fmt.Errorf("write inline data for %s: %w", e.path, err)
-				}
-				metaStart += int(n)
+			n, err := w.writeRegTrailing(buf, e)
+			if err != nil {
+				return err
 			}
+			metaStart += n
 		case disk.StatTypeDir:
 			if e.layout == disk.LayoutFlatInline {
 				n, err := w.writeDirents(buf, e)
@@ -401,6 +386,36 @@ func (w *erofsWriter) writeMetadataInodes(buf io.Writer) error {
 	}
 
 	return nil
+}
+
+// writeRegTrailing writes a regular file's trailing metadata — compressed
+// lcluster indexes, chunk indexes, or inline data, depending on layout — and
+// returns the bytes written.
+func (w *erofsWriter) writeRegTrailing(buf io.Writer, e *erofsEntry) (int, error) {
+	switch {
+	case e.layout == disk.LayoutCompressedFull:
+		n, err := w.writeZTrailing(buf, e)
+		if err != nil {
+			return 0, fmt.Errorf("write compressed indexes for %s: %w", e.path, err)
+		}
+		return n, nil
+	case e.layout == disk.LayoutChunkBased && (e.size > 0 || len(e.chunks) > 0):
+		if err := w.writeChunkIndexes(buf, e); err != nil {
+			return 0, fmt.Errorf("write chunks for %s: %w", e.path, err)
+		}
+		return e.trailingSize, nil
+	case e.layout == disk.LayoutFlatInline && e.size > 0 && e.data != nil:
+		n, err := io.CopyBuffer(onlyWriter{buf}, io.LimitReader(e.data, int64(e.size)), w.copyBuf)
+		if c, ok := e.data.(io.Closer); ok {
+			_ = c.Close()
+		}
+		if err != nil {
+			return 0, fmt.Errorf("write inline data for %s: %w", e.path, err)
+		}
+		return int(n), nil
+	default:
+		return 0, nil
+	}
 }
 
 func (w *erofsWriter) writeInode(buf io.Writer, e *erofsEntry) error {
@@ -516,7 +531,7 @@ func (w *erofsWriter) writeChunkIndexes(buf io.Writer, e *erofsEntry) error {
 		var scratch [disk.SizeChunkIndex]byte
 		ci := 0   // index into source chunks
 		coff := 0 // block offset within current source chunk
-		for n := 0; n < nchunks; n++ {
+		for range nchunks {
 			if ci >= len(e.chunks) {
 				if _, err := buf.Write(nullIdx[:]); err != nil {
 					return err
@@ -538,7 +553,7 @@ func (w *erofsWriter) writeChunkIndexes(buf io.Writer, e *erofsEntry) error {
 			}
 		}
 	} else {
-		for n := 0; n < nchunks; n++ {
+		for range nchunks {
 			if _, err := buf.Write(nullIdx[:]); err != nil {
 				return err
 			}
@@ -569,8 +584,8 @@ func (w *erofsWriter) writeDirents(buf io.Writer, e *erofsEntry) (int, error) {
 			fileType: c.erofsFileType,
 		})
 	}
-	sort.Slice(allEnts, func(i, j int) bool {
-		return allEnts[i].name < allEnts[j].name
+	slices.SortFunc(allEnts, func(a, b direntInfo) int {
+		return strings.Compare(a.name, b.name)
 	})
 
 	totalWritten := 0

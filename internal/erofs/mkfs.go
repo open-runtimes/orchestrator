@@ -1,13 +1,14 @@
 package erofs
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"math/bits"
 	"os"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -167,7 +168,7 @@ func WithTempDir(dir string) CreateOpt {
 func (fsys *Writer) Create(name string) (*File, error) {
 	name = cleanPath(name)
 	if name == "/" {
-		return nil, fmt.Errorf("mkfs: cannot create file at root")
+		return nil, errors.New("mkfs: cannot create file at root")
 	}
 	if err := fsys.checkPath(name); err != nil {
 		return nil, err
@@ -228,7 +229,7 @@ func (fsys *Writer) Mkdir(name string, perm fs.FileMode) error {
 func (fsys *Writer) Symlink(oldname, newname string) error {
 	newname = cleanPath(newname)
 	if newname == "/" {
-		return fmt.Errorf("mkfs: cannot create symlink at root")
+		return errors.New("mkfs: cannot create symlink at root")
 	}
 	if err := fsys.checkPath(newname); err != nil {
 		return err
@@ -251,7 +252,7 @@ func (fsys *Writer) Symlink(oldname, newname string) error {
 func (fsys *Writer) Mknod(name string, mode uint16, rdev uint32) error {
 	name = cleanPath(name)
 	if name == "/" {
-		return fmt.Errorf("mkfs: cannot mknod at root")
+		return errors.New("mkfs: cannot mknod at root")
 	}
 	if err := fsys.checkPath(name); err != nil {
 		return err
@@ -295,7 +296,7 @@ func (fsys *Writer) Chown(name string, uid, gid int) error {
 
 // Chtimes sets the access and modification times on the named path.
 // EROFS only stores mtime; atime is retained for read-back before Close.
-func (fsys *Writer) Chtimes(name string, atime time.Time, mtime time.Time) error {
+func (fsys *Writer) Chtimes(name string, atime, mtime time.Time) error {
 	e, err := fsys.lookup(name)
 	if err != nil {
 		return err
@@ -512,7 +513,7 @@ func (fsys *Writer) CopyFrom(src fs.FS, opts ...CopyOpt) error {
 // Close writes the EROFS image. The FS must not be used after Close.
 func (fsys *Writer) Close() error {
 	if fsys.closed {
-		return fmt.Errorf("mkfs: FS already closed")
+		return errors.New("mkfs: FS already closed")
 	}
 	fsys.closed = true
 
@@ -535,7 +536,7 @@ func (fsys *Writer) Close() error {
 
 	if fsys.compression != nil {
 		if fsys.dataFile != nil || len(fsys.devices) > 0 {
-			return fmt.Errorf("erofs: compression is not supported with external data files or extra devices")
+			return errors.New("erofs: compression is not supported with external data files or extra devices")
 		}
 		z, err := newZState(*fsys.compression, fsys.resolveBlockSize(), fsys.tempDir)
 		if err != nil {
@@ -602,7 +603,7 @@ func (fsys *Writer) Open(name string) (fs.File, error) {
 
 	case disk.StatTypeReg:
 		if !e.fileClosed {
-			return nil, &fs.PathError{Op: "open", Path: name, Err: fmt.Errorf("file not yet closed for writing")}
+			return nil, &fs.PathError{Op: "open", Path: name, Err: errors.New("file not yet closed for writing")}
 		}
 		var sr *io.SectionReader
 		if fsys.dataFile != nil {
@@ -623,7 +624,7 @@ func (fsys *Writer) Open(name string) (fs.File, error) {
 // Write appends data to the file.
 func (f *File) Write(p []byte) (int, error) {
 	if f.closed {
-		return 0, fmt.Errorf("mkfs: write to closed file")
+		return 0, errors.New("mkfs: write to closed file")
 	}
 
 	if f.fs.dataFile != nil {
@@ -666,7 +667,7 @@ func (f *File) ReadFrom(r io.Reader) (int64, error) {
 // boundary and records chunk indexes.
 func (f *File) Close() error {
 	if f.closed {
-		return fmt.Errorf("mkfs: file already closed")
+		return errors.New("mkfs: file already closed")
 	}
 	f.closed = true
 	f.entry.fileClosed = true
@@ -826,7 +827,7 @@ func cleanPath(p string) string {
 
 // fixParentNids sets the parent NID in the ".." dirent for all directories.
 // This must be called after planLayout has assigned NIDs.
-func fixParentNids(e *erofsEntry, parent *erofsEntry) {
+func fixParentNids(e, parent *erofsEntry) {
 	e.parentNid = parent.nid
 	for _, c := range e.children {
 		if c.mode&disk.StatTypeMask == disk.StatTypeDir {
@@ -875,7 +876,7 @@ func (f *readFile) Stat() (fs.FileInfo, error) {
 
 func (f *readFile) Read(p []byte) (int, error) {
 	if f.closed {
-		return 0, fmt.Errorf("mkfs: read from closed file")
+		return 0, errors.New("mkfs: read from closed file")
 	}
 	if f.reader == nil {
 		return 0, io.EOF
@@ -885,7 +886,7 @@ func (f *readFile) Read(p []byte) (int, error) {
 
 func (f *readFile) Close() error {
 	if f.closed {
-		return fmt.Errorf("mkfs: file already closed")
+		return errors.New("mkfs: file already closed")
 	}
 	f.closed = true
 	return nil
@@ -905,12 +906,12 @@ func (d *readDir) Stat() (fs.FileInfo, error) {
 }
 
 func (d *readDir) Read([]byte) (int, error) {
-	return 0, &fs.PathError{Op: "read", Path: d.entry.path, Err: fmt.Errorf("is a directory")}
+	return 0, &fs.PathError{Op: "read", Path: d.entry.path, Err: errors.New("is a directory")}
 }
 
 func (d *readDir) Close() error {
 	if d.closed {
-		return fmt.Errorf("mkfs: dir already closed")
+		return errors.New("mkfs: dir already closed")
 	}
 	d.closed = true
 	return nil
@@ -918,7 +919,7 @@ func (d *readDir) Close() error {
 
 func (d *readDir) ReadDir(n int) ([]fs.DirEntry, error) {
 	if d.closed {
-		return nil, fmt.Errorf("mkfs: read from closed dir")
+		return nil, errors.New("mkfs: read from closed dir")
 	}
 	if d.children == nil {
 		d.children = d.collectChildren()
@@ -953,8 +954,8 @@ func (d *readDir) collectChildren() []fs.DirEntry {
 		}
 		children = append(children, &dirEntry{entry: e})
 	}
-	sort.Slice(children, func(i, j int) bool {
-		return children[i].Name() < children[j].Name()
+	slices.SortFunc(children, func(a, b fs.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
 	})
 	return children
 }
@@ -1081,7 +1082,7 @@ func (fsys *Writer) add(p string, info fs.FileInfo) error {
 // checkPath validates that a path hasn't already been registered.
 func (fsys *Writer) checkPath(name string) error {
 	if fsys.closed {
-		return fmt.Errorf("mkfs: FS is closed")
+		return errors.New("mkfs: FS is closed")
 	}
 	if _, ok := fsys.byPath[name]; ok {
 		return fmt.Errorf("mkfs: duplicate path %q", name)
@@ -1207,8 +1208,8 @@ func (fsys *Writer) buildErofsTree() *erofsEntry {
 		}
 
 		// Sort children for deterministic output.
-		sort.Slice(cur.er.children, func(i, j int) bool {
-			return cur.er.children[i].name < cur.er.children[j].name
+		slices.SortFunc(cur.er.children, func(a, b *erofsEntry) int {
+			return strings.Compare(a.name, b.name)
 		})
 	}
 	return rootEr
@@ -1347,10 +1348,7 @@ func (f *File) closeDataFile() error {
 	totalBlocks := (uint64(f.written) + uint64(f.fs.resolveBlockSize()) - 1) / uint64(f.fs.resolveBlockSize())
 
 	for totalBlocks > 0 {
-		count := totalBlocks
-		if count > 65535 {
-			count = 65535
-		}
+		count := min(totalBlocks, 65535)
 		f.entry.chunks = append(f.entry.chunks, builder.Chunk{
 			PhysicalBlock: startBlock,
 			Count:         uint16(count),
