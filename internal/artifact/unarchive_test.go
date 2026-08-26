@@ -811,3 +811,119 @@ func TestUnarchive_Apply_HardLinkHonoursStrip(t *testing.T) {
 		t.Fatalf("hard link content = %q", content)
 	}
 }
+
+// tarEntry is an archive entry with a defined position in the stream; several
+// attacks depend on ordering, which a map cannot express.
+type tarEntry struct {
+	name     string
+	typeflag byte
+	body     string // contents for a regular file, link target otherwise
+}
+
+func createOrderedArchive(t *testing.T, archiveIn string, entries []tarEntry) {
+	t.Helper()
+
+	file, err := os.Create(archiveIn)
+	if err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+	defer file.Close()
+
+	gzWriter := gzip.NewWriter(file)
+	defer gzWriter.Close()
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	for _, e := range entries {
+		header := &tar.Header{Name: e.name, Mode: 0o644, Typeflag: e.typeflag}
+		switch e.typeflag {
+		case tar.TypeReg:
+			header.Size = int64(len(e.body))
+		default:
+			header.Linkname = e.body
+			header.Mode = 0o777
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatalf("header %s: %v", e.name, err)
+		}
+		if e.typeflag == tar.TypeReg {
+			if _, err := tarWriter.Write([]byte(e.body)); err != nil {
+				t.Fatalf("write %s: %v", e.name, err)
+			}
+		}
+	}
+}
+
+// `b -> .`, then `a -> b/../pwned`, then a regular file named `a`. Lexical
+// cleaning cancels `b/..` and hides the escape, so the symlink is accepted and
+// the file write follows it out of the destination. Order is the whole attack.
+func TestUnarchive_Apply_RejectsSymlinkChainThroughParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "b", typeflag: tar.TypeSymlink, body: "."},
+		{name: "a", typeflag: tar.TypeSymlink, body: "b/../pwned"},
+		{name: "a", typeflag: tar.TypeReg, body: "payload"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a symlink chain, got %v", result.Status)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "pwned")); err == nil {
+		t.Fatal("write escaped the destination")
+	}
+}
+
+// A regular file must replace a symlink sitting at its name rather than being
+// written through it.
+func TestUnarchive_Apply_ReplacesSymlinkWithRegularFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"target.txt": "original", "link.txt": "replacement"},
+		map[string]string{"link.txt": "target.txt"},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+	// The symlink's target must be untouched by the later regular-file entry.
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "target.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("write followed the symlink: target.txt = %q", content)
+	}
+}
+
+// A hard link whose source is missing must fail before replacing anything.
+func TestUnarchive_Apply_MissingHardLinkSourceKeepsDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	out := filepath.Join(tmpDir, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(out, "keep.txt")
+	if err := os.WriteFile(existing, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn, nil, nil, map[string]string{"keep.txt": "never/written.js"})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a missing hard link source, got %v", result.Status)
+	}
+	content, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("destination destroyed by a failed hard link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+}

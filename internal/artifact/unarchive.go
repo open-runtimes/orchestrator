@@ -109,7 +109,7 @@ func mkdirAllInRoot(root, dir string) error {
 	}
 
 	current := filepath.Clean(root)
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		current = filepath.Join(current, part)
 		info, err := os.Lstat(current)
 		switch {
@@ -140,17 +140,28 @@ func mkdirAllInRoot(root, dir string) error {
 // chain like `a -> .` followed by `a/x -> ../escape`, where the lexical parent
 // and the resolved one disagree.
 func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string) error {
+	// Resolved, because the walk below resolves too and the two have to be
+	// comparable — on macOS a temp dir under /var really lives in /private/var.
 	root := filepath.Clean(destDir)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 
 	if header.Typeflag == tar.TypeLink {
-		if !underRoot(hardLinkSource, root) {
+		if !underRoot(resolveWalking(destDir, relativeTo(destDir, hardLinkSource)), root) {
 			return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
+		}
+		// The source has to exist before anything is replaced: a hard link
+		// whose source comes later in the stream (or never) would otherwise
+		// delete the destination and then fail.
+		if _, err := os.Lstat(hardLinkSource); err != nil {
+			return fmt.Errorf("hard link source not found in archive: %s -> %s", header.Name, header.Linkname)
 		}
 	} else {
 		if filepath.IsAbs(header.Linkname) {
 			return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
 		}
-		if !underRoot(filepath.Join(filepath.Dir(targetPath), header.Linkname), root) {
+		if !underRoot(resolveWalking(filepath.Dir(targetPath), header.Linkname), root) {
 			return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
 		}
 	}
@@ -175,6 +186,46 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string)
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}
 	return nil
+}
+
+// resolveWalking follows name from base one component at a time, resolving any
+// symlink it lands on before taking the next step.
+//
+// filepath.Join cannot be used for this: it cleans lexically, so `b/../x`
+// collapses to `x` before anything notices that `b` is a symlink pointing
+// somewhere else — which is precisely how a chain of links escapes a
+// lexical containment check. Walking makes the escape visible.
+func resolveWalking(base, name string) string {
+	current := base
+	if resolved, err := filepath.EvalSymlinks(current); err == nil {
+		current = resolved
+	}
+
+	for part := range strings.SplitSeq(filepath.ToSlash(name), "/") {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+		default:
+			current = filepath.Join(current, part)
+		}
+		// Only an existing component can be resolved; the last one usually is
+		// not there yet, and an unresolvable component is judged as written.
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			current = resolved
+		}
+	}
+	return current
+}
+
+// relativeTo expresses path relative to base, for feeding back into a walk.
+func relativeTo(base, path string) string {
+	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(path))
+	if err != nil {
+		return path
+	}
+	return rel
 }
 
 // underRoot reports whether candidate is root itself or sits beneath it.
@@ -363,6 +414,15 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 		case tar.TypeReg:
 			if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
 				return &Result{Status: "failed", Error: err}
+			}
+
+			// A symlink already sitting at this name must be replaced, never
+			// written through: OpenFile follows it, so an earlier entry could
+			// otherwise redirect this write out of the destination.
+			if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				if err := os.Remove(targetPath); err != nil {
+					return &Result{Status: "failed", Error: fmt.Errorf("failed to replace symlink: %w", err)}
+				}
 			}
 
 			mode := extractMode(os.FileMode(header.Mode))
