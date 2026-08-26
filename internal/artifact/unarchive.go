@@ -91,6 +91,65 @@ func (a *Unarchive) ArtifactID() string   { return a.ID }
 func (a *Unarchive) ArtifactType() string { return "unarchive" }
 func (a *Unarchive) DependsOn() string    { return a.Depends }
 
+// extractLink recreates a symlink or hard link from the archive, refusing any
+// whose target escapes destDir. A symlink target is interpreted relative to the
+// link's own directory (an absolute target is resolved inside destDir, never on
+// the host), so a tree of relative links — a pnpm node_modules, say — is
+// reproduced exactly while `../../..` cannot reach out of the workspace.
+func extractLink(header *tar.Header, targetPath, destDir string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), extractDirMode); err != nil {
+		return fmt.Errorf("failed to create parent directory: %w", err)
+	}
+	// A re-extraction over an existing tree must not fail on a link that is
+	// already there; the archive is the source of truth for what it points at.
+	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to replace existing entry: %w", err)
+	}
+
+	// Compared lexically against destDir: both the root and the resolved target
+	// are built from it, so an evaluated root (which may differ, e.g. /var vs
+	// /private/var) would not line up.
+	root := filepath.Clean(destDir)
+
+	if header.Typeflag == tar.TypeLink {
+		// Hard link targets name another entry in the archive, always relative
+		// to its root, so they resolve against destDir.
+		source := filepath.Join(destDir, filepath.Clean("/"+header.Linkname))
+		if !underRoot(source, root) {
+			return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
+		}
+		if err := os.Link(source, targetPath); err != nil {
+			return fmt.Errorf("failed to create hard link: %w", err)
+		}
+		return nil
+	}
+
+	// An absolute target is rejected rather than rewritten: the link is written
+	// with the archive's own linkname, so "containing" it by validating a
+	// rewritten path would still plant a pointer outside the workspace. Build
+	// tooling (pnpm, npm) only ever emits relative links.
+	if filepath.IsAbs(header.Linkname) {
+		return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	if !underRoot(filepath.Join(filepath.Dir(targetPath), header.Linkname), root) {
+		return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+
+	if err := os.Symlink(header.Linkname, targetPath); err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+	return nil
+}
+
+// underRoot reports whether candidate is root itself or sits beneath it.
+func underRoot(candidate, root string) bool {
+	rel, err := filepath.Rel(root, filepath.Clean(candidate))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+}
+
 // Apply extracts the archive, detecting squashfs / plain tar / gzip / zstd / lz4 from
 // its magic bytes. If Strip is set, the first path component of every entry
 // is dropped — git-forge archives (GitHub's "{repo}-{ref}/", Gitea's
@@ -274,6 +333,14 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 				return &Result{Status: "failed", Error: fmt.Errorf("failed to extract file: %w", err)}
 			}
 			outFile.Close()
+
+		case tar.TypeSymlink, tar.TypeLink:
+			// pnpm builds node_modules almost entirely from symlinks, and npm
+			// links every .bin entry, so dropping these silently ships a tree
+			// that looks complete and fails at runtime with a missing module.
+			if err := extractLink(header, targetPath, destDir); err != nil {
+				return &Result{Status: "failed", Error: err}
+			}
 
 		default:
 			slog.Debug("Skipping archive entry", "name", header.Name, "type", header.Typeflag)

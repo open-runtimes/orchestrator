@@ -579,3 +579,136 @@ func TestUnarchive_Apply_UnreadableSource(t *testing.T) {
 		t.Errorf("expected the error to name the failed header read, got %v", result.Error)
 	}
 }
+
+// createLinkArchive writes a tar.gz of regular files plus symlink/hard-link
+// entries, mirroring how pnpm and npm ship a node_modules tree.
+func createLinkArchive(t *testing.T, archiveIn string, files, symlinks, hardlinks map[string]string) {
+	t.Helper()
+
+	file, err := os.Create(archiveIn)
+	if err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+	defer file.Close()
+
+	gzWriter := gzip.NewWriter(file)
+	defer gzWriter.Close()
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	for name, content := range files {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatalf("header %s: %v", name, err)
+		}
+		if _, err := tarWriter.Write([]byte(content)); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	for name, target := range symlinks {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: target,
+		}); err != nil {
+			t.Fatalf("symlink header %s: %v", name, err)
+		}
+	}
+	for name, target := range hardlinks {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o644, Typeflag: tar.TypeLink, Linkname: target,
+		}); err != nil {
+			t.Fatalf("hardlink header %s: %v", name, err)
+		}
+	}
+}
+
+// A pnpm node_modules is a tree of relative symlinks. Dropping them extracts a
+// tree that looks complete and fails at runtime with a missing module, which is
+// exactly how this surfaced in production.
+func TestUnarchive_Apply_PreservesSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+
+	createLinkArchive(t, archiveIn,
+		map[string]string{
+			"node_modules/.pnpm/react@19.2.6/node_modules/react/index.js": "module.exports = 'react';",
+			"server/entry.mjs": "import 'react';",
+		},
+		map[string]string{
+			"node_modules/react": ".pnpm/react@19.2.6/node_modules/react",
+		},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+
+	link := filepath.Join(tmpDir, "out", "node_modules", "react")
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("symlink not extracted: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected a symlink at %s, got mode %v", link, info.Mode())
+	}
+	// It must resolve to the real package, the way node's resolver walks it.
+	if content, err := os.ReadFile(filepath.Join(link, "index.js")); err != nil {
+		t.Fatalf("symlink does not resolve to the package: %v", err)
+	} else if string(content) != "module.exports = 'react';" {
+		t.Fatalf("resolved unexpected content: %q", content)
+	}
+}
+
+func TestUnarchive_Apply_PreservesHardLinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+
+	createLinkArchive(t, archiveIn,
+		map[string]string{"pkg/real.js": "payload"},
+		nil,
+		map[string]string{"pkg/linked.js": "pkg/real.js"},
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "pkg", "linked.js"))
+	if err != nil {
+		t.Fatalf("hard link not extracted: %v", err)
+	}
+	if string(content) != "payload" {
+		t.Fatalf("hard link content = %q", content)
+	}
+}
+
+// A link whose target escapes the destination must fail the artifact rather
+// than plant a pointer to the host filesystem.
+func TestUnarchive_Apply_RejectsEscapingLinks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		symlinks  map[string]string
+		hardlinks map[string]string
+	}{
+		"relative symlink": {symlinks: map[string]string{"evil": "../../../../etc/passwd"}},
+		"absolute symlink": {symlinks: map[string]string{"evil": "/etc/passwd"}},
+		"hard link":        {hardlinks: map[string]string{"evil": "../../../../etc/passwd"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+			createLinkArchive(t, archiveIn, map[string]string{"keep.txt": "x"}, tc.symlinks, tc.hardlinks)
+
+			a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+			result := a.Apply(t.Context(), tmpDir)
+			if result.Status != "failed" {
+				t.Fatalf("expected failure for an escaping link, got %v", result.Status)
+			}
+			if _, err := os.Lstat(filepath.Join(tmpDir, "out", "evil")); err == nil {
+				t.Fatal("escaping link was created")
+			}
+		})
+	}
+}
