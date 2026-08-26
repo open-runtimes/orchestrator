@@ -37,8 +37,9 @@ type Writer struct {
 	copyMerge        bool   // merge mode: apply whiteouts
 	copyDeviceID     uint16 // device ID assigned to current MetadataOnly CopyFrom
 
-	compression *CompressionOptions // from WithCompression
-	z           *zState             // compressed-output state, built in Close
+	compression   *CompressionOptions // from WithCompression
+	z             *zState             // compressed-output state, built in Close
+	compactInodes bool                // from WithCompactInodes
 
 	dataFile *os.File // external data file (nil = spool mode)
 	dataOff  int64    // current byte offset in data file
@@ -80,15 +81,16 @@ func Create(out io.WriteSeeker, opts ...CreateOpt) *Writer {
 		mode: disk.StatTypeDir | 0o755,
 	}
 	fsys := &Writer{
-		out:          out,
-		buildTime:    o.buildTime,
-		buildTimeNs:  o.buildTimeNs,
-		hasBuildTime: o.hasBuildTime,
-		root:         root,
-		byPath:       map[string]*fsEntry{"/": root},
-		dataFile:     o.dataFile,
-		tempDir:      o.tempDir,
-		compression:  o.compression,
+		out:           out,
+		buildTime:     o.buildTime,
+		buildTimeNs:   o.buildTimeNs,
+		hasBuildTime:  o.hasBuildTime,
+		root:          root,
+		byPath:        map[string]*fsEntry{"/": root},
+		dataFile:      o.dataFile,
+		tempDir:       o.tempDir,
+		compression:   o.compression,
+		compactInodes: o.compactInodes,
 	}
 
 	if o.dataFile != nil {
@@ -556,13 +558,14 @@ func (fsys *Writer) Close() error {
 	}
 
 	ew := &erofsWriter{
-		buildTime:   buildTime,
-		buildTimeNs: fsys.buildTimeNs,
-		devices:     fsys.devices,
-		blockSize:   fsys.blockSize,
-		chunkBits:   chunkBits,
-		zeroBuf:     make([]byte, fsys.blockSize),
-		z:           fsys.z,
+		buildTime:     buildTime,
+		buildTimeNs:   fsys.buildTimeNs,
+		devices:       fsys.devices,
+		blockSize:     fsys.blockSize,
+		chunkBits:     chunkBits,
+		zeroBuf:       make([]byte, fsys.blockSize),
+		z:             fsys.z,
+		compactInodes: fsys.compactInodes,
 	}
 
 	ew.planLayout(root)
@@ -727,12 +730,13 @@ type fsEntry struct {
 
 // createOptions holds the parsed option values for Create.
 type createOptions struct {
-	buildTime    uint64
-	buildTimeNs  uint32
-	hasBuildTime bool
-	dataFile     *os.File // external data file for metadata-only mode
-	tempDir      string   // temp directory for spool file
-	compression  *CompressionOptions
+	buildTime     uint64
+	buildTimeNs   uint32
+	hasBuildTime  bool
+	dataFile      *os.File // external data file for metadata-only mode
+	tempDir       string   // temp directory for spool file
+	compression   *CompressionOptions
+	compactInodes bool
 }
 
 // blockSizer may be implemented by an fs.FS to declare its block size.

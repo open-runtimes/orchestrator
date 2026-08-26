@@ -156,11 +156,12 @@ func TestCompressedRejectsInvalidOptions(t *testing.T) {
 	}
 }
 
-// TestCompressedLargeFile crosses many pclusters and the 16-bit NONHEAD
-// delta encoding paths with a file larger than 100 pclusters.
+// TestCompressedLargeFile crosses many pclusters, the 16-bit NONHEAD delta
+// encoding, and the segment-parallel packing path (the file spans multiple
+// 8 MiB segments).
 func TestCompressedLargeFile(t *testing.T) {
 	var b strings.Builder
-	for i := 0; b.Len() < 7<<20; i++ {
+	for i := 0; b.Len() < 20<<20; i++ {
 		b.WriteString("line ")
 		b.WriteString(strings.Repeat("x", i%97))
 		b.WriteString("\n")

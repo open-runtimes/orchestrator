@@ -66,7 +66,10 @@ func writeErofs(srcPath, destPath, compression string) error {
 	// streams too rather than buffering it (symmetric with writeSquashfs).
 	var opts []erofs.CreateOpt
 	if compressed {
-		opts = append(opts, erofs.WithCompression(comp))
+		// Compact inodes drop per-file mtimes (reads report the build time),
+		// matching mkfs.erofs defaults — irrelevant for build artifacts and
+		// roughly half the per-inode metadata on small-file-heavy trees.
+		opts = append(opts, erofs.WithCompression(comp), erofs.WithCompactInodes())
 	}
 	w := erofs.Create(out, opts...)
 	if err := w.CopyFrom(src); err != nil {

@@ -22,19 +22,20 @@ type onlyWriter struct{ io.Writer }
 
 // erofsWriter serializes EROFS metadata to an io.Writer.
 type erofsWriter struct {
-	entries     []*erofsEntry // all entries in NID order
-	rootNid     uint64
-	metaBlkAddr uint32
-	totalInodes uint64
-	buildTime   uint64
-	buildTimeNs uint32
-	devices     []uint64 // per-device block counts (one slot per entry)
-	blockSize   int
-	chunkBits   uint8                        // log2(chunkSize / blockSize); chunkSize = blockSize << chunkBits
-	copyBuf     []byte                       // reusable buffer for io.CopyBuffer
-	zeroBuf     []byte                       // blockSize-length zero buffer for padding
-	inodeBuf    [disk.SizeInodeExtended]byte // scratch buffer for writeInode
-	z           *zState                      // compressed-output state (nil = uncompressed)
+	entries       []*erofsEntry // all entries in NID order
+	rootNid       uint64
+	metaBlkAddr   uint32
+	totalInodes   uint64
+	buildTime     uint64
+	buildTimeNs   uint32
+	devices       []uint64 // per-device block counts (one slot per entry)
+	blockSize     int
+	chunkBits     uint8                        // log2(chunkSize / blockSize); chunkSize = blockSize << chunkBits
+	copyBuf       []byte                       // reusable buffer for io.CopyBuffer
+	zeroBuf       []byte                       // blockSize-length zero buffer for padding
+	inodeBuf      [disk.SizeInodeExtended]byte // scratch buffer for writeInode
+	z             *zState                      // compressed-output state (nil = uncompressed)
+	compactInodes bool                         // force 32-byte inodes, dropping mtimes
 }
 
 // inodeSize returns the on-disk inode header size for e.
