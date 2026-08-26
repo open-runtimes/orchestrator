@@ -712,3 +712,102 @@ func TestUnarchive_Apply_RejectsEscapingLinks(t *testing.T) {
 		})
 	}
 }
+
+// `a -> .` then `a/x -> ../escape`: the lexical parent (destDir/a) and the
+// resolved one (destDir) disagree, so a purely lexical containment check lets
+// the second link land outside the destination.
+func TestUnarchive_Apply_RejectsChainedSymlinkEscape(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"keep.txt": "x"},
+		// Order matters: the self-referential link is written first.
+		map[string]string{"a": ".", "a/x": "../escape"},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a chained symlink escape, got %v", result.Status)
+	}
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("chained symlink escaped the destination")
+	}
+}
+
+// An entry written beneath a symlinked directory would extract through the
+// link, outside the destination.
+func TestUnarchive_Apply_RejectsWritesThroughSymlinkedParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	outside := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"a/planted.txt": "payload"},
+		map[string]string{"a": "../outside"},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "failed" {
+		t.Fatalf("expected failure writing through a symlinked parent, got %v", result.Status)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "planted.txt")); err == nil {
+		t.Fatal("file was planted outside the destination")
+	}
+}
+
+// A rejected link must not have destroyed the entry it was replacing.
+func TestUnarchive_Apply_RejectedLinkLeavesExistingFileIntact(t *testing.T) {
+	tmpDir := t.TempDir()
+	out := filepath.Join(tmpDir, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(out, "keep.txt")
+	if err := os.WriteFile(existing, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn, nil, map[string]string{"keep.txt": "/etc/passwd"}, nil)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for an absolute symlink, got %v", result.Status)
+	}
+	content, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("existing file was destroyed by a rejected entry: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("existing file = %q, want original", content)
+	}
+}
+
+// A hard link names another entry of the same archive, so it has to follow the
+// same strip/subdir rewrite as the file it points at.
+func TestUnarchive_Apply_HardLinkHonoursStrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"wrapper/pkg/real.js": "payload"},
+		nil,
+		map[string]string{"wrapper/pkg/linked.js": "wrapper/pkg/real.js"},
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out", Strip: true}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "pkg", "linked.js"))
+	if err != nil {
+		t.Fatalf("hard link not extracted under strip: %v", err)
+	}
+	if string(content) != "payload" {
+		t.Fatalf("hard link content = %q", content)
+	}
+}

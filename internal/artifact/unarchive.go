@@ -91,50 +91,86 @@ func (a *Unarchive) ArtifactID() string   { return a.ID }
 func (a *Unarchive) ArtifactType() string { return "unarchive" }
 func (a *Unarchive) DependsOn() string    { return a.Depends }
 
-// extractLink recreates a symlink or hard link from the archive, refusing any
-// whose target escapes destDir. A symlink target is interpreted relative to the
-// link's own directory (an absolute target is resolved inside destDir, never on
-// the host), so a tree of relative links — a pnpm node_modules, say — is
-// reproduced exactly while `../../..` cannot reach out of the workspace.
-func extractLink(header *tar.Header, targetPath, destDir string) error {
-	if err := os.MkdirAll(filepath.Dir(targetPath), extractDirMode); err != nil {
-		return fmt.Errorf("failed to create parent directory: %w", err)
+// mkdirAllInRoot creates dir and every missing parent between it and root,
+// refusing to traverse a symlink on the way down. Without that refusal an
+// archive could ship `a -> /elsewhere` followed by entries under `a/`, and the
+// extraction would write through the link — outside the workspace — even though
+// every path involved looks contained when compared lexically.
+func mkdirAllInRoot(root, dir string) error {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(dir))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("archive entry escapes the destination: %s", dir)
 	}
-	// A re-extraction over an existing tree must not fail on a link that is
-	// already there; the archive is the source of truth for what it points at.
+	if err := os.MkdirAll(filepath.Clean(root), extractDirMode); err != nil {
+		return fmt.Errorf("failed to create destination: %w", err)
+	}
+	if rel == "." {
+		return nil
+	}
+
+	current := filepath.Clean(root)
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		switch {
+		case os.IsNotExist(err):
+			if err := os.Mkdir(current, extractDirMode); err != nil && !os.IsExist(err) {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+		case err != nil:
+			return fmt.Errorf("failed to inspect path: %w", err)
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("archive path traverses a symlink: %s", current)
+		case !info.IsDir():
+			return fmt.Errorf("archive path traverses a file: %s", current)
+		}
+	}
+	return nil
+}
+
+// extractLink recreates a symlink or hard link from the archive.
+//
+// Every target is validated BEFORE anything existing is replaced, so a rejected
+// entry cannot leave the tree missing the file it was going to overwrite. The
+// link is written with the archive's own linkname, so an absolute target is
+// refused outright rather than rewritten: "containing" it by validating a
+// rewritten path would still plant a pointer outside the workspace, and build
+// tooling (pnpm, npm) only ever emits relative links. Parents are created by
+// mkdirAllInRoot, which refuses to traverse a symlink — that is what stops a
+// chain like `a -> .` followed by `a/x -> ../escape`, where the lexical parent
+// and the resolved one disagree.
+func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string) error {
+	root := filepath.Clean(destDir)
+
+	if header.Typeflag == tar.TypeLink {
+		if !underRoot(hardLinkSource, root) {
+			return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
+		}
+	} else {
+		if filepath.IsAbs(header.Linkname) {
+			return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
+		}
+		if !underRoot(filepath.Join(filepath.Dir(targetPath), header.Linkname), root) {
+			return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
+		}
+	}
+
+	if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
+		return err
+	}
+	// Only now that the entry is known good: a re-extraction over an existing
+	// tree must not fail on a link that is already there, and the archive is the
+	// source of truth for what it points at.
 	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to replace existing entry: %w", err)
 	}
 
-	// Compared lexically against destDir: both the root and the resolved target
-	// are built from it, so an evaluated root (which may differ, e.g. /var vs
-	// /private/var) would not line up.
-	root := filepath.Clean(destDir)
-
 	if header.Typeflag == tar.TypeLink {
-		// Hard link targets name another entry in the archive, always relative
-		// to its root, so they resolve against destDir.
-		source := filepath.Join(destDir, filepath.Clean("/"+header.Linkname))
-		if !underRoot(source, root) {
-			return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
-		}
-		if err := os.Link(source, targetPath); err != nil {
+		if err := os.Link(hardLinkSource, targetPath); err != nil {
 			return fmt.Errorf("failed to create hard link: %w", err)
 		}
 		return nil
 	}
-
-	// An absolute target is rejected rather than rewritten: the link is written
-	// with the archive's own linkname, so "containing" it by validating a
-	// rewritten path would still plant a pointer outside the workspace. Build
-	// tooling (pnpm, npm) only ever emits relative links.
-	if filepath.IsAbs(header.Linkname) {
-		return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
-	}
-	if !underRoot(filepath.Join(filepath.Dir(targetPath), header.Linkname), root) {
-		return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
-	}
-
 	if err := os.Symlink(header.Linkname, targetPath); err != nil {
 		return fmt.Errorf("failed to create symlink: %w", err)
 	}
@@ -274,34 +310,45 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 			return &Result{Status: "failed", Error: fmt.Errorf("invalid path in archive: %s", header.Name)}
 		}
 
-		extractPath := cleanName
-		if a.Strip {
-			parts := strings.SplitN(cleanName, "/", 2)
-			if len(parts) < 2 {
-				continue // the wrapper root directory entry itself
+		// Applied to entry names and to hard-link targets alike: a link names
+		// another entry of the same archive, so it has to survive the same
+		// strip/subdir rewrite or it points at a path that was never written.
+		transform := func(name string) (string, bool) {
+			out := name
+			if a.Strip {
+				parts := strings.SplitN(name, "/", 2)
+				if len(parts) < 2 {
+					return "", false // the wrapper root directory entry itself
+				}
+				out = parts[1]
 			}
-			extractPath = parts[1]
+
+			if subdir != "" {
+				prefix := subdir
+				if !a.Strip {
+					// Legacy: resolve subdir under the tar's detected root folder.
+					if archiveRoot == "" {
+						archiveRoot = strings.SplitN(name, "/", 2)[0]
+					}
+					prefix = archiveRoot + "/" + subdir
+				}
+
+				if !strings.HasPrefix(out, prefix+"/") && out != prefix {
+					return "", false
+				}
+
+				out = strings.TrimPrefix(out, prefix)
+				out = strings.TrimPrefix(out, "/")
+				if out == "" {
+					return "", false
+				}
+			}
+			return out, true
 		}
 
-		if subdir != "" {
-			prefix := subdir
-			if !a.Strip {
-				// Legacy: resolve subdir under the tar's detected root folder.
-				if archiveRoot == "" {
-					archiveRoot = strings.SplitN(cleanName, "/", 2)[0]
-				}
-				prefix = archiveRoot + "/" + subdir
-			}
-
-			if !strings.HasPrefix(extractPath, prefix+"/") && extractPath != prefix {
-				continue
-			}
-
-			extractPath = strings.TrimPrefix(extractPath, prefix)
-			extractPath = strings.TrimPrefix(extractPath, "/")
-			if extractPath == "" {
-				continue
-			}
+		extractPath, ok := transform(cleanName)
+		if !ok {
+			continue
 		}
 
 		targetPath := filepath.Join(destDir, extractPath)
@@ -309,13 +356,13 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, extractDirMode); err != nil {
-				return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
+			if err := mkdirAllInRoot(destDir, targetPath); err != nil {
+				return &Result{Status: "failed", Error: err}
 			}
 
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), extractDirMode); err != nil {
-				return &Result{Status: "failed", Error: fmt.Errorf("failed to create parent directory: %w", err)}
+			if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
+				return &Result{Status: "failed", Error: err}
 			}
 
 			mode := extractMode(os.FileMode(header.Mode))
@@ -338,7 +385,15 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 			// pnpm builds node_modules almost entirely from symlinks, and npm
 			// links every .bin entry, so dropping these silently ships a tree
 			// that looks complete and fails at runtime with a missing module.
-			if err := extractLink(header, targetPath, destDir); err != nil {
+			linkSource := ""
+			if header.Typeflag == tar.TypeLink {
+				source, ok := transform(filepath.Clean(strings.TrimPrefix(header.Linkname, "./")))
+				if !ok {
+					return &Result{Status: "failed", Error: fmt.Errorf("hard link target excluded by strip/subdir: %s -> %s", header.Name, header.Linkname)}
+				}
+				linkSource = filepath.Join(destDir, source)
+			}
+			if err := extractLink(header, targetPath, destDir, linkSource); err != nil {
 				return &Result{Status: "failed", Error: err}
 			}
 
