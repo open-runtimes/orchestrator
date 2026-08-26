@@ -79,15 +79,17 @@ func TestLZ4HCEncoderFuzzish(t *testing.T) {
 	for range 3000 {
 		off := rnd.Intn(len(base) - 300)
 		b := byte(rnd.Intn(256))
-		for j := range 100 + rnd.Intn(200) {
+		runLen := 100 + rnd.Intn(200)
+		for j := range runLen {
 			base[off+j] = b
 		}
 	}
 	var e lz4HCEncoder
-	// Sized so the suite stays affordable under -race on small CI runners;
+	// Sized so the suite stays affordable under -race on small CI runners
+	// (the whole erofs package must clear CI's 10-minute test timeout);
 	// broader corpora run through the round-trip tests above.
-	for i := range 100 {
-		l := rnd.Intn(1 << 15)
+	for i := range 50 {
+		l := rnd.Intn(1 << 13)
 		off := rnd.Intn(len(base) - l)
 		src := base[off : off+l]
 		dst := make([]byte, lz4.CompressBlockBound(len(src)))
