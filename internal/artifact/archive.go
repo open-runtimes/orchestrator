@@ -25,7 +25,7 @@ type Archive struct {
 	In          string `json:"in"`                    // Source file or directory
 	Out         string `json:"out"`                   // Destination archive path
 	Format      string `json:"format"`                // "tar", "squashfs", or "erofs"
-	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd, lz4, lz4hc; squashfs: gzip, zstd, lz4, lz4hc
+	Compression string `json:"compression,omitempty"` // tar: none, gzip, zstd, lz4, lz4hc; squashfs: gzip, zstd, lz4, lz4hc; erofs: none, lz4, lz4hc
 	Level       int    `json:"level,omitempty"`       // gzip compression level 1-9 (tar only)
 	BlockSize   int    `json:"blockSize,omitempty"`   // squashfs block size in bytes, power of 2 from 4 KiB to 1 MiB (default 1 MiB)
 	Depends     string `json:"depends,omitempty"`
@@ -102,7 +102,7 @@ func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 		}
 		return &Result{Status: "success"}
 	case "erofs":
-		if err := writeErofs(srcPath, destPath); err != nil {
+		if err := writeErofs(srcPath, destPath, a.Compression); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 		return &Result{Status: "success"}

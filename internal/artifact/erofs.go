@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	erofs "github.com/erofs/go-erofs"
+	"orchestrator/internal/erofs"
 )
 
 // erofs writes its superblock magic at a fixed offset rather than the start of
@@ -21,12 +21,36 @@ func isErofs(b []byte) bool {
 	return len(b) >= end && string(b[erofsMagicOffset:end]) == erofsMagic
 }
 
+// erofsCompression validates an erofs compression name. ok is false for an
+// empty/none name (uncompressed image); lz4 and lz4hc produce z_erofs
+// compressed images with fragments and dedupe enabled — the configuration
+// that wins on both artifact size and cold-read speed for build outputs full
+// of small files.
+func erofsCompression(name string) (opts erofs.CompressionOptions, ok bool, err error) {
+	switch name {
+	case "", "none":
+		return erofs.CompressionOptions{}, false, nil
+	case "lz4", "lz4hc":
+		return erofs.CompressionOptions{
+			Algorithm:    name,
+			PClusterSize: 131072,
+			Fragments:    true,
+			Dedupe:       true,
+		}, true, nil
+	default:
+		return erofs.CompressionOptions{}, false, fmt.Errorf("unsupported erofs compression: %q (supported: lz4, lz4hc, none)", name)
+	}
+}
+
 // writeErofs builds an erofs image at destPath from the file or directory at
-// srcPath. Unlike squashfs, the go-erofs writer exposes no compression or block
-// size options, so the image is always stored uncompressed — hence writeErofs
-// takes no compression/blockSize arguments. The kernel erofs driver and the
-// reader still mount and extract it directly.
-func writeErofs(srcPath, destPath string) error {
+// srcPath, uncompressed or z_erofs lz4/lz4hc compressed. The kernel erofs
+// driver and the reader mount and extract both forms directly.
+func writeErofs(srcPath, destPath, compression string) error {
+	comp, compressed, err := erofsCompression(compression)
+	if err != nil {
+		return err
+	}
+
 	src, err := sourceFS(srcPath)
 	if err != nil {
 		return err
@@ -40,7 +64,14 @@ func writeErofs(srcPath, destPath string) error {
 
 	// CopyFrom streams each entry from src; sourceFS wraps a single file so it
 	// streams too rather than buffering it (symmetric with writeSquashfs).
-	w := erofs.Create(out)
+	var opts []erofs.CreateOpt
+	if compressed {
+		// Compact inodes drop per-file mtimes (reads report the build time),
+		// matching mkfs.erofs defaults — irrelevant for build artifacts and
+		// roughly half the per-inode metadata on small-file-heavy trees.
+		opts = append(opts, erofs.WithCompression(comp), erofs.WithCompactInodes())
+	}
+	w := erofs.Create(out, opts...)
 	if err := w.CopyFrom(src); err != nil {
 		return fmt.Errorf("failed to add source: %w", err)
 	}

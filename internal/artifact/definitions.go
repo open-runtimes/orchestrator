@@ -153,12 +153,8 @@ var (
 					return apperrors.Validation(field+".blockSize", "blockSize must be a power of 2 between 4096 and 1048576 (0 means 1 MiB default)")
 				}
 			case "erofs":
-				// erofs images are always uncompressed; the writer exposes no
-				// compression, level, or block size knobs.
-				switch a.Compression {
-				case "", "none":
-				default:
-					return apperrors.Validation(field+".compression", "compression is not supported for erofs (images are always uncompressed)")
+				if _, _, err := erofsCompression(a.Compression); err != nil {
+					return apperrors.Validation(field+".compression", err.Error())
 				}
 				if a.Level != 0 {
 					return apperrors.Validation(field+".level", "level is not supported for erofs")

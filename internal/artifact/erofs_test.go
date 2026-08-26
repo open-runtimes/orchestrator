@@ -1,12 +1,14 @@
 package artifact
 
 import (
+	"bytes"
 	"io/fs"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
 
-	erofs "github.com/erofs/go-erofs"
+	"orchestrator/internal/erofs"
 )
 
 // assertErofsContents opens the image (test-only; production mounts, never
@@ -49,6 +51,55 @@ func TestArchive_Erofs_RoundTrip(t *testing.T) {
 		t.Fatalf("output is not an erofs image (err=%v)", err)
 	}
 	assertErofsContents(t, image)
+}
+
+// TestArchive_Erofs_Compressed round-trips lz4 and lz4hc images (which enable
+// fragments and dedupe) through archive and unarchive, with content spanning
+// the whole-file-fragment, multi-extent, and incompressible paths.
+func TestArchive_Erofs_Compressed(t *testing.T) {
+	for _, comp := range []string{"lz4", "lz4hc"} {
+		t.Run(comp, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			srcDir := filepath.Join(tmpDir, "src")
+			os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755)
+			big := bytes.Repeat([]byte("compressible content line\n"), 20000)
+			random := make([]byte, 300000)
+			rand.New(rand.NewSource(1)).Read(random)
+			os.WriteFile(filepath.Join(srcDir, "small.txt"), []byte("hello"), 0o644)
+			os.WriteFile(filepath.Join(srcDir, "small2.txt"), []byte("hello"), 0o644) // dedupes with small.txt
+			os.WriteFile(filepath.Join(srcDir, "big.txt"), big, 0o644)
+			os.WriteFile(filepath.Join(srcDir, "sub", "random.bin"), random, 0o644)
+
+			arc := &Archive{ID: "a", In: "src", Out: "out.erofs", Format: "erofs", Compression: comp}
+			if r := arc.Apply(t.Context(), tmpDir); r.Error != nil {
+				t.Fatalf("archive Apply() error = %v", r.Error)
+			}
+			image := filepath.Join(tmpDir, "out.erofs")
+			magic, err := os.ReadFile(image)
+			if err != nil || !isErofs(magic) {
+				t.Fatalf("output is not an erofs image (err=%v)", err)
+			}
+			if len(magic) >= len(big) {
+				t.Fatalf("image (%d bytes) is not smaller than its most compressible input (%d bytes)", len(magic), len(big))
+			}
+
+			un := &Unarchive{ID: "u", In: "out.erofs", Out: "extracted"}
+			if r := un.Apply(t.Context(), tmpDir); r.Error != nil {
+				t.Fatalf("unarchive Apply() error = %v", r.Error)
+			}
+			for name, want := range map[string][]byte{
+				"small.txt":      []byte("hello"),
+				"small2.txt":     []byte("hello"),
+				"big.txt":        big,
+				"sub/random.bin": random,
+			} {
+				got, err := os.ReadFile(filepath.Join(tmpDir, "extracted", filepath.FromSlash(name)))
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("%s: mismatch (err=%v, %d vs %d bytes)", name, err, len(got), len(want))
+				}
+			}
+		})
+	}
 }
 
 // TestArchive_Erofs_SingleFile covers the single-file path (streamed via a
