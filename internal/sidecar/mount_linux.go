@@ -226,10 +226,20 @@ func setupLoop(image string) (string, *os.File, error) {
 
 		loop, err := os.OpenFile(loopPath, os.O_RDWR, 0)
 		if errors.Is(err, os.ErrNotExist) {
-			// GET_FREE allocated the device but udev/devtmpfs hasn't created the
-			// node yet; give it a moment and ask again.
-			time.Sleep(10 * time.Millisecond)
-			continue
+			// GET_FREE allocated the device, but a container's /dev is a static
+			// snapshot taken when it started: a node the kernel creates later
+			// never appears in it, so waiting cannot help — GET_FREE would keep
+			// naming the same unopenable device until the retries run out.
+			// Create the node ourselves, the way losetup recovers a lost device
+			// node (mknod is covered by the same privilege the mount needs).
+			// Losing the race to another creator (EEXIST) is fine — the node is
+			// there either way. Where mknod is refused, fall back to a brief
+			// wait for udev/devtmpfs, the only remaining way the node can appear.
+			if mkErr := unix.Mknod(loopPath, unix.S_IFBLK|0o660, int(unix.Mkdev(7, uint32(num)))); mkErr != nil && !errors.Is(mkErr, unix.EEXIST) {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			loop, err = os.OpenFile(loopPath, os.O_RDWR, 0)
 		}
 		if err != nil {
 			return "", nil, fmt.Errorf("open %s: %w", loopPath, err)
