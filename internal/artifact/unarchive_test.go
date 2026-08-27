@@ -959,3 +959,26 @@ func TestUnarchive_Apply_HardLinkToDirectoryKeepsDestination(t *testing.T) {
 		t.Fatalf("keep.txt = %q, want original", content)
 	}
 }
+
+// A hard link naming itself would have its source removed as the destination
+// and then fail, destroying the file.
+func TestUnarchive_Apply_SelfHardLinkKeepsSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "keep.txt", typeflag: tar.TypeReg, body: "original"},
+		{name: "keep.txt", typeflag: tar.TypeLink, body: "keep.txt"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a self-referential hard link, got %v", result.Status)
+	}
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "keep.txt"))
+	if err != nil {
+		t.Fatalf("source destroyed by a self-referential hard link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+}

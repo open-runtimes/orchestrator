@@ -148,7 +148,7 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string)
 	}
 
 	if header.Typeflag == tar.TypeLink {
-		if err := validateHardLinkSource(header, destDir, hardLinkSource, root); err != nil {
+		if err := validateHardLinkSource(header, targetPath, destDir, hardLinkSource, root); err != nil {
 			return err
 		}
 	} else if err := validateSymlinkTarget(header, targetPath, root); err != nil {
@@ -181,9 +181,14 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string)
 // source has to be contained, present, and linkable. A source that comes later
 // in the stream (or never), or that names a directory link(2) will refuse,
 // would otherwise delete the destination and only then fail.
-func validateHardLinkSource(header *tar.Header, destDir, hardLinkSource, root string) error {
+func validateHardLinkSource(header *tar.Header, targetPath, destDir, hardLinkSource, root string) error {
 	if !underRoot(resolveWalking(destDir, relativeTo(destDir, hardLinkSource)), root) {
 		return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	// A self-referential link would have its source removed as the destination
+	// and then fail, taking the file with it.
+	if filepath.Clean(hardLinkSource) == filepath.Clean(targetPath) {
+		return fmt.Errorf("hard link points at itself: %s -> %s", header.Name, header.Linkname)
 	}
 	info, err := os.Lstat(hardLinkSource)
 	if err != nil {
