@@ -37,7 +37,7 @@ internal/         # Private packages
   job/            # Jobs: Orchestrator interface, validation, types, event builders
     docker/       # Docker backend
     kubernetes/   # Kubernetes backend (batch/v1.Job + native sidecar)
-  observability/  # Prometheus metrics
+  observability/  # OpenTelemetry metrics and OTLP export
   sidecar/        # Input download, output upload handlers
   circuitbreaker/ # Per-host circuit breaker implementation
   cloudevent/     # CloudEvents 1.0 types and HTTP sender
@@ -56,7 +56,7 @@ Configuration is loaded from environment variables. Each package manages its own
 
 | Package | Env Prefix | Description |
 |---------|------------|-------------|
-| `config` | `PORT`, `METRICS_PORT`, `ORCHESTRATOR_BACKEND`, etc. | Service-level settings; backend selection |
+| `config` | `PORT`, `ORCHESTRATOR_BACKEND`, etc. | Service-level settings; backend selection |
 | `dispatcher` | `DISPATCHER_*` | Event dispatch buffer, workers, retry |
 | `orchestrator/docker` | `JOB_RETENTION`, `MAINTENANCE_INTERVAL`, `ARTIFACT_ENDPOINT`, `EXTRA_HOSTS` | Docker backend config |
 | `orchestrator/kubernetes` | `KUBE_NAMESPACE`, `KUBE_JOB_SERVICE_ACCOUNT`, `KUBE_IMAGE_PULL_SECRETS`, `KUBE_TERMINATION_GRACE_SECONDS`, `KUBECONFIG`, plus shared `JOB_RETENTION`/`MAINTENANCE_INTERVAL`/`ARTIFACT_ENDPOINT` | Kubernetes backend config |
@@ -110,13 +110,13 @@ Key test files:
 Start the monitoring stack:
 
 ```bash
-docker compose up -d
-task dev  # Start service with hot reload
+docker compose -f docker-compose.telemetry.yml up -d
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 task dev
 ```
 
 - **Grafana**: http://localhost:3000 (no login required)
 - **Prometheus**: http://localhost:9091
-- **Metrics endpoint**: http://localhost:9090/metrics
+- **OTLP receiver**: http://localhost:4318
 
 The Grafana dashboard shows HTTP request rates, latencies, job throughput, and active jobs.
 
@@ -130,7 +130,9 @@ task kind:up     # create the kind cluster
 task dev:k8s     # tilt up
 ```
 
-Port-forwards are set in the Tiltfile: API on `localhost:8080`, metrics on `localhost:9090`.
+Port-forwards are set in the Tiltfile for each enabled service API. Configure
+`OTEL_EXPORTER_OTLP_ENDPOINT` through `extraEnv` to push metrics from the kind
+cluster to an OTLP collector.
 
 To render or lint the chart without a cluster:
 

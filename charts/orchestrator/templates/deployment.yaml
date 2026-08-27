@@ -66,15 +66,11 @@ spec:
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}
-            - name: metrics
-              containerPort: {{ .Values.service.metricsPort }}
           env:
             - name: ORCHESTRATOR_BACKEND
               value: kubernetes
             - name: PORT
               value: {{ .Values.service.apiPort | quote }}
-            - name: METRICS_PORT
-              value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.jobNamespace" . | quote }}
             - name: KUBE_JOB_SERVICE_ACCOUNT

@@ -50,13 +50,9 @@ spec:
           ports:
             - name: data
               containerPort: {{ .Values.deployments.activator.port }}
-            - name: metrics
-              containerPort: {{ .Values.service.metricsPort }}
           env:
             - name: ACTIVATOR_PORT
               value: {{ .Values.deployments.activator.port | quote }}
-            - name: METRICS_PORT
-              value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.workloadNamespace" . | quote }}
             - name: KUBE_CLIENT_QPS
@@ -65,6 +61,9 @@ spec:
               value: {{ .Values.deployments.clientBurst | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

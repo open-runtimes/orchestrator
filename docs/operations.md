@@ -207,9 +207,9 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `poolController.leaderElection.enabled` | `false` | Required above one replica; each pool kind uses a distinct Lease |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
-| `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
+| `service.apiPort` | `8080` | API port |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
-| `extraEnv` | `[]` | Extra environment for the services (e.g. `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |
+| `extraEnv` | `[]` | Extra environment for all service/data-plane containers (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |
 
 Autoscaler tuning via `extraEnv`: `AUTOSCALER_WINDOW` (sliding window, default 60s) and `AUTOSCALER_TICK` (evaluation period, default 2s). A shorter window scales — in both directions — more aggressively.
 

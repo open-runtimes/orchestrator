@@ -101,7 +101,6 @@ k8s_resource(
     'jobs',
     port_forwards=[
         port_forward(8080, 8080, name='api'),
-        port_forward(9090, 9090, name='metrics'),
     ],
     labels=['orchestrator'],
     objects=[
@@ -113,7 +112,6 @@ k8s_resource(
     ],
     links=[
         link('http://localhost:8080/readyz', 'readyz'),
-        link('http://localhost:9090/metrics', 'metrics'),
     ],
 )
 
@@ -122,12 +120,10 @@ if DEPLOYMENTS_ENABLED:
         'deployments',
         port_forwards=[
             port_forward(8081, 8080, name='api'),
-            port_forward(9091, 9090, name='metrics'),
         ],
         labels=['orchestrator'],
         links=[
             link('http://localhost:8081/readyz', 'readyz'),
-            link('http://localhost:9091/metrics', 'metrics'),
         ],
     )
 
@@ -136,11 +132,9 @@ if SANDBOXES_ENABLED:
         'sandbox',
         port_forwards=[
             port_forward(8082, 8080, name='api'),
-            port_forward(9092, 9090, name='metrics'),
         ],
         labels=['orchestrator'],
         links=[
             link('http://localhost:8082/readyz', 'readyz'),
-            link('http://localhost:9092/metrics', 'metrics'),
         ],
     )

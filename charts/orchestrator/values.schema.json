@@ -95,9 +95,6 @@
         },
         "apiPort": {
           "$ref": "#/$defs/port"
-        },
-        "metricsPort": {
-          "$ref": "#/$defs/port"
         }
       }
     },

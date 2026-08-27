@@ -6,7 +6,6 @@ package server
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"orchestrator/internal/api"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
@@ -71,7 +70,7 @@ func NewJobEmitter(queue dispatcher.Queue, metrics *observability.Metrics) *job.
 // Config is loaded from environment variables by the various internal
 // packages; add attributes to slog.Default before calling Run if you want
 // them attached to every log line.
-func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observability.Metrics, metricsHandler http.Handler) error {
+func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observability.Metrics) error {
 	svcCfg := config.LoadServiceConfig()
 	dispatcherCfg := dispatcher.LoadConfigFromEnv()
 
@@ -126,12 +125,11 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 	}
 
 	return Serve(ctx, Options{
-		Handler:        router,
-		MetricsHandler: metricsHandler,
-		Port:           svcCfg.Port,
-		MetricsPort:    svcCfg.MetricsPort,
-		DrainWait:      svcCfg.ShutdownDrainWait,
-		SetDraining:    healthChecker.SetShuttingDown,
+		Handler:           router,
+		Port:              svcCfg.Port,
+		DrainWait:         svcCfg.ShutdownDrainWait,
+		SetDraining:       healthChecker.SetShuttingDown,
+		TelemetryShutdown: metrics.Shutdown,
 		Cleanup: func(cleanupCtx context.Context) {
 			slog.Info("Draining callback dispatcher")
 			if err := eventDispatcher.Close(cleanupCtx); err != nil {

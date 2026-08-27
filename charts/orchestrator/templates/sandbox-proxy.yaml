@@ -59,13 +59,9 @@ spec:
               containerPort: {{ .Values.sandbox.proxy.port }}
             - name: mgmt
               containerPort: {{ .Values.service.apiPort }}
-            - name: metrics
-              containerPort: {{ .Values.service.metricsPort }}
           env:
             - name: ACTIVATOR_PORT
               value: {{ .Values.sandbox.proxy.port | quote }}
-            - name: METRICS_PORT
-              value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.workloadNamespace" . | quote }}
             - name: SANDBOX_DOMAIN
@@ -76,6 +72,9 @@ spec:
               value: {{ .Values.service.apiPort | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- /*
           Probes hit the management port, not the data port: the data listener
           serves only sandbox traffic, since every path there belongs to the

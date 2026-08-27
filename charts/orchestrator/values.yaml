@@ -528,7 +528,6 @@ rbac:
 service:
   type: ClusterIP
   apiPort: 8080
-  metricsPort: 9090
 
 # Orchestrator runtime config.
 orchestrator:
@@ -563,6 +562,6 @@ resources:
 
 podAnnotations: {}
 
-# Arbitrary extra env vars on the jobs-service container.
+# Arbitrary extra env vars on all service and data-plane containers.
 # Each entry is a raw corev1.EnvVar (supports .value, .valueFrom, etc.).
 extraEnv: []

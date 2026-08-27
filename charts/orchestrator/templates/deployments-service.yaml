@@ -68,8 +68,6 @@ spec:
               containerPort: {{ .Values.service.apiPort }}
             - name: data
               containerPort: {{ .Values.deployments.dataPort }}
-            - name: metrics
-              containerPort: {{ .Values.service.metricsPort }}
           env:
             - name: ORCHESTRATOR_BACKEND
               value: kubernetes
@@ -77,8 +75,6 @@ spec:
               value: {{ .Values.service.apiPort | quote }}
             - name: DATA_PORT
               value: {{ .Values.deployments.dataPort | quote }}
-            - name: METRICS_PORT
-              value: {{ .Values.service.metricsPort | quote }}
             - name: DEPLOYMENTS_DOMAIN
               value: {{ .Values.deployments.domain | quote }}
             - name: WORKLOAD_SIDECAR_IMAGE
@@ -190,9 +186,6 @@ spec:
     - name: data
       port: {{ .Values.deployments.dataPort }}
       targetPort: data
-    - name: metrics
-      port: {{ .Values.service.metricsPort }}
-      targetPort: metrics
 ---
 apiVersion: v1
 kind: ServiceAccount

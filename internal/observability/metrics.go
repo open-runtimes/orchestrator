@@ -2,11 +2,13 @@ package observability
 
 import (
 	"context"
-	"net/http"
+	"fmt"
+	"os"
+	"strings"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
@@ -17,7 +19,8 @@ import (
 // - Errors: Rate of failures
 // - Saturation: Resource utilization (concurrent jobs/requests)
 type Metrics struct {
-	meter metric.Meter
+	meter    metric.Meter
+	provider *sdkmetric.MeterProvider
 
 	// HTTP metrics (Latency, Traffic, Errors)
 	HTTPRequestDuration metric.Float64Histogram
@@ -141,18 +144,24 @@ func (b *instruments) histogram(name, desc string, buckets ...float64) metric.Fl
 	return h
 }
 
-// NewMetrics creates and registers all metrics with a Prometheus exporter.
-func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
-	exporter, err := prometheus.New()
+// NewMetrics creates all metrics and configures periodic OTLP push export from
+// the standard OpenTelemetry environment variables. Export is disabled when
+// neither OTEL_METRICS_EXPORTER nor an OTLP endpoint is configured.
+func NewMetrics(ctx context.Context) (*Metrics, error) {
+	reader, err := newMetricReader(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
+	providerOpts := make([]sdkmetric.Option, 0, 1)
+	if reader != nil {
+		providerOpts = append(providerOpts, sdkmetric.WithReader(reader))
+	}
+	provider := sdkmetric.NewMeterProvider(providerOpts...)
 	otel.SetMeterProvider(provider)
 
 	b := &instruments{meter: provider.Meter("orchestrator")}
-	m := &Metrics{meter: b.meter}
+	m := &Metrics{meter: b.meter, provider: provider}
 
 	// HTTP metrics
 	m.HTTPRequestDuration = b.histogram("http_request_duration_seconds",
@@ -244,9 +253,59 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	m.PoolClaimed = b.gauge("pool_claimed", "Claimed workload pods, per pool")
 
 	if b.err != nil {
-		return nil, nil, b.err
+		_ = provider.Shutdown(ctx)
+		return nil, b.err
 	}
-	return m, promhttp.Handler(), nil
+	return m, nil
+}
+
+func newMetricReader(ctx context.Context) (sdkmetric.Reader, error) {
+	exporterName := strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_METRICS_EXPORTER")))
+	if exporterName == "" {
+		if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" && os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") == "" {
+			return nil, nil
+		}
+		exporterName = "otlp"
+	}
+
+	switch exporterName {
+	case "none":
+		return nil, nil
+	case "otlp":
+	default:
+		return nil, fmt.Errorf("unsupported OTEL_METRICS_EXPORTER %q (expected otlp or none)", exporterName)
+	}
+
+	protocol := strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")))
+	if protocol == "" {
+		protocol = strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")))
+	}
+	if protocol == "" {
+		protocol = "http/protobuf"
+	}
+
+	var exporter sdkmetric.Exporter
+	var err error
+	switch protocol {
+	case "http/protobuf":
+		exporter, err = otlpmetrichttp.New(ctx)
+	case "grpc":
+		exporter, err = otlpmetricgrpc.New(ctx)
+	default:
+		return nil, fmt.Errorf("unsupported OTLP metrics protocol %q (expected http/protobuf or grpc)", protocol)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create OTLP metrics exporter: %w", err)
+	}
+	return sdkmetric.NewPeriodicReader(exporter), nil
+}
+
+// Shutdown flushes pending metrics and stops the periodic OTLP exporter.
+func (m *Metrics) Shutdown(ctx context.Context) error {
+	if m == nil || m.provider == nil {
+		return nil
+	}
+	return m.provider.Shutdown(ctx)
 }
 
 // ObserveInt64 registers an asynchronous gauge that reads observe at collection
@@ -255,7 +314,7 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 // and ours don't — a restart resets the counter while the jobs it counted keep
 // running, a K8s leadership handover moves the -1 to a replica that never did
 // the +1, and either way the gauge drifts negative and never recovers. An async
-// gauge re-derives the truth on every scrape, so it cannot drift.
+// gauge re-derives the truth on every collection, so it cannot drift.
 //
 // Safe to call on a nil *Metrics (metrics disabled).
 func (m *Metrics) ObserveInt64(name, desc string, observe func() int64) error {

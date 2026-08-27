@@ -117,6 +117,10 @@ poolController:
 
 # ── Autoscaler tuning + API auth (both services) ─────────────────────────────
 extraEnv:
+  # Push metrics to an OTLP/HTTP collector. OTLP export stays disabled when no
+  # exporter or endpoint is configured.
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector.observability:4318
   # Concurrency window: shorter reacts faster, both up and down.
   - name: AUTOSCALER_WINDOW
     value: 60s

@@ -14,13 +14,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// Options configures Serve. Handler and ports are required; the hooks are
+// Options configures Serve. Handler and Port are required; the hooks are
 // optional.
 type Options struct {
-	Handler        http.Handler
-	MetricsHandler http.Handler // served at GET /metrics on MetricsPort
-	Port           string
-	MetricsPort    string
+	Handler http.Handler
+	Port    string
 
 	// Extra servers (e.g. a data-plane listener) started alongside the API
 	// server and shut down with it. Addr and Handler must be set.
@@ -34,11 +32,13 @@ type Options struct {
 	// Cleanup runs after the HTTP servers have shut down (phase 3), e.g. to
 	// drain a callback dispatcher.
 	Cleanup func(context.Context)
+	// TelemetryShutdown flushes and stops telemetry after component cleanup.
+	TelemetryShutdown func(context.Context) error
 }
 
-// Serve runs the API + metrics HTTP servers until SIGINT/SIGTERM or a server
-// error, then performs the three-phase graceful shutdown (drain traffic →
-// shut down servers → run cleanup). It returns nil on a clean shutdown.
+// Serve runs the API and any extra HTTP servers until SIGINT/SIGTERM or a
+// server error, then performs graceful shutdown (drain traffic → shut down
+// servers → run cleanup → flush telemetry). It returns nil on a clean shutdown.
 func Serve(ctx context.Context, opts Options) error {
 	// Route client-go / leaderelection / apimachinery logs (which go through
 	// klog) via slog, so everything in the container's stdout is one ndjson
@@ -53,27 +53,11 @@ func Serve(ctx context.Context, opts Options) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("GET /metrics", opts.MetricsHandler)
-	metricsServer := &http.Server{
-		Addr:         ":" + opts.MetricsPort,
-		Handler:      metricsMux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	}
-
 	serverErr := make(chan error, 1)
 
 	go func() {
 		slog.Info("Starting API server", "port", opts.Port)
 		if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErr <- err
-		}
-	}()
-
-	go func() {
-		slog.Info("Starting metrics server", "port", opts.MetricsPort)
-		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()
@@ -90,10 +74,20 @@ func Serve(ctx context.Context, opts Options) error {
 	shutdown := func(timeout time.Duration) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		for _, srv := range append([]*http.Server{apiServer, metricsServer}, opts.Extra...) {
+		for _, srv := range append([]*http.Server{apiServer}, opts.Extra...) {
 			if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("Server shutdown error", "addr", srv.Addr, "error", err)
 			}
+		}
+	}
+	shutdownTelemetry := func() {
+		if opts.TelemetryShutdown == nil {
+			return
+		}
+		telemetryCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := opts.TelemetryShutdown(telemetryCtx); err != nil {
+			slog.Warn("Telemetry shutdown error", "error", err)
 		}
 	}
 
@@ -108,6 +102,7 @@ func Serve(ctx context.Context, opts Options) error {
 	case err := <-serverErr:
 		slog.Error("Server failed to start", "error", err)
 		shutdown(5 * time.Second)
+		shutdownTelemetry()
 		return err
 	}
 
@@ -127,9 +122,11 @@ func Serve(ctx context.Context, opts Options) error {
 	// Phase 3: cleanup (e.g. drain callback dispatcher).
 	if opts.Cleanup != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
 		opts.Cleanup(cleanupCtx)
+		cancel()
 	}
+
+	shutdownTelemetry()
 
 	slog.Info("Shutdown complete")
 	return nil

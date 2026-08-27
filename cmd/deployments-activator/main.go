@@ -39,7 +39,7 @@ func main() {
 
 // run serves the activator data plane until SIGINT/SIGTERM.
 func run(ctx context.Context) error {
-	metrics, metricsHandler, err := observability.NewMetrics(ctx)
+	metrics, err := observability.NewMetrics(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to init metrics: %w", err)
 	}
@@ -101,11 +101,10 @@ func run(ctx context.Context) error {
 	})
 
 	return server.Serve(ctx, server.Options{
-		Handler:        mgmt,
-		MetricsHandler: metricsHandler,
-		Port:           config.GetEnv("PORT", "8080"),
-		MetricsPort:    config.GetEnv("METRICS_PORT", "9090"),
-		Extra:          []*http.Server{dataServer},
+		Handler:           mgmt,
+		Port:              config.GetEnv("PORT", "8080"),
+		Extra:             []*http.Server{dataServer},
+		TelemetryShutdown: metrics.Shutdown,
 		Cleanup: func(cleanupCtx context.Context) {
 			slog.Info("Draining callback dispatcher")
 			if err := queue.Close(cleanupCtx); err != nil {
