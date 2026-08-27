@@ -982,3 +982,28 @@ func TestUnarchive_Apply_SelfHardLinkKeepsSource(t *testing.T) {
 		t.Fatalf("keep.txt = %q, want original", content)
 	}
 }
+
+// Per-entry validation is point-in-time, so a later entry can invalidate an
+// earlier verdict: `x -> a/../escape` is contained while `a -> sub` names a
+// real directory, and stops being contained once `sub` becomes a link to the
+// root. Only the finished tree tells the truth.
+func TestUnarchive_Apply_RejectsSymlinkMadeEscapingByLaterEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "failed" {
+		t.Fatalf("expected failure once the tree leaves an escaping symlink, got %v", result.Status)
+	}
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "escapes the destination after extraction") {
+		t.Fatalf("expected the post-extraction check to be what rejected it, got %v", result.Error)
+	}
+}
