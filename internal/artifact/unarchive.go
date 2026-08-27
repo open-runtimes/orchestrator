@@ -219,11 +219,11 @@ func resolveWalking(base, name string) string {
 	return current
 }
 
-// relativeTo expresses path relative to base, for feeding back into a walk.
-func relativeTo(base, path string) string {
-	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(path))
+// relativeTo expresses target relative to base, for feeding back into a walk.
+func relativeTo(base, target string) string {
+	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(target))
 	if err != nil {
-		return path
+		return target
 	}
 	return rel
 }
