@@ -450,9 +450,18 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 		if _, statErr := os.Stat(destDir); statErr != nil {
 			return
 		}
-		if sweepErr := assertNoEscapingSymlinks(destDir); sweepErr != nil && (result == nil || result.Error == nil) {
-			result = &Result{Status: "failed", Error: sweepErr}
+		sweepErr := assertNoEscapingSymlinks(destDir)
+		if sweepErr == nil {
+			return
 		}
+		// Joined rather than dropped when extraction already failed: the sweep
+		// reports what it could not remove, and a workspace still holding a
+		// pointer out of itself must not be masked by whatever failed first.
+		if result != nil && result.Error != nil {
+			result = &Result{Status: "failed", Error: errors.Join(result.Error, sweepErr)}
+			return
+		}
+		result = &Result{Status: "failed", Error: sweepErr}
 	}()
 
 	file, err := os.Open(srcPath)

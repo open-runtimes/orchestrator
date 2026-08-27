@@ -1153,3 +1153,33 @@ func TestWriteRegularFile_FailedCopyLeavesExistingFileIntact(t *testing.T) {
 		}
 	}
 }
+
+// When extraction fails for its own reason and the sweep also has something to
+// report, both must reach the caller: a workspace still holding a pointer out
+// of itself must not be masked by whatever failed first.
+func TestUnarchive_Apply_ReportsSweepAlongsideExtractionFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+		// Fails extraction after the escape is already on disk.
+		{name: "boom", typeflag: tar.TypeSymlink, body: "/etc/passwd"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "failed" {
+		t.Fatalf("expected failure, got %v", result.Status)
+	}
+
+	msg := result.Error.Error()
+	if !strings.Contains(msg, "absolute symlink target") {
+		t.Errorf("extraction failure missing from the report: %s", msg)
+	}
+	if !strings.Contains(msg, "escape the destination after extraction") {
+		t.Errorf("sweep result missing from the report: %s", msg)
+	}
+}
