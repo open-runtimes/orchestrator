@@ -379,14 +379,21 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 			})
 		}
 		if err != nil {
-			r.emitArtifact(a, "failed", nil, start, err)
+			r.emitArtifact(a, artifact.Result{Status: "failed", Error: err}, start)
 			slog.With("artifactId", m.ID, "error", err).Error("Mount failed")
 			return fmt.Errorf("mount %s: %w", m.ID, err)
 		}
 
+		// Classified after the mount succeeded, so a header that cannot be read
+		// costs a label and never the mount itself.
+		format, compression, classifyErr := artifact.ClassifyFile(image)
+		if classifyErr != nil {
+			slog.With("artifactId", m.ID, "error", classifyErr).Debug("Could not classify mounted image")
+		}
+
 		r.mounted = append(r.mounted, target)
-		r.emitArtifact(a, "success", nil, start, nil)
-		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out).Info("Mounted image")
+		r.emitArtifact(a, artifact.Result{Status: "success", Format: format, Compression: compression}, start)
+		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out, "format", format, "compression", compression).Info("Mounted image")
 	}
 	return nil
 }
@@ -427,7 +434,7 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 				cancel()
 				if err != nil {
 					err = fmt.Errorf("%s did not appear within %s of worker exit: %w", srcPath, time.Since(start).Round(time.Millisecond), err)
-					r.emitArtifact(a, "failed", nil, start, err)
+					r.emitArtifact(a, artifact.Result{Status: "failed", Error: err}, start)
 					slog.With("artifactId", a.ArtifactID(), "error", err).Warn("Artifact failed (file not found)")
 					return err
 				}
@@ -435,7 +442,7 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 		}
 
 		result := a.Apply(ctx, r.sharedVolumePath)
-		r.emitArtifact(a, result.Status, result.Content, start, result.Error)
+		r.emitArtifact(a, *result, start)
 
 		logger := slog.With("artifactId", a.ArtifactID(), "type", a.ArtifactType(), "status", result.Status)
 		if result.Error != nil {
@@ -447,16 +454,18 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 	})
 }
 
-func (r *Runner) emitArtifact(a artifact.Artifact, status string, content any, start time.Time, err error) {
+func (r *Runner) emitArtifact(a artifact.Artifact, res artifact.Result, start time.Time) {
 	report := job.ArtifactReport{
 		ID:              a.ArtifactID(),
 		Type:            a.ArtifactType(),
-		Status:          status,
-		Content:         content,
+		Status:          res.Status,
+		Content:         res.Content,
+		Format:          res.Format,
+		Compression:     res.Compression,
 		DurationSeconds: time.Since(start).Seconds(),
 	}
-	if err != nil {
-		report.FailureReason = err.Error()
+	if res.Error != nil {
+		report.FailureReason = res.Error.Error()
 	}
 	r.emitter.Emit(report)
 }

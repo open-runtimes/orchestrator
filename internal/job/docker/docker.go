@@ -617,11 +617,7 @@ func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
 		return
 	}
 	builder := job.NewEventBuilder(r.JobID, "orchestrator/service", r.Meta)
-	var errVal error
-	if r.FailureReason != "" {
-		errVal = fmt.Errorf("%s", r.FailureReason)
-	}
-	event := builder.BuildArtifactEvent(r.ID, r.Type, r.Status, r.Content, r.DurationSeconds, errVal)
+	event := builder.BuildArtifactEvent(&r)
 	o.emitter.Emit(&job.CallbackEnvelope{
 		Payload:     event,
 		CallbackURL: r.CallbackURL,

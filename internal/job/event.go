@@ -57,20 +57,33 @@ func (b *EventBuilder) BuildStartEvent() *cloudevent.Event {
 }
 
 // BuildArtifactEvent creates an artifact event.
-func (b *EventBuilder) BuildArtifactEvent(artifactID, artifactType, status string, content any, durationSeconds float64, err error) *cloudevent.Event {
+//
+// Takes the report whole so that a field added to ArtifactReport reaches
+// callback subscribers as well as the artifact endpoint. The two are the same
+// report seen by different consumers, and a positional signature let them
+// drift: format and compression reached one and not the other.
+func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
 	data := map[string]any{
 		"jobId":           b.subject,
-		"artifactId":      artifactID,
-		"artifactType":    artifactType,
-		"status":          status,
-		"durationSeconds": durationSeconds,
+		"artifactId":      r.ID,
+		"artifactType":    r.Type,
+		"status":          r.Status,
+		"durationSeconds": r.DurationSeconds,
 		"meta":            b.meta,
 	}
-	if content != nil {
-		data["content"] = content
+	if r.Content != nil {
+		data["content"] = r.Content
 	}
-	if err != nil {
-		data["error"] = err.Error()
+	// Omitted rather than sent empty: absent means "could not be determined",
+	// which a subscriber can act on differently from a real value.
+	if r.Format != "" {
+		data["format"] = r.Format
+	}
+	if r.Compression != "" {
+		data["compression"] = r.Compression
+	}
+	if r.FailureReason != "" {
+		data["error"] = r.FailureReason
 	}
 	return b.Build(CallbackTypeArtifact, data)
 }

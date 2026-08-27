@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io/fs"
 	"os"
@@ -216,4 +217,34 @@ func (s singleFileFS) ReadDir(name string) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	return []fs.DirEntry{fs.FileInfoToDirEntry(info)}, nil
+}
+
+// squashfsCompressionID is the uint16 (little-endian) at offset 0x14 of the
+// superblock naming the codec the image was built with. It is the only record
+// of that choice: every image is named the same regardless of what is inside.
+const squashfsCompressionIDOffset = 0x14
+
+// squashfsCodec reports the codec a squashfs image was built with, or "" when
+// the header is too short or the id is one this build does not know.
+func squashfsCodec(b []byte) string {
+	if len(b) < squashfsCompressionIDOffset+2 {
+		return ""
+	}
+
+	switch binary.LittleEndian.Uint16(b[squashfsCompressionIDOffset:]) {
+	case 1:
+		return "gzip"
+	case 2:
+		return "lzma"
+	case 3:
+		return "lzo"
+	case 4:
+		return "xz"
+	case 5:
+		return "lz4"
+	case 6:
+		return "zstd"
+	default:
+		return ""
+	}
 }

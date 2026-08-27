@@ -412,34 +412,31 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("archive %s is empty", a.In)}
 	}
 
-	switch {
-	case isSquashfs(header):
+	format, compression := Classify(header)
+
+	switch format {
+	case "squashfs":
 		if err := extractSquashfs(srcPath, destDir, a.Subdir, a.Strip); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
-		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", "squashfs")
-		return &Result{Status: "success"}
-	case isErofs(header):
+		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", format, "compression", compression)
+		return &Result{Status: "success", Format: format, Compression: compression}
+	case "erofs":
 		if err := extractErofs(srcPath, destDir, a.Subdir, a.Strip); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
-		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", "erofs")
-		return &Result{Status: "success"}
-	case isGzip(header):
-		return a.extractTar(srcPath, destDir, "gzip")
-	case isZstd(header):
-		return a.extractTar(srcPath, destDir, "zstd")
-	case isLz4(header):
-		return a.extractTar(srcPath, destDir, "lz4")
-	case isTar(header):
-		return a.extractTar(srcPath, destDir, "")
+		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", format)
+		return &Result{Status: "success", Format: format}
+	case "tar":
+		return a.extractTar(srcPath, destDir, compression)
 	default:
 		return &Result{Status: "failed", Error: fmt.Errorf("unrecognized archive format for %s", a.In)}
 	}
 }
 
 // extractTar extracts a tar archive at srcPath into destDir, decompressing the
-// stream first with the named codec ("gzip", "zstd", "lz4", or "" for plain tar).
+// stream first with the named codec ("gzip", "zstd", "lz4", or "none" for plain
+// tar). The codec is echoed on the Result so callers learn what it actually was.
 func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Result) {
 	// Deferred so it runs on every exit, not just the successful one: an entry
 	// that fails partway through may follow one that already planted an
@@ -564,8 +561,8 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 		return &Result{Status: "failed", Error: fmt.Errorf("no entries extracted from %s (strip=%t, subdir=%q): archive layout does not match", a.In, a.Strip, subdir)}
 	}
 
-	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip)
-	return &Result{Status: "success"}
+	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "compression", compression)
+	return &Result{Status: "success", Format: "tar", Compression: compression}
 }
 
 // assertNoEscapingSymlinks walks the extracted tree and fails if any symlink

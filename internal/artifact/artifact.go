@@ -41,4 +41,12 @@ type Result struct {
 	Status  string
 	Content any // For event/list types - content to include in callback
 	Error   error
+
+	// Format and Compression describe what the artifact actually turned out
+	// to be, sniffed from its header rather than taken from the request. They
+	// are two axes on purpose: "squashfs" and "gzip" answer different
+	// questions, and a squashfs image records its codec only in the
+	// superblock, so the filename cannot supply either one.
+	Format      string // "tar", "squashfs", or "erofs"
+	Compression string // "none", "gzip", "zstd", "lz4", "xz", "lzma", "lzo"
 }
