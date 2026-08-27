@@ -270,8 +270,11 @@ func validateHardLinkSource(header *tar.Header, targetPath, destDir, hardLinkSou
 		return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
 	}
 	// A self-referential link would have its source removed as the destination
-	// and then fail, taking the file with it.
-	if filepath.Clean(hardLinkSource) == filepath.Clean(targetPath) {
+	// and then fail, taking the file with it. Compared after resolution, since
+	// a symlink source aliasing the destination is the same trap wearing a
+	// different path: link(2) would attach the link inode and the file's data
+	// would be gone.
+	if resolveIfPossible(hardLinkSource) == resolveIfPossible(targetPath) {
 		return fmt.Errorf("hard link points at itself: %s -> %s", header.Name, header.Linkname)
 	}
 	info, err := os.Lstat(hardLinkSource)
@@ -282,6 +285,15 @@ func validateHardLinkSource(header *tar.Header, targetPath, destDir, hardLinkSou
 		return fmt.Errorf("hard link source is a directory: %s -> %s", header.Name, header.Linkname)
 	}
 	return nil
+}
+
+// resolveIfPossible resolves path through symlinks when it exists, and cleans
+// it otherwise, so two names for one file compare equal.
+func resolveIfPossible(target string) string {
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		return resolved
+	}
+	return filepath.Clean(target)
 }
 
 // validateSymlinkTarget refuses a target that leaves the destination. An
@@ -538,22 +550,38 @@ func assertNoEscapingSymlinks(destDir string) error {
 		root = resolved
 	}
 
-	return filepath.WalkDir(destDir, func(path string, d fs.DirEntry, err error) error {
+	var escaped []string
+	walkErr := filepath.WalkDir(destDir, func(entry string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.Type()&fs.ModeSymlink == 0 {
 			return nil
 		}
-		linkname, err := os.Readlink(path)
+		linkname, err := os.Readlink(entry)
 		if err != nil {
-			return fmt.Errorf("failed to read symlink %s: %w", path, err)
+			return fmt.Errorf("failed to read symlink %s: %w", entry, err)
 		}
-		if !underRoot(resolveWalking(filepath.Dir(path), linkname), root) {
-			return fmt.Errorf("symlink escapes the destination after extraction: %s -> %s", path, linkname)
+		if underRoot(resolveWalking(filepath.Dir(entry), linkname), root) {
+			return nil
 		}
+		// Removed, not just reported: the workspace is shared and outlives this
+		// artifact, so a rejected extraction must not leave a usable pointer out
+		// of it behind for whatever reads the tree next. Removing a symlink
+		// unlinks the link, never what it points at.
+		if err := os.Remove(entry); err != nil {
+			return fmt.Errorf("failed to remove escaping symlink %s -> %s: %w", entry, linkname, err)
+		}
+		escaped = append(escaped, entry+" -> "+linkname)
 		return nil
 	})
+	if walkErr != nil {
+		return walkErr
+	}
+	if len(escaped) > 0 {
+		return fmt.Errorf("symlinks escape the destination after extraction (removed): %s", strings.Join(escaped, ", "))
+	}
+	return nil
 }
 
 // extractFS materializes the contents of an image filesystem (squashfs or

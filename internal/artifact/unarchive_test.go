@@ -1003,7 +1003,36 @@ func TestUnarchive_Apply_RejectsSymlinkMadeEscapingByLaterEntry(t *testing.T) {
 		t.Fatalf("expected failure once the tree leaves an escaping symlink, got %v", result.Status)
 	}
 
-	if result.Error == nil || !strings.Contains(result.Error.Error(), "escapes the destination after extraction") {
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "escape the destination after extraction") {
 		t.Fatalf("expected the post-extraction check to be what rejected it, got %v", result.Error)
+	}
+	// A rejected tree must not keep a usable pointer out of the workspace.
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("escaping symlink was left behind on the shared workspace")
+	}
+}
+
+// A hard-link source that is a symlink aliasing the destination is the same
+// self-link trap under a different path: link(2) attaches the link inode and
+// the original file's data is gone.
+func TestUnarchive_Apply_HardLinkViaSymlinkAliasKeepsData(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "real.txt", typeflag: tar.TypeReg, body: "original"},
+		{name: "alias", typeflag: tar.TypeSymlink, body: "real.txt"},
+		{name: "real.txt", typeflag: tar.TypeLink, body: "alias"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a hard link aliasing its own destination, got %v", result.Status)
+	}
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "real.txt"))
+	if err != nil {
+		t.Fatalf("original destroyed by an aliased self-link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("real.txt = %q, want original", content)
 	}
 }
