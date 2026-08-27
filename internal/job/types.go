@@ -77,6 +77,12 @@ type ArtifactReport struct {
 	Content       any    `json:"content,omitempty"`
 	FailureReason string `json:"failureReason,omitempty"`
 
+	// What the artifact turned out to be, sniffed from its header. Two axes:
+	// Format is the container, Compression the codec inside it. Empty when
+	// the artifact was never read far enough to tell.
+	Format      string `json:"format,omitempty"`
+	Compression string `json:"compression,omitempty"`
+
 	DurationSeconds float64 `json:"durationSeconds"`
 
 	CallbackURL    string            `json:"callbackUrl,omitempty"`
