@@ -148,22 +148,11 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string)
 	}
 
 	if header.Typeflag == tar.TypeLink {
-		if !underRoot(resolveWalking(destDir, relativeTo(destDir, hardLinkSource)), root) {
-			return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
+		if err := validateHardLinkSource(header, destDir, hardLinkSource, root); err != nil {
+			return err
 		}
-		// The source has to exist before anything is replaced: a hard link
-		// whose source comes later in the stream (or never) would otherwise
-		// delete the destination and then fail.
-		if _, err := os.Lstat(hardLinkSource); err != nil {
-			return fmt.Errorf("hard link source not found in archive: %s -> %s", header.Name, header.Linkname)
-		}
-	} else {
-		if filepath.IsAbs(header.Linkname) {
-			return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
-		}
-		if !underRoot(resolveWalking(filepath.Dir(targetPath), header.Linkname), root) {
-			return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
-		}
+	} else if err := validateSymlinkTarget(header, targetPath, root); err != nil {
+		return err
 	}
 
 	if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
@@ -184,6 +173,38 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string)
 	}
 	if err := os.Symlink(header.Linkname, targetPath); err != nil {
 		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+	return nil
+}
+
+// validateHardLinkSource checks a hard link before anything is replaced: the
+// source has to be contained, present, and linkable. A source that comes later
+// in the stream (or never), or that names a directory link(2) will refuse,
+// would otherwise delete the destination and only then fail.
+func validateHardLinkSource(header *tar.Header, destDir, hardLinkSource, root string) error {
+	if !underRoot(resolveWalking(destDir, relativeTo(destDir, hardLinkSource)), root) {
+		return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	info, err := os.Lstat(hardLinkSource)
+	if err != nil {
+		return fmt.Errorf("hard link source not found in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("hard link source is a directory: %s -> %s", header.Name, header.Linkname)
+	}
+	return nil
+}
+
+// validateSymlinkTarget refuses a target that leaves the destination. An
+// absolute target is rejected rather than rewritten: the link is written with
+// the archive's own linkname, so validating a rewritten path would still plant
+// a pointer outside the workspace, and build tooling only emits relative links.
+func validateSymlinkTarget(header *tar.Header, targetPath, root string) error {
+	if filepath.IsAbs(header.Linkname) {
+		return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	if !underRoot(resolveWalking(filepath.Dir(targetPath), header.Linkname), root) {
+		return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
 	}
 	return nil
 }

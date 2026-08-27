@@ -927,3 +927,35 @@ func TestUnarchive_Apply_MissingHardLinkSourceKeepsDestination(t *testing.T) {
 		t.Fatalf("keep.txt = %q, want original", content)
 	}
 }
+
+// link(2) refuses a directory source, so the check has to happen before the
+// destination is replaced.
+func TestUnarchive_Apply_HardLinkToDirectoryKeepsDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	out := filepath.Join(tmpDir, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(out, "keep.txt")
+	if err := os.WriteFile(existing, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "somedir/", typeflag: tar.TypeDir},
+		{name: "keep.txt", typeflag: tar.TypeLink, body: "somedir"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a directory hard-link source, got %v", result.Status)
+	}
+	content, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("destination destroyed by a failed hard link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+}
