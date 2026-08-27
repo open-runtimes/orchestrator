@@ -129,6 +129,44 @@ while interleaved latency medians remain effectively flat:
 | Node import | 545 / 20,720 | 499 / 20,352 | 412.81 -> 409.62 ms |
 | Sequential | 25,520 / 601,720 | 25,282 / 599,744 | 2,570.87 -> 2,567.25 ms |
 
+### Raw-pcluster request-coalescing audit
+
+Kernel tracepoints (`erofs:map_blocks_exit`, `erofs:read_folio`,
+`block:block_rq_issue`, and the block merge/split events) accounted for every
+request in a cold sequential traversal. The compact-index image issued 25,282
+loop-device reads. Of those, 18,878 were 4 KiB reads mapping raw blocks in the
+packed inode. The payload was already contiguous, but each raw lcluster was
+encoded as an independent `PLAIN` head, so the kernel could not map adjacent
+blocks as one request.
+
+EROFS big-pcluster indexes also support raw data: one `PLAIN` head followed by
+`NONHEAD` records carrying the physical block count. Prototypes grouped those
+same contiguous payload blocks at 8 KiB, 16 KiB, and the complete raw extent
+(up to 64 KiB). Image size, compressed and raw payload bytes, and build work
+were identical. `fsck.erofs`, a Linux kernel mount, and a hash of all 159,924
+regular files validated each layout.
+
+| Raw mapping | Random 50k reads / sectors | Node reads / sectors | Sequential reads / sectors |
+|---|---:|---:|---:|
+| Independent 4 KiB heads | 8,027 / 161,624 | 499 / 20,352 | 25,282 / 599,744 |
+| 8 KiB cap | 6,796 / 166,320 | 499 / 20,352 | 15,845 / 599,744 |
+| 16 KiB cap | 6,163 / 175,152 | 499 / 20,352 | 11,128 / 599,744 |
+| Whole raw extent, up to 64 KiB | 5,568 / 214,320 | 499 / 20,352 | 7,496 / 599,744 |
+
+This exposes a format-level tradeoff, not eliminated work. A 16 KiB group
+removes 23.2% of random requests and 56.0% of sequential requests, but an
+isolated page brings in its neighbors and random transfer rises 8.4%. Clean
+memory-backed A/B pairs made sequential traversal faster but made the random
+workload 11--23% slower. The 64 KiB form raises random sectors by 32.6%.
+Node startup performs exactly the same I/O at every grouping size.
+
+No variant is enabled. The independent 4 KiB heads remain the correct default
+for the stated worst-case random-access workload. The kernel cannot know from
+the image whether the caller will request the neighboring packed-inode page;
+coalescing it in the index necessarily turns that uncertainty into read
+amplification. This audit rules out request grouping as a Pareto avenue while
+pinpointing why tuned `mkfs.erofs` submits fewer, larger requests.
+
 For independent implementations, the most useful differential target is
 [`rust-fs-erofs`](https://github.com/antimatter-studios/rust-fs-erofs), whose
 writer has both legacy and compacted-2B indexes plus LZ4 compression. The
