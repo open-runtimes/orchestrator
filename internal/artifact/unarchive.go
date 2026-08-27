@@ -559,38 +559,56 @@ func assertNoEscapingSymlinks(destDir string) error {
 		root = resolved
 	}
 
-	var escaped []string
-	walkErr := filepath.WalkDir(destDir, func(entry string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	var escaped, problems []string
+	// Nothing here aborts the walk. A sweep that stops at the first unreadable
+	// entry would leave every escaping link after it in place — the opposite of
+	// the point — so failures are collected and the walk always completes.
+	_ = filepath.WalkDir(destDir, func(entry string, d fs.DirEntry, walkErr error) error {
+		removed, problem := pruneIfEscaping(entry, d, walkErr, root)
+		if removed != "" {
+			escaped = append(escaped, removed)
 		}
-		if d.Type()&fs.ModeSymlink == 0 {
-			return nil
+		if problem != "" {
+			problems = append(problems, problem)
 		}
-		linkname, err := os.Readlink(entry)
-		if err != nil {
-			return fmt.Errorf("failed to read symlink %s: %w", entry, err)
-		}
-		if underRoot(resolveWalking(filepath.Dir(entry), linkname), root) {
-			return nil
-		}
-		// Removed, not just reported: the workspace is shared and outlives this
-		// artifact, so a rejected extraction must not leave a usable pointer out
-		// of it behind for whatever reads the tree next. Removing a symlink
-		// unlinks the link, never what it points at.
-		if err := os.Remove(entry); err != nil {
-			return fmt.Errorf("failed to remove escaping symlink %s -> %s: %w", entry, linkname, err)
-		}
-		escaped = append(escaped, entry+" -> "+linkname)
 		return nil
 	})
-	if walkErr != nil {
-		return walkErr
-	}
-	if len(escaped) > 0 {
+
+	switch {
+	case len(problems) > 0 && len(escaped) > 0:
+		return fmt.Errorf("symlinks escape the destination after extraction (removed: %s; unresolved: %s)", strings.Join(escaped, ", "), strings.Join(problems, "; "))
+	case len(problems) > 0:
+		return fmt.Errorf("could not verify the extracted tree for escaping symlinks: %s", strings.Join(problems, "; "))
+	case len(escaped) > 0:
 		return fmt.Errorf("symlinks escape the destination after extraction (removed): %s", strings.Join(escaped, ", "))
 	}
 	return nil
+}
+
+// pruneIfEscaping removes entry when it is a symlink resolving outside root,
+// reporting what it removed or what stopped it. It never fails the walk: the
+// caller needs every entry inspected, not an early exit.
+func pruneIfEscaping(entry string, d fs.DirEntry, walkErr error, root string) (removed, problem string) {
+	if walkErr != nil {
+		return "", entry + ": " + walkErr.Error()
+	}
+	if d.Type()&fs.ModeSymlink == 0 {
+		return "", ""
+	}
+	linkname, err := os.Readlink(entry)
+	if err != nil {
+		return "", entry + ": " + err.Error()
+	}
+	if underRoot(resolveWalking(filepath.Dir(entry), linkname), root) {
+		return "", ""
+	}
+	// Removed, not just reported: the workspace is shared and outlives this
+	// artifact, so a rejected extraction must not leave a usable pointer out of
+	// it behind. Removing a symlink unlinks the link, never what it points at.
+	if err := os.Remove(entry); err != nil {
+		return "", "failed to remove escaping symlink " + entry + " -> " + linkname + ": " + err.Error()
+	}
+	return entry + " -> " + linkname, ""
 }
 
 // extractFS materializes the contents of an image filesystem (squashfs or

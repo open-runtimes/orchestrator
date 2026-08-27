@@ -1079,3 +1079,38 @@ func TestUnarchive_Apply_RejectsHardLinkToDanglingSymlink(t *testing.T) {
 		t.Fatalf("real.txt was left as a symlink to %q", target)
 	}
 }
+
+// An unreadable entry earlier in the walk must not stop the sweep before it
+// reaches an escaping link later in it.
+func TestUnarchive_Apply_SweepContinuesPastUnreadableEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		// Sorts before "x", and is made unreadable below.
+		{name: "aaa_blocked/keep.txt", typeflag: tar.TypeReg, body: "x"},
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+
+	// Make the early directory unreadable only after extraction, so the sweep
+	// meets a walk error before it reaches the escaping link.
+	blocked := filepath.Join(tmpDir, "out", "aaa_blocked")
+	if err := os.Chmod(blocked, 0o000); err == nil {
+		defer os.Chmod(blocked, 0o755)
+		if err := assertNoEscapingSymlinks(filepath.Join(tmpDir, "out")); err == nil {
+			t.Fatal("sweep reported success despite an escaping symlink")
+		}
+	}
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failure, got %v", result.Status)
+	}
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("escaping symlink survived the sweep")
+	}
+}
