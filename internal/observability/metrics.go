@@ -148,14 +148,14 @@ func (b *instruments) histogram(name, desc string, buckets ...float64) metric.Fl
 // the standard OpenTelemetry environment variables. Export is disabled when
 // neither OTEL_METRICS_EXPORTER nor an OTLP endpoint is configured.
 func NewMetrics(ctx context.Context) (*Metrics, error) {
-	reader, err := newMetricReader(ctx)
+	readerCfg, err := newMetricReader(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	providerOpts := make([]sdkmetric.Option, 0, 1)
-	if reader != nil {
-		providerOpts = append(providerOpts, sdkmetric.WithReader(reader))
+	if readerCfg.reader != nil {
+		providerOpts = append(providerOpts, sdkmetric.WithReader(readerCfg.reader))
 	}
 	provider := sdkmetric.NewMeterProvider(providerOpts...)
 	otel.SetMeterProvider(provider)
@@ -259,21 +259,25 @@ func NewMetrics(ctx context.Context) (*Metrics, error) {
 	return m, nil
 }
 
-func newMetricReader(ctx context.Context) (sdkmetric.Reader, error) {
+type metricReaderConfig struct {
+	reader sdkmetric.Reader
+}
+
+func newMetricReader(ctx context.Context) (metricReaderConfig, error) {
 	exporterName := strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_METRICS_EXPORTER")))
 	if exporterName == "" {
 		if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" && os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") == "" {
-			return nil, nil
+			return metricReaderConfig{}, nil
 		}
 		exporterName = "otlp"
 	}
 
 	switch exporterName {
 	case "none":
-		return nil, nil
+		return metricReaderConfig{}, nil
 	case "otlp":
 	default:
-		return nil, fmt.Errorf("unsupported OTEL_METRICS_EXPORTER %q (expected otlp or none)", exporterName)
+		return metricReaderConfig{}, fmt.Errorf("unsupported OTEL_METRICS_EXPORTER %q (expected otlp or none)", exporterName)
 	}
 
 	protocol := strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")))
@@ -292,12 +296,12 @@ func newMetricReader(ctx context.Context) (sdkmetric.Reader, error) {
 	case "grpc":
 		exporter, err = otlpmetricgrpc.New(ctx)
 	default:
-		return nil, fmt.Errorf("unsupported OTLP metrics protocol %q (expected http/protobuf or grpc)", protocol)
+		return metricReaderConfig{}, fmt.Errorf("unsupported OTLP metrics protocol %q (expected http/protobuf or grpc)", protocol)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("create OTLP metrics exporter: %w", err)
+		return metricReaderConfig{}, fmt.Errorf("create OTLP metrics exporter: %w", err)
 	}
-	return sdkmetric.NewPeriodicReader(exporter), nil
+	return metricReaderConfig{reader: sdkmetric.NewPeriodicReader(exporter)}, nil
 }
 
 // Shutdown flushes pending metrics and stops the periodic OTLP exporter.
