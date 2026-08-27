@@ -140,6 +140,81 @@ compressed-image size competitors. Outside EROFS, `mksquashfs` and
 their results should be kept separate because their metadata and decompression
 semantics differ.
 
+### Cross-implementation comparison (2026-08-27)
+
+A follow-up run built and kernel-mounted images from independent current
+writers on the same production corpus. This run used a Debian amd64 OrbStack
+guest (Linux 7.0.14, 10 vCPUs) so its absolute times are not comparable to the
+arm64 reference run above. Every valid image contained all 159,924 regular
+files and 32 symlinks, and their regular-file content hashes matched the source.
+
+| Writer and profile | Image bytes | Build time | Peak RSS |
+|---|---:|---:|---:|
+| In-tree EROFS writer | 307,073,024 | 84.89 s | 495 MiB |
+| `mkfs.erofs` 1.9.3, tuned as above | 298,606,592 | 114.80 s | 631 MiB |
+| `mksquashfs` 4.7.5, LZ4HC, 64 KiB | 303,042,560 | 12.04 s | 1,173 MiB |
+| `mksquashfs` 4.7.5, LZ4HC, 128 KiB | 294,264,832 | 19.11 s | 1,126 MiB |
+| `mksquashfs` 4.7.5, LZ4HC, 1 MiB | 287,182,848 | 12.11 s | 890 MiB |
+| `gensquashfs` 1.2.0, LZ4HC, 128 KiB | 293,732,352 | 34.40 s | 67 MiB |
+| `gensquashfs` 1.2.0, LZ4HC, 1 MiB | 286,498,816 | 37.94 s | 183 MiB |
+
+The 64 KiB `mksquashfs` time is the median of three builds; the other rows are
+single builds in this follow-up and should be treated as directional. Both
+SquashFS implementations were built from their upstream source: `mksquashfs`
+at [`db038ef`](https://github.com/plougher/squashfs-tools/commit/db038ef) and
+`gensquashfs` at
+[`e3dcf17`](https://github.com/AgentD/squashfs-tools-ng/commit/e3dcf17).
+
+Wall time in the translated guest had multi-second storage stalls, but
+loop-device counters were stable across the rotated samples. They measure the
+physical work done by the kernel after dropping caches:
+
+| Image | Random 50k reads / sectors | Node reads / sectors | Sequential reads / sectors |
+|---|---:|---:|---:|
+| In-tree EROFS writer | 8,027 / 161,624 | 499 / 20,352 | 25,282 / 599,744 |
+| `mkfs.erofs` 1.9.3 | 5,721 / 200,376 | 534 / 20,960 | 10,974 / 589,608 |
+| `mksquashfs`, 64 KiB | 349,981 / 2,373,546 | 2,130 / 31,534 | 19,694 / 724,254 |
+| `mksquashfs`, 128 KiB | 345,475 / 3,001,520 | 1,858 / 39,222 | 13,156 / 720,710 |
+| `mksquashfs`, 1 MiB | 327,382 / 11,460,154 | 1,471 / 99,272 | 6,321 / 898,534 |
+| `gensquashfs`, 128 KiB | 355,907 / 3,007,124 | 2,254 / 41,226 | 16,027 / 726,930 |
+| `gensquashfs`, 1 MiB | 337,702 / 11,548,272 | 1,939 / 109,090 | 9,456 / 896,084 |
+
+The closest cross-format size point is 64 KiB SquashFS: it is 1.31% smaller
+and about seven times faster to build, but reads 14.7 times as many sectors and
+issues 43.6 times as many reads in the random-file workload. It also reads 55%
+more sectors for Node startup and 21% more sequentially. At 128 KiB and 1 MiB,
+SquashFS saves 4.17% and 6.48% of image bytes respectively, but random sectors
+rise to 18.6 and 70.9 times the EROFS result. A 4/16/64/128/1024 KiB block-size
+sweep found no dominating point: 4 KiB and 16 KiB images grew to 369,659,904
+and 330,117,120 bytes while still reading more than two million random sectors.
+
+The source and image statistics explain the apparent SquashFS size win.
+SquashFS compresses its inode and directory tables to about 3.9 MB at 64 KiB;
+the EROFS image has 16.3 MB of metadata. That roughly 12.4 MB format-level
+advantage is larger than SquashFS's 4.0 MB total lead, so its remaining payload
+and tables are about 8 MB larger. Its 94,604 reported duplicate files are the
+in-tree writer's 94,005 non-empty duplicates plus the corpus's 599 zero-length
+files, not an additional data saving. Compressed metadata and whole-fragment
+block reads are inseparable SquashFS format semantics, not techniques the EROFS
+writer can adopt without changing compatibility or read amplification.
+
+The transferable source-level ideas in `mksquashfs` are a pipelined
+reader/compressor/writer, bounded reusable queues, cheap size/checksum gates
+before bytewise duplicate verification, and a single liblz4hc call per block.
+The in-tree writer already has the first three equivalents. Profiling shows its
+remaining build CPU is the stronger optimal LZ4 parse, which is also why its
+payload overcomes most of SquashFS's metadata advantage. Replacing that parse
+with the cheaper single-pass compressor is a compression-ratio tradeoff rather
+than eliminated overhead.
+
+`rust-fs-erofs` at
+[`616c2f7`](https://github.com/antimatter-studios/rust-fs-erofs/commit/616c2f7)
+was also exercised through its compressed writer API. It produced a
+558,792,704-byte image in 19.62 seconds with 2.9 GiB peak RSS, but 39 route
+directories with parenthesized names were inaccessible after the kernel mount.
+It was excluded from read benchmarks because the generated tree was invalid for
+this corpus.
+
 The packed-inode phase uses up to 12 workers because its 1 MiB scratch is
 cheap, while normal 4 MiB extents remain capped at eight workers. On this
 machine that recovered another 4% of build time without materially changing
