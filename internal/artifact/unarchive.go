@@ -91,6 +91,289 @@ func (a *Unarchive) ArtifactID() string   { return a.ID }
 func (a *Unarchive) ArtifactType() string { return "unarchive" }
 func (a *Unarchive) DependsOn() string    { return a.Depends }
 
+// decompress wraps r for the named codec, returning the stream and a close
+// function for whatever it allocated.
+func decompress(r io.Reader, compression string) (io.Reader, func(), error) {
+	switch compression {
+	case "gzip":
+		gzReader, err := pgzip.NewReader(r)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		return gzReader, func() { gzReader.Close() }, nil
+	case "zstd":
+		zstdReader, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create zstd reader: %w", err)
+		}
+		return zstdReader, zstdReader.Close, nil
+	case "lz4":
+		return lz4.NewReader(r), func() {}, nil
+	default:
+		return r, func() {}, nil
+	}
+}
+
+// writeEntry materializes one archive entry. transform applies the archive's
+// strip/subdir rewrite, which hard-link targets need as much as entry names do.
+func writeEntry(header *tar.Header, tarReader io.Reader, targetPath, destDir string, transform func(string) (string, bool)) error {
+	switch header.Typeflag {
+	case tar.TypeDir:
+		return mkdirAllInRoot(destDir, targetPath)
+
+	case tar.TypeReg:
+		return writeRegularFile(header, tarReader, targetPath, destDir)
+
+	case tar.TypeSymlink, tar.TypeLink:
+		// pnpm builds node_modules almost entirely from symlinks, and npm links
+		// every .bin entry, so dropping these silently ships a tree that looks
+		// complete and fails at runtime with a missing module.
+		linkSource := ""
+		if header.Typeflag == tar.TypeLink {
+			source, ok := transform(filepath.Clean(strings.TrimPrefix(header.Linkname, "./")))
+			if !ok {
+				return fmt.Errorf("hard link target excluded by strip/subdir: %s -> %s", header.Name, header.Linkname)
+			}
+			linkSource = filepath.Join(destDir, source)
+		}
+		return extractLink(header, targetPath, destDir, linkSource)
+
+	default:
+		slog.Debug("Skipping archive entry", "name", header.Name, "type", header.Typeflag)
+		return nil
+	}
+}
+
+// writeRegularFile materializes one file entry atomically: the bytes go to a
+// temporary file alongside the target and are renamed over it only once they
+// are all there.
+//
+// Atomic because the workspace is shared and outlives a failed artifact — a
+// truncating write that dies mid-copy leaves a half file where consumers
+// expect whole ones. rename(2) also replaces a symlink sitting at the name
+// rather than following it, which is what stops an earlier entry redirecting
+// this write out of the destination.
+func writeRegularFile(header *tar.Header, tarReader io.Reader, targetPath, destDir string) error {
+	if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
+		return err
+	}
+
+	mode := extractMode(os.FileMode(header.Mode))
+	tmp, err := os.CreateTemp(filepath.Dir(targetPath), ".artifact-*")
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	tmpName := tmp.Name()
+	// Cleans up on every failure path; after a successful rename the name is
+	// gone and both calls are harmless no-ops.
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName)
+	}()
+
+	if err := tmp.Chmod(mode); err != nil {
+		return fmt.Errorf("failed to set file mode: %w", err)
+	}
+	if _, err := io.Copy(tmp, tarReader); err != nil {
+		return fmt.Errorf("failed to extract file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to extract file: %w", err)
+	}
+	if err := os.Rename(tmpName, targetPath); err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	return nil
+}
+
+// mkdirAllInRoot creates dir and every missing parent between it and root,
+// refusing to traverse a symlink on the way down. Without that refusal an
+// archive could ship `a -> /elsewhere` followed by entries under `a/`, and the
+// extraction would write through the link — outside the workspace — even though
+// every path involved looks contained when compared lexically.
+func mkdirAllInRoot(root, dir string) error {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(dir))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("archive entry escapes the destination: %s", dir)
+	}
+	if err := os.MkdirAll(filepath.Clean(root), extractDirMode); err != nil {
+		return fmt.Errorf("failed to create destination: %w", err)
+	}
+	if rel == "." {
+		return nil
+	}
+
+	current := filepath.Clean(root)
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		switch {
+		case os.IsNotExist(err):
+			if err := os.Mkdir(current, extractDirMode); err != nil && !os.IsExist(err) {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+		case err != nil:
+			return fmt.Errorf("failed to inspect path: %w", err)
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("archive path traverses a symlink: %s", current)
+		case !info.IsDir():
+			return fmt.Errorf("archive path traverses a file: %s", current)
+		}
+	}
+	return nil
+}
+
+// extractLink recreates a symlink or hard link from the archive.
+//
+// Every target is validated BEFORE anything existing is replaced, so a rejected
+// entry cannot leave the tree missing the file it was going to overwrite. The
+// link is written with the archive's own linkname, so an absolute target is
+// refused outright rather than rewritten: "containing" it by validating a
+// rewritten path would still plant a pointer outside the workspace, and build
+// tooling (pnpm, npm) only ever emits relative links. Parents are created by
+// mkdirAllInRoot, which refuses to traverse a symlink — that is what stops a
+// chain like `a -> .` followed by `a/x -> ../escape`, where the lexical parent
+// and the resolved one disagree.
+func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string) error {
+	// Resolved, because the walk below resolves too and the two have to be
+	// comparable — on macOS a temp dir under /var really lives in /private/var.
+	root := filepath.Clean(destDir)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+
+	if header.Typeflag == tar.TypeLink {
+		if err := validateHardLinkSource(header, targetPath, destDir, hardLinkSource, root); err != nil {
+			return err
+		}
+	} else if err := validateSymlinkTarget(header, targetPath, root); err != nil {
+		return err
+	}
+
+	if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
+		return err
+	}
+	// Only now that the entry is known good: a re-extraction over an existing
+	// tree must not fail on a link that is already there, and the archive is the
+	// source of truth for what it points at.
+	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to replace existing entry: %w", err)
+	}
+
+	if header.Typeflag == tar.TypeLink {
+		if err := os.Link(hardLinkSource, targetPath); err != nil {
+			return fmt.Errorf("failed to create hard link: %w", err)
+		}
+		return nil
+	}
+	if err := os.Symlink(header.Linkname, targetPath); err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+	return nil
+}
+
+// validateHardLinkSource checks a hard link before anything is replaced: the
+// source has to be contained, present, and linkable. A source that comes later
+// in the stream (or never), or that names a directory link(2) will refuse,
+// would otherwise delete the destination and only then fail.
+func validateHardLinkSource(header *tar.Header, targetPath, destDir, hardLinkSource, root string) error {
+	if !underRoot(resolveWalking(destDir, relativeTo(destDir, hardLinkSource)), root) {
+		return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	// A self-referential link would have its source removed as the destination
+	// and then fail, taking the file with it.
+	if resolveIfPossible(hardLinkSource) == resolveIfPossible(targetPath) {
+		return fmt.Errorf("hard link points at itself: %s -> %s", header.Name, header.Linkname)
+	}
+	info, err := os.Lstat(hardLinkSource)
+	if err != nil {
+		return fmt.Errorf("hard link source not found in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("hard link source is a directory: %s -> %s", header.Name, header.Linkname)
+	}
+	// link(2) does not follow symlinks: it would duplicate the link inode, not
+	// the file. That is how an alias of the destination — or a dangling one,
+	// which cannot be compared against it at all — turns an extraction into a
+	// self-referential tree. No build tool emits this, so refuse it.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("hard link source is a symlink: %s -> %s", header.Name, header.Linkname)
+	}
+	return nil
+}
+
+// resolveIfPossible resolves path through symlinks when it exists, and cleans
+// it otherwise, so two names for one file compare equal.
+func resolveIfPossible(target string) string {
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		return resolved
+	}
+	return filepath.Clean(target)
+}
+
+// validateSymlinkTarget refuses a target that leaves the destination. An
+// absolute target is rejected rather than rewritten: the link is written with
+// the archive's own linkname, so validating a rewritten path would still plant
+// a pointer outside the workspace, and build tooling only emits relative links.
+func validateSymlinkTarget(header *tar.Header, targetPath, root string) error {
+	if filepath.IsAbs(header.Linkname) {
+		return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	if !underRoot(resolveWalking(filepath.Dir(targetPath), header.Linkname), root) {
+		return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
+	}
+	return nil
+}
+
+// resolveWalking follows name from base one component at a time, resolving any
+// symlink it lands on before taking the next step.
+//
+// filepath.Join cannot be used for this: it cleans lexically, so `b/../x`
+// collapses to `x` before anything notices that `b` is a symlink pointing
+// somewhere else — which is precisely how a chain of links escapes a
+// lexical containment check. Walking makes the escape visible.
+func resolveWalking(base, name string) string {
+	current := base
+	if resolved, err := filepath.EvalSymlinks(current); err == nil {
+		current = resolved
+	}
+
+	for part := range strings.SplitSeq(filepath.ToSlash(name), "/") {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+		default:
+			current = filepath.Join(current, part)
+		}
+		// Only an existing component can be resolved; the last one usually is
+		// not there yet, and an unresolvable component is judged as written.
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			current = resolved
+		}
+	}
+	return current
+}
+
+// relativeTo expresses target relative to base, for feeding back into a walk.
+func relativeTo(base, target string) string {
+	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(target))
+	if err != nil {
+		return target
+	}
+	return rel
+}
+
+// underRoot reports whether candidate is root itself or sits beneath it.
+func underRoot(candidate, root string) bool {
+	rel, err := filepath.Rel(root, filepath.Clean(candidate))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
+}
+
 // Apply extracts the archive, detecting squashfs / plain tar / gzip / zstd / lz4 from
 // its magic bytes. If Strip is set, the first path component of every entry
 // is dropped — git-forge archives (GitHub's "{repo}-{ref}/", Gitea's
@@ -157,32 +440,41 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 
 // extractTar extracts a tar archive at srcPath into destDir, decompressing the
 // stream first with the named codec ("gzip", "zstd", "lz4", or "" for plain tar).
-func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
+func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Result) {
+	// Deferred so it runs on every exit, not just the successful one: an entry
+	// that fails partway through may follow one that already planted an
+	// escaping link, and returning early would leave it on a workspace that
+	// outlives this artifact. The sweep removes what it finds; it only becomes
+	// the reported error when there is not already one.
+	defer func() {
+		if _, statErr := os.Stat(destDir); statErr != nil {
+			return
+		}
+		sweepErr := assertNoEscapingSymlinks(destDir)
+		if sweepErr == nil {
+			return
+		}
+		// Joined rather than dropped when extraction already failed: the sweep
+		// reports what it could not remove, and a workspace still holding a
+		// pointer out of itself must not be masked by whatever failed first.
+		if result != nil && result.Error != nil {
+			result = &Result{Status: "failed", Error: errors.Join(result.Error, sweepErr)}
+			return
+		}
+		result = &Result{Status: "failed", Error: sweepErr}
+	}()
+
 	file, err := os.Open(srcPath)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to open archive: %w", err)}
 	}
 	defer file.Close()
 
-	var src io.Reader = file
-	switch compression {
-	case "gzip":
-		gzReader, err := pgzip.NewReader(file)
-		if err != nil {
-			return &Result{Status: "failed", Error: fmt.Errorf("failed to create gzip reader: %w", err)}
-		}
-		defer gzReader.Close()
-		src = gzReader
-	case "zstd":
-		zstdReader, err := zstd.NewReader(file)
-		if err != nil {
-			return &Result{Status: "failed", Error: fmt.Errorf("failed to create zstd reader: %w", err)}
-		}
-		defer zstdReader.Close()
-		src = zstdReader
-	case "lz4":
-		src = lz4.NewReader(file)
+	src, closeStream, err := decompress(file, compression)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
 	}
+	defer closeStream()
 
 	tarReader := tar.NewReader(src)
 
@@ -215,68 +507,52 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 			return &Result{Status: "failed", Error: fmt.Errorf("invalid path in archive: %s", header.Name)}
 		}
 
-		extractPath := cleanName
-		if a.Strip {
-			parts := strings.SplitN(cleanName, "/", 2)
-			if len(parts) < 2 {
-				continue // the wrapper root directory entry itself
+		// Applied to entry names and to hard-link targets alike: a link names
+		// another entry of the same archive, so it has to survive the same
+		// strip/subdir rewrite or it points at a path that was never written.
+		transform := func(name string) (string, bool) {
+			out := name
+			if a.Strip {
+				parts := strings.SplitN(name, "/", 2)
+				if len(parts) < 2 {
+					return "", false // the wrapper root directory entry itself
+				}
+				out = parts[1]
 			}
-			extractPath = parts[1]
+
+			if subdir != "" {
+				prefix := subdir
+				if !a.Strip {
+					// Legacy: resolve subdir under the tar's detected root folder.
+					if archiveRoot == "" {
+						archiveRoot = strings.SplitN(name, "/", 2)[0]
+					}
+					prefix = archiveRoot + "/" + subdir
+				}
+
+				if !strings.HasPrefix(out, prefix+"/") && out != prefix {
+					return "", false
+				}
+
+				out = strings.TrimPrefix(out, prefix)
+				out = strings.TrimPrefix(out, "/")
+				if out == "" {
+					return "", false
+				}
+			}
+			return out, true
 		}
 
-		if subdir != "" {
-			prefix := subdir
-			if !a.Strip {
-				// Legacy: resolve subdir under the tar's detected root folder.
-				if archiveRoot == "" {
-					archiveRoot = strings.SplitN(cleanName, "/", 2)[0]
-				}
-				prefix = archiveRoot + "/" + subdir
-			}
-
-			if !strings.HasPrefix(extractPath, prefix+"/") && extractPath != prefix {
-				continue
-			}
-
-			extractPath = strings.TrimPrefix(extractPath, prefix)
-			extractPath = strings.TrimPrefix(extractPath, "/")
-			if extractPath == "" {
-				continue
-			}
+		extractPath, ok := transform(cleanName)
+		if !ok {
+			continue
 		}
 
 		targetPath := filepath.Join(destDir, extractPath)
 		extracted++
 
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, extractDirMode); err != nil {
-				return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
-			}
-
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), extractDirMode); err != nil {
-				return &Result{Status: "failed", Error: fmt.Errorf("failed to create parent directory: %w", err)}
-			}
-
-			mode := extractMode(os.FileMode(header.Mode))
-			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-			if err != nil {
-				return &Result{Status: "failed", Error: fmt.Errorf("failed to create file: %w", err)}
-			}
-			if err := outFile.Chmod(mode); err != nil {
-				outFile.Close()
-				return &Result{Status: "failed", Error: fmt.Errorf("failed to set file mode: %w", err)}
-			}
-
-			if _, err := io.Copy(outFile, tarReader); err != nil {
-				outFile.Close()
-				return &Result{Status: "failed", Error: fmt.Errorf("failed to extract file: %w", err)}
-			}
-			outFile.Close()
-
-		default:
-			slog.Debug("Skipping archive entry", "name", header.Name, "type", header.Typeflag)
+		if err := writeEntry(header, tarReader, targetPath, destDir, transform); err != nil {
+			return &Result{Status: "failed", Error: err}
 		}
 	}
 
@@ -290,6 +566,69 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 
 	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip)
 	return &Result{Status: "success"}
+}
+
+// assertNoEscapingSymlinks walks the extracted tree and fails if any symlink
+// resolves outside destDir. This is the guarantee consumers actually need —
+// whatever order the archive wrote its entries in, nothing left behind points
+// out of the workspace. WalkDir does not follow symlinks, so the walk itself
+// cannot be led astray.
+func assertNoEscapingSymlinks(destDir string) error {
+	root := filepath.Clean(destDir)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+
+	var escaped, problems []string
+	// Nothing here aborts the walk. A sweep that stops at the first unreadable
+	// entry would leave every escaping link after it in place — the opposite of
+	// the point — so failures are collected and the walk always completes.
+	_ = filepath.WalkDir(destDir, func(entry string, d fs.DirEntry, walkErr error) error {
+		removed, problem := pruneIfEscaping(entry, d, walkErr, root)
+		if removed != "" {
+			escaped = append(escaped, removed)
+		}
+		if problem != "" {
+			problems = append(problems, problem)
+		}
+		return nil
+	})
+
+	switch {
+	case len(problems) > 0 && len(escaped) > 0:
+		return fmt.Errorf("symlinks escape the destination after extraction (removed: %s; unresolved: %s)", strings.Join(escaped, ", "), strings.Join(problems, "; "))
+	case len(problems) > 0:
+		return fmt.Errorf("could not verify the extracted tree for escaping symlinks: %s", strings.Join(problems, "; "))
+	case len(escaped) > 0:
+		return fmt.Errorf("symlinks escape the destination after extraction (removed): %s", strings.Join(escaped, ", "))
+	}
+	return nil
+}
+
+// pruneIfEscaping removes entry when it is a symlink resolving outside root,
+// reporting what it removed or what stopped it. It never fails the walk: the
+// caller needs every entry inspected, not an early exit.
+func pruneIfEscaping(entry string, d fs.DirEntry, walkErr error, root string) (removed, problem string) {
+	if walkErr != nil {
+		return "", entry + ": " + walkErr.Error()
+	}
+	if d.Type()&fs.ModeSymlink == 0 {
+		return "", ""
+	}
+	linkname, err := os.Readlink(entry)
+	if err != nil {
+		return "", entry + ": " + err.Error()
+	}
+	if underRoot(resolveWalking(filepath.Dir(entry), linkname), root) {
+		return "", ""
+	}
+	// Removed, not just reported: the workspace is shared and outlives this
+	// artifact, so a rejected extraction must not leave a usable pointer out of
+	// it behind. Removing a symlink unlinks the link, never what it points at.
+	if err := os.Remove(entry); err != nil {
+		return "", "failed to remove escaping symlink " + entry + " -> " + linkname + ": " + err.Error()
+	}
+	return entry + " -> " + linkname, ""
 }
 
 // extractFS materializes the contents of an image filesystem (squashfs or

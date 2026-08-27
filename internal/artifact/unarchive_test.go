@@ -579,3 +579,607 @@ func TestUnarchive_Apply_UnreadableSource(t *testing.T) {
 		t.Errorf("expected the error to name the failed header read, got %v", result.Error)
 	}
 }
+
+// createLinkArchive writes a tar.gz of regular files plus symlink/hard-link
+// entries, mirroring how pnpm and npm ship a node_modules tree.
+func createLinkArchive(t *testing.T, archiveIn string, files, symlinks, hardlinks map[string]string) {
+	t.Helper()
+
+	file, err := os.Create(archiveIn)
+	if err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+	defer file.Close()
+
+	gzWriter := gzip.NewWriter(file)
+	defer gzWriter.Close()
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	for name, content := range files {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatalf("header %s: %v", name, err)
+		}
+		if _, err := tarWriter.Write([]byte(content)); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	for name, target := range symlinks {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: target,
+		}); err != nil {
+			t.Fatalf("symlink header %s: %v", name, err)
+		}
+	}
+	for name, target := range hardlinks {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o644, Typeflag: tar.TypeLink, Linkname: target,
+		}); err != nil {
+			t.Fatalf("hardlink header %s: %v", name, err)
+		}
+	}
+}
+
+// A pnpm node_modules is a tree of relative symlinks. Dropping them extracts a
+// tree that looks complete and fails at runtime with a missing module, which is
+// exactly how this surfaced in production.
+func TestUnarchive_Apply_PreservesSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+
+	createLinkArchive(t, archiveIn,
+		map[string]string{
+			"node_modules/.pnpm/react@19.2.6/node_modules/react/index.js": "module.exports = 'react';",
+			"server/entry.mjs": "import 'react';",
+		},
+		map[string]string{
+			"node_modules/react": ".pnpm/react@19.2.6/node_modules/react",
+		},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+
+	link := filepath.Join(tmpDir, "out", "node_modules", "react")
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("symlink not extracted: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected a symlink at %s, got mode %v", link, info.Mode())
+	}
+	// It must resolve to the real package, the way node's resolver walks it.
+	if content, err := os.ReadFile(filepath.Join(link, "index.js")); err != nil {
+		t.Fatalf("symlink does not resolve to the package: %v", err)
+	} else if string(content) != "module.exports = 'react';" {
+		t.Fatalf("resolved unexpected content: %q", content)
+	}
+}
+
+func TestUnarchive_Apply_PreservesHardLinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+
+	createLinkArchive(t, archiveIn,
+		map[string]string{"pkg/real.js": "payload"},
+		nil,
+		map[string]string{"pkg/linked.js": "pkg/real.js"},
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "pkg", "linked.js"))
+	if err != nil {
+		t.Fatalf("hard link not extracted: %v", err)
+	}
+	if string(content) != "payload" {
+		t.Fatalf("hard link content = %q", content)
+	}
+}
+
+// A link whose target escapes the destination must fail the artifact rather
+// than plant a pointer to the host filesystem.
+func TestUnarchive_Apply_RejectsEscapingLinks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		symlinks  map[string]string
+		hardlinks map[string]string
+	}{
+		"relative symlink": {symlinks: map[string]string{"evil": "../../../../etc/passwd"}},
+		"absolute symlink": {symlinks: map[string]string{"evil": "/etc/passwd"}},
+		"hard link":        {hardlinks: map[string]string{"evil": "../../../../etc/passwd"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+			createLinkArchive(t, archiveIn, map[string]string{"keep.txt": "x"}, tc.symlinks, tc.hardlinks)
+
+			a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+			result := a.Apply(t.Context(), tmpDir)
+			if result.Status != "failed" {
+				t.Fatalf("expected failure for an escaping link, got %v", result.Status)
+			}
+			if _, err := os.Lstat(filepath.Join(tmpDir, "out", "evil")); err == nil {
+				t.Fatal("escaping link was created")
+			}
+		})
+	}
+}
+
+// `a -> .` then `a/x -> ../escape`: the lexical parent (destDir/a) and the
+// resolved one (destDir) disagree, so a purely lexical containment check lets
+// the second link land outside the destination.
+func TestUnarchive_Apply_RejectsChainedSymlinkEscape(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"keep.txt": "x"},
+		// Order matters: the self-referential link is written first.
+		map[string]string{"a": ".", "a/x": "../escape"},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a chained symlink escape, got %v", result.Status)
+	}
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("chained symlink escaped the destination")
+	}
+}
+
+// An entry written beneath a symlinked directory would extract through the
+// link, outside the destination.
+func TestUnarchive_Apply_RejectsWritesThroughSymlinkedParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	outside := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"a/planted.txt": "payload"},
+		map[string]string{"a": "../outside"},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "failed" {
+		t.Fatalf("expected failure writing through a symlinked parent, got %v", result.Status)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "planted.txt")); err == nil {
+		t.Fatal("file was planted outside the destination")
+	}
+}
+
+// A rejected link must not have destroyed the entry it was replacing.
+func TestUnarchive_Apply_RejectedLinkLeavesExistingFileIntact(t *testing.T) {
+	tmpDir := t.TempDir()
+	out := filepath.Join(tmpDir, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(out, "keep.txt")
+	if err := os.WriteFile(existing, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn, nil, map[string]string{"keep.txt": "/etc/passwd"}, nil)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for an absolute symlink, got %v", result.Status)
+	}
+	content, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("existing file was destroyed by a rejected entry: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("existing file = %q, want original", content)
+	}
+}
+
+// A hard link names another entry of the same archive, so it has to follow the
+// same strip/subdir rewrite as the file it points at.
+func TestUnarchive_Apply_HardLinkHonoursStrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"wrapper/pkg/real.js": "payload"},
+		nil,
+		map[string]string{"wrapper/pkg/linked.js": "wrapper/pkg/real.js"},
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out", Strip: true}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "pkg", "linked.js"))
+	if err != nil {
+		t.Fatalf("hard link not extracted under strip: %v", err)
+	}
+	if string(content) != "payload" {
+		t.Fatalf("hard link content = %q", content)
+	}
+}
+
+// tarEntry is an archive entry with a defined position in the stream; several
+// attacks depend on ordering, which a map cannot express.
+type tarEntry struct {
+	name     string
+	typeflag byte
+	body     string // contents for a regular file, link target otherwise
+}
+
+func createOrderedArchive(t *testing.T, archiveIn string, entries []tarEntry) {
+	t.Helper()
+
+	file, err := os.Create(archiveIn)
+	if err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+	defer file.Close()
+
+	gzWriter := gzip.NewWriter(file)
+	defer gzWriter.Close()
+	tarWriter := tar.NewWriter(gzWriter)
+	defer tarWriter.Close()
+
+	for _, e := range entries {
+		header := &tar.Header{Name: e.name, Mode: 0o644, Typeflag: e.typeflag}
+		switch e.typeflag {
+		case tar.TypeReg:
+			header.Size = int64(len(e.body))
+		default:
+			header.Linkname = e.body
+			header.Mode = 0o777
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatalf("header %s: %v", e.name, err)
+		}
+		if e.typeflag == tar.TypeReg {
+			if _, err := tarWriter.Write([]byte(e.body)); err != nil {
+				t.Fatalf("write %s: %v", e.name, err)
+			}
+		}
+	}
+}
+
+// `b -> .`, then `a -> b/../pwned`, then a regular file named `a`. Lexical
+// cleaning cancels `b/..` and hides the escape, so the symlink is accepted and
+// the file write follows it out of the destination. Order is the whole attack.
+func TestUnarchive_Apply_RejectsSymlinkChainThroughParent(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "b", typeflag: tar.TypeSymlink, body: "."},
+		{name: "a", typeflag: tar.TypeSymlink, body: "b/../pwned"},
+		{name: "a", typeflag: tar.TypeReg, body: "payload"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a symlink chain, got %v", result.Status)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "pwned")); err == nil {
+		t.Fatal("write escaped the destination")
+	}
+}
+
+// A regular file must replace a symlink sitting at its name rather than being
+// written through it.
+func TestUnarchive_Apply_ReplacesSymlinkWithRegularFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn,
+		map[string]string{"target.txt": "original", "link.txt": "replacement"},
+		map[string]string{"link.txt": "target.txt"},
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+	// The symlink's target must be untouched by the later regular-file entry.
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "target.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("write followed the symlink: target.txt = %q", content)
+	}
+}
+
+// A hard link whose source is missing must fail before replacing anything.
+func TestUnarchive_Apply_MissingHardLinkSourceKeepsDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	out := filepath.Join(tmpDir, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(out, "keep.txt")
+	if err := os.WriteFile(existing, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createLinkArchive(t, archiveIn, nil, nil, map[string]string{"keep.txt": "never/written.js"})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a missing hard link source, got %v", result.Status)
+	}
+	content, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("destination destroyed by a failed hard link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+}
+
+// link(2) refuses a directory source, so the check has to happen before the
+// destination is replaced.
+func TestUnarchive_Apply_HardLinkToDirectoryKeepsDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	out := filepath.Join(tmpDir, "out")
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(out, "keep.txt")
+	if err := os.WriteFile(existing, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "somedir/", typeflag: tar.TypeDir},
+		{name: "keep.txt", typeflag: tar.TypeLink, body: "somedir"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a directory hard-link source, got %v", result.Status)
+	}
+	content, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("destination destroyed by a failed hard link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+}
+
+// A hard link naming itself would have its source removed as the destination
+// and then fail, destroying the file.
+func TestUnarchive_Apply_SelfHardLinkKeepsSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "keep.txt", typeflag: tar.TypeReg, body: "original"},
+		{name: "keep.txt", typeflag: tar.TypeLink, body: "keep.txt"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a self-referential hard link, got %v", result.Status)
+	}
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "keep.txt"))
+	if err != nil {
+		t.Fatalf("source destroyed by a self-referential hard link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+}
+
+// Per-entry validation is point-in-time, so a later entry can invalidate an
+// earlier verdict: `x -> a/../escape` is contained while `a -> sub` names a
+// real directory, and stops being contained once `sub` becomes a link to the
+// root. Only the finished tree tells the truth.
+func TestUnarchive_Apply_RejectsSymlinkMadeEscapingByLaterEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "failed" {
+		t.Fatalf("expected failure once the tree leaves an escaping symlink, got %v", result.Status)
+	}
+
+	if result.Error == nil || !strings.Contains(result.Error.Error(), "escape the destination after extraction") {
+		t.Fatalf("expected the post-extraction check to be what rejected it, got %v", result.Error)
+	}
+	// A rejected tree must not keep a usable pointer out of the workspace.
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("escaping symlink was left behind on the shared workspace")
+	}
+}
+
+// A hard-link source that is a symlink aliasing the destination is the same
+// self-link trap under a different path: link(2) attaches the link inode and
+// the original file's data is gone.
+func TestUnarchive_Apply_HardLinkViaSymlinkAliasKeepsData(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "real.txt", typeflag: tar.TypeReg, body: "original"},
+		{name: "alias", typeflag: tar.TypeSymlink, body: "real.txt"},
+		{name: "real.txt", typeflag: tar.TypeLink, body: "alias"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a hard link aliasing its own destination, got %v", result.Status)
+	}
+	content, err := os.ReadFile(filepath.Join(tmpDir, "out", "real.txt"))
+	if err != nil {
+		t.Fatalf("original destroyed by an aliased self-link: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("real.txt = %q, want original", content)
+	}
+}
+
+// A failure partway through must not leave an escaping link behind: the entry
+// that fails may follow one that already planted it.
+func TestUnarchive_Apply_SweepsEscapeEvenWhenAnEntryFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+		// Fails the extraction after the escape is already on disk.
+		{name: "boom", typeflag: tar.TypeSymlink, body: "/etc/passwd"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure, got %v", result.Status)
+	}
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("escaping symlink survived a mid-archive failure")
+	}
+}
+
+// A dangling symlink cannot be compared against the destination, and link(2)
+// would duplicate the link inode rather than the file.
+func TestUnarchive_Apply_RejectsHardLinkToDanglingSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "alias", typeflag: tar.TypeSymlink, body: "real.txt"},
+		{name: "real.txt", typeflag: tar.TypeLink, body: "alias"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a hard link to a dangling alias, got %v", result.Status)
+	}
+	// Nothing self-referential may be left behind.
+	if target, err := os.Readlink(filepath.Join(tmpDir, "out", "real.txt")); err == nil {
+		t.Fatalf("real.txt was left as a symlink to %q", target)
+	}
+}
+
+// An unreadable entry earlier in the walk must not stop the sweep before it
+// reaches an escaping link later in it.
+func TestUnarchive_Apply_SweepContinuesPastUnreadableEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		// Sorts before "x", and is made unreadable below.
+		{name: "aaa_blocked/keep.txt", typeflag: tar.TypeReg, body: "x"},
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+
+	// Make the early directory unreadable only after extraction, so the sweep
+	// meets a walk error before it reaches the escaping link.
+	blocked := filepath.Join(tmpDir, "out", "aaa_blocked")
+	if err := os.Chmod(blocked, 0o000); err == nil {
+		defer os.Chmod(blocked, 0o755)
+		if err := assertNoEscapingSymlinks(filepath.Join(tmpDir, "out")); err == nil {
+			t.Fatal("sweep reported success despite an escaping symlink")
+		}
+	}
+
+	if result.Status != "failed" {
+		t.Fatalf("expected failure, got %v", result.Status)
+	}
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("escaping symlink survived the sweep")
+	}
+}
+
+// failingReader stands in for a truncated or corrupt archive body.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("stream failed") }
+
+// A copy that dies part-way must leave the previous entry untouched rather than
+// a truncated file: the workspace is shared and outlives the failed artifact.
+func TestWriteRegularFile_FailedCopyLeavesExistingFileIntact(t *testing.T) {
+	destDir := t.TempDir()
+	target := filepath.Join(destDir, "keep.txt")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	header := &tar.Header{Name: "keep.txt", Mode: 0o644, Size: 99, Typeflag: tar.TypeReg}
+	if err := writeRegularFile(header, failingReader{}, target, destDir); err == nil {
+		t.Fatal("expected the failing copy to error")
+	}
+
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("existing file destroyed by a failed copy: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+
+	// And no temporary file may be left lying around.
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".artifact-") {
+			t.Fatalf("temporary file left behind: %s", e.Name())
+		}
+	}
+}
+
+// When extraction fails for its own reason and the sweep also has something to
+// report, both must reach the caller: a workspace still holding a pointer out
+// of itself must not be masked by whatever failed first.
+func TestUnarchive_Apply_ReportsSweepAlongsideExtractionFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+		// Fails extraction after the escape is already on disk.
+		{name: "boom", typeflag: tar.TypeSymlink, body: "/etc/passwd"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "failed" {
+		t.Fatalf("expected failure, got %v", result.Status)
+	}
+
+	msg := result.Error.Error()
+	if !strings.Contains(msg, "absolute symlink target") {
+		t.Errorf("extraction failure missing from the report: %s", msg)
+	}
+	if !strings.Contains(msg, "escape the destination after extraction") {
+		t.Errorf("sweep result missing from the report: %s", msg)
+	}
+}
