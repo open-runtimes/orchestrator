@@ -270,10 +270,7 @@ func validateHardLinkSource(header *tar.Header, targetPath, destDir, hardLinkSou
 		return fmt.Errorf("invalid hard link target in archive: %s -> %s", header.Name, header.Linkname)
 	}
 	// A self-referential link would have its source removed as the destination
-	// and then fail, taking the file with it. Compared after resolution, since
-	// a symlink source aliasing the destination is the same trap wearing a
-	// different path: link(2) would attach the link inode and the file's data
-	// would be gone.
+	// and then fail, taking the file with it.
 	if resolveIfPossible(hardLinkSource) == resolveIfPossible(targetPath) {
 		return fmt.Errorf("hard link points at itself: %s -> %s", header.Name, header.Linkname)
 	}
@@ -283,6 +280,13 @@ func validateHardLinkSource(header *tar.Header, targetPath, destDir, hardLinkSou
 	}
 	if info.IsDir() {
 		return fmt.Errorf("hard link source is a directory: %s -> %s", header.Name, header.Linkname)
+	}
+	// link(2) does not follow symlinks: it would duplicate the link inode, not
+	// the file. That is how an alias of the destination — or a dangling one,
+	// which cannot be compared against it at all — turns an extraction into a
+	// self-referential tree. No build tool emits this, so refuse it.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("hard link source is a symlink: %s -> %s", header.Name, header.Linkname)
 	}
 	return nil
 }
@@ -425,7 +429,21 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 
 // extractTar extracts a tar archive at srcPath into destDir, decompressing the
 // stream first with the named codec ("gzip", "zstd", "lz4", or "" for plain tar).
-func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
+func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Result) {
+	// Deferred so it runs on every exit, not just the successful one: an entry
+	// that fails partway through may follow one that already planted an
+	// escaping link, and returning early would leave it on a workspace that
+	// outlives this artifact. The sweep removes what it finds; it only becomes
+	// the reported error when there is not already one.
+	defer func() {
+		if _, statErr := os.Stat(destDir); statErr != nil {
+			return
+		}
+		if sweepErr := assertNoEscapingSymlinks(destDir); sweepErr != nil && (result == nil || result.Error == nil) {
+			result = &Result{Status: "failed", Error: sweepErr}
+		}
+	}()
+
 	file, err := os.Open(srcPath)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to open archive: %w", err)}
@@ -524,15 +542,6 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) *Result {
 	// the cause is still visible.
 	if extracted == 0 && (a.Strip || subdir != "") {
 		return &Result{Status: "failed", Error: fmt.Errorf("no entries extracted from %s (strip=%t, subdir=%q): archive layout does not match", a.In, a.Strip, subdir)}
-	}
-
-	// Per-entry checks judge the filesystem as it stood when the entry was
-	// written, and a later entry can invalidate an earlier verdict: accept
-	// `x -> a/../escape` while `a -> sub` is a real directory, then replace
-	// `sub` with a link to the root, and x now points outside. Only the
-	// finished tree can be judged, so judge it.
-	if err := assertNoEscapingSymlinks(destDir); err != nil {
-		return &Result{Status: "failed", Error: err}
 	}
 
 	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip)

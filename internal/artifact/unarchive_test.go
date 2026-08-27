@@ -1036,3 +1036,46 @@ func TestUnarchive_Apply_HardLinkViaSymlinkAliasKeepsData(t *testing.T) {
 		t.Fatalf("real.txt = %q, want original", content)
 	}
 }
+
+// A failure partway through must not leave an escaping link behind: the entry
+// that fails may follow one that already planted it.
+func TestUnarchive_Apply_SweepsEscapeEvenWhenAnEntryFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "sub/", typeflag: tar.TypeDir},
+		{name: "a", typeflag: tar.TypeSymlink, body: "sub"},
+		{name: "x", typeflag: tar.TypeSymlink, body: "a/../escape"},
+		{name: "sub", typeflag: tar.TypeSymlink, body: "."},
+		// Fails the extraction after the escape is already on disk.
+		{name: "boom", typeflag: tar.TypeSymlink, body: "/etc/passwd"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure, got %v", result.Status)
+	}
+	if _, err := os.Lstat(filepath.Join(tmpDir, "out", "x")); err == nil {
+		t.Fatal("escaping symlink survived a mid-archive failure")
+	}
+}
+
+// A dangling symlink cannot be compared against the destination, and link(2)
+// would duplicate the link inode rather than the file.
+func TestUnarchive_Apply_RejectsHardLinkToDanglingSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "alias", typeflag: tar.TypeSymlink, body: "real.txt"},
+		{name: "real.txt", typeflag: tar.TypeLink, body: "alias"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "failed" {
+		t.Fatalf("expected failure for a hard link to a dangling alias, got %v", result.Status)
+	}
+	// Nothing self-referential may be left behind.
+	if target, err := os.Readlink(filepath.Join(tmpDir, "out", "real.txt")); err == nil {
+		t.Fatalf("real.txt was left as a symlink to %q", target)
+	}
+}
