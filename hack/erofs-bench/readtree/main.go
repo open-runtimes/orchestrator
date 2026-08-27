@@ -60,9 +60,7 @@ func main() {
 		paths = paths[:*limit]
 	}
 	if *dropCaches {
-		if err := unix.Sync(); err != nil {
-			panic(err)
-		}
+		unix.Sync()
 		if err := os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0); err != nil {
 			panic(err)
 		}
