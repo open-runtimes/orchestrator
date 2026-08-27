@@ -1114,3 +1114,42 @@ func TestUnarchive_Apply_SweepContinuesPastUnreadableEntries(t *testing.T) {
 		t.Fatal("escaping symlink survived the sweep")
 	}
 }
+
+// failingReader stands in for a truncated or corrupt archive body.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("stream failed") }
+
+// A copy that dies part-way must leave the previous entry untouched rather than
+// a truncated file: the workspace is shared and outlives the failed artifact.
+func TestWriteRegularFile_FailedCopyLeavesExistingFileIntact(t *testing.T) {
+	destDir := t.TempDir()
+	target := filepath.Join(destDir, "keep.txt")
+	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	header := &tar.Header{Name: "keep.txt", Mode: 0o644, Size: 99, Typeflag: tar.TypeReg}
+	if err := writeRegularFile(header, failingReader{}, target, destDir); err == nil {
+		t.Fatal("expected the failing copy to error")
+	}
+
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("existing file destroyed by a failed copy: %v", err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("keep.txt = %q, want original", content)
+	}
+
+	// And no temporary file may be left lying around.
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".artifact-") {
+			t.Fatalf("temporary file left behind: %s", e.Name())
+		}
+	}
+}

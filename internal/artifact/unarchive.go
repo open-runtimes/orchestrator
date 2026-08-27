@@ -144,33 +144,44 @@ func writeEntry(header *tar.Header, tarReader io.Reader, targetPath, destDir str
 	}
 }
 
-// writeRegularFile creates targetPath and copies the entry's bytes into it.
+// writeRegularFile materializes one file entry atomically: the bytes go to a
+// temporary file alongside the target and are renamed over it only once they
+// are all there.
+//
+// Atomic because the workspace is shared and outlives a failed artifact — a
+// truncating write that dies mid-copy leaves a half file where consumers
+// expect whole ones. rename(2) also replaces a symlink sitting at the name
+// rather than following it, which is what stops an earlier entry redirecting
+// this write out of the destination.
 func writeRegularFile(header *tar.Header, tarReader io.Reader, targetPath, destDir string) error {
 	if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
 		return err
 	}
 
-	// A symlink already sitting at this name must be replaced, never written
-	// through: OpenFile follows it, so an earlier entry could otherwise
-	// redirect this write out of the destination.
-	if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		if err := os.Remove(targetPath); err != nil {
-			return fmt.Errorf("failed to replace symlink: %w", err)
-		}
-	}
-
 	mode := extractMode(os.FileMode(header.Mode))
-	outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	tmp, err := os.CreateTemp(filepath.Dir(targetPath), ".artifact-*")
 	if err != nil {
 		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer outFile.Close()
+	tmpName := tmp.Name()
+	// Cleans up on every failure path; after a successful rename the name is
+	// gone and both calls are harmless no-ops.
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName)
+	}()
 
-	if err := outFile.Chmod(mode); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		return fmt.Errorf("failed to set file mode: %w", err)
 	}
-	if _, err := io.Copy(outFile, tarReader); err != nil {
+	if _, err := io.Copy(tmp, tarReader); err != nil {
 		return fmt.Errorf("failed to extract file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to extract file: %w", err)
+	}
+	if err := os.Rename(tmpName, targetPath); err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
 	}
 	return nil
 }
