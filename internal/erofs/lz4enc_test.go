@@ -11,8 +11,8 @@ import (
 // lz4encCorpora produces inputs spanning the encoder's edge cases: empty,
 // tiny, incompressible, highly repetitive (overlap matches), long matches
 // with extended lengths, and realistic mixed content.
-func lz4encCorpora(t *testing.T) map[string][]byte {
-	t.Helper()
+func lz4encCorpora(tb testing.TB) map[string][]byte {
+	tb.Helper()
 	rnd := rand.New(rand.NewSource(11))
 	random := make([]byte, 300000)
 	rnd.Read(random)
@@ -131,6 +131,30 @@ func TestLZ4HCEncoderRatio(t *testing.T) {
 	}
 }
 
+func TestLZ4HCEncoderOptLimit(t *testing.T) {
+	src := lz4encCorpora(t)["structured"]
+	dst := make([]byte, lz4.CompressBlockBound(len(src)))
+	var full lz4HCEncoder
+	want, err := full.CompressBlockOpt(src, dst)
+	if err != nil || want == 0 {
+		t.Fatalf("full compression: n=%d err=%v", want, err)
+	}
+
+	var fits lz4HCEncoder
+	n, within, err := fits.CompressBlockOptLimit(src, dst, want)
+	if err != nil || !within || n != want {
+		t.Fatalf("exact limit: n=%d within=%v err=%v, want %d", n, within, err, want)
+	}
+	var stops lz4HCEncoder
+	if n, within, err := stops.CompressBlockOptLimit(src, dst, want-1); err != nil || within {
+		t.Fatalf("undersized limit: n=%d within=%v err=%v", n, within, err)
+	}
+	var noOutput lz4HCEncoder
+	if n, within, err := noOutput.CompressBlockOptLimit(src[:8], nil, 100); err != nil || n != 0 || within {
+		t.Fatalf("no output buffer: n=%d within=%v err=%v", n, within, err)
+	}
+}
+
 // TestLZ4HCEncoderOptBatchFlush regresses a corruption where an optimal-parse
 // batch flush left hash-chain entries at positions beyond the parse point;
 // the finders then returned a "match" referencing the current or a future
@@ -163,5 +187,18 @@ func TestLZ4HCEncoderOptBatchFlush(t *testing.T) {
 	m, err := lz4.UncompressBlock(dst[:n], out)
 	if err != nil || m != len(src) || !bytes.Equal(out[:m], src) {
 		t.Fatalf("round trip: decoded=%d err=%v", m, err)
+	}
+}
+
+func BenchmarkLZ4HCEncoder(b *testing.B) {
+	src := lz4encCorpora(b)["structured"]
+	dst := make([]byte, lz4.CompressBlockBound(len(src)))
+	var encoder lz4HCEncoder
+	b.SetBytes(int64(len(src)))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := encoder.CompressBlockOpt(src, dst); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

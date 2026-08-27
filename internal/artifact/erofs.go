@@ -32,10 +32,13 @@ func erofsCompression(name string) (opts erofs.CompressionOptions, ok bool, err 
 		return erofs.CompressionOptions{}, false, nil
 	case "lz4", "lz4hc":
 		return erofs.CompressionOptions{
-			Algorithm:    name,
-			PClusterSize: 131072,
-			Fragments:    true,
-			Dedupe:       true,
+			Algorithm:           name,
+			PClusterSize:        128 << 10,
+			MaxExtentSize:       4 << 20,
+			Fragments:           true,
+			PackedPClusterSize:  64 << 10,
+			PackedMaxExtentSize: 1 << 20,
+			Dedupe:              true,
 		}, true, nil
 	default:
 		return erofs.CompressionOptions{}, false, fmt.Errorf("unsupported erofs compression: %q (supported: lz4, lz4hc, none)", name)

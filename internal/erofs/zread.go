@@ -3,6 +3,7 @@ package erofs
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"orchestrator/internal/erofs/disk"
 
@@ -10,9 +11,8 @@ import (
 )
 
 // Read support for z_erofs compressed inodes, covering the subset this
-// package writes: COMPRESSED_FULL (non-compact) lcluster indexes, lz4 with
-// 0-padded (big) pclusters, and packed-inode fragments including whole-file
-// packing. Compact indexes and other algorithms remain unsupported.
+// package writes: compacted-2B or full lcluster indexes, lz4 with 0-padded
+// (big) pclusters, and packed-inode fragments including whole-file packing.
 
 // Format-level pcluster bounds (Z_EROFS_PCLUSTER_MAX_SIZE and
 // Z_EROFS_PCLUSTER_MAX_DSIZE in the kernel): the compressed and decompressed
@@ -31,9 +31,14 @@ type zRead struct {
 	fragOff       uint64
 	idxStart      int64 // absolute byte offset of the lcluster index array
 	nIdx          int
+	compact       bool
+	advise        uint16
 
-	// cached decompressed extent
+	// cached decompressed extent. The packed inode is shared by all fragment
+	// readers, so protect its cache while allowing concurrent cache hits.
+	extMu       sync.RWMutex
 	extStartLcn int
+	extEndLcn   int
 	extData     []byte
 }
 
@@ -78,7 +83,17 @@ func (img *image) zInit(fi *inode) error {
 		return fmt.Errorf("unsupported z inode (advise=0x%x algo=%d clusterbits=%d) for nid %d: %w",
 			advise, algo, clusterbits, fi.nid, ErrNotImplemented)
 	}
-	z.idxStart = pos + zMapHeaderSize + zFullIndexExtra
+	z.advise = advise
+	z.compact = fi.inodeLayout == disk.LayoutCompressedCompact
+	if z.compact {
+		if advise&(zAdviseCompacted2B|zAdviseBigPcluster1|zAdviseBigPcluster2) !=
+			zAdviseCompacted2B|zAdviseBigPcluster1|zAdviseBigPcluster2 {
+			return fmt.Errorf("unsupported compact z advise 0x%x for nid %d: %w", advise, fi.nid, ErrNotImplemented)
+		}
+		z.idxStart = pos + zMapHeaderSize
+	} else {
+		z.idxStart = pos + zMapHeaderSize + zFullIndexExtra
+	}
 	z.nIdx = int((fi.size + int64(img.blockSize()) - 1) >> img.sb.BlkSizeBits)
 	fi.z = z
 	return nil
@@ -89,6 +104,9 @@ func (img *image) zIndex(fi *inode, lcn int) (advise, clusterofs uint16, u uint3
 	if lcn < 0 || lcn >= fi.z.nIdx {
 		return 0, 0, 0, fmt.Errorf("lcluster %d out of range for nid %d: %w", lcn, fi.nid, ErrInvalid)
 	}
+	if fi.z.compact {
+		return img.zCompactIndex(fi, lcn)
+	}
 	var buf [zLclusterIdxSize]byte
 	if _, err := img.meta.ReadAt(buf[:], fi.z.idxStart+int64(lcn)*zLclusterIdxSize); err != nil {
 		return 0, 0, 0, err
@@ -96,6 +114,95 @@ func (img *image) zIndex(fi *inode, lcn int) (advise, clusterofs uint16, u uint3
 	return binary.LittleEndian.Uint16(buf[0:2]),
 		binary.LittleEndian.Uint16(buf[2:4]),
 		binary.LittleEndian.Uint32(buf[4:8]), nil
+}
+
+func decodeCompactBits(pack []byte, bitpos, bits int) (uint16, uint32) {
+	bytepos := bitpos / 8
+	var word [4]byte
+	copy(word[:], pack[bytepos:min(bytepos+4, len(pack))])
+	value := binary.LittleEndian.Uint32(word[:]) >> (bitpos & 7)
+	value &= 1<<bits - 1
+	return uint16(value >> 12 & 3), value & ((1 << 12) - 1)
+}
+
+// zCompactIndex expands one compacted-2B/4B index into the same logical
+// record shape used by the full-index read path. Physical addresses are
+// reconstructed from the pack's base address and preceding records.
+func (img *image) zCompactIndex(fi *inode, lcn int) (advise, clusterofs uint16, u uint32, err error) {
+	z := fi.z
+	initial := ((32 - int(z.idxStart%32)) / 4) & 7
+	if initial > z.nIdx {
+		initial = 0
+	}
+	middle := 0
+	if initial < z.nIdx {
+		middle = (z.nIdx - initial) &^ 15
+	}
+
+	var packStart int64
+	var idx, vcnt, destSize int
+	switch {
+	case lcn < initial:
+		vcnt, destSize = 2, 4
+		idx = lcn
+		packStart = z.idxStart
+	case lcn < initial+middle:
+		vcnt, destSize = 16, 2
+		idx = lcn - initial
+		packStart = z.idxStart + int64(initial*4)
+	default:
+		vcnt, destSize = 2, 4
+		idx = lcn - initial - middle
+		packStart = z.idxStart + int64(initial*4+middle*2)
+	}
+	packBytes := vcnt * destSize
+	packStart += int64(idx/vcnt) * int64(packBytes)
+	i := idx % vcnt
+	pack := make([]byte, packBytes)
+	if _, err := img.meta.ReadAt(pack, packStart); err != nil {
+		return 0, 0, 0, err
+	}
+	encodeBits := (packBytes*8 - 32) / vcnt
+	typ, lo := decodeCompactBits(pack, encodeBits*i, encodeBits)
+	if typ == zLclusterNonhead {
+		if lo&zCblkcntBit != 0 {
+			return typ, 0, lo, nil
+		}
+		d0 := lo
+		if i+1 == vcnt {
+			prevType, prevLo := decodeCompactBits(pack, encodeBits*(i-1), encodeBits)
+			switch {
+			case prevType != zLclusterNonhead:
+				d0 = 1
+			case prevLo&zCblkcntBit != 0:
+				d0 = 2
+			default:
+				d0 = prevLo + 1
+			}
+		}
+		return typ, 0, d0, nil
+	}
+
+	nblk := uint32(0)
+	for j := i; j > 0; {
+		j--
+		prevType, prevLo := decodeCompactBits(pack, encodeBits*j, encodeBits)
+		if prevType != zLclusterNonhead {
+			nblk++
+			continue
+		}
+		if prevLo&zCblkcntBit != 0 {
+			nblk += prevLo &^ zCblkcntBit
+			j--
+			continue
+		}
+		if prevLo <= 1 {
+			return 0, 0, 0, fmt.Errorf("invalid compact NONHEAD delta %d for nid %d: %w", prevLo, fi.nid, ErrInvalid)
+		}
+		j -= int(prevLo) - 2
+	}
+	base := binary.LittleEndian.Uint32(pack[packBytes-4:])
+	return typ, uint16(lo), base + nblk, nil
 }
 
 // zLoadBlock returns the logical block containing pos for a compressed inode.
@@ -129,14 +236,9 @@ func (img *image) zLoadBlock(fi *inode, pos int64) (*block, error) {
 
 // zReadPacked reads bytes from the packed inode's decompressed data.
 func (img *image) zReadPacked(off uint64, dst []byte) error {
-	packedNid := img.sb.PackedNid
-	if packedNid == 0 {
-		return fmt.Errorf("fragment read without a packed inode: %w", ErrInvalid)
-	}
-	f := &file{img: img, name: "(packed)", nid: packedNid}
-	fi, err := f.readInfo()
+	fi, err := img.zPackedInfo()
 	if err != nil {
-		return fmt.Errorf("read packed inode: %w", err)
+		return err
 	}
 	for len(dst) > 0 {
 		if int64(off) >= fi.size {
@@ -154,10 +256,34 @@ func (img *image) zReadPacked(off uint64, dst []byte) error {
 	return nil
 }
 
+// zPackedInfo parses the hidden packed inode once. Fragment-heavy trees can
+// route tens of thousands of files through this inode; rebuilding it for each
+// logical block discarded the decompressed-extent cache between every read.
+func (img *image) zPackedInfo() (*inode, error) {
+	img.packedOnce.Do(func() {
+		if img.sb.PackedNid == 0 {
+			img.packedErr = fmt.Errorf("fragment read without a packed inode: %w", ErrInvalid)
+			return
+		}
+		f := &file{img: img, name: "(packed)", nid: img.sb.PackedNid}
+		img.packedInfo, img.packedErr = f.readInfo()
+		if img.packedErr == nil {
+			img.packedErr = img.zInit(img.packedInfo)
+		}
+		if img.packedErr != nil {
+			img.packedErr = fmt.Errorf("read packed inode: %w", img.packedErr)
+		}
+	})
+	return img.packedInfo, img.packedErr
+}
+
 // zReadIndexed fills dst with logical block bn of an indexed compressed
 // inode, decompressing (and caching) the extent that contains it.
 func (img *image) zReadIndexed(fi *inode, bn int64, dst []byte) error {
 	lcn := int(bn)
+	if fi.z.copyCachedBlock(lcn, int(img.blockSize()), dst) {
+		return nil
+	}
 
 	// Walk back to the extent HEAD.
 	head := lcn
@@ -219,13 +345,31 @@ func (img *image) zReadIndexed(fi *inode, bn int64, dst []byte) error {
 	}
 }
 
+func (z *zRead) copyCachedBlock(lcn, blockSize int, dst []byte) bool {
+	z.extMu.RLock()
+	defer z.extMu.RUnlock()
+	if lcn < z.extStartLcn || lcn >= z.extEndLcn {
+		return false
+	}
+	start := (lcn - z.extStartLcn) * blockSize
+	if start < 0 || start+len(dst) > len(z.extData) {
+		return false
+	}
+	copy(dst, z.extData[start:start+len(dst)])
+	return true
+}
+
 // zExtentData decompresses (or returns the cached copy of) the extent whose
 // HEAD lcluster is head, stored at block address blkaddr.
 func (img *image) zExtentData(fi *inode, head int, blkaddr uint32) ([]byte, error) {
 	z := fi.z
+	z.extMu.RLock()
 	if z.extStartLcn == head {
-		return z.extData, nil
+		data := z.extData
+		z.extMu.RUnlock()
+		return data, nil
 	}
+	z.extMu.RUnlock()
 
 	// Scan forward to size the extent and find the compressed block count.
 	blockSize := int64(img.blockSize())
@@ -292,7 +436,10 @@ func (img *image) zExtentData(fi *inode, head int, blkaddr uint32) ([]byte, erro
 		return nil, fmt.Errorf("pcluster at block %d for nid %d decompressed to %d bytes, want %d: %w",
 			blkaddr, fi.nid, n, decompressed, ErrInvalid)
 	}
+	z.extMu.Lock()
 	z.extStartLcn = head
+	z.extEndLcn = head + lclusters
 	z.extData = out
+	z.extMu.Unlock()
 	return out, nil
 }

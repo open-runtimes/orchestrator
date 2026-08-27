@@ -33,6 +33,18 @@ func assertErofsContents(t *testing.T, image string) {
 	}
 }
 
+func TestErofsCompressionProfile(t *testing.T) {
+	opts, compressed, err := erofsCompression("lz4hc")
+	if err != nil || !compressed {
+		t.Fatalf("erofsCompression(lz4hc) = (%+v, %v, %v)", opts, compressed, err)
+	}
+	if opts.PClusterSize != 128<<10 || opts.MaxExtentSize != 4<<20 ||
+		opts.PackedPClusterSize != 64<<10 || opts.PackedMaxExtentSize != 1<<20 ||
+		!opts.Fragments || !opts.Dedupe {
+		t.Fatalf("unexpected balanced erofs profile: %+v", opts)
+	}
+}
+
 func TestArchive_Erofs_RoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	srcDir := filepath.Join(tmpDir, "src")

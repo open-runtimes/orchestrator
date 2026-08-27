@@ -8,9 +8,11 @@ import (
 
 // planLayout assigns NIDs and determines trailing data sizes for all entries.
 func (w *erofsWriter) planLayout(root *erofsEntry) {
+	align32 := func(n int) int { return (n + 31) &^ 31 }
+	alignBlock := func(n int) int { return (n + w.blockSize - 1) &^ (w.blockSize - 1) }
 	// Collect all entries in a deterministic order (DFS, pre-order).
-	// DFS keeps directory contents close to their parent inode,
-	// improving locality for operations like find and ls -lR.
+	// DFS keeps directory contents close to their parent inode and allows
+	// small directories to use inline data with very little padding.
 	w.entries = nil
 	var walk func(e *erofsEntry)
 	walk = func(e *erofsEntry) {
@@ -59,12 +61,23 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 		// Trailing data (dirents, chunk indexes, inline data) follows.
 		headerSize := inodeSize + e.xattrSize
 
+		// Decide layout at the inode's actual offset. The core itself may not
+		// cross a metadata block boundary.
+		if currentOff%w.blockSize+inodeSize > w.blockSize {
+			currentOff = alignBlock(currentOff)
+			e.nid = uint64(currentOff / 32)
+		}
+
 		// Determine layout
 		switch e.mode & disk.StatTypeMask {
 		case disk.StatTypeReg:
 			switch {
 			case e.z != nil:
-				e.layout = disk.LayoutCompressedFull
+				if w.zCanCompact(e) {
+					e.layout = disk.LayoutCompressedCompact
+				} else {
+					e.layout = disk.LayoutCompressedFull
+				}
 			case e.size == 0 && len(e.chunks) == 0 && e.data == nil && !e.metadataOnly:
 				e.layout = disk.LayoutFlatPlain
 			case len(e.chunks) > 0 || e.metadataOnly:
@@ -75,8 +88,8 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 			default:
 				// Full-image mode: decide inline vs plain
 				if int(e.size) <= w.blockSize-headerSize {
-					inBlockOff := (currentOff + headerSize) % w.blockSize
-					if inBlockOff+int(e.size) <= w.blockSize {
+					blockOff := currentOff % w.blockSize
+					if blockOff+headerSize+int(e.size) <= w.blockSize {
 						e.layout = disk.LayoutFlatInline
 					} else {
 						e.layout = disk.LayoutFlatPlain
@@ -87,15 +100,32 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 			}
 		case disk.StatTypeDir:
 			direntDataSize := w.direntDataSize(e)
-			inBlockOff := (currentOff + headerSize) % w.blockSize
-			if direntDataSize > 0 && inBlockOff+direntDataSize <= w.blockSize {
+			blockOff := currentOff % w.blockSize
+			if direntDataSize > 0 && blockOff+headerSize+direntDataSize <= w.blockSize {
 				e.layout = disk.LayoutFlatInline
+			} else if direntDataSize > 0 && headerSize+direntDataSize <= w.blockSize {
+				// If a small directory only misses inline placement because this
+				// inode is near the end of a metadata block, advancing to the next
+				// block can eliminate a whole external directory-data block. Do it
+				// only when padding plus inline metadata is no larger overall.
+				nextBlock := alignBlock(currentOff)
+				padding := nextBlock - currentOff
+				inlineMeta := align32(headerSize + direntDataSize)
+				plainMeta := align32(headerSize)
+				externalData := alignBlock(direntDataSize)
+				if padding+inlineMeta <= plainMeta+externalData {
+					currentOff = nextBlock
+					e.nid = uint64(currentOff / 32)
+					e.layout = disk.LayoutFlatInline
+				} else {
+					e.layout = disk.LayoutFlatPlain
+				}
 			} else {
 				e.layout = disk.LayoutFlatPlain
 			}
 		case disk.StatTypeSymlink:
-			inBlockOff := (currentOff + headerSize) % w.blockSize
-			if len(e.symTarget) > 0 && inBlockOff+len(e.symTarget) <= w.blockSize {
+			blockOff := currentOff % w.blockSize
+			if len(e.symTarget) > 0 && blockOff+headerSize+len(e.symTarget) <= w.blockSize {
 				e.layout = disk.LayoutFlatInline
 			} else {
 				e.layout = disk.LayoutFlatPlain
@@ -114,17 +144,9 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 			totalInodeSize = (totalInodeSize + 31) & ^31
 		}
 
-		// Check block boundary: inode core must not cross a block boundary
-		blockOff := currentOff % w.blockSize
-		if blockOff+inodeSize > w.blockSize {
-			// Align to next block
-			currentOff = (currentOff + w.blockSize - 1) & ^(w.blockSize - 1)
-			e.nid = uint64(currentOff / 32)
-		}
-
 		// Also check that trailing data doesn't cross block boundary for inline layouts
 		if e.layout == disk.LayoutFlatInline {
-			blockOff = currentOff % w.blockSize
+			blockOff := currentOff % w.blockSize
 			if blockOff+headerSize+e.trailingSize > w.blockSize {
 				// Fall back to flat-plain (data would cross block boundary)
 				e.layout = disk.LayoutFlatPlain
@@ -146,7 +168,7 @@ func (w *erofsWriter) planLayout(root *erofsEntry) {
 func (w *erofsWriter) calcTrailingSize(e *erofsEntry) int {
 	switch e.mode & disk.StatTypeMask {
 	case disk.StatTypeReg:
-		if e.layout == disk.LayoutCompressedFull {
+		if e.layout == disk.LayoutCompressedFull || e.layout == disk.LayoutCompressedCompact {
 			return w.zTrailingSize(e)
 		}
 		if e.layout == disk.LayoutChunkBased {

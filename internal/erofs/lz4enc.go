@@ -1,6 +1,9 @@
 package erofs
 
-import "math/bits"
+import (
+	"encoding/binary"
+	"math/bits"
+)
 
 // A high-compression LZ4 block encoder. The vendored pierrec/lz4 decoder (and
 // the kernel) read its output like any other lz4 block; this encoder exists
@@ -43,31 +46,30 @@ func lz4Hash(u uint32) uint32 {
 }
 
 func load32(b []byte, i int) uint32 {
-	return uint32(b[i]) | uint32(b[i+1])<<8 | uint32(b[i+2])<<16 | uint32(b[i+3])<<24
+	return binary.LittleEndian.Uint32(b[i:])
 }
 
-// matchLen returns the length of the common prefix of a and b.
-func matchLen(a, b []byte) int {
+// matchLenAt returns the common-prefix length of two equal-length ranges in
+// src. Indexed access lets the compiler inline this into the match finders;
+// the equivalent two-slice helper kept a call and updated two slice headers
+// in the encoder's hottest loop.
+func matchLenAt(src []byte, a, b, maxLen int) int {
 	n := 0
-	for len(a) >= 8 && len(b) >= 8 {
-		x := load64(a) ^ load64(b)
+	for n+8 <= maxLen {
+		x := load64(src[a+n:]) ^ load64(src[b+n:])
 		if x != 0 {
 			return n + trailingZeroBytes(x)
 		}
-		a, b = a[8:], b[8:]
 		n += 8
 	}
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] != b[i] {
-			return n + i
-		}
+	for n < maxLen && src[a+n] == src[b+n] {
+		n++
 	}
-	return n + min(len(a), len(b))
+	return n
 }
 
 func load64(b []byte) uint64 {
-	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
-		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
+	return binary.LittleEndian.Uint64(b)
 }
 
 func trailingZeroBytes(x uint64) int {
@@ -126,18 +128,25 @@ func (e *lz4HCEncoder) widerMatch(src []byte, i, minStart int) (int, int, int) {
 		// loop and the body has loops of its own, so a helper cannot inline
 		// (measured ~3% on whole-image builds).
 		if viable && load32(src, cand) == first {
-			fwd := matchLen(src[cand:min(cand+srcEnd-i, srcEnd)], src[i:srcEnd])
+			fwd := matchLenAt(src, cand, i, srcEnd-i)
 			if fwd >= lz4MinMatch && fwd+maxBack > bestLen {
-				back := 0
-				for back < maxBack && cand-back > 0 && src[i-back-1] == src[cand-back-1] {
-					back++
-				}
-				if fwd+back > bestLen {
-					bestLen = fwd + back
-					bestStart = i - back
-					bestRef = cand - back
-					if bestLen >= lz4GoodEnough {
-						break // long matches saturate the token economics
+				candidateBack := min(maxBack, cand)
+				// To improve the match, the backward run must reach needBack.
+				// Reject it with one mandatory-byte check when it cannot.
+				needBack := bestLen - fwd + 1
+				if needBack <= candidateBack &&
+					(needBack <= 0 || src[i-needBack] == src[cand-needBack]) {
+					back := 0
+					for back < candidateBack && src[i-back-1] == src[cand-back-1] {
+						back++
+					}
+					if fwd+back > bestLen {
+						bestLen = fwd + back
+						bestStart = i - back
+						bestRef = cand - back
+						if bestLen >= lz4GoodEnough {
+							break // long matches saturate the token economics
+						}
 					}
 				}
 			}
@@ -343,7 +352,8 @@ func seqPrice(litlen, mlen int32) int32 {
 func (e *lz4HCEncoder) forwardMatch(src []byte, i int) (int, int) {
 	bestLen, bestRef := 0, 0
 	limit := i - lz4MaxDistance
-	cand := int(e.head[lz4Hash(load32(src, i))]) - 1
+	first := load32(src, i)
+	cand := int(e.head[lz4Hash(first)]) - 1
 	// See widerMatch: skip stale future positions from flushed batches.
 	for cand >= i {
 		d := int(e.chain[cand])
@@ -355,8 +365,8 @@ func (e *lz4HCEncoder) forwardMatch(src []byte, i int) (int, int) {
 	srcEnd := len(src) - lz4LastLiterals
 	maxLen := srcEnd - i
 	for attempts := lz4Attempts; attempts > 0 && cand >= 0 && cand >= limit; attempts-- {
-		if bestLen == 0 || src[cand+bestLen] == src[i+bestLen] {
-			if l := matchLen(src[cand:cand+maxLen], src[i:i+maxLen]); l > bestLen {
+		if load32(src, cand) == first && (bestLen == 0 || src[cand+bestLen] == src[i+bestLen]) {
+			if l := matchLenAt(src, cand, i, maxLen); l > bestLen {
 				bestLen, bestRef = l, cand
 				if bestLen >= maxLen {
 					break
@@ -380,8 +390,19 @@ func (e *lz4HCEncoder) forwardMatch(src []byte, i int) (int, int) {
 // cheapest encoding, the same strategy as liblz4's highest levels. Output is
 // a standard LZ4 block; 0 means it does not fit dst.
 func (e *lz4HCEncoder) CompressBlockOpt(src, dst []byte) (int, error) {
+	n, _, err := e.CompressBlockOptLimit(src, dst, len(dst))
+	return n, err
+}
+
+// CompressBlockOptLimit is CompressBlockOpt with an output-size target. It
+// stops as soon as committed output exceeds limit: encoded output only grows,
+// so the completed block cannot get back under the target. withinLimit reports
+// whether the complete encoding fits. The packer uses this to avoid finishing
+// an expensive optimal parse when it cannot remove a 4 KiB physical block.
+func (e *lz4HCEncoder) CompressBlockOptLimit(src, dst []byte, limit int) (n int, withinLimit bool, err error) {
 	if len(src) < lz4MFLimit+lz4MinMatch {
-		return e.emitTail(src, dst, 0, 0)
+		n, err := e.emitTail(src, dst, 0, 0)
+		return n, n > 0 && n <= limit, err
 	}
 	if cap(e.chain) < len(src) {
 		e.chain = make([]uint16, len(src))
@@ -411,7 +432,10 @@ func (e *lz4HCEncoder) CompressBlockOpt(src, dst []byte) (int, error) {
 		if ml >= lz4SufficientLen {
 			var ok bool
 			if d, ok = emitSequence(dst, d, src[anchor:ip], ip-ref, ml); !ok {
-				return 0, nil
+				return 0, false, nil
+			}
+			if d > limit {
+				return 0, false, nil
 			}
 			ip = e.optAdvance(src, ip, ml, mfLimit)
 			anchor = ip
@@ -425,8 +449,14 @@ func (e *lz4HCEncoder) CompressBlockOpt(src, dst []byte) (int, error) {
 		for l := 1; l < lz4MinMatch && l <= last; l++ {
 			opt[l] = lz4OptEntry{price: inf, mlen: 1}
 		}
+		price := seqPrice(0, lz4MinMatch)
+		nextPriceBump := 15 + lz4MinMatch
 		for l := lz4MinMatch; l <= ml; l++ {
-			opt[l] = lz4OptEntry{price: seqPrice(0, int32(l)), off: int32(ip - ref), mlen: int32(l)}
+			if l == nextPriceBump {
+				price++
+				nextPriceBump += 255
+			}
+			opt[l] = lz4OptEntry{price: price, off: int32(ip - ref), mlen: int32(l)}
 		}
 		for cur := 1; cur <= last; cur++ {
 			// Literal step from cur-1.
@@ -471,8 +501,13 @@ func (e *lz4HCEncoder) CompressBlockOpt(src, dst []byte) (int, error) {
 				base = opt[relStart-int(litlen)].price
 			}
 			off := int32(s2 - ref2)
+			price := base + seqPrice(litlen, lz4MinMatch)
+			nextPriceBump := 15 + lz4MinMatch
 			for l := lz4MinMatch; l <= ml2; l++ {
-				price := base + seqPrice(litlen, int32(l))
+				if l == nextPriceBump {
+					price++
+					nextPriceBump += 255
+				}
 				pos := relStart + l
 				if pos <= cur {
 					continue // already-settled positions stay as parsed
@@ -512,7 +547,10 @@ func (e *lz4HCEncoder) CompressBlockOpt(src, dst []byte) (int, error) {
 			off := int(seqs[si][2])
 			var ok bool
 			if d, ok = emitSequence(dst, d, src[anchor:start], off, mlen); !ok {
-				return 0, nil
+				return 0, false, nil
+			}
+			if d > limit {
+				return 0, false, nil
 			}
 			anchor = start + mlen
 		}
@@ -523,7 +561,8 @@ func (e *lz4HCEncoder) CompressBlockOpt(src, dst []byte) (int, error) {
 		}
 		ip = e.optAdvance(src, ip, endPos, mfLimit)
 	}
-	return e.emitTail(src, dst, d, anchor)
+	n, err = e.emitTail(src, dst, d, anchor)
+	return n, n > 0 && n <= limit, err
 }
 
 // optAdvance indexes the positions a committed batch consumed and returns
