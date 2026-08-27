@@ -45,8 +45,10 @@ services:
       # both planes, so the domains have to differ. Override SANDBOX_DOMAIN and
       # it must stay distinct — the service refuses to start otherwise.
       DEPLOYMENTS_DOMAIN: localhost
-      JOB_SIDECAR_IMAGE: ${JOB_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/job-sidecar:latest}
-      WORKLOAD_SIDECAR_IMAGE: ${WORKLOAD_SIDECAR_IMAGE:-ghcr.io/open-runtimes/orchestrator/workload-sidecar:latest}
+      # Empty values let the binary select sidecars matching its own release;
+      # set either variable on the host to override that image explicitly.
+      JOB_SIDECAR_IMAGE: ${JOB_SIDECAR_IMAGE:-}
+      WORKLOAD_SIDECAR_IMAGE: ${WORKLOAD_SIDECAR_IMAGE:-}
       # API_KEY_FILE: /run/secrets/api-key   # uncomment to require Bearer auth
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

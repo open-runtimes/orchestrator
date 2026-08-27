@@ -38,6 +38,7 @@ import (
 func main() {
 	ctx := context.Background()
 	svcCfg := config.LoadServiceConfig()
+	svcCfg.JobSidecarImage = configuredSidecarImage("JOB_SIDECAR_IMAGE", "job-sidecar")
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "orchestrator", "backend", "docker"))
 
@@ -216,7 +217,7 @@ func startDeployments(ctx context.Context, domain string, queue dispatcher.Queue
 	dataPort := config.GetEnv("DATA_PORT", "8081")
 
 	cfg := depdocker.LoadConfigFromEnv()
-	cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
+	cfg.SidecarImage = configuredSidecarImage("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar")
 	orchestrator, err := depdocker.NewOrchestrator(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -259,7 +260,7 @@ func startSandboxes(ctx context.Context, domain string, metrics *observability.M
 	}
 
 	cfg := sandboxdocker.LoadConfigFromEnv()
-	cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
+	cfg.SidecarImage = configuredSidecarImage("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar")
 	cfg.Pools = pools
 	// The domain the URLs are minted under must be the one the proxy resolves.
 	cfg.SandboxDomain = domain
