@@ -114,12 +114,15 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}"
             echo "tags=${VERSION},${GITHUB_REF_NAME},latest" >> "$GITHUB_OUTPUT"
           else
-            echo "tags=${GITHUB_SHA},latest" >> "$GITHUB_OUTPUT"
+            VERSION="$GITHUB_SHA"
+            echo "tags=${VERSION},latest" >> "$GITHUB_OUTPUT"
           fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push orchestrator
         env:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/orchestrator
+          RELEASE_VERSION: ${{ steps.tags.outputs.version }}
         run: |
           ko build ./cmd/orchestrator \
             --bare \
