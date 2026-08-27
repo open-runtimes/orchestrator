@@ -528,6 +528,9 @@ rbac:
 service:
   type: ClusterIP
   apiPort: 8080
+  # Covers HTTP shutdown (25s), component cleanup (10s), and the final OTLP
+  # flush (10s), with margin for process and kubelet scheduling overhead.
+  terminationGracePeriodSeconds: 60
 
 # Orchestrator runtime config.
 orchestrator:

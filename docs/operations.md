@@ -208,6 +208,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
 | `service.apiPort` | `8080` | API port |
+| `service.terminationGracePeriodSeconds` | `60` | Pod shutdown budget, including the final OTLP flush |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
 | `extraEnv` | `[]` | Extra environment for all service/data-plane containers (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |
 

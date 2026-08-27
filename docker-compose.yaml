@@ -24,6 +24,9 @@
 services:
   orchestrator:
     image: ${ORCHESTRATOR_IMAGE:-ghcr.io/open-runtimes/orchestrator/orchestrator:latest}
+    # Serve (25s), component cleanup (10s), and final OTLP flush (10s) run in
+    # sequence, so Compose must not apply its shorter default stop timeout.
+    stop_grace_period: 60s
     # The images run as uid 65532; root is needed to open the host's Docker
     # socket. Fine for this dev profile — production is the Helm chart, where
     # nothing mounts a container runtime socket.

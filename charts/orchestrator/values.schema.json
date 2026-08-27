@@ -95,6 +95,10 @@
         },
         "apiPort": {
           "$ref": "#/$defs/port"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

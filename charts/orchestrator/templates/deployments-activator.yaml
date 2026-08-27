@@ -20,6 +20,7 @@ spec:
       labels:
         {{- include "orchestrator.activatorSelectorLabels" . | nindent 8 }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.service.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "orchestrator.deploymentsName" . }}-activator
       {{- with include "orchestrator.imagePullSecrets" . }}
       {{- . | nindent 6 }}

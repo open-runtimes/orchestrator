@@ -29,6 +29,7 @@ spec:
       labels:
         {{- include "orchestrator.sandboxProxySelectorLabels" . | nindent 8 }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.service.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "orchestrator.sandboxName" . }}-proxy
       {{- with include "orchestrator.imagePullSecrets" . }}
       {{- . | nindent 6 }}
