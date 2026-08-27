@@ -3,6 +3,7 @@ package erofs
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"io/fs"
 	"math/rand"
@@ -14,6 +15,49 @@ import (
 
 	"orchestrator/internal/erofs/disk"
 )
+
+var errForcedSourceRead = errors.New("forced source read failure")
+var errForcedCompression = errors.New("forced compression failure")
+
+type failingReadFS struct {
+	fs.FS
+	target string
+	opens  int
+	closes int
+}
+
+func (f *failingReadFS) Open(name string) (fs.File, error) {
+	file, err := f.FS.Open(name)
+	if err != nil || name != f.target {
+		return file, err
+	}
+	f.opens++
+	return &failingReadFile{File: file, owner: f}, nil
+}
+
+type failingReadFile struct {
+	fs.File
+	owner *failingReadFS
+}
+
+type closeTrackingReader struct {
+	io.Reader
+	closes int
+}
+
+func (r *closeTrackingReader) Close() error {
+	r.closes++
+	return nil
+}
+
+func (f *failingReadFile) Read([]byte) (int, error) {
+	return 0, errForcedSourceRead
+}
+
+func (f *failingReadFile) Close() error {
+	f.owner.closes++
+	return f.File.Close()
+}
 
 // compressTestTree exercises every write path: empty and tiny files (flat),
 // whole-file fragments, single- and multi-extent compressed files, an EOF
@@ -317,6 +361,87 @@ func TestWholeFileDedupeBeforeCompression(t *testing.T) {
 		t.Fatal("different file reused the duplicate layout")
 	}
 	assertImageMatches(t, out.Name(), src)
+}
+
+func TestCompressionClosesLazySourceOnReadError(t *testing.T) {
+	tests := []struct {
+		name string
+		size int
+		opts CompressionOptions
+	}{
+		{
+			name: "fragment",
+			size: 4096,
+			opts: CompressionOptions{Algorithm: "lz4", Fragments: true},
+		},
+		{
+			name: "buffered file",
+			size: 4096,
+			opts: CompressionOptions{Algorithm: "lz4"},
+		},
+		{
+			name: "large stream",
+			size: 2 * zSegmentSize,
+			opts: CompressionOptions{Algorithm: "lz4"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &failingReadFS{
+				FS:     fstest.MapFS{"fail": {Data: make([]byte, tc.size)}},
+				target: "fail",
+			}
+			out, err := os.Create(filepath.Join(t.TempDir(), "failed.img"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer out.Close()
+			w := Create(out, WithCompression(tc.opts))
+			if err := w.CopyFrom(src); err != nil {
+				t.Fatalf("CopyFrom: %v", err)
+			}
+			if err := w.Close(); !errors.Is(err, errForcedSourceRead) {
+				t.Fatalf("Close error = %v, want %v", err, errForcedSourceRead)
+			}
+			if src.opens == 0 || src.closes != src.opens {
+				t.Fatalf("lazy source opens/closes = %d/%d, want every open closed", src.opens, src.closes)
+			}
+		})
+	}
+}
+
+func TestCompressionClosesSourceOnCompressorError(t *testing.T) {
+	z, err := newZState(CompressionOptions{Algorithm: "lz4"}, 4096, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.close()
+	z.newPackers = func(int) (zCompressor, zFinalizer) {
+		return func([]byte, []byte) (int, error) {
+			return 0, errForcedCompression
+		}, nil
+	}
+
+	const size = 128 << 10
+	source := &closeTrackingReader{Reader: bytes.NewReader(make([]byte, size))}
+	entry := &fsEntry{
+		path:       "/fail",
+		mode:       disk.StatTypeReg | 0o644,
+		size:       size,
+		directData: source,
+	}
+	root := &fsEntry{
+		path:     "/",
+		mode:     disk.StatTypeDir | 0o755,
+		children: []*fsEntry{entry},
+	}
+	w := &Writer{root: root, z: z}
+	if err := w.compressAll(); !errors.Is(err, errForcedCompression) {
+		t.Fatalf("compressAll error = %v, want %v", err, errForcedCompression)
+	}
+	if source.closes != 1 || entry.directData != nil {
+		t.Fatalf("source closes/directData = %d/%v, want 1/<nil>", source.closes, entry.directData)
+	}
 }
 
 // TestCompressedShrinks pins that compression actually reduces the image and

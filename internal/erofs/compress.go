@@ -488,13 +488,15 @@ func (fsys *Writer) compressAll() error {
 			} else {
 				off, err = z.addFragment(r, packed, int(e.size))
 			}
+			// The source is no longer needed on either outcome. Close it before
+			// returning so a lazy reader cannot retain an opened file on error.
+			closeDirect(e)
 			if err != nil {
 				return fmt.Errorf("erofs: pack %s: %w", e.path, err)
 			}
 			e.z = &zInfo{wholeFragment: true, fragOff: off}
 			z.stats.FragmentFiles++
 			z.stats.FragmentBytes += e.size
-			closeDirect(e)
 		}
 		zi, err := packed.Finish()
 		if err != nil {
@@ -638,26 +640,45 @@ func (fsys *Writer) compressAll() error {
 	}
 
 	for _, e := range remaining {
-		r := readerFor(e)
-		if r == nil {
-			continue
-		}
 		switch {
 		case e.size >= 2*zSegmentSize:
 			// Large file: extents must land in stream order, so drain the
-			// pool first; the stream packer parallelizes internally.
+			// pool before opening this source; the stream packer parallelizes
+			// internally.
 			if err := drain(); err != nil {
 				return err
 			}
+			r := readerFor(e)
+			if r == nil {
+				continue
+			}
 			zi, err := z.compressStream(r, e.size, z.dataProfile)
+			closeDirect(e)
 			if err != nil {
 				return fmt.Errorf("erofs: compress %s: %w", e.path, err)
 			}
 			e.z = zi
 		default:
+			// Collect before opening and buffering another source. Besides
+			// bounding memory, this means a prior compression error cannot
+			// strand the next lazy reader or its buffer.
+			if len(pending) == cap(pending) {
+				job := pending[0]
+				pending = pending[:copy(pending, pending[1:])]
+				if err := collect(job); err != nil {
+					return err
+				}
+			}
+			r := readerFor(e)
+			if r == nil {
+				continue
+			}
 			buf := getFileBuffer(int(e.size))
-			if _, err := io.ReadFull(r, buf); err != nil {
-				return fmt.Errorf("erofs: read %s: %w", e.path, err)
+			_, readErr := io.ReadFull(r, buf)
+			closeDirect(e)
+			if readErr != nil {
+				putFileBuffer(buf)
+				return fmt.Errorf("erofs: read %s: %w", e.path, readErr)
 			}
 			job := &fileJob{e: e, buf: buf, res: make(chan fileResult, 1)}
 			// Extent dedupe would discover a duplicate only after running both
@@ -676,22 +697,13 @@ func (fsys *Writer) compressAll() error {
 						canonical.duplicates = append(canonical.duplicates, e)
 					}
 					putFileBuffer(buf)
-					closeDirect(e)
 					continue
 				}
 				fileDedupe[key] = job
 			}
-			if len(pending) == cap(pending) {
-				job := pending[0]
-				pending = pending[:copy(pending, pending[1:])]
-				if err := collect(job); err != nil {
-					return err
-				}
-			}
 			pending = append(pending, job)
 			jobs <- job
 		}
-		closeDirect(e)
 	}
 	return drain()
 }
