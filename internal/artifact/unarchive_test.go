@@ -691,7 +691,6 @@ func TestUnarchive_Apply_SkipsEscapingSymlinks(t *testing.T) {
 	for name, symlinks := range map[string]map[string]string{
 		"relative symlink":          {"evil": "../../../../etc/passwd"},
 		"absolute symlink":          {"evil": "/etc/passwd"},
-		"python virtualenv":         {"runtime-env/bin/python3": "/usr/local/bin/python3"},
 		"pnpm link above code root": {"submit-decklist-claim/node_modules/typescript": "../../../node_modules/.pnpm/typescript@5.9.3/node_modules/typescript"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -713,6 +712,80 @@ func TestUnarchive_Apply_SkipsEscapingSymlinks(t *testing.T) {
 				t.Fatalf("regular archive content was not extracted: content=%q error=%v", content, err)
 			}
 		})
+	}
+}
+
+// python -m venv creates an absolute interpreter link and points its relative
+// aliases at it. Keeping only the aliases yields a plausible-looking but
+// unusable environment whose interpreter fails with ENOENT at runtime.
+func TestUnarchive_Apply_PreservesRuntimePythonInterpreterSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	links := map[string]string{
+		"runtime-env/bin/python3":    "/usr/local/bin/python3",
+		"runtime-env/bin/python":     "python3",
+		"runtime-env/bin/python3.12": "python3",
+	}
+	createLinkArchive(t, archiveIn,
+		map[string]string{"runtime-env/pyvenv.cfg": "home = /usr/local/bin"},
+		links,
+		nil,
+	)
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+		t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+	}
+	for name, want := range links {
+		got, err := os.Readlink(filepath.Join(tmpDir, "out", name))
+		if err != nil {
+			t.Fatalf("Readlink(%s): %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("Readlink(%s) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestUnarchive_Apply_SkipsRuntimePythonSymlinkLookalikes(t *testing.T) {
+	for name, link := range map[string]map[string]string{
+		"wrong target":         {"runtime-env/bin/python3": "/etc/passwd"},
+		"wrong destination":    {"other-env/bin/python3": "/usr/local/bin/python3"},
+		"non interpreter":      {"runtime-env/bin/pip": "/usr/local/bin/pip"},
+		"non canonical target": {"runtime-env/bin/python3": "/opt/python/bin/python3"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+			createLinkArchive(t, archiveIn, map[string]string{"keep.txt": "x"}, link, nil)
+
+			a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+			if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {
+				t.Fatalf("Apply() = %v, error = %v", result.Status, result.Error)
+			}
+			for path := range link {
+				if _, err := os.Lstat(filepath.Join(tmpDir, "out", path)); !os.IsNotExist(err) {
+					t.Fatalf("lookalike link %q survived: %v", path, err)
+				}
+			}
+		})
+	}
+}
+
+// Even an allowed interpreter link must never become a directory traversal
+// primitive for a later archive entry.
+func TestUnarchive_Apply_RuntimePythonSymlinkCannotRedirectWrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "runtime-env/bin/python3", typeflag: tar.TypeSymlink, body: "/usr/local/bin/python3"},
+		{name: "runtime-env/bin/python3/planted", typeflag: tar.TypeReg, body: "payload"},
+	})
+
+	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "failed" || result.Error == nil || !strings.Contains(result.Error.Error(), "archive path traverses a symlink") {
+		t.Fatalf("expected symlink traversal failure, got status=%v error=%v", result.Status, result.Error)
 	}
 }
 
@@ -739,12 +812,13 @@ func TestUnarchive_Apply_RejectsEscapingHardLink(t *testing.T) {
 func TestUnarchive_Apply_SkipsChainedSymlinkEscape(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveIn := filepath.Join(tmpDir, "code.tar.gz")
-	createLinkArchive(t, archiveIn,
-		map[string]string{"keep.txt": "x"},
-		// Order matters: the self-referential link is written first.
-		map[string]string{"a": ".", "a/x": "../escape"},
-		nil,
-	)
+	// Order matters: the self-referential link is written first. A map-backed
+	// fixture made this security regression test nondeterministic.
+	createOrderedArchive(t, archiveIn, []tarEntry{
+		{name: "keep.txt", typeflag: tar.TypeReg, body: "x"},
+		{name: "a", typeflag: tar.TypeSymlink, body: "."},
+		{name: "a/x", typeflag: tar.TypeSymlink, body: "../escape"},
+	})
 
 	a := &Unarchive{ID: "u", In: "code.tar.gz", Out: "out"}
 	if result := a.Apply(t.Context(), tmpDir); result.Status != "success" {

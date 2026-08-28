@@ -261,7 +261,7 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string)
 		if err := validateHardLinkSource(header, targetPath, destDir, hardLinkSource, root); err != nil {
 			return err
 		}
-	} else if err := validateSymlinkTarget(header, targetPath, root); err != nil {
+	} else if err := validateSymlinkTarget(header, targetPath, destDir, root); err != nil {
 		return err
 	}
 
@@ -326,11 +326,15 @@ func resolveIfPossible(target string) string {
 	return filepath.Clean(target)
 }
 
-// validateSymlinkTarget marks a target that leaves the destination as unsafe.
-// An absolute target is not rewritten: the link is written with the archive's
-// own linkname, so validating a rewritten path would still plant a pointer
-// outside the workspace.
-func validateSymlinkTarget(header *tar.Header, targetPath, root string) error {
+// validateSymlinkTarget marks a target that leaves the destination as unsafe,
+// except for the narrowly recognized Python runtime interpreter chain. An
+// absolute target is not rewritten: the link is written with the archive's own
+// linkname, so validating a rewritten path would still plant a pointer outside
+// the workspace.
+func validateSymlinkTarget(header *tar.Header, targetPath, destDir, root string) error {
+	if isRuntimePythonSymlink(targetPath, destDir, header.Linkname) {
+		return nil
+	}
 	if filepath.IsAbs(header.Linkname) {
 		return fmt.Errorf("%w: absolute symlink target in archive: %s -> %s", errUnsafeSymlink, header.Name, header.Linkname)
 	}
@@ -338,6 +342,66 @@ func validateSymlinkTarget(header *tar.Header, targetPath, root string) error {
 		return fmt.Errorf("%w: invalid symlink target in archive: %s -> %s", errUnsafeSymlink, header.Name, header.Linkname)
 	}
 	return nil
+}
+
+// isRuntimePythonSymlink recognizes the one external-link shape required by
+// Python build artifacts. python -m venv writes runtime-env/bin/python3 as an
+// absolute link to the interpreter used for the build (the Open Runtimes
+// images install it under /usr/local/bin), then makes python and the versioned
+// alias point at that link. Dropping the absolute link leaves both aliases
+// dangling and the runtime crashes before it can start.
+//
+// This is deliberately narrower than allowing arbitrary absolute symlinks:
+// only Python interpreter names at the canonical runtime-env/bin location may
+// point at an interpreter in a system bin directory shared by the matching
+// build and runtime images. mkdirAllInRoot still refuses to traverse the link
+// while extracting later entries, so accepting this leaf cannot redirect an
+// archive write outside the workspace.
+func isRuntimePythonSymlink(linkPath, root, linkname string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(linkPath))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) != 3 || parts[0] != "runtime-env" || parts[1] != "bin" || !isPythonInterpreter(parts[2]) {
+		return false
+	}
+
+	if !filepath.IsAbs(linkname) {
+		return filepath.Base(linkname) == linkname && isPythonInterpreter(linkname)
+	}
+	if filepath.Clean(linkname) != linkname {
+		return false
+	}
+	targetDir := filepath.ToSlash(filepath.Dir(linkname))
+	if targetDir != "/usr/local/bin" && targetDir != "/usr/bin" {
+		return false
+	}
+	return isPythonInterpreter(filepath.Base(linkname))
+}
+
+func isPythonInterpreter(name string) bool {
+	if name == "python" {
+		return true
+	}
+	if !strings.HasPrefix(name, "python") {
+		return false
+	}
+	suffix := strings.TrimPrefix(name, "python")
+	if suffix == "" {
+		return true
+	}
+	hasDigit := false
+	for _, c := range suffix {
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+			continue
+		}
+		if c != '.' {
+			return false
+		}
+	}
+	return hasDigit
 }
 
 // resolveWalking follows name from base one component at a time, resolving any
@@ -581,11 +645,10 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 }
 
 // assertNoEscapingSymlinks walks the extracted tree and removes any symlink
-// resolving outside destDir. It fails only when the tree cannot be completely
-// inspected or an unsafe link cannot be removed. This is the guarantee
-// consumers actually need — whatever order the archive wrote its entries in,
-// nothing left behind points out of the workspace. WalkDir does not follow
-// symlinks, so the walk itself cannot be led astray.
+// resolving outside destDir except the recognized Python runtime interpreter
+// chain. It fails only when the tree cannot be completely inspected or an
+// unsafe link cannot be removed. WalkDir does not follow symlinks, so the walk
+// itself cannot be led astray.
 func assertNoEscapingSymlinks(destDir string) error {
 	root := filepath.Clean(destDir)
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
@@ -597,7 +660,7 @@ func assertNoEscapingSymlinks(destDir string) error {
 	// entry would leave every escaping link after it in place — the opposite of
 	// the point — so failures are collected and the walk always completes.
 	_ = filepath.WalkDir(destDir, func(entry string, d fs.DirEntry, walkErr error) error {
-		removed, problem := pruneIfEscaping(entry, d, walkErr, root)
+		removed, problem := pruneIfEscaping(entry, d, walkErr, root, destDir)
 		if removed != "" {
 			escaped = append(escaped, removed)
 		}
@@ -623,7 +686,7 @@ func assertNoEscapingSymlinks(destDir string) error {
 // pruneIfEscaping removes entry when it is a symlink resolving outside root,
 // reporting what it removed or what stopped it. It never fails the walk: the
 // caller needs every entry inspected, not an early exit.
-func pruneIfEscaping(entry string, d fs.DirEntry, walkErr error, root string) (removed, problem string) {
+func pruneIfEscaping(entry string, d fs.DirEntry, walkErr error, root, destDir string) (removed, problem string) {
 	if walkErr != nil {
 		return "", entry + ": " + walkErr.Error()
 	}
@@ -633,6 +696,9 @@ func pruneIfEscaping(entry string, d fs.DirEntry, walkErr error, root string) (r
 	linkname, err := os.Readlink(entry)
 	if err != nil {
 		return "", entry + ": " + err.Error()
+	}
+	if isRuntimePythonSymlink(entry, destDir, linkname) {
+		return "", ""
 	}
 	if underRoot(resolveWalking(filepath.Dir(entry), linkname), root) {
 		return "", ""
