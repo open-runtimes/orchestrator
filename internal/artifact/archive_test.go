@@ -3,6 +3,7 @@ package artifact
 import (
 	"archive/tar"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,33 @@ func TestArchive_Interface(t *testing.T) {
 	}
 	if a.ArtifactType() != "archive" {
 		t.Errorf("ArtifactType() = %v, want archive", a.ArtifactType())
+	}
+}
+
+func TestSourceFS_FollowsTopLevelDirectorySymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "target")
+	if err := os.MkdirAll(filepath.Join(target, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "nested", "file.txt"), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmpDir, "source")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	fSys, err := sourceFS(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := fs.ReadFile(fSys, "nested/file.txt")
+	if err != nil {
+		t.Fatalf("read through source FS: %v", err)
+	}
+	if string(content) != "payload" {
+		t.Fatalf("content = %q, want payload", content)
 	}
 }
 

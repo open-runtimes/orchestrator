@@ -70,7 +70,10 @@ func (a *Archive) DependsOn() string    { return a.Depends }
 // to a one-entry fs.FS (via singleFileFS) so the writer streams it rather than
 // buffering the entire file in memory.
 func sourceFS(srcPath string) (fs.FS, error) {
-	info, err := os.Lstat(srcPath)
+	// Image archives preserve the historical command-line behavior of
+	// following a top-level directory symlink and packing the target tree. Tar
+	// handles links separately below because it can represent the link itself.
+	info, err := os.Stat(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat source: %w", err)
 	}
