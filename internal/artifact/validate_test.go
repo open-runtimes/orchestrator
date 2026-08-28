@@ -367,6 +367,16 @@ func TestValidate_Unarchive(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "valid with contained symlinks",
+			art:     &Unarchive{ID: "ua1", In: "src.tar.gz", Out: "src", SymlinkPolicy: SymlinkPolicyContained},
+			wantErr: false,
+		},
+		{
+			name:    "invalid symlink policy",
+			art:     &Unarchive{ID: "ua1", In: "src.tar.gz", Out: "src", SymlinkPolicy: "python"},
+			wantErr: true,
+		},
+		{
 			name:    "missing out (dest)",
 			art:     &Unarchive{ID: "ua1", In: "src.tar.gz"},
 			wantErr: true,
