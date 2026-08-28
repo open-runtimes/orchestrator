@@ -93,22 +93,42 @@ func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 	srcPath := filepath.Join(basePath, a.In)
 	destPath := filepath.Join(basePath, a.Out)
 
+	var result *Result
 	switch a.Format {
 	case "tar":
-		return a.applyTar(srcPath, destPath)
+		result = a.applyTar(srcPath, destPath)
 	case "squashfs":
 		if err := writeSquashfs(srcPath, destPath, a.Compression, a.BlockSize); err != nil {
-			return &Result{Status: "failed", Error: err}
+			result = &Result{Status: "failed", Error: err}
+			break
 		}
-		return &Result{Status: "success"}
+		result = &Result{Status: "success"}
 	case "erofs":
 		if err := writeErofs(srcPath, destPath, a.Compression); err != nil {
-			return &Result{Status: "failed", Error: err}
+			result = &Result{Status: "failed", Error: err}
+			break
 		}
-		return &Result{Status: "success"}
+		result = &Result{Status: "success"}
 	default:
 		return &Result{Status: "failed", Error: fmt.Errorf("unsupported archive format: %s (supported: tar, squashfs, erofs)", a.Format)}
 	}
+
+	// An archive producer knows the selected format/profile without rereading
+	// the file it just wrote. Preserve lz4hc as the encoder profile even though
+	// its on-disk codec is the same LZ4 stream consumed by lz4.
+	result.Format = a.Format
+	result.Compression = effectiveArchiveCompression(a.Format, a.Compression)
+	return result
+}
+
+func effectiveArchiveCompression(format, compression string) string {
+	if compression != "" {
+		return compression
+	}
+	if format == "squashfs" {
+		return "gzip"
+	}
+	return "none"
 }
 
 // applyTar creates a tar archive from srcPath at destPath, optionally gzipped.

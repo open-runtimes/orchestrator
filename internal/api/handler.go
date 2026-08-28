@@ -186,6 +186,10 @@ func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	report.JobID = jobID
+	if h.metrics != nil {
+		h.metrics.RecordArtifactTask(r.Context(), report.Type, report.Format, report.Compression,
+			report.Status == "success", report.DurationSeconds, report.OutputBytes)
+	}
 
 	if h.artifactEmitter != nil {
 		h.artifactEmitter.EmitArtifactEvent(report)

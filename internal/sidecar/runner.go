@@ -464,6 +464,11 @@ func (r *Runner) emitArtifact(a artifact.Artifact, res artifact.Result, start ti
 		Compression:     res.Compression,
 		DurationSeconds: time.Since(start).Seconds(),
 	}
+	if archive, ok := a.(*artifact.Archive); ok && res.Status == "success" {
+		if info, err := os.Stat(filepath.Join(r.sharedVolumePath, archive.Out)); err == nil && info.Mode().IsRegular() {
+			report.OutputBytes = info.Size()
+		}
+	}
 	if res.Error != nil {
 		report.FailureReason = res.Error.Error()
 	}

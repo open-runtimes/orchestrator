@@ -3,6 +3,7 @@ package observability
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -59,6 +60,41 @@ func TestRecordJobMetrics(t *testing.T) {
 	metrics.RecordJobCreated(ctx, "python:3.11")
 	metrics.RecordJobCompleted(ctx, "alpine:latest", true, 5.5)
 	metrics.RecordJobCompleted(ctx, "python:3.11", false, 120.0)
+}
+
+func TestRecordArtifactTaskMetrics(t *testing.T) {
+	registry := promclient.NewRegistry()
+	exporter, err := prometheus.New(prometheus.WithRegisterer(registry))
+	if err != nil {
+		t.Fatalf("exporter: %v", err)
+	}
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
+	b := &instruments{meter: provider.Meter("orchestrator")}
+	metrics := &Metrics{
+		ArtifactTaskDuration:    b.histogram("artifact_task_duration_seconds", "test", 1, 5, 10),
+		ArtifactTaskOutputBytes: b.byteHistogram("artifact_task_output_bytes", "test", 1024, 4096, 16384),
+	}
+	if b.err != nil {
+		t.Fatalf("instruments: %v", b.err)
+	}
+
+	metrics.RecordArtifactTask(t.Context(), "archive", "erofs", "lz4hc", true, 2.5, 4096)
+	// Unexpected report dimensions collapse to bounded values.
+	metrics.RecordArtifactTask(t.Context(), "future-task", "future-format", "future-codec", false, 1, 0)
+
+	rec := httptest.NewRecorder()
+	promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(rec,
+		httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`artifact_task_duration_seconds_count\{[^}]*compression="lz4hc"[^}]*format="erofs"[^}]*success="true"[^}]*type="archive"[^}]*\} 1`,
+		`artifact_task_output_bytes_sum\{[^}]*compression="lz4hc"[^}]*format="erofs"[^}]*success="true"[^}]*type="archive"[^}]*\} 4096`,
+		`artifact_task_duration_seconds_count\{[^}]*compression="other"[^}]*format="other"[^}]*success="false"[^}]*type="other"[^}]*\} 1`,
+	} {
+		if !regexp.MustCompile(want).MatchString(body) {
+			t.Errorf("metrics output missing %q\n%s", want, body)
+		}
+	}
 }
 
 // Saturation gauges must be read at collection time, not tallied: a job that

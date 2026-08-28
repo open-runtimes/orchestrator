@@ -82,6 +82,9 @@ func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
 	if r.Compression != "" {
 		data["compression"] = r.Compression
 	}
+	if r.OutputBytes > 0 {
+		data["outputBytes"] = r.OutputBytes
+	}
 	if r.FailureReason != "" {
 		data["error"] = r.FailureReason
 	}

@@ -84,6 +84,7 @@ type ArtifactReport struct {
 	Compression string `json:"compression,omitempty"`
 
 	DurationSeconds float64 `json:"durationSeconds"`
+	OutputBytes     int64   `json:"outputBytes,omitempty"`
 
 	CallbackURL    string            `json:"callbackUrl,omitempty"`
 	CallbackKey    string            `json:"callbackKey,omitempty"`

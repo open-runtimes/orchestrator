@@ -34,9 +34,32 @@ func TestArchive_Apply(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
+	if result.Format != "tar" || result.Compression != "none" {
+		t.Errorf("classification = %s/%s, want tar/none", result.Format, result.Compression)
+	}
 
 	if _, err := os.Stat(filepath.Join(tmpDir, "output.tar.gz")); os.IsNotExist(err) {
 		t.Error("Archive file was not created")
+	}
+}
+
+func TestEffectiveArchiveCompression(t *testing.T) {
+	tests := []struct {
+		format      string
+		compression string
+		want        string
+	}{
+		{format: "tar", want: "none"},
+		{format: "squashfs", want: "gzip"},
+		{format: "erofs", want: "none"},
+		{format: "erofs", compression: "lz4hc", want: "lz4hc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.format+"/"+tt.compression, func(t *testing.T) {
+			if got := effectiveArchiveCompression(tt.format, tt.compression); got != tt.want {
+				t.Errorf("effectiveArchiveCompression(%q, %q) = %q, want %q", tt.format, tt.compression, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -43,10 +43,10 @@ type Result struct {
 	Error   error
 
 	// Format and Compression describe what the artifact actually turned out
-	// to be, sniffed from its header rather than taken from the request. They
-	// are two axes on purpose: "squashfs" and "gzip" answer different
-	// questions, and a squashfs image records its codec only in the
-	// superblock, so the filename cannot supply either one.
+	// to be. Consumers sniff them from the header; archive producers report
+	// the selected encoder profile directly, preserving lz4hc versus lz4.
+	// They are two axes on purpose: "squashfs" and "gzip" answer different
+	// questions, and the filename cannot reliably supply either one.
 	Format      string // "tar", "squashfs", or "erofs"
-	Compression string // "none", "gzip", "zstd", "lz4", "xz", "lzma", "lzo"
+	Compression string // "none", "gzip", "zstd", "lz4", "lz4hc", "xz", "lzma", "lzo"
 }

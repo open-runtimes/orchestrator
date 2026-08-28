@@ -10,23 +10,26 @@ import (
 
 // Attribute keys
 const (
-	attrMethod     = "method"
-	attrPath       = "path"
-	attrStatus     = "status"
-	attrImage      = "image"
-	attrSuccess    = "success"
-	attrIdentity   = "identity"
-	attrVerb       = "verb"
-	attrResource   = "resource"
-	attrCreated    = "created"
-	attrComponent  = "component" // which component held the request
-	attrOutcome    = "outcome"
-	attrResult     = "result"
-	attrDirection  = "direction"
-	attrDeployment = "deployment"
-	attrPool       = "pool"
-	attrKind       = "kind" // which warm-pool consumer: pool | sandbox
-	attrPolicy     = "policy"
+	attrMethod      = "method"
+	attrPath        = "path"
+	attrStatus      = "status"
+	attrImage       = "image"
+	attrSuccess     = "success"
+	attrIdentity    = "identity"
+	attrVerb        = "verb"
+	attrResource    = "resource"
+	attrCreated     = "created"
+	attrComponent   = "component" // which component held the request
+	attrOutcome     = "outcome"
+	attrResult      = "result"
+	attrDirection   = "direction"
+	attrDeployment  = "deployment"
+	attrPool        = "pool"
+	attrKind        = "kind" // which warm-pool consumer: pool | sandbox
+	attrPolicy      = "policy"
+	attrType        = "type"
+	attrFormat      = "format"
+	attrCompression = "compression"
 )
 
 func methodAttr(method string) attribute.KeyValue {
@@ -98,6 +101,18 @@ func poolAttr(id string) attribute.KeyValue {
 
 func policyAttr(policy string) attribute.KeyValue {
 	return attribute.String(attrPolicy, policy)
+}
+
+func typeAttr(value string) attribute.KeyValue {
+	return attribute.String(attrType, value)
+}
+
+func formatAttr(value string) attribute.KeyValue {
+	return attribute.String(attrFormat, value)
+}
+
+func compressionAttr(value string) attribute.KeyValue {
+	return attribute.String(attrCompression, value)
 }
 
 // WithMethod returns a metric option with the method attribute.

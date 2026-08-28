@@ -364,6 +364,40 @@ func TestRunner_ReportsArtifact(t *testing.T) {
 	}
 }
 
+func TestRunner_ReportsArchiveMetrics(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "source.txt"), []byte("artifact metrics"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	captured := &captureReporter{}
+	runner := NewRunner("test-job", tmpDir, 5, artifact.DefaultRegistry(),
+		WithSignalFunc(func(context.Context) {}),
+		WithArtifactListener(captured.fn()),
+	)
+	archive := &artifact.Archive{ID: "archive", In: "source.txt", Out: "code.tar", Format: "tar"}
+
+	if err := runner.Run(t.Context(), []artifact.Artifact{archive}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	captured.mu.Lock()
+	defer captured.mu.Unlock()
+	if len(captured.reports) != 1 {
+		t.Fatalf("reports = %d, want 1", len(captured.reports))
+	}
+	report := captured.reports[0]
+	if report.Format != "tar" || report.Compression != "none" {
+		t.Errorf("classification = %s/%s, want tar/none", report.Format, report.Compression)
+	}
+	if report.OutputBytes <= 0 {
+		t.Errorf("outputBytes = %d, want > 0", report.OutputBytes)
+	}
+	if report.DurationSeconds <= 0 {
+		t.Errorf("durationSeconds = %f, want > 0", report.DurationSeconds)
+	}
+}
+
 // fakeMounter records Mount/Unmount calls without touching the kernel.
 type fakeMounter struct {
 	mu        sync.Mutex

@@ -369,9 +369,13 @@ func TestHandler_ReportArtifact(t *testing.T) {
 	handler := &Handler{artifactEmitter: mock}
 
 	report := job.ArtifactReport{
-		ID:     "a1",
-		Type:   "upload",
-		Status: "success",
+		ID:              "a1",
+		Type:            "archive",
+		Format:          "erofs",
+		Compression:     "lz4hc",
+		Status:          "success",
+		DurationSeconds: 2.5,
+		OutputBytes:     4096,
 	}
 	body, _ := json.Marshal(report)
 
@@ -399,6 +403,12 @@ func TestHandler_ReportArtifact(t *testing.T) {
 	}
 	if r.Status != "success" {
 		t.Errorf("Expected Status 'success', got %q", r.Status)
+	}
+	if r.Format != "erofs" || r.Compression != "lz4hc" {
+		t.Errorf("Expected erofs/lz4hc, got %s/%s", r.Format, r.Compression)
+	}
+	if r.OutputBytes != 4096 {
+		t.Errorf("Expected OutputBytes 4096, got %d", r.OutputBytes)
 	}
 }
 

@@ -31,6 +31,11 @@ type Metrics struct {
 	JobDuration metric.Float64Histogram
 	JobsTotal   metric.Int64Counter
 
+	// Artifact work happens in short-lived sidecars. They report completed
+	// tasks here so jobs-service can expose durable, centrally scraped series.
+	ArtifactTaskDuration    metric.Float64Histogram
+	ArtifactTaskOutputBytes metric.Int64Histogram
+
 	// Dispatcher metrics (Latency, Traffic, Errors). Queue depth is an async
 	// gauge, registered by the wiring.
 	DispatcherDuration  metric.Float64Histogram
@@ -133,6 +138,18 @@ func (b *instruments) histogram(name, desc string, buckets ...float64) metric.Fl
 	return h
 }
 
+func (b *instruments) byteHistogram(name, desc string, buckets ...float64) metric.Int64Histogram {
+	h, err := b.meter.Int64Histogram(name,
+		metric.WithDescription(desc),
+		metric.WithUnit("By"),
+		metric.WithExplicitBucketBoundaries(buckets...),
+	)
+	if b.err == nil {
+		b.err = err
+	}
+	return h
+}
+
 // NewMetrics creates and registers all metrics with a Prometheus exporter.
 func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	exporter, err := prometheus.New()
@@ -158,6 +175,12 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 		"Job execution duration in seconds",
 		1, 5, 10, 30, 60, 120, 300, 600, 900, 1800)
 	m.JobsTotal = b.counter("jobs_total", "Total number of jobs created")
+	m.ArtifactTaskDuration = b.histogram("artifact_task_duration_seconds",
+		"Artifact task wall time in seconds, reported by job sidecars",
+		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600, 1800)
+	m.ArtifactTaskOutputBytes = b.byteHistogram("artifact_task_output_bytes",
+		"Archive output size in bytes",
+		4<<10, 16<<10, 64<<10, 256<<10, 1<<20, 4<<20, 16<<20, 64<<20, 256<<20, 1<<30, 4<<30)
 
 	// Dispatcher metrics
 	m.DispatcherDuration = b.histogram("dispatcher_duration_seconds",
@@ -273,6 +296,57 @@ func (m *Metrics) RecordJobCreated(ctx context.Context, image string) {
 func (m *Metrics) RecordJobCompleted(ctx context.Context, image string, success bool, durationSeconds float64) {
 	m.JobDuration.Record(ctx, durationSeconds,
 		metric.WithAttributes(imageAttr(image), successAttr(success)))
+}
+
+// RecordArtifactTask records one sidecar task. The endpoint deliberately
+// accepts reports from newer sidecars during rolling upgrades, so normalize
+// unexpected values rather than letting them create unbounded Prometheus
+// dimensions.
+func (m *Metrics) RecordArtifactTask(ctx context.Context, taskType, format, compression string, success bool, durationSeconds float64, outputBytes int64) {
+	if m == nil || durationSeconds < 0 {
+		return
+	}
+	attrs := metric.WithAttributes(
+		typeAttr(normalizeArtifactType(taskType)),
+		formatAttr(normalizeArtifactFormat(format)),
+		compressionAttr(normalizeArtifactCompression(compression)),
+		successAttr(success),
+	)
+	m.ArtifactTaskDuration.Record(ctx, durationSeconds, attrs)
+	if outputBytes > 0 {
+		m.ArtifactTaskOutputBytes.Record(ctx, outputBytes, attrs)
+	}
+}
+
+func normalizeArtifactType(value string) string {
+	switch value {
+	case "download", "clone", "upload", "write", "read", "archive", "unarchive", "mount", "stat", "list":
+		return value
+	default:
+		return "other"
+	}
+}
+
+func normalizeArtifactFormat(value string) string {
+	switch value {
+	case "tar", "squashfs", "erofs":
+		return value
+	case "":
+		return "none"
+	default:
+		return "other"
+	}
+}
+
+func normalizeArtifactCompression(value string) string {
+	switch value {
+	case "gzip", "zstd", "lz4", "lz4hc", "xz", "lzma", "lzo":
+		return value
+	case "", "none":
+		return "none"
+	default:
+		return "other"
+	}
 }
 
 // RecordDispatcherDelivered records a successful event delivery with its duration.

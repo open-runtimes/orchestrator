@@ -45,6 +45,18 @@ The `path` label is the mux route the request matched (`/v1/jobs/{jobId}`, `/v1/
 
 Job completions and job errors are both read off `job_duration_seconds_count`, which carries `image` and `success` — there is no separate `job_errors_total` to fall out of step with it.
 
+**Artifact Task Metrics:**
+
+Artifact work runs in short-lived sidecars that commonly finish between Prometheus scrapes. Each sidecar therefore reports its completed operations to `jobs-service`, which exposes the durable central series.
+
+| Signal | Metrics |
+|--------|---------|
+| Latency | `artifact_task_duration_seconds{type,format,compression,success}` |
+| Traffic / errors | `artifact_task_duration_seconds_count{type,format,compression,success}` |
+| Output size | `artifact_task_output_bytes{type,format,compression,success}` (archive tasks) |
+
+`format` and `compression` are bounded dimensions. Archive tasks report the selected encoder profile, preserving `lz4hc` versus `lz4`; mount and unarchive tasks report the format detected from the image. Unknown values collapse to `other`, and operations without either dimension use `none`.
+
 **Dispatcher (Callback) Metrics:**
 
 | Signal | Metrics |
@@ -139,6 +151,9 @@ Metrics use consistent labels for filtering and aggregation:
 | `status` | 2xx, 4xx, 5xx | HTTP metrics |
 | `image` | alpine:latest, etc. | Job metrics |
 | `success` | true, false | Job duration |
+| `type` | archive, mount, unarchive, etc. | Artifact task metrics |
+| `format` | tar, squashfs, erofs, none, other | Artifact task metrics |
+| `compression` | gzip, zstd, lz4, lz4hc, none, other | Artifact task metrics |
 
 ### Route Patterns for Cardinality Control
 
@@ -178,6 +193,17 @@ sum(jobs_active)
 
 # Job duration P95
 histogram_quantile(0.95, sum(rate(job_duration_seconds_bucket[5m])) by (le))
+
+# Compare archive duration by image format and encoder profile
+histogram_quantile(0.50,
+  sum(rate(artifact_task_duration_seconds_bucket{type="archive",success="true"}[15m]))
+  by (le, format, compression)
+)
+
+# Average archive output size by format (bytes per completed archive)
+sum(rate(artifact_task_output_bytes_sum{type="archive",success="true"}[15m])) by (format, compression)
+/
+sum(rate(artifact_task_output_bytes_count{type="archive",success="true"}[15m])) by (format, compression)
 ```
 
 ## Grafana Dashboard

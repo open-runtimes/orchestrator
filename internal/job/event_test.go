@@ -19,6 +19,7 @@ func TestBuildArtifactEventCarriesClassification(t *testing.T) {
 		Status:      "success",
 		Format:      "squashfs",
 		Compression: "lz4",
+		OutputBytes: 4096,
 	})
 
 	if data["format"] != "squashfs" {
@@ -26,6 +27,9 @@ func TestBuildArtifactEventCarriesClassification(t *testing.T) {
 	}
 	if data["compression"] != "lz4" {
 		t.Errorf("compression = %v, want lz4", data["compression"])
+	}
+	if data["outputBytes"] != int64(4096) {
+		t.Errorf("outputBytes = %v, want 4096", data["outputBytes"])
 	}
 }
 
@@ -65,7 +69,7 @@ func TestBuildArtifactEventReportsFailureReason(t *testing.T) {
 func TestBuildArtifactEventOmitsAbsentOptionalFields(t *testing.T) {
 	data := artifactEventData(t, &ArtifactReport{ID: "code", Type: "download", Status: "success"})
 
-	for _, key := range []string{"error", "content"} {
+	for _, key := range []string{"error", "content", "outputBytes"} {
 		if _, ok := data[key]; ok {
 			t.Errorf("%s present as %v, want omitted", key, data[key])
 		}
