@@ -35,6 +35,12 @@ const (
 	extractFileMode fs.FileMode = 0o644
 )
 
+// errUnsafeSymlink marks a symlink that cannot be materialized without
+// pointing outside the extracted tree. Callers skip these entries for
+// compatibility with archives produced before symlink extraction was added,
+// while still surfacing every other extraction error.
+var errUnsafeSymlink = errors.New("unsafe symlink target")
+
 func extractMode(mode fs.FileMode) fs.FileMode {
 	if mode.Perm()&0o111 != 0 {
 		return extractFileMode | 0o111
@@ -136,7 +142,16 @@ func writeEntry(header *tar.Header, tarReader io.Reader, targetPath, destDir str
 			}
 			linkSource = filepath.Join(destDir, source)
 		}
-		return extractLink(header, targetPath, destDir, linkSource)
+		err := extractLink(header, targetPath, destDir, linkSource)
+		if header.Typeflag == tar.TypeSymlink && errors.Is(err, errUnsafeSymlink) {
+			slog.Warn("Skipping symlink outside archive destination",
+				"name", header.Name,
+				"target", header.Linkname,
+				"error", err,
+			)
+			return nil
+		}
+		return err
 
 	default:
 		slog.Debug("Skipping archive entry", "name", header.Name, "type", header.Typeflag)
@@ -228,12 +243,12 @@ func mkdirAllInRoot(root, dir string) error {
 // Every target is validated BEFORE anything existing is replaced, so a rejected
 // entry cannot leave the tree missing the file it was going to overwrite. The
 // link is written with the archive's own linkname, so an absolute target is
-// refused outright rather than rewritten: "containing" it by validating a
-// rewritten path would still plant a pointer outside the workspace, and build
-// tooling (pnpm, npm) only ever emits relative links. Parents are created by
-// mkdirAllInRoot, which refuses to traverse a symlink — that is what stops a
-// chain like `a -> .` followed by `a/x -> ../escape`, where the lexical parent
-// and the resolved one disagree.
+// marked unsafe rather than rewritten: "containing" it by validating a
+// rewritten path would still plant a pointer outside the workspace. The caller
+// skips unsafe symlinks for compatibility with legacy archives. Parents are
+// created by mkdirAllInRoot, which refuses to traverse a symlink — that is what
+// stops a chain like `a -> .` followed by `a/x -> ../escape`, where the lexical
+// parent and the resolved one disagree.
 func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string) error {
 	// Resolved, because the walk below resolves too and the two have to be
 	// comparable — on macOS a temp dir under /var really lives in /private/var.
@@ -311,16 +326,16 @@ func resolveIfPossible(target string) string {
 	return filepath.Clean(target)
 }
 
-// validateSymlinkTarget refuses a target that leaves the destination. An
-// absolute target is rejected rather than rewritten: the link is written with
-// the archive's own linkname, so validating a rewritten path would still plant
-// a pointer outside the workspace, and build tooling only emits relative links.
+// validateSymlinkTarget marks a target that leaves the destination as unsafe.
+// An absolute target is not rewritten: the link is written with the archive's
+// own linkname, so validating a rewritten path would still plant a pointer
+// outside the workspace.
 func validateSymlinkTarget(header *tar.Header, targetPath, root string) error {
 	if filepath.IsAbs(header.Linkname) {
-		return fmt.Errorf("absolute symlink target in archive: %s -> %s", header.Name, header.Linkname)
+		return fmt.Errorf("%w: absolute symlink target in archive: %s -> %s", errUnsafeSymlink, header.Name, header.Linkname)
 	}
 	if !underRoot(resolveWalking(filepath.Dir(targetPath), header.Linkname), root) {
-		return fmt.Errorf("invalid symlink target in archive: %s -> %s", header.Name, header.Linkname)
+		return fmt.Errorf("%w: invalid symlink target in archive: %s -> %s", errUnsafeSymlink, header.Name, header.Linkname)
 	}
 	return nil
 }
@@ -565,11 +580,12 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 	return &Result{Status: "success", Format: "tar", Compression: compression}
 }
 
-// assertNoEscapingSymlinks walks the extracted tree and fails if any symlink
-// resolves outside destDir. This is the guarantee consumers actually need —
-// whatever order the archive wrote its entries in, nothing left behind points
-// out of the workspace. WalkDir does not follow symlinks, so the walk itself
-// cannot be led astray.
+// assertNoEscapingSymlinks walks the extracted tree and removes any symlink
+// resolving outside destDir. It fails only when the tree cannot be completely
+// inspected or an unsafe link cannot be removed. This is the guarantee
+// consumers actually need — whatever order the archive wrote its entries in,
+// nothing left behind points out of the workspace. WalkDir does not follow
+// symlinks, so the walk itself cannot be led astray.
 func assertNoEscapingSymlinks(destDir string) error {
 	root := filepath.Clean(destDir)
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
@@ -597,7 +613,9 @@ func assertNoEscapingSymlinks(destDir string) error {
 	case len(problems) > 0:
 		return fmt.Errorf("could not verify the extracted tree for escaping symlinks: %s", strings.Join(problems, "; "))
 	case len(escaped) > 0:
-		return fmt.Errorf("symlinks escape the destination after extraction (removed): %s", strings.Join(escaped, ", "))
+		slog.Warn("Removed symlinks outside archive destination",
+			"links", strings.Join(escaped, ", "),
+		)
 	}
 	return nil
 }
@@ -620,8 +638,8 @@ func pruneIfEscaping(entry string, d fs.DirEntry, walkErr error, root string) (r
 		return "", ""
 	}
 	// Removed, not just reported: the workspace is shared and outlives this
-	// artifact, so a rejected extraction must not leave a usable pointer out of
-	// it behind. Removing a symlink unlinks the link, never what it points at.
+	// artifact, so even a compatible extraction must not leave a usable pointer
+	// out of it behind. Removing a symlink unlinks the link, never its target.
 	if err := os.Remove(entry); err != nil {
 		return "", "failed to remove escaping symlink " + entry + " -> " + linkname + ": " + err.Error()
 	}
