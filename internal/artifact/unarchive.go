@@ -33,12 +33,14 @@ import (
 const (
 	extractDirMode  fs.FileMode = 0o755
 	extractFileMode fs.FileMode = 0o644
+
+	SymlinkPolicyPreserve  = "preserve"
+	SymlinkPolicyContained = "contained"
 )
 
-// errUnsafeSymlink marks a symlink that cannot be materialized without
-// pointing outside the extracted tree. Callers skip these entries for
-// compatibility with archives produced before symlink extraction was added,
-// while still surfacing every other extraction error.
+// errUnsafeSymlink marks a link excluded by the opt-in contained policy.
+// Callers skip these entries while still surfacing every other extraction
+// error.
 var errUnsafeSymlink = errors.New("unsafe symlink target")
 
 func extractMode(mode fs.FileMode) fs.FileMode {
@@ -85,12 +87,13 @@ func isTar(b []byte) bool {
 // a squashfs or erofs image read-only in place instead of materializing its
 // files, use a "mount" artifact.)
 type Unarchive struct {
-	ID      string `json:"id"`
-	In      string `json:"in"`               // Source archive path
-	Out     string `json:"out"`              // Destination directory
-	Subdir  string `json:"subdir,omitempty"` // Extract only this subdirectory
-	Strip   bool   `json:"strip,omitempty"`  // Drop the archive's wrapper root directory
-	Depends string `json:"depends,omitempty"`
+	ID            string `json:"id"`
+	In            string `json:"in"`                      // Source archive path
+	Out           string `json:"out"`                     // Destination directory
+	Subdir        string `json:"subdir,omitempty"`        // Extract only this subdirectory
+	Strip         bool   `json:"strip,omitempty"`         // Drop the archive's wrapper root directory
+	SymlinkPolicy string `json:"symlinkPolicy,omitempty"` // "preserve" (default) or "contained"
+	Depends       string `json:"depends,omitempty"`
 }
 
 func (a *Unarchive) ArtifactID() string   { return a.ID }
@@ -122,7 +125,7 @@ func decompress(r io.Reader, compression string) (io.Reader, func(), error) {
 
 // writeEntry materializes one archive entry. transform applies the archive's
 // strip/subdir rewrite, which hard-link targets need as much as entry names do.
-func writeEntry(header *tar.Header, tarReader io.Reader, targetPath, destDir string, transform func(string) (string, bool)) error {
+func writeEntry(header *tar.Header, tarReader io.Reader, targetPath, destDir string, transform func(string) (string, bool), containedSymlinks bool) error {
 	switch header.Typeflag {
 	case tar.TypeDir:
 		return mkdirAllInRoot(destDir, targetPath)
@@ -142,7 +145,7 @@ func writeEntry(header *tar.Header, tarReader io.Reader, targetPath, destDir str
 			}
 			linkSource = filepath.Join(destDir, source)
 		}
-		err := extractLink(header, targetPath, destDir, linkSource)
+		err := extractLink(header, targetPath, destDir, linkSource, containedSymlinks)
 		if header.Typeflag == tar.TypeSymlink && errors.Is(err, errUnsafeSymlink) {
 			slog.Warn("Skipping symlink outside archive destination",
 				"name", header.Name,
@@ -240,16 +243,13 @@ func mkdirAllInRoot(root, dir string) error {
 
 // extractLink recreates a symlink or hard link from the archive.
 //
-// Every target is validated BEFORE anything existing is replaced, so a rejected
-// entry cannot leave the tree missing the file it was going to overwrite. The
-// link is written with the archive's own linkname, so an absolute target is
-// marked unsafe rather than rewritten: "containing" it by validating a
-// rewritten path would still plant a pointer outside the workspace. The caller
-// skips unsafe symlinks for compatibility with legacy archives. Parents are
-// created by mkdirAllInRoot, which refuses to traverse a symlink — that is what
-// stops a chain like `a -> .` followed by `a/x -> ../escape`, where the lexical
-// parent and the resolved one disagree.
-func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string) error {
+// Hard-link targets are validated before anything existing is replaced. A
+// symlink target is validated only under the opt-in contained policy; the
+// default preserves the archive's link verbatim. In both modes parents are
+// created by mkdirAllInRoot, which refuses to traverse a symlink. Preserving a
+// leaf link therefore cannot redirect a later archive write outside the
+// workspace.
+func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string, containedSymlinks bool) error {
 	// Resolved, because the walk below resolves too and the two have to be
 	// comparable — on macOS a temp dir under /var really lives in /private/var.
 	root := filepath.Clean(destDir)
@@ -261,8 +261,10 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string)
 		if err := validateHardLinkSource(header, targetPath, destDir, hardLinkSource, root); err != nil {
 			return err
 		}
-	} else if err := validateSymlinkTarget(header, targetPath, root); err != nil {
-		return err
+	} else if containedSymlinks {
+		if err := validateSymlinkTarget(header, targetPath, root); err != nil {
+			return err
+		}
 	}
 
 	if err := mkdirAllInRoot(destDir, filepath.Dir(targetPath)); err != nil {
@@ -327,9 +329,10 @@ func resolveIfPossible(target string) string {
 }
 
 // validateSymlinkTarget marks a target that leaves the destination as unsafe.
-// An absolute target is not rewritten: the link is written with the archive's
-// own linkname, so validating a rewritten path would still plant a pointer
-// outside the workspace.
+// An
+// absolute target is not rewritten: the link is written with the archive's own
+// linkname, so validating a rewritten path would still plant a pointer outside
+// the workspace.
 func validateSymlinkTarget(header *tar.Header, targetPath, root string) error {
 	if filepath.IsAbs(header.Linkname) {
 		return fmt.Errorf("%w: absolute symlink target in archive: %s -> %s", errUnsafeSymlink, header.Name, header.Linkname)
@@ -453,12 +456,15 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 // stream first with the named codec ("gzip", "zstd", "lz4", or "none" for plain
 // tar). The codec is echoed on the Result so callers learn what it actually was.
 func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Result) {
-	// Deferred so it runs on every exit, not just the successful one: an entry
-	// that fails partway through may follow one that already planted an
-	// escaping link, and returning early would leave it on a workspace that
-	// outlives this artifact. The sweep removes what it finds; it only becomes
-	// the reported error when there is not already one.
+	// Under the contained policy the sweep runs on every exit, not just the
+	// successful one: a later entry can change where an earlier relative link
+	// resolves, and returning early must not leave that link in the workspace.
+	// The default preserve policy intentionally keeps link targets verbatim.
+	containedSymlinks := a.SymlinkPolicy == SymlinkPolicyContained
 	defer func() {
+		if !containedSymlinks {
+			return
+		}
 		if _, statErr := os.Stat(destDir); statErr != nil {
 			return
 		}
@@ -563,7 +569,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 		targetPath := filepath.Join(destDir, extractPath)
 		extracted++
 
-		if err := writeEntry(header, tarReader, targetPath, destDir, transform); err != nil {
+		if err := writeEntry(header, tarReader, targetPath, destDir, transform, containedSymlinks); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 	}
@@ -581,11 +587,10 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 }
 
 // assertNoEscapingSymlinks walks the extracted tree and removes any symlink
-// resolving outside destDir. It fails only when the tree cannot be completely
-// inspected or an unsafe link cannot be removed. This is the guarantee
-// consumers actually need — whatever order the archive wrote its entries in,
-// nothing left behind points out of the workspace. WalkDir does not follow
-// symlinks, so the walk itself cannot be led astray.
+// resolving outside destDir. It is used by the opt-in contained policy and
+// fails only when the tree cannot be completely inspected or an
+// unsafe link cannot be removed. WalkDir does not follow symlinks, so the walk
+// itself cannot be led astray.
 func assertNoEscapingSymlinks(destDir string) error {
 	root := filepath.Clean(destDir)
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {

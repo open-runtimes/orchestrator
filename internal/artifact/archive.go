@@ -70,6 +70,9 @@ func (a *Archive) DependsOn() string    { return a.Depends }
 // to a one-entry fs.FS (via singleFileFS) so the writer streams it rather than
 // buffering the entire file in memory.
 func sourceFS(srcPath string) (fs.FS, error) {
+	// Image archives preserve the historical command-line behavior of
+	// following a top-level directory symlink and packing the target tree. Tar
+	// handles links separately below because it can represent the link itself.
 	info, err := os.Stat(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat source: %w", err)
@@ -157,7 +160,7 @@ func (a *Archive) applyTar(srcPath, destPath string) *Result {
 	tarWriter := tar.NewWriter(w)
 	defer tarWriter.Close()
 
-	info, err := os.Stat(srcPath)
+	info, err := os.Lstat(srcPath)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to stat source: %w", err)}
 	}
@@ -190,8 +193,15 @@ func archiveDir(tw *tar.Writer, srcDir string) error {
 			return nil
 		}
 
-		if info.IsDir() {
-			header, err := tar.FileInfoHeader(info, "")
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			linkname := ""
+			if info.Mode()&os.ModeSymlink != 0 {
+				linkname, err = os.Readlink(path)
+				if err != nil {
+					return fmt.Errorf("failed to read symlink: %w", err)
+				}
+			}
+			header, err := tar.FileInfoHeader(info, linkname)
 			if err != nil {
 				return fmt.Errorf("failed to create tar header: %w", err)
 			}
@@ -229,7 +239,15 @@ func archiveDir(tw *tar.Writer, srcDir string) error {
 }
 
 func archiveFile(tw *tar.Writer, filePath string, info os.FileInfo) error {
-	header, err := tar.FileInfoHeader(info, "")
+	linkname := ""
+	if info.Mode()&os.ModeSymlink != 0 {
+		var err error
+		linkname, err = os.Readlink(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read symlink: %w", err)
+		}
+	}
+	header, err := tar.FileInfoHeader(info, linkname)
 	if err != nil {
 		return fmt.Errorf("failed to create tar header: %w", err)
 	}
@@ -237,6 +255,9 @@ func archiveFile(tw *tar.Writer, filePath string, info os.FileInfo) error {
 
 	if err := tw.WriteHeader(header); err != nil {
 		return fmt.Errorf("failed to write tar header: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil
 	}
 
 	file, err := os.Open(filePath)

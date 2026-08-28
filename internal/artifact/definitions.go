@@ -186,6 +186,11 @@ var (
 			if err := validatePath(a.Out); err != nil {
 				return apperrors.Validation(field+".out", "invalid out (dest): "+err.Error())
 			}
+			switch a.SymlinkPolicy {
+			case "", SymlinkPolicyPreserve, SymlinkPolicyContained:
+			default:
+				return apperrors.Validation(field+".symlinkPolicy", "symlinkPolicy must be \"preserve\" or \"contained\"")
+			}
 			return nil
 		}),
 		SourcePath: TypedSourcePath(func(a *Unarchive) string { return a.In }),
