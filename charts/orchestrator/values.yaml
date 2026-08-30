@@ -369,8 +369,8 @@ sandbox:
   # per sandbox and cannot be capped by maxIdleSeconds, so declare pools for any
   # workload that creates sandboxes at a rate.
   #
-  # mounts lets this pool's sandboxes use the `mount` artifact (a squashfs or
-  # erofs image mounted into the workspace, optionally with a tmpfs overlay).
+  # mounts lets this pool's sandboxes use the `mount` artifact (a tar archive,
+  # squashfs image, or erofs image, optionally with a tmpfs overlay).
   # It is a pool dimension because it changes the pod: the sidecar performing
   # the mount runs PRIVILEGED as root, and the workspace carries mount
   # propagation. That privileged container then sits in every pod of the pool,

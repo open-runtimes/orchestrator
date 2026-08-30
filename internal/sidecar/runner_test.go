@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
@@ -367,6 +368,8 @@ func TestRunner_ReportsArtifact(t *testing.T) {
 // fakeMounter records Mount/Unmount calls without touching the kernel.
 type fakeMounter struct {
 	mu        sync.Mutex
+	sources   []string
+	opts      []MountOpts
 	mounted   []string
 	unmounted []string
 }
@@ -374,6 +377,8 @@ type fakeMounter struct {
 func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sources = append(f.sources, image)
+	f.opts = append(f.opts, opts)
 	f.mounted = append(f.mounted, target)
 	return nil
 }
@@ -446,8 +451,87 @@ func TestRunner_MountLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
+	for _, name := range []string{"data.tar", "data.tar.gz"} {
+		t.Run(name, func(t *testing.T) {
+			workspace := t.TempDir()
+			archivePath := filepath.Join(workspace, name)
+			createTarFile(t, archivePath, name == "data.tar.gz", map[string]string{
+				"bin/start": "#!/bin/sh\necho ready\n",
+				"notes.txt": "change me",
+			})
+
+			fake := &fakeMounter{}
+			runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithMounter(fake))
+			mount := &artifact.Mount{ID: "m", In: name, Out: "runtime", Writable: true}
+
+			if err := runner.Mount(t.Context(), []artifact.Artifact{mount}); err != nil {
+				t.Fatalf("Mount() error = %v", err)
+			}
+			defer runner.Release()
+
+			lower := filepath.Join(workspace, "runtime", ".lower")
+			content, err := os.ReadFile(filepath.Join(lower, "bin", "start"))
+			if err != nil {
+				t.Fatalf("read extracted lower: %v", err)
+			}
+			if string(content) != "#!/bin/sh\necho ready\n" {
+				t.Fatalf("extracted content = %q", content)
+			}
+			for path, want := range map[string]os.FileMode{
+				filepath.Join(lower, "bin"):       0o777,
+				filepath.Join(lower, "bin/start"): 0o666,
+				filepath.Join(lower, "notes.txt"): 0o666,
+			} {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatalf("stat writable lower %s: %v", path, err)
+				}
+				if got := info.Mode().Perm(); got != want {
+					t.Errorf("writable lower %s mode = %o, want %o", path, got, want)
+				}
+			}
+
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if len(fake.sources) != 1 || fake.sources[0] != lower {
+				t.Fatalf("mount source = %v, want [%s]", fake.sources, lower)
+			}
+			if len(fake.opts) != 1 || !fake.opts[0].SourceDir || !fake.opts[0].Writable {
+				t.Fatalf("mount opts = %+v, want directory + writable", fake.opts)
+			}
+		})
+	}
+}
+
+func TestRunner_InvalidTarMountRemovesPartialLower(t *testing.T) {
+	workspace := t.TempDir()
+	archivePath := filepath.Join(workspace, "broken.tar.gz")
+	if err := os.WriteFile(archivePath, append([]byte{0x1f, 0x8b}, []byte("not gzip")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeMounter{}
+	runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithMounter(fake))
+	err := runner.Mount(t.Context(), []artifact.Artifact{&artifact.Mount{ID: "m", In: "broken.tar.gz", Out: "runtime"}})
+	if err == nil {
+		t.Fatal("Mount() error = nil, want invalid archive error")
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, "runtime", ".lower")); !os.IsNotExist(statErr) {
+		t.Fatalf("partial lower remains after failure: %v", statErr)
+	}
+	if len(fake.mounted) != 0 {
+		t.Fatalf("mounter called for invalid tar: %v", fake.mounted)
+	}
+}
+
 // createTestArchiveFile creates a tar.gz archive file for use in tests.
 func createTestArchiveFile(t *testing.T, archivePath string, files map[string]string) {
+	t.Helper()
+	createTarFile(t, archivePath, true, files)
+}
+
+func createTarFile(t *testing.T, archivePath string, compressed bool, files map[string]string) {
 	t.Helper()
 
 	file, err := os.Create(archivePath)
@@ -456,10 +540,14 @@ func createTestArchiveFile(t *testing.T, archivePath string, files map[string]st
 	}
 	defer file.Close()
 
-	gzWriter := gzip.NewWriter(file)
-	defer gzWriter.Close()
-
-	tarWriter := tar.NewWriter(gzWriter)
+	var output io.Writer = file
+	var gzWriter *gzip.Writer
+	if compressed {
+		gzWriter = gzip.NewWriter(file)
+		output = gzWriter
+		defer gzWriter.Close()
+	}
+	tarWriter := tar.NewWriter(output)
 	defer tarWriter.Close()
 
 	for name, content := range files {

@@ -15,7 +15,9 @@ const (
 )
 
 // Mount mounts a squashfs or erofs image into the workspace so the worker can
-// read it without extraction; the format is detected from the image's magic.
+// read it without extraction. Tar archives (plain, gzip, zstd, or lz4) are
+// accepted as a compatibility path: they are extracted into a private lower
+// directory and bind-mounted at the target. The format is detected from magic.
 // By default the mount is read-only; set Writable to layer a tmpfs-backed
 // overlay on top, giving the worker a copy-on-write view whose writes are
 // discarded when the job ends. Size caps that tmpfs (in MiB); 0 leaves it at
@@ -32,7 +34,7 @@ const (
 // it (internal/artifact/registry.go). Jobs are the only plane that runs one.
 type Mount struct {
 	ID       string `json:"id"`
-	In       string `json:"in"`  // Source image path (squashfs or erofs, in the workspace)
+	In       string `json:"in"`  // Source image or tar archive path in the workspace
 	Out      string `json:"out"` // Mount point directory (in the workspace)
 	Writable bool   `json:"writable,omitempty"`
 	Size     int    `json:"size,omitempty"` // Overlay tmpfs cap in MiB (writable only; 0 = default)
@@ -57,7 +59,7 @@ func (a *Mount) ArtifactID() string   { return a.ID }
 func (a *Mount) ArtifactType() string { return "mount" }
 func (a *Mount) DependsOn() string    { return a.Depends }
 
-// HasMount reports whether any artifact is an image mount. Orchestrators use
+// HasMount reports whether any artifact is a mount. Orchestrators use
 // this to decide whether a job needs the privileged, propagation-enabled pod.
 func HasMount(artifacts []Artifact) bool {
 	for _, a := range artifacts {

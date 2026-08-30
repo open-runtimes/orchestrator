@@ -90,11 +90,11 @@ func TestPushDelta_ArchivesTheUpperLayerOnly(t *testing.T) {
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(ws, "work.lower"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(ws, "work", ".lower"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(upper, "changed.txt"), "the delta")
-	write(t, filepath.Join(ws, "work.lower", "from-image.txt"), "not the delta")
+	write(t, filepath.Join(ws, "work", ".lower", "from-image.txt"), "not the delta")
 
 	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
 	m := &artifact.Mount{ID: "tree", In: "base.erofs", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
@@ -218,6 +218,30 @@ func TestRestoreDelta_RestoredTreeIsWritableByTheWorkload(t *testing.T) {
 		if got := info.Mode().Perm(); got != want {
 			t.Errorf("%s mode = %o, want %o", filepath.Base(path), got, want)
 		}
+	}
+}
+
+func TestMakeWritable_DoesNotFollowSymlinks(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	write(t, outside, "leave permissions alone")
+	if err := os.Chmod(outside, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := makeWritable(root); err != nil {
+		t.Fatalf("makeWritable: %v", err)
+	}
+	info, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("external symlink target mode = %o, want 600", got)
 	}
 }
 

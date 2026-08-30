@@ -195,7 +195,7 @@ Artifacts run in the **pre phase only**: a post-phase artifact (one depending on
 
 ### Mounting a filesystem image
 
-A [`mount`](jobs.md#mount-artifact) puts a squashfs or erofs image into the workspace without extracting it — read-only, or `writable` with an overlay whose size you cap. For a large read-mostly tree that is the difference between an `O(1)` mount and copying every byte in.
+A [`mount`](jobs.md#mount-artifact) puts a tar archive, squashfs image, or erofs image into the workspace — read-only, or `writable` with an overlay whose size you cap. Squashfs and erofs mount without extraction; tar is accepted as a compatibility path and is extracted into a private lower directory first. For a large read-mostly tree, the image formats retain the `O(1)` startup advantage.
 
 From a pool, it needs one that declares the capability:
 

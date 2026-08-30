@@ -260,23 +260,32 @@ func (r *Runner) apply(ctx context.Context, arts ...artifact.Artifact) error {
 	return r.processArtifacts(ctx, arts, false)
 }
 
-// makeWritable opens a restored tree up to whoever the workload runs as. The
-// sidecar unpacks as root and the extraction deliberately does not trust the
-// archive's modes, so without this a restored file is root-owned 0644: readable
-// to the workload and impossible to change, which would make a resumed session
-// strictly worse than a fresh one. World-writable for the same reason the upper
-// layer is — the sidecar cannot know the image's uid — and this tree belongs to
-// one sandbox, not to anything shared. The execute bit survives, since a
-// workspace legitimately holds scripts.
+// makeWritable opens a sidecar-materialized tree up to whoever the workload
+// runs as. The sidecar unpacks as root and extraction deliberately does not
+// trust archive modes, so an existing lower or restored file would otherwise
+// be root-owned 0644 and fail overlayfs's permission check before copy-up.
+// World-writable for the same reason the upper layer is — the sidecar cannot
+// know the workload's uid — and these trees belong to one workload. The
+// execute bit survives, since a workspace legitimately holds scripts.
 func makeWritable(root string) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		// Chmod follows symlinks on Linux. Archive links are preserved
+		// verbatim and may intentionally point outside this tree, so changing a
+		// link target here could mutate unrelated workspace permissions.
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		mode := os.FileMode(0o666)
 		if d.IsDir() {
 			mode = 0o777
-		} else if info, err := d.Info(); err == nil && info.Mode().Perm()&0o111 != 0 {
+		} else if info.Mode().Perm()&0o111 != 0 {
 			mode |= 0o111
 		}
 		return os.Chmod(path, mode)

@@ -48,7 +48,7 @@
 | **Read** | Reads a workspace file and includes its content in the callback | Get, cat |
 | **Archive** | Packs a workspace directory into a tar, squashfs, or erofs file | Zip, pack |
 | **Unarchive** | Expands a tar (plain/gzip/zstd/lz4), squashfs, or erofs archive into the workspace | Unzip, unpack, extract |
-| **Mount** | Mounts a squashfs or erofs image into the workspace for the worker, read-only or as a writable tmpfs overlay | Attach, bind |
+| **Mount** | Exposes a tar archive, squashfs image, or erofs image in the workspace for the worker, read-only or as a writable tmpfs overlay | Attach, bind |
 | **List** | Enumerates files in a workspace directory and includes the list in the callback | Ls, dir |
 
 ## Callbacks

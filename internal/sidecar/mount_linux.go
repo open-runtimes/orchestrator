@@ -14,9 +14,9 @@ import (
 )
 
 // kernelMounter mounts read-only filesystem images (squashfs or erofs) via a
-// loop device and the mount(2) syscall — no external binaries, so it works on a
-// distroless image. It needs CAP_SYS_ADMIN, access to loop devices, and the
-// matching filesystem kernel module (squashfs and/or erofs).
+// loop device, or a materialized tar directory via a bind mount. It uses only
+// mount(2), so it works in a distroless image. It needs CAP_SYS_ADMIN and, for
+// images, access to loop devices and the matching filesystem kernel module.
 type kernelMounter struct{}
 
 //nolint:iface // platform builds return different concrete Mounter types
@@ -27,11 +27,29 @@ func defaultMounter() Mounter { return kernelMounter{} }
 // overlay whose upper/work layers live on a fresh tmpfs — the classic
 // read-only-image + tmpfs live-system overlay, giving the worker a
 // copy-on-write view whose writes are RAM-backed and discarded on Unmount.
-func (kernelMounter) Mount(image, target string, opts MountOpts) error {
-	if !opts.Writable {
-		return mountImage(image, target)
+func (kernelMounter) Mount(source, target string, opts MountOpts) error {
+	if opts.SourceDir {
+		// A classic bind mount cannot become read-only atomically: MS_BIND
+		// creates it writable and a second remount changes the flag. Mount
+		// propagation can deliver that first event to the worker without the
+		// remount update. Make the hidden source a read-only mount first, so the
+		// bind cloned onto target is born read-only. The source sits below target
+		// and is hidden as soon as the final bind or overlay is established.
+		if err := mountDirectory(source, source); err != nil {
+			return fmt.Errorf("protect directory lower: %w", err)
+		}
 	}
-	return mountOverlay(image, target, opts.SizeMiB, opts.UpperOnDisk)
+	if !opts.Writable {
+		if opts.SourceDir {
+			if err := mountDirectory(source, target); err != nil {
+				_ = unix.Unmount(source, 0)
+				return err
+			}
+			return nil
+		}
+		return mountImage(source, target)
+	}
+	return mountOverlay(source, target, opts.SizeMiB, opts.UpperOnDisk, opts.SourceDir)
 }
 
 // Unmount unmounts target. For an overlay it also tears down the sibling scratch
@@ -52,14 +70,17 @@ func (kernelMounter) Unmount(target string) error {
 	lower := overlayLower(target)
 	if _, err := os.Stat(lower); err == nil {
 		_ = unix.Unmount(lower, 0)
-		_ = os.Remove(lower)
+		_ = os.RemoveAll(lower)
 	}
 	return nil
 }
 
-// overlayLower/overlayScratch derive the sibling directories an overlay mount
-// uses from its target, so Unmount can find them without extra bookkeeping.
-func overlayLower(target string) string   { return target + ".lower" }
+// overlayLower lives inside the directory that is about to become the mount
+// point. Once the bind or overlay is established at target, the implementation
+// lower is hidden from the worker; unmounting target reveals it for cleanup.
+// overlayScratch remains a sibling because a writable overlay must keep its
+// upper and work directories accessible to the sidecar for sync.
+func overlayLower(target string) string   { return filepath.Join(target, ".lower") }
 func overlayScratch(target string) string { return target + ".scratch" }
 
 // mountImage associates image with a free loop device and mounts it read-only
@@ -85,6 +106,20 @@ func mountImage(image, target string) error {
 	if err := unix.Mount(loopPath, target, fstype, unix.MS_RDONLY|unix.MS_NODEV, ""); err != nil {
 		_ = unix.IoctlSetInt(int(loop.Fd()), unix.LOOP_CLR_FD, 0)
 		return fmt.Errorf("mount %s on %s: %w", loopPath, target, err)
+	}
+	return nil
+}
+
+// mountDirectory exposes an extracted tar tree with the same read-only
+// contract as a mounted filesystem image. The second mount call remounts the
+// bind read-only; a plain bind inherits the source's writable flags.
+func mountDirectory(source, target string) error {
+	if err := unix.Mount(source, target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		return fmt.Errorf("bind mount %s on %s: %w", source, target, err)
+	}
+	if err := unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NODEV|unix.MS_NOSUID, ""); err != nil {
+		_ = unix.Unmount(target, 0)
+		return fmt.Errorf("remount %s read-only: %w", target, err)
 	}
 	return nil
 }
@@ -121,7 +156,7 @@ func imageFsType(image string) (string, error) {
 // and supports the trusted.overlay.* xattrs overlayfs needs. sizeMiB caps the
 // tmpfs (0 = kernel default). On any failure it unwinds every mount and
 // directory it created, leaving the workspace as it found it.
-func mountOverlay(image, target string, sizeMiB int, upperOnDisk bool) (err error) {
+func mountOverlay(source, target string, sizeMiB int, upperOnDisk, sourceDir bool) (err error) {
 	lower := overlayLower(target)
 	scratch := overlayScratch(target)
 	upper := UpperDir(target)
@@ -138,14 +173,24 @@ func mountOverlay(image, target string, sizeMiB int, upperOnDisk bool) (err erro
 		}
 	}()
 
-	for _, d := range []string{lower, scratch} {
+	if sourceDir && filepath.Clean(source) != filepath.Clean(lower) {
+		return fmt.Errorf("directory lower %s does not match mount lower %s", source, lower)
+	}
+
+	dirs := []string{scratch}
+	if !sourceDir {
+		dirs = append(dirs, lower)
+	}
+	for _, d := range dirs {
 		if err = os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
 
-	if err = mountImage(image, lower); err != nil {
-		return err
+	if !sourceDir {
+		if err = mountImage(source, lower); err != nil {
+			return err
+		}
 	}
 
 	// A synced upper stays on the workspace volume: the delta has to be an
