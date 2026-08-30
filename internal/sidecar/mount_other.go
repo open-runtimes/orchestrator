@@ -18,3 +18,7 @@ func (unsupportedMounter) Mount(image, target string, opts MountOpts) error {
 func (unsupportedMounter) Unmount(target string) error {
 	return errors.New("artifact mounting is only supported on linux")
 }
+
+func (unsupportedMounter) IsMounted(target string) (bool, error) {
+	return false, errors.New("artifact mounting is only supported on linux")
+}

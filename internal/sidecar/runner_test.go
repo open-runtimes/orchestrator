@@ -372,6 +372,7 @@ type fakeMounter struct {
 	opts      []MountOpts
 	mounted   []string
 	unmounted []string
+	active    map[string]bool
 }
 
 func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
@@ -380,6 +381,10 @@ func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
 	f.sources = append(f.sources, image)
 	f.opts = append(f.opts, opts)
 	f.mounted = append(f.mounted, target)
+	if f.active == nil {
+		f.active = map[string]bool{}
+	}
+	f.active[target] = true
 	return nil
 }
 
@@ -387,7 +392,16 @@ func (f *fakeMounter) Unmount(target string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unmounted = append(f.unmounted, target)
+	if f.active != nil {
+		f.active[target] = false
+	}
 	return nil
+}
+
+func (f *fakeMounter) IsMounted(target string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.active != nil && f.active[target], nil
 }
 
 // TestRunner_MountLifecycle verifies the post sidecar mounts before signaling
@@ -451,6 +465,46 @@ func TestRunner_MountLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunner_RunPostAdoptsMountAfterSidecarRestart(t *testing.T) {
+	workspace := t.TempDir()
+	createTarFile(t, filepath.Join(workspace, "data.tar.gz"), true, map[string]string{"index.js": "export default {}"})
+	target := filepath.Join(workspace, "runtime")
+	if err := os.MkdirAll(filepath.Join(target, ".lower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeMounter{active: map[string]bool{target: true}}
+	sigFn, triggerDone := triggerSignal()
+	runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithSignalFunc(sigFn), WithMounter(fake))
+	artifacts := []artifact.Artifact{&artifact.Mount{ID: "m", In: "data.tar.gz", Out: "runtime", Writable: true}}
+
+	done := make(chan error, 1)
+	go func() { done <- runner.RunPost(t.Context(), artifacts) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !CheckMountsReady(workspace) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !CheckMountsReady(workspace) {
+		t.Fatal("restarted sidecar did not restore the mounts-ready marker")
+	}
+	fake.mu.Lock()
+	if len(fake.mounted) != 0 {
+		t.Fatalf("existing mount was re-established: %v", fake.mounted)
+	}
+	fake.mu.Unlock()
+
+	triggerDone()
+	if err := <-done; err != nil {
+		t.Fatalf("RunPost() error = %v", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.unmounted) != 1 || fake.unmounted[0] != target {
+		t.Fatalf("adopted mount was not cleaned up: %v", fake.unmounted)
+	}
+}
+
 func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 	for _, name := range []string{"data.tar", "data.tar.gz"} {
 		t.Run(name, func(t *testing.T) {
@@ -464,6 +518,13 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			fake := &fakeMounter{}
 			runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithMounter(fake))
 			mount := &artifact.Mount{ID: "m", In: name, Out: "runtime", Writable: true}
+			staleLower := filepath.Join(workspace, "runtime", ".lower")
+			if err := os.MkdirAll(staleLower, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(staleLower, "stale"), []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
 			if err := runner.Mount(t.Context(), []artifact.Artifact{mount}); err != nil {
 				t.Fatalf("Mount() error = %v", err)
@@ -471,6 +532,9 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			defer runner.Release()
 
 			lower := filepath.Join(workspace, "runtime", ".lower")
+			if _, err := os.Stat(filepath.Join(lower, "stale")); !os.IsNotExist(err) {
+				t.Fatalf("stale lower entry survived re-extraction: %v", err)
+			}
 			content, err := os.ReadFile(filepath.Join(lower, "bin", "start"))
 			if err != nil {
 				t.Fatalf("read extracted lower: %v", err)

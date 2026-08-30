@@ -75,6 +75,24 @@ func (kernelMounter) Unmount(target string) error {
 	return nil
 }
 
+// IsMounted reports whether target is a mount point by comparing its mount ID
+// with its parent's. Unlike a marker file, the kernel mount table survives a
+// native-sidecar container restart and is authoritative for adoption.
+func (kernelMounter) IsMounted(target string) (bool, error) {
+	var targetStat, parentStat unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, target, unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &targetStat); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat mount target %s: %w", target, err)
+	}
+	parent := filepath.Dir(filepath.Clean(target))
+	if err := unix.Statx(unix.AT_FDCWD, parent, unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &parentStat); err != nil {
+		return false, fmt.Errorf("stat mount parent %s: %w", parent, err)
+	}
+	return targetStat.Mnt_id != parentStat.Mnt_id, nil
+}
+
 // overlayLower lives inside the directory that is about to become the mount
 // point. Once the bind or overlay is established at target, the implementation
 // lower is hidden from the worker; unmounting target reveals it for cleanup.

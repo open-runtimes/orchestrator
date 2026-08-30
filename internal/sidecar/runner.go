@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -306,8 +307,14 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	// the worker starts. The startup probe gates the worker on the marker.
 	if len(mounts) > 0 {
 		logger.Info("Establishing artifact mounts")
+		if err := r.removeMountReadyMarker(); err != nil {
+			return err
+		}
 		mountCtx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
-		err := r.establishMounts(mountCtx, mounts)
+		adopted, err := r.adoptExistingMounts(mounts)
+		if err == nil && !adopted {
+			err = r.establishMounts(mountCtx, mounts)
+		}
 		cancel()
 		if err != nil {
 			r.unmountAll() // roll back any mounts established before the failure
@@ -352,6 +359,54 @@ func (r *Runner) writeMountReadyMarker() error {
 		return fmt.Errorf("failed to write mounts-ready marker: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) removeMountReadyMarker() error {
+	markerPath := filepath.Join(r.sharedVolumePath, MountReadyFile)
+	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale mounts-ready marker: %w", err)
+	}
+	return nil
+}
+
+// adoptExistingMounts recovers ownership after a Kubernetes native-sidecar
+// restart. Mounts live in the pod's propagated mount namespace and can outlive
+// the container process that established them. If every requested target is
+// still mounted, track them so normal teardown unmounts them. A partial set is
+// stale state: tear it down before establishing the complete declaration.
+func (r *Runner) adoptExistingMounts(mounts []artifact.Artifact) (bool, error) {
+	targets := make([]string, 0, len(mounts))
+	mounted := make([]bool, 0, len(mounts))
+	count := 0
+	for _, a := range mounts {
+		m, ok := a.(*artifact.Mount)
+		if !ok {
+			continue
+		}
+		target := filepath.Join(r.sharedVolumePath, m.Out)
+		active, err := r.mounter.IsMounted(target)
+		if err != nil {
+			return false, fmt.Errorf("inspect mount %s: %w", m.ID, err)
+		}
+		targets = append(targets, target)
+		mounted = append(mounted, active)
+		if active {
+			count++
+		}
+	}
+
+	if count == len(targets) && count > 0 {
+		r.mounted = append(r.mounted, targets...)
+		return true, nil
+	}
+	for i := len(targets) - 1; i >= 0; i-- {
+		if mounted[i] {
+			if err := r.mounter.Unmount(targets[i]); err != nil {
+				return false, fmt.Errorf("remove partial mount %s: %w", targets[i], err)
+			}
+		}
+	}
+	return false, nil
 }
 
 // establishMounts mounts each image read-only into the workspace. A failure
@@ -416,6 +471,9 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 // and extraction made those inodes root-owned because the sidecar runs as root.
 func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lowerRel string) (string, error) {
 	lower := filepath.Join(r.sharedVolumePath, lowerRel)
+	if err := os.RemoveAll(lower); err != nil {
+		return "", fmt.Errorf("remove stale tar lower directory: %w", err)
+	}
 	if err := os.Mkdir(lower, 0o755); err != nil {
 		return "", fmt.Errorf("create tar lower directory: %w", err)
 	}

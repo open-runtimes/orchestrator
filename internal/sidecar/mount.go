@@ -43,6 +43,7 @@ func UpperDir(target string) string { return filepath.Join(target+".scratch", "u
 type Mounter interface {
 	Mount(source, target string, opts MountOpts) error
 	Unmount(target string) error
+	IsMounted(target string) (bool, error)
 }
 
 // CheckMountsReady reports whether the mounts-ready marker exists.
