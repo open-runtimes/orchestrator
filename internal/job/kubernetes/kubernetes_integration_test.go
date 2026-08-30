@@ -282,6 +282,91 @@ func TestIntegration_SquashfsWritableMount(t *testing.T) {
 	}
 }
 
+// TestIntegration_TarGzipMount proves the tar compatibility path extracts the
+// archive into a private lower directory, bind-mounts it read-only, and
+// propagates that mount to the worker.
+func TestIntegration_TarGzipMount(t *testing.T) {
+	o, emitter, teardown := setup(t)
+	defer teardown()
+
+	d := wireDispatcher(t, emitter)
+	defer d.Close(context.Background())
+
+	jobID := fmt.Sprintf("mount-tar-gzip-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:             jobID,
+		Image:          "alpine:3.20",
+		Command:        `sleep 1 && grep -q "mounted content" /workspace/mnt/hello.txt && ! touch /workspace/mnt/nope && ! touch /workspace/mnt.lower/nope`,
+		CPU:            0.1,
+		Memory:         64,
+		TimeoutSeconds: 120,
+		Workspace:      "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "w", In: "mounted content", Out: "hello.txt"},
+			&artifact.Archive{ID: "a", In: "hello.txt", Out: "data.tar.gz", Format: "tar", Compression: "gzip", Depends: "w"},
+			&artifact.Mount{ID: "m", In: "data.tar.gz", Out: "mnt", Depends: "a"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), jobID)
+		return err == nil && (s.State == job.StateCompleted || s.State == job.StateFailed)
+	}, testutil.WithTimeout(150*time.Second), testutil.WithInterval(time.Second))
+
+	status, err := o.Status(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("final Status: %v", err)
+	}
+	if status.State != job.StateCompleted {
+		t.Errorf("final state: want completed (read-only tar mount succeeded), got %s (exit=%v)", status.State, status.ExitCode)
+	}
+}
+
+// TestIntegration_TarWritableMount proves an extracted tar directory can act
+// as the lower layer of the same writable overlay used by filesystem images.
+func TestIntegration_TarWritableMount(t *testing.T) {
+	o, emitter, teardown := setup(t)
+	defer teardown()
+
+	d := wireDispatcher(t, emitter)
+	defer d.Close(context.Background())
+
+	jobID := fmt.Sprintf("mount-tar-rw-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:             jobID,
+		Image:          "alpine:3.20",
+		Command:        `sleep 1 && echo scratch > /workspace/mnt/new.txt && grep -q scratch /workspace/mnt/new.txt && grep -q "mounted content" /workspace/mnt/hello.txt && ! touch /workspace/mnt.lower/nope`,
+		CPU:            0.1,
+		Memory:         64,
+		TimeoutSeconds: 120,
+		Workspace:      "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "w", In: "mounted content", Out: "hello.txt"},
+			&artifact.Archive{ID: "a", In: "hello.txt", Out: "data.tar", Format: "tar", Depends: "w"},
+			&artifact.Mount{ID: "m", In: "data.tar", Out: "mnt", Writable: true, Size: 64, Depends: "a"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), jobID)
+		return err == nil && (s.State == job.StateCompleted || s.State == job.StateFailed)
+	}, testutil.WithTimeout(150*time.Second), testutil.WithInterval(time.Second))
+
+	status, err := o.Status(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("final Status: %v", err)
+	}
+	if status.State != job.StateCompleted {
+		t.Errorf("final state: want completed (writable tar overlay succeeded), got %s (exit=%v)", status.State, status.ExitCode)
+	}
+}
+
 // TestIntegration_ErofsMount is the squashfs read-only mount test for the erofs
 // format: build an erofs image (write → archive), mount it read-only, and read
 // a file back. The mount path detects the filesystem type from the image magic,

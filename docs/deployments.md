@@ -97,7 +97,7 @@ Probes: the **readiness** probe is run by the orchestrator's sidecar and honors 
 
 Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving, materialized by an `artifact-pre` init container.
 
-A [`mount`](jobs.md#mount-artifact) works too — a squashfs or erofs image mounted into the workspace rather than extracted into it, optionally writable over a tmpfs overlay. It is handled by the revision's sidecar rather than that init container, because a mount has to be held for as long as the workload reads from it and an init container exits:
+A [`mount`](jobs.md#mount-artifact) works too — a tar archive, squashfs image, or erofs image exposed through one mount lifecycle, optionally writable over a tmpfs overlay. Tar is extracted into a private lower directory first; the image formats mount in place. It is handled by the revision's sidecar rather than that init container, because the resulting mount has to be held for as long as the workload reads from it and an init container exits:
 
 ```jsonc
 {
@@ -109,7 +109,7 @@ A [`mount`](jobs.md#mount-artifact) works too — a squashfs or erofs image moun
 }
 ```
 
-**Declaring a mount changes the pod**, and only for revisions that declare one: the sidecar runs **privileged as root** (a loop mount needs `CAP_SYS_ADMIN`), the workspace carries mount propagation so the mount reaches the worker, and the worker is held by a startup probe until the mount is in place. That privileged container is in **every replica** of such a revision, so keep it to revisions that need it — and do not lean on container isolation in a revision that also runs code you do not trust. A revision with no mount artifact is unchanged: hardened sidecar, no propagation, no gate.
+**Declaring a mount changes the pod**, and only for revisions that declare one: the sidecar runs **privileged as root** (`mount(2)` needs `CAP_SYS_ADMIN`, including tar's final bind mount), the workspace carries mount propagation so the mount reaches the worker, and the worker is held by a startup probe until the mount is in place. That privileged container is in **every replica** of such a revision, so keep it to revisions that need it — and do not lean on container isolation in a revision that also runs code you do not trust. A revision with no mount artifact is unchanged: hardened sidecar, no propagation, no gate.
 
 The Docker backend cannot mount — sibling containers do not share a mount namespace the way a pod's containers do — and rejects the request rather than serving a revision without it.
 

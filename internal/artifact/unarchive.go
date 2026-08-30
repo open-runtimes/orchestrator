@@ -83,9 +83,9 @@ func isTar(b []byte) bool {
 }
 
 // Unarchive extracts a tar archive (plain, gzip, zstd, or lz4) or a squashfs or
-// erofs image; the format is detected from the archive's magic bytes. (To mount
-// a squashfs or erofs image read-only in place instead of materializing its
-// files, use a "mount" artifact.)
+// erofs image; the format is detected from the archive's magic bytes. (To use
+// the common read-only or writable mount lifecycle instead, use a "mount"
+// artifact; tar is still materialized internally.)
 type Unarchive struct {
 	ID            string `json:"id"`
 	In            string `json:"in"`                      // Source archive path

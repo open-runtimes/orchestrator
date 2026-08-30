@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-// MountReadyFile marks that all image mounts are established. The Kubernetes
+// MountReadyFile marks that all artifact mounts are established. The Kubernetes
 // native sidecar writes it after mounting; the worker's startup probe waits on
 // it so the worker only starts once its mounts are present.
 const MountReadyFile = ".mounts-ready"
@@ -17,6 +17,11 @@ const MountReadyFile = ".mounts-ready"
 type MountOpts struct {
 	Writable bool
 	SizeMiB  int
+	// SourceDir says the source is an already-materialized directory rather
+	// than a loop-mountable filesystem image. Tar archives are extracted into
+	// a private lower directory before reaching the mounter; a read-only mount
+	// bind-mounts it, while a writable mount uses it as the overlay lower.
+	SourceDir bool
 	// UpperOnDisk puts the overlay's upper layer on the shared workspace instead
 	// of a tmpfs. A tmpfs upper is RAM and dies with the pod, which is the right
 	// default; a synced mount needs the delta to be an ordinary directory that
@@ -30,12 +35,13 @@ type MountOpts struct {
 // exactly what a sync has to carry.
 func UpperDir(target string) string { return filepath.Join(target+".scratch", "upper") }
 
-// Mounter mounts a read-only filesystem image (squashfs or erofs) at a target
-// directory and unmounts it. With opts.Writable the image becomes the read-only
-// lower layer of a tmpfs-backed overlay. Implementations are platform-specific
-// (kernel loop mount on Linux).
+// Mounter mounts a source at a target directory and unmounts it. The source is
+// normally a read-only filesystem image (squashfs or erofs); with SourceDir it
+// is a directory materialized from a tar archive. With opts.Writable the source
+// becomes the read-only lower layer of a tmpfs-backed overlay. Implementations
+// are platform-specific (kernel mounts on Linux).
 type Mounter interface {
-	Mount(image, target string, opts MountOpts) error
+	Mount(source, target string, opts MountOpts) error
 	Unmount(target string) error
 }
 

@@ -108,7 +108,7 @@ Artifacts handle file operations before and after job execution. An artifact run
 | `clone` | Materialize the tree at a git ref |
 | `write` | Write inline content |
 | `unarchive` | Extract a tar (plain/gzip/zstd/lz4), squashfs, or erofs archive |
-| `mount` | Mount a squashfs or erofs image read-only into the workspace |
+| `mount` | Mount a tar archive, squashfs image, or erofs image into the workspace |
 | `upload` | Upload file to URL |
 | `read` | Include file contents in callback event |
 | `archive` | Create tar, squashfs, or erofs archive |
@@ -183,7 +183,7 @@ Write inline content to a file:
 
 ### Unarchive Artifact
 
-Extract an archive — tar (plain, gzip-, zstd-, or lz4-compressed), squashfs, or erofs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To mount a squashfs or erofs image read-only *in place* instead of copying its files out, use the Mount artifact.)
+Extract an archive — tar (plain, gzip-, zstd-, or lz4-compressed), squashfs, or erofs — detected automatically from the archive's magic bytes. This materializes the files into the workspace. (To expose any of these through the common mount lifecycle, use the Mount artifact; tar is still extracted internally, while squashfs and erofs are mounted in place.)
 
 ```json
 {
@@ -266,7 +266,7 @@ Often chained with a download:
 
 ### Mount Artifact
 
-Mount a squashfs or erofs image read-only into the workspace, so the worker reads it directly without extraction (preserving the read-only image); the format is detected automatically from the image's magic bytes:
+Mount a tar archive, squashfs image, or erofs image read-only into the workspace; the format is detected automatically from magic bytes. Squashfs and erofs are loop-mounted directly. Tar archives (plain, gzip-, zstd-, or lz4-compressed) are the compatibility path: they are extracted into a private lower directory and bind-mounted at the destination, giving callers one lifecycle at the cost of tar's extraction time and disk usage.
 
 ```json
 {
@@ -277,9 +277,9 @@ Mount a squashfs or erofs image read-only into the workspace, so the worker read
 }
 ```
 
-This mounts `dataset.sqfs` at `mnt/dataset/` in the workspace, visible to the worker for its whole run and unmounted afterwards.
+This mounts `dataset.sqfs` at `mnt/dataset/` in the workspace, visible to the worker for its whole run and unmounted afterwards. The same request can name `dataset.tar` or `dataset.tar.gz` without changing the artifact chain.
 
-Set `writable: true` to give the worker a writable copy-on-write view: the read-only squashfs becomes the lower layer of an overlay whose upper layer lives on a tmpfs (the classic squashfs + tmpfs live-system pattern). The image is never modified; writes land in RAM (counted against the pod's memory limit) and are discarded when the job ends. Use `size` to cap that tmpfs in MiB — an overrun then fails with a disk-full error instead of OOM-killing the pod.
+Set `writable: true` to give the worker a writable copy-on-write view: the read-only image or extracted tar tree becomes the lower layer of an overlay whose upper layer lives on a tmpfs. The source is never modified; writes land in RAM (counted against the pod's memory limit) and are discarded when the job ends. Use `size` to cap that tmpfs in MiB — an overrun then fails with a disk-full error instead of OOM-killing the pod.
 
 ```json
 {
@@ -293,7 +293,7 @@ Set `writable: true` to give the worker a writable copy-on-write view: the read-
 ```
 
 **Options:**
-- `in` - Squashfs or erofs image to mount (required)
+- `in` - Tar archive, squashfs image, or erofs image to mount (required)
 - `out` - Mount point directory in the workspace (required)
 - `writable` - Overlay a writable layer on the image (optional, default read-only)
 - `size` - Cap the writable overlay in MiB (optional, writable only; 0/omitted = kernel default of half of RAM)
@@ -302,7 +302,7 @@ Set `writable: true` to give the worker a writable copy-on-write view: the read-
 
 > **Every workload kind.** Mounts work for jobs, [deployment revisions](deployments.md#the-request-spec), [pool activations](pools.md#artifacts) and [sandboxes](sandboxes.md#mounting-a-filesystem-image) alike — the same sidecar establishes them in all four. A job or a revision infers the capability from its artifacts, because its pod is built for the request; a pool has to declare `mounts: true`, because its pods stand warm long before the claim arrives.
 
-> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs require the matching kernel module on nodes (`squashfs` or `erofs`, plus `overlay` for writable mounts), and their sidecar runs privileged with mount propagation. Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs. Loop devices are a finite per-node resource, so a node running many mounts at once may need `max_loop` raised; a job that cannot get one fails with `no free loop device`.
+> **Operator note:** Mounting activates automatically for any job whose artifacts include a `mount` entry — no configuration required. Such jobs run their sidecar privileged with mount propagation, including tar-backed mounts, because the final bind or overlay mount needs `CAP_SYS_ADMIN`. Image-backed mounts also require the matching kernel module on nodes (`squashfs` or `erofs`; `overlay` is required for every writable mount). Privilege is added only to the sidecar of jobs that mount — never to the worker, and never to other jobs. Loop devices are a finite per-node resource, so a node running many image mounts at once may need `max_loop` raised; a job that cannot get one fails with `no free loop device`.
 
 ### Upload Artifact
 

@@ -228,7 +228,7 @@ func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) erro
 	return nil
 }
 
-// Mount establishes the image mounts among artifacts, for a consumer that runs
+// Mount establishes the mounts among artifacts, for a consumer that runs
 // no post phase but holds its workload for as long as the pod lives: a claimed
 // warm pod. Call it after the pre phase has materialized the images and BEFORE
 // the workload is signalled, so the mount is already there when it execs.
@@ -241,7 +241,7 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 		return nil
 	}
 	logger := slog.With("jobId", r.jobID, "mounts", len(mounts))
-	logger.Info("Establishing image mounts")
+	logger.Info("Establishing artifact mounts")
 
 	// Bounded, like every other phase: the image was materialized by the pre
 	// phase that just ran, so a missing one is never going to arrive. Without a
@@ -275,7 +275,7 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 			r.startSync(m)
 		}
 	}
-	logger.Info("Image mounts established")
+	logger.Info("Artifact mounts established")
 	return nil
 }
 
@@ -305,7 +305,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	// Establish mounts at startup, before signaling ready, so they exist when
 	// the worker starts. The startup probe gates the worker on the marker.
 	if len(mounts) > 0 {
-		logger.Info("Establishing image mounts")
+		logger.Info("Establishing artifact mounts")
 		mountCtx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
 		err := r.establishMounts(mountCtx, mounts)
 		cancel()
@@ -370,25 +370,46 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 		if err == nil {
 			err = os.MkdirAll(target, 0o755)
 		}
+
+		format, compression := "", ""
 		if err == nil {
-			err = r.mounter.Mount(image, target, MountOpts{
+			format, compression, err = artifact.ClassifyFile(image)
+		}
+
+		source := image
+		sourceDir := false
+		if err == nil && format == "tar" {
+			lowerRel := m.Out + ".lower"
+			lower := filepath.Join(r.sharedVolumePath, lowerRel)
+			if mkdirErr := os.Mkdir(lower, 0o755); mkdirErr != nil {
+				err = fmt.Errorf("create tar lower directory: %w", mkdirErr)
+			} else {
+				result := (&artifact.Unarchive{In: m.In, Out: lowerRel}).Apply(ctx, r.sharedVolumePath)
+				if result.Error != nil {
+					err = result.Error
+					_ = os.RemoveAll(lower)
+				} else {
+					source = lower
+					sourceDir = true
+				}
+			}
+		}
+		if err == nil {
+			err = r.mounter.Mount(source, target, MountOpts{
 				Writable: m.Writable, SizeMiB: m.Size,
+				SourceDir: sourceDir,
 				// A synced delta must outlive each write and be readable by the
 				// artifact runner, which a tmpfs upper is not.
 				UpperOnDisk: m.Sync != "",
 			})
+			if err != nil && sourceDir {
+				_ = os.RemoveAll(source)
+			}
 		}
 		if err != nil {
 			r.emitArtifact(a, artifact.Result{Status: "failed", Error: err}, start)
 			slog.With("artifactId", m.ID, "error", err).Error("Mount failed")
 			return fmt.Errorf("mount %s: %w", m.ID, err)
-		}
-
-		// Classified after the mount succeeded, so a header that cannot be read
-		// costs a label and never the mount itself.
-		format, compression, classifyErr := artifact.ClassifyFile(image)
-		if classifyErr != nil {
-			slog.With("artifactId", m.ID, "error", classifyErr).Debug("Could not classify mounted image")
 		}
 
 		r.mounted = append(r.mounted, target)
