@@ -19,8 +19,8 @@ type MountOpts struct {
 	SizeMiB  int
 	// SourceDir says the source is an already-materialized directory rather
 	// than a loop-mountable filesystem image. Tar archives are extracted into
-	// a private lower directory before reaching the mounter; a read-only mount
-	// bind-mounts it, while a writable mount uses it as the overlay lower.
+	// a lower directory inside the future mount point, so the resulting bind or
+	// overlay hides that implementation path from the worker.
 	SourceDir bool
 	// UpperOnDisk puts the overlay's upper layer on the shared workspace instead
 	// of a tmpfs. A tmpfs upper is RAM and dies with the pod, which is the right

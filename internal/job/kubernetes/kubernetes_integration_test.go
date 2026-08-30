@@ -296,7 +296,7 @@ func TestIntegration_TarGzipMount(t *testing.T) {
 	req := &job.Request{
 		ID:             jobID,
 		Image:          "alpine:3.20",
-		Command:        `sleep 1 && grep -q "mounted content" /workspace/mnt/hello.txt && ! touch /workspace/mnt/nope && ! touch /workspace/mnt.lower/nope`,
+		Command:        `sleep 1; grep -q "mounted content" /workspace/mnt/hello.txt || exit 11; if touch /workspace/mnt/nope; then exit 12; fi; if test -e /workspace/mnt/.lower; then exit 13; fi`,
 		CPU:            0.1,
 		Memory:         64,
 		TimeoutSeconds: 120,
@@ -338,7 +338,7 @@ func TestIntegration_TarWritableMount(t *testing.T) {
 	req := &job.Request{
 		ID:             jobID,
 		Image:          "alpine:3.20",
-		Command:        `sleep 1 && echo changed > /workspace/mnt/hello.txt && grep -q changed /workspace/mnt/hello.txt && echo scratch > /workspace/mnt/new.txt && grep -q scratch /workspace/mnt/new.txt && ! touch /workspace/mnt.lower/nope`,
+		Command:        `sleep 1 && echo changed > /workspace/mnt/hello.txt && grep -q changed /workspace/mnt/hello.txt && echo scratch > /workspace/mnt/new.txt && grep -q scratch /workspace/mnt/new.txt && ! test -e /workspace/mnt/.lower`,
 		CPU:            0.1,
 		Memory:         64,
 		TimeoutSeconds: 120,

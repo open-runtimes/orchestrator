@@ -470,7 +470,7 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			}
 			defer runner.Release()
 
-			lower := filepath.Join(workspace, "runtime.lower")
+			lower := filepath.Join(workspace, "runtime", ".lower")
 			content, err := os.ReadFile(filepath.Join(lower, "bin", "start"))
 			if err != nil {
 				t.Fatalf("read extracted lower: %v", err)
@@ -517,7 +517,7 @@ func TestRunner_InvalidTarMountRemovesPartialLower(t *testing.T) {
 	if err == nil {
 		t.Fatal("Mount() error = nil, want invalid archive error")
 	}
-	if _, statErr := os.Stat(filepath.Join(workspace, "runtime.lower")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(workspace, "runtime", ".lower")); !os.IsNotExist(statErr) {
 		t.Fatalf("partial lower remains after failure: %v", statErr)
 	}
 	if len(fake.mounted) != 0 {

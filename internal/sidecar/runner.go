@@ -379,7 +379,7 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 		source := image
 		sourceDir := false
 		if err == nil && format == "tar" {
-			lowerRel := m.Out + ".lower"
+			lowerRel := filepath.Join(m.Out, ".lower")
 			source, err = r.extractTarMountLower(ctx, m, lowerRel)
 			if err == nil {
 				sourceDir = true

@@ -90,11 +90,11 @@ func TestPushDelta_ArchivesTheUpperLayerOnly(t *testing.T) {
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(ws, "work.lower"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(ws, "work", ".lower"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(upper, "changed.txt"), "the delta")
-	write(t, filepath.Join(ws, "work.lower", "from-image.txt"), "not the delta")
+	write(t, filepath.Join(ws, "work", ".lower", "from-image.txt"), "not the delta")
 
 	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
 	m := &artifact.Mount{ID: "tree", In: "base.erofs", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}

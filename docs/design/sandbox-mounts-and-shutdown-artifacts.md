@@ -450,10 +450,11 @@ pricing first: it needs no FUSE at all.
 Concretely, for the overlay-delta route: **four changes across three files.**
 Everything else already exists and shipped.
 
-A writable `mount` today is an erofs or squashfs image loop-mounted read-only at
-`<out>.lower`, with an overlay stacked at `<out>` whose upper and work layers
-live on a **tmpfs** at `<out>.scratch`. The upper directory is therefore already
-at a known path, and it already contains exactly the delta — measured:
+A writable `mount` today has its erofs, squashfs, or extracted tar lower mounted
+read-only at `<out>/.lower`, with an overlay stacked at `<out>` whose upper and
+work layers live on a **tmpfs** at `<out>.scratch`. Stacking the overlay hides
+the implementation lower from the workload. The upper directory is already at
+a known path, and it contains exactly the delta — measured:
 
 ```
 OVERLAY-ON-EMPTYDIR: OK

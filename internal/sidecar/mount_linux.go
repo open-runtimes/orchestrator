@@ -29,9 +29,12 @@ func defaultMounter() Mounter { return kernelMounter{} }
 // copy-on-write view whose writes are RAM-backed and discarded on Unmount.
 func (kernelMounter) Mount(source, target string, opts MountOpts) error {
 	if opts.SourceDir {
-		// The lower directory shares the workspace with the worker. Protect the
-		// source path itself before exposing it at target, otherwise a worker
-		// could bypass the read-only/overlay view through target.lower.
+		// A classic bind mount cannot become read-only atomically: MS_BIND
+		// creates it writable and a second remount changes the flag. Mount
+		// propagation can deliver that first event to the worker without the
+		// remount update. Make the hidden source a read-only mount first, so the
+		// bind cloned onto target is born read-only. The source sits below target
+		// and is hidden as soon as the final bind or overlay is established.
 		if err := mountDirectory(source, source); err != nil {
 			return fmt.Errorf("protect directory lower: %w", err)
 		}
@@ -72,9 +75,12 @@ func (kernelMounter) Unmount(target string) error {
 	return nil
 }
 
-// overlayLower/overlayScratch derive the sibling directories an overlay mount
-// uses from its target, so Unmount can find them without extra bookkeeping.
-func overlayLower(target string) string   { return target + ".lower" }
+// overlayLower lives inside the directory that is about to become the mount
+// point. Once the bind or overlay is established at target, the implementation
+// lower is hidden from the worker; unmounting target reveals it for cleanup.
+// overlayScratch remains a sibling because a writable overlay must keep its
+// upper and work directories accessible to the sidecar for sync.
+func overlayLower(target string) string   { return filepath.Join(target, ".lower") }
 func overlayScratch(target string) string { return target + ".scratch" }
 
 // mountImage associates image with a free loop device and mounts it read-only
