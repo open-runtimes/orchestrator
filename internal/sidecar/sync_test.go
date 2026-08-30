@@ -221,6 +221,30 @@ func TestRestoreDelta_RestoredTreeIsWritableByTheWorkload(t *testing.T) {
 	}
 }
 
+func TestMakeWritable_DoesNotFollowSymlinks(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	write(t, outside, "leave permissions alone")
+	if err := os.Chmod(outside, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := makeWritable(root); err != nil {
+		t.Fatalf("makeWritable: %v", err)
+	}
+	info, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("external symlink target mode = %o, want 600", got)
+	}
+}
+
 // A change that moves no bytes is still a change. An empty mkdir and a rename
 // both leave the file count, the total size and every file mtime exactly as they
 // were, so a fingerprint over files alone would call them unchanged and skip the

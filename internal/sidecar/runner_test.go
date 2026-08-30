@@ -456,7 +456,10 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			workspace := t.TempDir()
 			archivePath := filepath.Join(workspace, name)
-			createTarFile(t, archivePath, name == "data.tar.gz", map[string]string{"bin/start": "#!/bin/sh\necho ready\n"})
+			createTarFile(t, archivePath, name == "data.tar.gz", map[string]string{
+				"bin/start": "#!/bin/sh\necho ready\n",
+				"notes.txt": "change me",
+			})
 
 			fake := &fakeMounter{}
 			runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithMounter(fake))
@@ -474,6 +477,19 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			}
 			if string(content) != "#!/bin/sh\necho ready\n" {
 				t.Fatalf("extracted content = %q", content)
+			}
+			for path, want := range map[string]os.FileMode{
+				filepath.Join(lower, "bin"):       0o777,
+				filepath.Join(lower, "bin/start"): 0o666,
+				filepath.Join(lower, "notes.txt"): 0o666,
+			} {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatalf("stat writable lower %s: %v", path, err)
+				}
+				if got := info.Mode().Perm(); got != want {
+					t.Errorf("writable lower %s mode = %o, want %o", path, got, want)
+				}
 			}
 
 			fake.mu.Lock()

@@ -380,18 +380,9 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 		sourceDir := false
 		if err == nil && format == "tar" {
 			lowerRel := m.Out + ".lower"
-			lower := filepath.Join(r.sharedVolumePath, lowerRel)
-			if mkdirErr := os.Mkdir(lower, 0o755); mkdirErr != nil {
-				err = fmt.Errorf("create tar lower directory: %w", mkdirErr)
-			} else {
-				result := (&artifact.Unarchive{In: m.In, Out: lowerRel}).Apply(ctx, r.sharedVolumePath)
-				if result.Error != nil {
-					err = result.Error
-					_ = os.RemoveAll(lower)
-				} else {
-					source = lower
-					sourceDir = true
-				}
+			source, err = r.extractTarMountLower(ctx, m, lowerRel)
+			if err == nil {
+				sourceDir = true
 			}
 		}
 		if err == nil {
@@ -417,6 +408,32 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out, "format", format, "compression", compression).Info("Mounted image")
 	}
 	return nil
+}
+
+// extractTarMountLower materializes a tar into the implementation directory
+// used as a bind or overlay lower. Writable overlays must also be able to copy
+// up existing entries: overlayfs checks each lower inode's permissions first,
+// and extraction made those inodes root-owned because the sidecar runs as root.
+func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lowerRel string) (string, error) {
+	lower := filepath.Join(r.sharedVolumePath, lowerRel)
+	if err := os.Mkdir(lower, 0o755); err != nil {
+		return "", fmt.Errorf("create tar lower directory: %w", err)
+	}
+
+	result := (&artifact.Unarchive{In: m.In, Out: lowerRel}).Apply(ctx, r.sharedVolumePath)
+	if result.Error != nil {
+		_ = os.RemoveAll(lower)
+		return "", result.Error
+	}
+	if m.Writable {
+		// Open the extracted tree to the unknown workload uid just like a
+		// restored sync delta and the overlay upper directory.
+		if err := makeWritable(lower); err != nil {
+			_ = os.RemoveAll(lower)
+			return "", fmt.Errorf("make tar lower writable: %w", err)
+		}
+	}
+	return lower, nil
 }
 
 // unmountAll tears down established mounts in reverse order (best effort).

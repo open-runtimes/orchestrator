@@ -338,7 +338,7 @@ func TestIntegration_TarWritableMount(t *testing.T) {
 	req := &job.Request{
 		ID:             jobID,
 		Image:          "alpine:3.20",
-		Command:        `sleep 1 && echo scratch > /workspace/mnt/new.txt && grep -q scratch /workspace/mnt/new.txt && grep -q "mounted content" /workspace/mnt/hello.txt && ! touch /workspace/mnt.lower/nope`,
+		Command:        `sleep 1 && echo changed > /workspace/mnt/hello.txt && grep -q changed /workspace/mnt/hello.txt && echo scratch > /workspace/mnt/new.txt && grep -q scratch /workspace/mnt/new.txt && ! touch /workspace/mnt.lower/nope`,
 		CPU:            0.1,
 		Memory:         64,
 		TimeoutSeconds: 120,
