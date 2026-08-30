@@ -511,6 +511,7 @@ func TestRunner_InvalidTarMountRemovesPartialLower(t *testing.T) {
 
 // createTestArchiveFile creates a tar.gz archive file for use in tests.
 func createTestArchiveFile(t *testing.T, archivePath string, files map[string]string) {
+	t.Helper()
 	createTarFile(t, archivePath, true, files)
 }
 
