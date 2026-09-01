@@ -103,6 +103,12 @@ spec:
               value: {{ .Values.deployments.cpuOvercommit | quote }}
             - name: KUBE_MEMORY_OVERCOMMIT
               value: {{ .Values.deployments.memoryOvercommit | quote }}
+            - name: KUBE_REVISION_WORKERS
+              value: {{ .Values.deployments.revisionWorkers | quote }}
+            - name: KUBE_CLIENT_QPS
+              value: {{ .Values.deployments.clientQPS | quote }}
+            - name: KUBE_CLIENT_BURST
+              value: {{ .Values.deployments.clientBurst | quote }}
             {{- with .Values.deployments.workloadTolerations }}
             - name: KUBE_WORKLOAD_TOLERATIONS
               value: {{ toJson . | quote }}
@@ -206,11 +212,14 @@ metadata:
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 rules:
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments/scale"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions/scale"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["services"]
@@ -218,7 +227,7 @@ rules:
   # Pools create/claim/discard warm pods and read exec output from their logs.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]

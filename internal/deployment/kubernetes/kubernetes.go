@@ -1,6 +1,7 @@
 // Package kubernetes implements the deployment.Orchestrator interface using
-// the Kubernetes API. A deployment is a series of immutable revisions — each
-// an apps/v1.Deployment plus a selectorless Service — fronted by a Gateway
+// the Kubernetes API. A deployment is a series of immutable Revision CRs;
+// their pods are created directly by this service and exposed by selectorless
+// Services fronted by a Gateway
 // API HTTPRoute holding the traffic table, anchored by a marker ConfigMap.
 // Kubernetes is the source of truth — Status, List, Spec, and Endpoints
 // derive from it live, so any replica can serve any request and a restart
@@ -17,7 +18,9 @@ import (
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/deployment/endpointflip"
 	"orchestrator/internal/kube"
+	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/workload"
+	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,25 +30,36 @@ import (
 
 // Orchestrator implements deployment.Orchestrator using Kubernetes.
 type Orchestrator struct {
-	client    kubernetes.Interface
-	gateway   gatewayclient.Interface
-	namespace string
-	cfg       Config
-	stop      context.CancelFunc
+	client     kubernetes.Interface
+	revisions  *revisionapi.Client
+	gateway    gatewayclient.Interface
+	namespace  string
+	cfg        Config
+	stop       context.CancelFunc
+	controller *revisionController
+
+	leaderMu      sync.Mutex
+	leaderTerm    context.Context
+	leaderChanged chan struct{}
+	started       bool
 }
 
 // NewOrchestrator creates a Kubernetes deployment orchestrator.
 func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
+	cs, err := kube.NewClientWithRate(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
 	if err != nil {
 		return nil, err
 	}
-	gw, err := kube.NewGatewayClient(cfg.Kubeconfig, cfg.Context)
+	gw, err := kube.NewGatewayClientWithRate(cfg.Kubeconfig, cfg.Context, float32(cfg.ClientQPS), cfg.ClientBurst)
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{client: cs, gateway: gw, namespace: cfg.Namespace, cfg: cfg}, nil
+	dynamicClient, err := kube.NewDynamicClientWithRate(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
+	if err != nil {
+		return nil, err
+	}
+	return &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg}, nil
 }
 
 // Start surveys pre-existing managed deployments (their markers), then
@@ -54,6 +68,9 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 // leader-election config: with election enabled only the lease holder runs
 // them; disabled, they run directly (single-replica mode).
 func (o *Orchestrator) Start(ctx context.Context) error {
+	if _, err := o.revisions.List(ctx, o.namespace, metav1.ListOptions{Limit: 1}); err != nil {
+		return apperrors.Internal("kubernetes.listRevisions", err)
+	}
 	markers, err := o.client.CoreV1().ConfigMaps(o.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: LabelManagedBy + "=" + ManagedByValue,
 	})
@@ -64,12 +81,39 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	o.stop = cancel
+	o.leaderMu.Lock()
+	o.started = true
+	if o.leaderChanged == nil {
+		o.leaderChanged = make(chan struct{})
+	}
+	o.leaderMu.Unlock()
+	o.controller = newRevisionController(o)
+	if err := o.controller.start(runCtx); err != nil {
+		cancel()
+		o.leaderMu.Lock()
+		o.started = false
+		o.leaderMu.Unlock()
+		return apperrors.Internal("kubernetes.syncRevisionCaches", err)
+	}
 	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runReconcilers, o.onLeadership)
 	return nil
 }
 
 // onLeadership records leadership transitions when metrics are wired.
 func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leading bool) {
+	o.leaderMu.Lock()
+	if leading {
+		o.leaderTerm = ctx
+	} else {
+		o.leaderTerm = nil
+	}
+	if o.leaderChanged == nil {
+		o.leaderChanged = make(chan struct{})
+	} else {
+		close(o.leaderChanged)
+		o.leaderChanged = make(chan struct{})
+	}
+	o.leaderMu.Unlock()
 	if o.cfg.Metrics != nil {
 		o.cfg.Metrics.RecordLeadership(ctx, identity, leading)
 	}
@@ -78,6 +122,7 @@ func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leadin
 // runReconcilers runs the background loops for one leadership term (or the
 // process lifetime when election is disabled), blocking until ctx ends.
 func (o *Orchestrator) runReconcilers(ctx context.Context) {
+	go o.controller.runLeader(ctx)
 	if o.cfg.GatewayEnabled {
 		flip := endpointflip.New(o.client, o.namespace, endpointflip.Options{
 			ActivatorSelector:  o.cfg.ActivatorSelector,
@@ -90,14 +135,57 @@ func (o *Orchestrator) runReconcilers(ctx context.Context) {
 	o.runRollouts(ctx)
 }
 
-// RunLeaderElected runs `run` under the orchestrator's leader-election config
-// — the SAME lease that gates the built-in reconcilers, so one elected replica
-// runs every leader-gated loop (rollouts, endpoint flip, and the caller's,
-// e.g. the shared autoscaler). With election disabled it simply calls
-// run(ctx). Blocks until ctx cancels. Deliberately not part of
-// deployment.Orchestrator: it is Kubernetes-specific wiring for main.
+// RunLeaderElected runs `run` during this orchestrator's existing leadership
+// term. It deliberately does not start another elector: two electors in one
+// process with the same identity race their own Lease resource versions.
+// Callers may subscribe after leadership was acquired and start immediately.
+// Before Start, the disabled-election case retains its direct-run behavior for
+// simple single-replica embedding.
 func (o *Orchestrator) RunLeaderElected(ctx context.Context, run func(context.Context)) {
-	kube.RunLeaderElected(ctx, o.client, o.namespace, o.cfg.LeaderElection, run, nil)
+	o.leaderMu.Lock()
+	started := o.started
+	o.leaderMu.Unlock()
+	if !started && !o.cfg.LeaderElection.Enabled {
+		run(ctx)
+		return
+	}
+
+	for ctx.Err() == nil {
+		o.leaderMu.Lock()
+		term := o.leaderTerm
+		changed := o.leaderChanged
+		if changed == nil {
+			changed = make(chan struct{})
+			o.leaderChanged = changed
+		}
+		o.leaderMu.Unlock()
+		if term == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-changed:
+				continue
+			}
+		}
+
+		runWithinLeadershipTerm(ctx, term, run)
+		// A leader-gated component is expected to block for the term. If it
+		// returns early, wait for a real leadership transition rather than
+		// immediately starting a duplicate copy in the same term.
+		select {
+		case <-ctx.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+func runWithinLeadershipTerm(ctx, term context.Context, run func(context.Context)) {
+	runCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(term, cancel)
+	run(runCtx)
+	stop()
+	cancel()
 }
 
 // Apply is the declarative create-or-update:
@@ -200,23 +288,23 @@ func (o *Orchestrator) mintNextRevision(ctx context.Context, req *deployment.Req
 	return o.ensureRoute(ctx, m, fallbackTargets(m))
 }
 
-// ensureRevisionObjects creates the revision's Deployment, PDB (durably
+// ensureRevisionObjects creates the revision's Revision CR, PDB (durably
 // multi-replica deployments only), and Service, tolerating pre-existing ones —
 // revisions are immutable, so create-if-missing is also the heal for a
 // partial earlier Apply.
 func (o *Orchestrator) ensureRevisionObjects(ctx context.Context, req *deployment.Request, rev string) error {
-	dep, err := o.client.AppsV1().Deployments(o.namespace).Create(ctx, buildDeployment(req, o.cfg, rev), metav1.CreateOptions{})
+	revision, err := o.revisions.Create(ctx, o.namespace, buildRevision(req, o.cfg, rev))
 	if apierrors.IsAlreadyExists(err) {
-		dep, err = o.client.AppsV1().Deployments(o.namespace).Get(ctx, objectNameFor(rev), metav1.GetOptions{})
+		revision, err = o.revisions.Get(ctx, o.namespace, objectNameFor(rev))
 	}
 	if err != nil {
-		return apperrors.Internal("kubernetes.createDeployment", err)
+		return apperrors.Internal("kubernetes.createRevision", err)
 	}
 	if pdb := buildPDB(req, rev); pdb != nil {
 		// The PDB is deleted explicitly with the revision; the ownerReference
-		// is belt-and-braces so GC reaps it if the Deployment goes first.
+		// is belt-and-braces so GC reaps it if the Revision goes first.
 		pdb.OwnerReferences = []metav1.OwnerReference{{
-			APIVersion: "apps/v1", Kind: "Deployment", Name: dep.Name, UID: dep.UID,
+			APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind, Name: revision.Name, UID: revision.UID,
 		}}
 		_, err = o.client.PolicyV1().PodDisruptionBudgets(o.namespace).Create(ctx, pdb, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
@@ -227,7 +315,8 @@ func (o *Orchestrator) ensureRevisionObjects(ctx context.Context, req *deploymen
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return apperrors.Internal("kubernetes.createService", err)
 	}
-	return nil
+	// Fast path: materialize the initial slots before returning from Apply.
+	return o.reconcileRevision(ctx, objectNameFor(rev))
 }
 
 // Scale sets the replica count of the ROUTED revision via the scale
@@ -244,22 +333,20 @@ func (o *Orchestrator) Scale(ctx context.Context, id string, replicas int) error
 	}
 	rev := o.routedRevision(ctx, m)
 
-	deployments := o.client.AppsV1().Deployments(o.namespace)
-	scale, err := deployments.GetScale(ctx, objectNameFor(rev), metav1.GetOptions{})
+	revision, err := o.revisions.Get(ctx, o.namespace, objectNameFor(rev))
 	if apierrors.IsNotFound(err) {
 		return apperrors.NotFound("deployment", id)
 	}
 	if err != nil {
 		return apperrors.Internal("kubernetes.getScale", err)
 	}
-	if scale.Spec.Replicas == int32(replicas) {
+	if revision.Spec.Replicas == int32(replicas) {
 		return nil
 	}
-	scale.Spec.Replicas = int32(replicas)
-	if _, err := deployments.UpdateScale(ctx, objectNameFor(rev), scale, metav1.UpdateOptions{}); err != nil {
+	if err := o.revisions.Scale(ctx, o.namespace, objectNameFor(rev), int32(replicas)); err != nil {
 		return apperrors.Internal("kubernetes.updateScale", err)
 	}
-	return nil
+	return o.reconcileRevision(ctx, objectNameFor(rev))
 }
 
 // routedRevision picks the revision a whole-deployment operation acts on: a
@@ -276,9 +363,8 @@ func (o *Orchestrator) routedRevision(ctx context.Context, m marker) string {
 	return m.LatestRevision
 }
 
-// Delete tears down the deployment: its HTTPRoute, every revision's
-// Deployment (foreground propagation, so pods are gone before the objects
-// are) and Service, and finally the marker — last, so a crashed teardown is
+// Delete tears down the deployment: its HTTPRoute, every Revision and its
+// Pods and Service, and finally the marker — last, so a crashed teardown is
 // still visible and retryable.
 func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 	if _, err := o.getMarker(ctx, id); err != nil {
@@ -306,15 +392,21 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// deleteRevisionObjects removes one revision's Deployment, PDB, and Service,
+// deleteRevisionObjects removes one revision's Revision, Pods, PDB, and Service,
 // tolerating already-gone objects (not every revision has a PDB).
 func (o *Orchestrator) deleteRevisionObjects(ctx context.Context, rev string) error {
 	prop := metav1.DeletePropagationForeground
-	err := o.client.AppsV1().Deployments(o.namespace).Delete(ctx, objectNameFor(rev), metav1.DeleteOptions{
+	err := o.revisions.Delete(ctx, o.namespace, objectNameFor(rev), metav1.DeleteOptions{
 		PropagationPolicy: &prop,
 	})
 	if err != nil && !apierrors.IsNotFound(err) {
-		return apperrors.Internal("kubernetes.deleteDeployment", err)
+		return apperrors.Internal("kubernetes.deleteRevision", err)
+	}
+	err = o.client.CoreV1().Pods(o.namespace).DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{
+		LabelSelector: LabelRevision + "=" + rev,
+	})
+	if err != nil {
+		return apperrors.Internal("kubernetes.deleteRevisionPods", err)
 	}
 	err = o.client.PolicyV1().PodDisruptionBudgets(o.namespace).Delete(ctx, objectNameFor(rev), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {

@@ -180,6 +180,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `jobs.gateway.{enabled,gatewayClassName,listeners}` | disabled | Renders a `Gateway` for the jobs API (above) |
 | `jobs.httpRoute.{enabled,parentRefs,hostnames}` | disabled | Renders an `HTTPRoute` for the jobs API (above) |
 | `deployments.enabled` | `false` | Install the deployments service + activator |
+| `deployments.revisionWorkers` | `32` | Concurrent direct-Pod Revision reconciles |
+| `deployments.clientQPS` / `deployments.clientBurst` | `200` / `400` | Client-side K8s API write budget for Revision and Pod bursts |
 | `deployments.domain` | `localhost` | Base domain for auto-assigned hosts |
 | `deployments.gateway.{enabled,name,namespace}` | `true`, `orchestrator`, release ns | The Gateway that HTTPRoutes attach to |
 | `deployments.dataPort` | `8081` | Docker-backend data plane / activator data port |
@@ -194,6 +196,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.workloadNodeSelector` | `{}` | Node selector pinning workload pods to a node pool |
 | `jobs.workloadNodeSelector` | `{}` | Same, independently for job pods |
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
+| `deployments.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss can delay Pod creation by roughly the lease duration |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
 | `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
@@ -253,6 +256,8 @@ The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the pl
 ## Scaling the control plane
 
 Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=true`: all replicas serve the API (any replica can answer anything — state lives in the cluster), while the background reconcilers (rollout auto-cut, endpoint flip, autoscaler, pool control) run on the elected leader only. The activator scales independently via `deployments.activator.replicaCount`. The chart **fails fast at render time** if you ask for multiple replicas without leader election.
+
+On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.io/v1alpha1` `Revision`. The elected deployments-service controller creates its replica Pods directly using deterministic slots; Kubernetes `Deployment` and `ReplicaSet` controllers are not on the workload creation path. The `Revision` `/scale` subresource is shared by the autoscaler and cold-start activator.
 
 Each component can also autoscale on CPU (`autoscaling.enabled`, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 

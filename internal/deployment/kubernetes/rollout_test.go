@@ -183,13 +183,13 @@ func TestRetire_NeverDeletesWeightedRevision(t *testing.T) {
 	}
 }
 
-func TestRollout_MissingRevisionDeploymentIsSkipped(t *testing.T) {
+func TestRollout_MissingRevisionIsSkipped(t *testing.T) {
 	t.Parallel()
-	o, cs := newTestOrchestrator(t)
+	o, _ := newTestOrchestrator(t)
 	mustApply(t, o, testRequest())
-	// Head revision's Deployment vanished (e.g. mid-teardown): the sweep must
+	// Head Revision vanished (e.g. mid-teardown): the sweep must
 	// not cut or crash.
-	if err := cs.AppsV1().Deployments("orchestrator").Delete(t.Context(), "dep-web-00001", metav1.DeleteOptions{}); err != nil {
+	if err := o.revisions.Delete(t.Context(), "orchestrator", "dep-web-00001", metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete revision: %v", err)
 	}
 

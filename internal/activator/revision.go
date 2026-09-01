@@ -12,24 +12,23 @@ import (
 	"net/url"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
+	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
 	"time"
 
-	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
-	appslisters "k8s.io/client-go/listers/apps/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
 // Label/annotation contract stamped by the deployments-service Kubernetes
-// backend onto revision Deployments and their pods. Kept as local literals so
+// backend onto Revision CRs and their pods. Kept as local literals so
 // the data-plane edge does not import the control-plane backend package.
 const (
 	revisionLabelManagedBy = "managed-by"
@@ -67,18 +66,18 @@ type RevisionConfig struct {
 // revision's ready workload pods directly — never via the routable Service,
 // whose endpoints are this activator during the cold window (loop).
 type RevisionActivator struct {
-	client kubernetes.Interface
-	broker *deploymentBroker
-	cfg    RevisionConfig
+	client    kubernetes.Interface
+	revisions *revisionapi.Client
+	broker    *deploymentBroker
+	cfg       RevisionConfig
 
-	pods        corelisters.PodLister
-	deployments appslisters.DeploymentLister
+	pods corelisters.PodLister
 }
 
 // NewRevisionActivator creates a RevisionActivator. queue delivers async
 // response callbacks; rec (nilable) receives the hold/raise/async metrics.
 // Call Start before serving.
-func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, cfg RevisionConfig, rec Recorder) *RevisionActivator {
+func NewRevisionActivator(client kubernetes.Interface, revisions *revisionapi.Client, queue dispatcher.Queue, cfg RevisionConfig, rec Recorder) *RevisionActivator {
 	if cfg.ProxyPort == 0 {
 		cfg.ProxyPort = workload.DefaultProxyPort
 	}
@@ -89,9 +88,10 @@ func NewRevisionActivator(client kubernetes.Interface, queue dispatcher.Queue, c
 		cfg.StartTimeout = defaultStartTimeout
 	}
 	return &RevisionActivator{
-		client: client,
-		broker: newDeploymentBroker(queue, rec),
-		cfg:    cfg,
+		client:    client,
+		revisions: revisions,
+		broker:    newDeploymentBroker(queue, rec),
+		cfg:       cfg,
 	}
 }
 
@@ -102,7 +102,7 @@ func (a *RevisionActivator) QueuedByRevision() map[string]int {
 	return a.broker.depths()
 }
 
-// Start runs the managed pod + Deployment informers on ctx and blocks until
+// Start runs the managed pod informer on ctx and blocks until
 // their caches sync; the informers keep running until ctx cancels.
 func (a *RevisionActivator) Start(ctx context.Context) error {
 	factory := informers.NewSharedInformerFactoryWithOptions(a.client, revisionInformerResync,
@@ -112,12 +112,10 @@ func (a *RevisionActivator) Start(ctx context.Context) error {
 		}),
 	)
 	pods := factory.Core().V1().Pods()
-	deps := factory.Apps().V1().Deployments()
 	a.pods = pods.Lister()
-	a.deployments = deps.Lister()
 
 	factory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), pods.Informer().HasSynced, deps.Informer().HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), pods.Informer().HasSynced) {
 		return errors.New("informer caches failed to sync")
 	}
 	return nil
@@ -152,7 +150,7 @@ func (a *RevisionActivator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // revisionCapacity adapts one revision to the broker's seam: targets are the
 // informer's ready pods — or, during a cold start, the first Running pod whose
 // sidecar answers a direct /ready probe — and a raise patches the revision
-// Deployment's scale subresource 0→1.
+// Revision's scale subresource 0→1.
 type revisionCapacity struct {
 	a   *RevisionActivator
 	rev string
@@ -171,20 +169,16 @@ func (c revisionCapacity) Target(ctx context.Context) (*url.URL, error) {
 }
 
 func (c revisionCapacity) Raise(ctx context.Context) error {
-	name := revisionDeploymentName(c.rev)
-	dep, err := c.a.deployments.Deployments(c.a.cfg.Namespace).Get(name)
+	name := revisionObjectName(c.rev)
+	revision, err := c.a.revisions.Get(ctx, c.a.cfg.Namespace, name)
 	if err != nil {
 		return fmt.Errorf("raise skipped: %w", err)
 	}
-	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+	if revision.Spec.Replicas != 0 {
 		return nil // already raised; pods are on their way
 	}
 
-	scale := &autoscalingv1.Scale{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: c.a.cfg.Namespace},
-		Spec:       autoscalingv1.ScaleSpec{Replicas: 1},
-	}
-	if _, err := c.a.client.AppsV1().Deployments(c.a.cfg.Namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{}); err != nil {
+	if err := c.a.revisions.Scale(ctx, c.a.cfg.Namespace, name, 1); err != nil {
 		return err
 	}
 	slog.Info("Cold-start scale-up requested", "revision", c.rev)
@@ -240,7 +234,7 @@ func probeReady(ctx context.Context, podIP string, adminPort int32) bool {
 // informer) is fine.
 func (a *RevisionActivator) specFor(ctx context.Context, rev string) (*deployment.Request, error) {
 	deploymentID := deploymentIDOf(rev)
-	secret, err := a.client.CoreV1().Secrets(a.cfg.Namespace).Get(ctx, revisionDeploymentName(deploymentID), metav1.GetOptions{})
+	secret, err := a.client.CoreV1().Secrets(a.cfg.Namespace).Get(ctx, revisionObjectName(deploymentID), metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +288,6 @@ func podReady(pod *corev1.Pod) bool {
 	return false
 }
 
-func revisionDeploymentName(rev string) string {
+func revisionObjectName(rev string) string {
 	return "dep-" + rev
 }

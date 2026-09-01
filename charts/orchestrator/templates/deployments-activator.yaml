@@ -59,6 +59,10 @@ spec:
               value: {{ .Values.service.metricsPort | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.workloadNamespace" . | quote }}
+            - name: KUBE_CLIENT_QPS
+              value: {{ .Values.deployments.clientQPS | quote }}
+            - name: KUBE_CLIENT_BURST
+              value: {{ .Values.deployments.clientBurst | quote }}
             - name: SHUTDOWN_DRAIN_WAIT
               value: "0s"
           readinessProbe:
@@ -111,11 +115,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["apps"]
-    resources: ["deployments/scale"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions/scale"]
     verbs: ["get", "update", "patch"]
   # Async requests read the deployment's callback config off its dep-{id}
   # spec Secret (secret material never rests on ConfigMaps).

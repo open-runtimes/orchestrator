@@ -130,6 +130,12 @@ deployments:
   # otherwise "<release>-deployments".
   fullnameOverride: ""
   replicaCount: 1
+  # Concurrent Revision reconciles. Bursty clusters benefit from enough
+  # workers to issue direct Pod creates in parallel.
+  revisionWorkers: 32
+  # Client-side API rate budget for Revision status and direct Pod writes.
+  clientQPS: 200
+  clientBurst: 400
   image:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/deployments-service

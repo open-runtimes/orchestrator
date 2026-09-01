@@ -7,11 +7,11 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/kube"
+	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/workload"
 	"slices"
 	"strconv"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +22,7 @@ const (
 	LabelManagedBy    = "managed-by"
 	LabelDeploymentID = "deployment.id"
 	LabelRevision     = "deployment.revision"
+	LabelReplicaSlot  = "deployment.replica-slot"
 	ManagedByValue    = "deployments-service"
 
 	// AnnotationHost carries the deployment's hostname on the marker ConfigMap.
@@ -41,6 +42,29 @@ const (
 	portNameAdmin = "admin"
 )
 
+// buildRevision maps a domain revision to the immutable Revision CR consumed
+// by the direct-pod controller.
+func buildRevision(req *deployment.Request, cfg Config, revision string) *revisionapi.Revision {
+	labels := revisionLabels(req.ID, revision)
+	replicas := max(int32(req.Replicas), 0)
+	return &revisionapi.Revision{
+		TypeMeta: metav1.TypeMeta{APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      objectNameFor(revision),
+			Namespace: cfg.Namespace,
+			Labels:    labels,
+		},
+		Spec: revisionapi.Spec{
+			Replicas:            replicas,
+			ReadyTimeoutSeconds: int32(req.ReadyTimeoutSeconds),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec:       buildPodSpec(req, cfg, revision),
+			},
+		},
+	}
+}
+
 // workspaceOf is the request's workspace (working directory and shared-volume
 // mount path), falling back to the default for specs stored before the field
 // existed. Every container in the pod must agree on it.
@@ -52,60 +76,19 @@ func workspaceOf(req *deployment.Request) string {
 }
 
 // objectNameFor prefixes a deployment ID or revision name into a managed
-// object name: the marker ConfigMap and HTTPRoute are dep-{id}, a revision's
-// Deployment and Service are dep-{revisionName}.
+// object name: the marker ConfigMap and HTTPRoute are dep-{id}; a Revision and
+// its Service are dep-{revisionName}.
 func objectNameFor(name string) string {
 	return "dep-" + name
 }
 
-// revisionLabels are stamped on every revision-scoped object (Deployment,
+// revisionLabels are stamped on every revision-scoped object (Revision,
 // Service, pod template).
 func revisionLabels(id, revision string) map[string]string {
 	return map[string]string{
 		LabelManagedBy:    ManagedByValue,
 		LabelDeploymentID: id,
 		LabelRevision:     revision,
-	}
-}
-
-// buildDeployment maps a deployment.Request to the revision's immutable
-// apps/v1.Deployment. The pod selector is the revision label alone, so each
-// revision owns exactly its own pods.
-//
-// Pod template, all sharing an emptyDir workspace:
-//   - initContainer "artifact-pre" (only when the request has artifacts):
-//     regular init, materializes artifacts and exits before serving starts
-//   - initContainer "proxy": native sidecar (restartPolicy: Always) fronting
-//     the worker; its /ready probe gates pod readiness (and so EndpointSlice
-//     membership)
-//   - container "worker": the user workload
-func buildDeployment(req *deployment.Request, cfg Config, revision string) *appsv1.Deployment {
-	labels := revisionLabels(req.ID, revision)
-
-	spec := appsv1.DeploymentSpec{
-		Selector: &metav1.LabelSelector{
-			MatchLabels: map[string]string{LabelRevision: revision},
-		},
-		Template: corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: labels},
-			Spec:       buildPodSpec(req, cfg, revision),
-		},
-	}
-	if req.Replicas > 0 {
-		replicas := int32(req.Replicas)
-		spec.Replicas = &replicas
-	}
-	if req.ReadyTimeoutSeconds > 0 {
-		deadline := int32(req.ReadyTimeoutSeconds)
-		spec.ProgressDeadlineSeconds = &deadline
-	}
-
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   objectNameFor(revision),
-			Labels: labels,
-		},
-		Spec: spec,
 	}
 }
 

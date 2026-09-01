@@ -39,7 +39,7 @@ func (o *Orchestrator) SetTraffic(ctx context.Context, id string, targets []depl
 		targets = []deployment.Target{{RevisionName: m.LatestRevision, Percent: 100}}
 	}
 	for _, t := range targets {
-		_, err := o.client.AppsV1().Deployments(o.namespace).Get(ctx, objectNameFor(t.RevisionName), metav1.GetOptions{})
+		_, err := o.revisions.Get(ctx, o.namespace, objectNameFor(t.RevisionName))
 		if apierrors.IsNotFound(err) {
 			return apperrors.Validation("traffic.revisionName", fmt.Sprintf("revision %q does not exist", t.RevisionName))
 		}

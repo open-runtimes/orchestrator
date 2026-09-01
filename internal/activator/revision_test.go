@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"orchestrator/internal/deployment"
+	revisionapi "orchestrator/internal/revision"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,7 +18,9 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -74,9 +77,58 @@ func newTestRevisionActivator(t *testing.T, cfg RevisionConfig, objs ...runtime.
 	t.Helper()
 	cs := fake.NewClientset(objs...)
 	registerScaleSubresource(cs)
+	dynamicClient := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	for _, obj := range objs {
+		dep, ok := obj.(*appsv1.Deployment)
+		if !ok {
+			continue
+		}
+		replicas := int32(1)
+		if dep.Spec.Replicas != nil {
+			replicas = *dep.Spec.Replicas
+		}
+		revisionValue := &revisionapi.Revision{
+			TypeMeta:   metav1.TypeMeta{APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind},
+			ObjectMeta: metav1.ObjectMeta{Name: dep.Name, Namespace: dep.Namespace, Labels: dep.Labels},
+			Spec:       revisionapi.Spec{Replicas: replicas},
+		}
+		revisionMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(revisionValue)
+		if err != nil {
+			t.Fatalf("convert revision: %v", err)
+		}
+		rev := &unstructured.Unstructured{Object: revisionMap}
+		if _, err := dynamicClient.Resource(revisionapi.Resource()).Namespace(testRevisionNamespace).Create(t.Context(), rev, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed revision: %v", err)
+		}
+	}
+	dynamicClient.PrependReactor("update", "revisions", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		update, ok := action.(k8stesting.UpdateAction)
+		if !ok || action.GetSubresource() != "scale" {
+			return false, nil, nil
+		}
+		scale := update.GetObject().(*unstructured.Unstructured)
+		replicas, _, _ := unstructured.NestedInt64(scale.Object, "spec", "replicas")
+		obj, err := dynamicClient.Tracker().Get(revisionapi.Resource(), update.GetNamespace(), scale.GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		rev := obj.(*unstructured.Unstructured).DeepCopy()
+		_ = unstructured.SetNestedField(rev.Object, replicas, "spec", "replicas")
+		if err := dynamicClient.Tracker().Update(revisionapi.Resource(), rev, update.GetNamespace()); err != nil {
+			return true, nil, err
+		}
+		// Keep the legacy test fixture in sync for the assertion below.
+		if depObj, getErr := cs.Tracker().Get(appsv1.SchemeGroupVersion.WithResource("deployments"), update.GetNamespace(), scale.GetName()); getErr == nil {
+			dep := depObj.(*appsv1.Deployment)
+			value := int32(replicas)
+			dep.Spec.Replicas = &value
+			_ = cs.Tracker().Update(appsv1.SchemeGroupVersion.WithResource("deployments"), dep, update.GetNamespace())
+		}
+		return true, scale, nil
+	})
 	queue := newCaptureQueue()
 	cfg.Namespace = testRevisionNamespace
-	act := NewRevisionActivator(cs, queue, cfg, nil)
+	act := NewRevisionActivator(cs, revisionapi.NewClient(dynamicClient), queue, cfg, nil)
 	if err := act.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -122,11 +174,11 @@ func revisionPod(rev, name, ip string, ready bool) *corev1.Pod {
 	return pod
 }
 
-func revisionDeployment(t *testing.T, rev string, replicas int32, spec *deployment.Request) *appsv1.Deployment {
+func revisionResource(t *testing.T, rev string, replicas int32, spec *deployment.Request) *appsv1.Deployment {
 	t.Helper()
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      revisionDeploymentName(rev),
+			Name:      revisionObjectName(rev),
 			Namespace: testRevisionNamespace,
 			Labels:    map[string]string{revisionLabelManagedBy: revisionManagedByValue},
 		},
@@ -148,7 +200,7 @@ func revisionSpecSecret(t *testing.T, rev string, spec *deployment.Request) *cor
 	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      revisionDeploymentName(deploymentIDOf(rev)),
+			Name:      revisionObjectName(deploymentIDOf(rev)),
 			Namespace: testRevisionNamespace,
 			Labels:    map[string]string{revisionLabelManagedBy: revisionManagedByValue},
 		},
@@ -205,11 +257,11 @@ func TestRevision_ColdRaisesScaleAndProbes(t *testing.T) {
 	}))
 	act, cs, _ := newTestRevisionActivator(t,
 		RevisionConfig{ProxyPort: port, AdminPort: port, StartTimeout: 5 * time.Second},
-		revisionDeployment(t, "rev1", 0, nil))
+		revisionResource(t, "rev1", 0, nil))
 
 	// When the scale patch lands, a Running-but-NOT-ready pod appears: the
 	// direct sidecar probe, not kubelet readiness, must release the request.
-	cs.PrependReactor("update", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	act.revisions.Dynamic().(*dynamicfake.FakeDynamicClient).PrependReactor("update", "revisions", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if action.GetSubresource() == "scale" {
 			_ = cs.Tracker().Add(revisionPod("rev1", "pod-cold", ip, false))
 		}
@@ -237,7 +289,7 @@ func TestRevision_ColdRaisesScaleAndProbes(t *testing.T) {
 func TestRevision_ColdTimeout503(t *testing.T) {
 	act, _, _ := newTestRevisionActivator(t,
 		RevisionConfig{StartTimeout: 100 * time.Millisecond},
-		revisionDeployment(t, "rev1", 0, nil))
+		revisionResource(t, "rev1", 0, nil))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://app.example.test/", nil)
 	req.Header.Set(headerRevision, "rev1")
@@ -274,7 +326,7 @@ func TestRevisionAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	act, _, queue := newTestRevisionActivator(t,
 		RevisionConfig{ProxyPort: port, AdminPort: port, StartTimeout: time.Second},
 		revisionPod("rev1", "pod-1", ip, true),
-		revisionDeployment(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
+		revisionResource(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://app.example.test/", strings.NewReader("payload"))
 	req.Header.Set("Prefer", "respond-async")
@@ -323,7 +375,7 @@ func TestRevisionAsync_RequiresCallback(t *testing.T) {
 	spec := &deployment.Request{ID: "app", Hosts: []string{"app.example.test"}, Port: 8080}
 	act, _, _ := newTestRevisionActivator(t,
 		RevisionConfig{StartTimeout: time.Second},
-		revisionDeployment(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
+		revisionResource(t, "rev1", 1, nil), revisionSpecSecret(t, "rev1", spec))
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://app.example.test/", strings.NewReader("{}"))
 	req.Header.Set("Prefer", "respond-async")

@@ -18,6 +18,9 @@ const (
 	defaultActivatorPort        = 8081
 	defaultActivatorSelector    = "app.kubernetes.io/component=deployments-activator"
 	defaultRevisionHistoryLimit = 3
+	defaultRevisionWorkers      = 32
+	defaultClientQPS            = 200
+	defaultClientBurst          = 400
 	defaultLeaderLeaseName      = "deployments-service-leader"
 )
 
@@ -54,6 +57,9 @@ type Config struct {
 	ActivatorPort        int    // activator listen port
 	ActivatorSelector    string // pod selector for activator endpoints (cold endpoint flip)
 	RevisionHistoryLimit int    // retained revisions beyond the routed set; default 3
+	RevisionWorkers      int    // concurrent direct-pod revision reconciles; default 32
+	ClientQPS            int    // client-side K8s API steady-state QPS; default 200
+	ClientBurst          int    // client-side K8s API burst; default 400
 
 	// LeaderElection gates the background reconcilers (and any caller-supplied
 	// loop via RunLeaderElected) to one replica; disabled = single-replica mode.
@@ -102,6 +108,9 @@ func LoadConfigFromEnv() (Config, error) {
 		ActivatorPort:        config.GetIntEnv("ACTIVATOR_PORT", defaultActivatorPort),
 		ActivatorSelector:    config.GetEnv("ACTIVATOR_SELECTOR", defaultActivatorSelector),
 		RevisionHistoryLimit: config.GetIntEnv("REVISION_HISTORY_LIMIT", defaultRevisionHistoryLimit),
+		RevisionWorkers:      config.GetIntEnv("KUBE_REVISION_WORKERS", defaultRevisionWorkers),
+		ClientQPS:            config.GetIntEnv("KUBE_CLIENT_QPS", defaultClientQPS),
+		ClientBurst:          config.GetIntEnv("KUBE_CLIENT_BURST", defaultClientBurst),
 
 		LeaderElection: kube.LeaderElectionConfig{
 			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
@@ -147,6 +156,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RevisionHistoryLimit <= 0 {
 		c.RevisionHistoryLimit = defaultRevisionHistoryLimit
+	}
+	if c.RevisionWorkers <= 0 {
+		c.RevisionWorkers = defaultRevisionWorkers
+	}
+	if c.ClientQPS <= 0 {
+		c.ClientQPS = defaultClientQPS
+	}
+	if c.ClientBurst <= 0 {
+		c.ClientBurst = defaultClientBurst
 	}
 	if c.RuntimeClasses == nil {
 		c.RuntimeClasses, _ = kube.ParseRuntimeClasses("")

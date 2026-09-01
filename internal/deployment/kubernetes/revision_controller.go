@@ -1,0 +1,596 @@
+package kubernetes
+
+import (
+	"cmp"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
+	revisionapi "orchestrator/internal/revision"
+	"reflect"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metameta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/informers"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
+	"k8s.io/client-go/util/workqueue"
+	"k8s.io/utils/ptr"
+)
+
+const revisionConditionReady = "Ready"
+
+// revisionController owns warm process-lifetime informer caches. Only its
+// queue workers are leader-gated, so a new leader never starts with cold API
+// caches or needs per-Revision GET/LIST calls to audit the fleet.
+type revisionController struct {
+	o *Orchestrator
+
+	revisionInformer cache.SharedIndexInformer
+	revisionLister   cache.GenericLister
+	podInformer      cache.SharedIndexInformer
+	podLister        corelisters.PodLister
+
+	mu                 sync.Mutex
+	queue              workqueue.TypedRateLimitingInterface[string]
+	pending            map[string]time.Time
+	initial            map[string]struct{}
+	convergenceStarted time.Time
+}
+
+func newRevisionController(o *Orchestrator) *revisionController {
+	return &revisionController{o: o, pending: make(map[string]time.Time)}
+}
+
+// start launches and synchronizes informers for the process lifetime. Event
+// handlers are active on followers, but enqueue only while this replica leads.
+func (c *revisionController) start(ctx context.Context) error {
+	revisionFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
+		c.o.revisions.Dynamic(), 0, c.o.namespace,
+		func(opts *metav1.ListOptions) { opts.LabelSelector = LabelManagedBy + "=" + ManagedByValue },
+	)
+	revisions := revisionFactory.ForResource(revisionapi.Resource())
+	c.revisionInformer = revisions.Informer()
+	c.revisionLister = revisions.Lister()
+	podFactory := informers.NewSharedInformerFactoryWithOptions(c.o.client, 0,
+		informers.WithNamespace(c.o.namespace),
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			opts.LabelSelector = LabelManagedBy + "=" + ManagedByValue
+		}),
+	)
+	pods := podFactory.Core().V1().Pods()
+	c.podInformer = pods.Informer()
+	c.podLister = pods.Lister()
+
+	_, _ = c.revisionInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: c.enqueueRevisionObject,
+		UpdateFunc: func(old, current any) {
+			if shouldEnqueueRevisionUpdate(old, current) {
+				c.enqueueRevisionObject(current)
+			}
+		},
+		DeleteFunc: c.enqueueRevisionObject,
+	})
+	_, _ = c.podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    c.enqueuePodRevision,
+		UpdateFunc: func(_, obj any) { c.enqueuePodRevision(obj) },
+		DeleteFunc: c.enqueuePodRevision,
+	})
+
+	revisionFactory.Start(ctx.Done())
+	podFactory.Start(ctx.Done())
+	if !cache.WaitForCacheSync(ctx.Done(), c.revisionInformer.HasSynced, c.podInformer.HasSynced) {
+		return errors.New("informer caches failed to sync")
+	}
+	if c.o.cfg.Metrics != nil {
+		_ = c.o.cfg.Metrics.ObserveInt64("revision_queue_depth", "Revision reconcile items currently queued", c.queueDepth)
+		_ = c.o.cfg.Metrics.ObserveInt64("revision_queue_oldest_age_seconds", "Age in seconds of the oldest queued Revision", c.oldestPendingSeconds)
+		_ = c.o.cfg.Metrics.ObserveInt64("revision_replica_drift", "Total absolute desired-to-active replica drift across live Revisions", c.replicaDrift)
+	}
+	return nil
+}
+
+// runLeader owns one disposable queue for a leadership term. Followers keep
+// caches warm; every acquisition enqueues the authoritative cached inventory.
+func (c *revisionController) runLeader(ctx context.Context) {
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
+	objects := c.revisionInformer.GetStore().List()
+	c.mu.Lock()
+	c.queue = queue
+	c.pending = make(map[string]time.Time)
+	c.initial = make(map[string]struct{}, len(objects))
+	c.convergenceStarted = time.Now()
+	for _, obj := range objects {
+		if revision, ok := obj.(*unstructured.Unstructured); ok {
+			c.initial[revision.GetName()] = struct{}{}
+		}
+	}
+	c.mu.Unlock()
+
+	for _, obj := range objects {
+		c.enqueueRevisionObject(obj)
+	}
+
+	var workers sync.WaitGroup
+	for range c.o.cfg.RevisionWorkers {
+		workers.Go(func() {
+			for c.processRevisionItem(ctx, queue) {
+			}
+		})
+	}
+	if len(objects) == 0 && c.o.cfg.Metrics != nil {
+		c.o.cfg.Metrics.RecordRevisionLeaderConvergence(ctx, 0)
+	}
+	<-ctx.Done()
+	c.mu.Lock()
+	if c.queue == queue {
+		c.queue = nil
+	}
+	c.mu.Unlock()
+	queue.ShutDown()
+	workers.Wait()
+}
+
+func (c *revisionController) enqueueRevisionObject(obj any) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	if revision, ok := obj.(*unstructured.Unstructured); ok {
+		c.add(revision.GetName(), time.Now())
+	}
+}
+
+// enqueueRevisionUpdate ignores status-only writes made by this controller.
+// Spec and /scale writes increment metadata.generation and must reconcile;
+// feeding status updates back into the queue doubles work at fleet scale.
+func shouldEnqueueRevisionUpdate(old, current any) bool {
+	oldRevision, oldOK := old.(*unstructured.Unstructured)
+	currentRevision, currentOK := current.(*unstructured.Unstructured)
+	if !oldOK || !currentOK {
+		return true
+	}
+	deletionStarted := oldRevision.GetDeletionTimestamp() == nil && currentRevision.GetDeletionTimestamp() != nil
+	return currentRevision.GetGeneration() != oldRevision.GetGeneration() || deletionStarted
+}
+
+func (c *revisionController) enqueuePodRevision(obj any) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	if pod, ok := obj.(*corev1.Pod); ok {
+		if revision := pod.Labels[LabelRevision]; revision != "" {
+			c.add(objectNameFor(revision), time.Now())
+		}
+	}
+}
+
+func (c *revisionController) add(name string, at time.Time) {
+	c.mu.Lock()
+	queue := c.queue
+	if queue != nil {
+		if _, exists := c.pending[name]; !exists {
+			c.pending[name] = at
+		}
+	}
+	c.mu.Unlock()
+	if queue != nil {
+		queue.Add(name)
+	}
+}
+
+func (c *revisionController) processRevisionItem(ctx context.Context, queue workqueue.TypedRateLimitingInterface[string]) bool {
+	name, shutdown := queue.Get()
+	if shutdown {
+		return false
+	}
+	defer queue.Done(name)
+	c.mu.Lock()
+	queuedAt := c.pending[name]
+	delete(c.pending, name)
+	c.mu.Unlock()
+	if c.o.cfg.Metrics != nil && !queuedAt.IsZero() {
+		c.o.cfg.Metrics.RecordRevisionQueueWait(ctx, time.Since(queuedAt).Seconds())
+	}
+	started := time.Now()
+	err := c.reconcileCached(ctx, name, queuedAt)
+	if c.o.cfg.Metrics != nil {
+		c.o.cfg.Metrics.RecordRevisionReconcile(ctx, err == nil || apierrors.IsNotFound(err), time.Since(started).Seconds())
+	}
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			slog.Warn("Revision reconcile failed", "revision", name, "error", err)
+			c.mu.Lock()
+			c.pending[name] = time.Now()
+			c.mu.Unlock()
+			queue.AddRateLimited(name)
+			return true
+		}
+	}
+	c.markInitialConverged(ctx, name)
+	queue.Forget(name)
+	// A Pending pod may emit no event at the exact progress deadline. Arrange
+	// one deadline reconcile instead of globally resyncing thousands of CRs.
+	if revision, err := c.revision(name); err == nil {
+		if delay := revisionDeadlineDelay(revision); delay > 0 {
+			c.mu.Lock()
+			c.pending[name] = time.Now().Add(delay)
+			c.mu.Unlock()
+			queue.AddAfter(name, delay)
+		}
+	}
+	return true
+}
+
+func (c *revisionController) markInitialConverged(ctx context.Context, name string) {
+	c.mu.Lock()
+	if _, tracked := c.initial[name]; !tracked {
+		c.mu.Unlock()
+		return
+	}
+	delete(c.initial, name)
+	done := len(c.initial) == 0
+	duration := time.Since(c.convergenceStarted).Seconds()
+	if done {
+		c.initial = nil
+	}
+	c.mu.Unlock()
+	if done && c.o.cfg.Metrics != nil {
+		c.o.cfg.Metrics.RecordRevisionLeaderConvergence(ctx, duration)
+	}
+}
+
+func (c *revisionController) queueDepth() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.queue == nil {
+		return 0
+	}
+	return int64(c.queue.Len())
+}
+
+func (c *revisionController) oldestPendingSeconds() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	var oldest time.Duration
+	for _, pendingAt := range c.pending {
+		if age := now.Sub(pendingAt); age > oldest {
+			oldest = age
+		}
+	}
+	return int64(max(oldest, 0) / time.Second)
+}
+
+func (c *revisionController) replicaDrift() int64 {
+	c.mu.Lock()
+	leading := c.queue != nil
+	c.mu.Unlock()
+	if !leading {
+		return 0
+	}
+	var total int64
+	for _, obj := range c.revisionInformer.GetStore().List() {
+		revision, ok := obj.(*unstructured.Unstructured)
+		if !ok || revision.GetDeletionTimestamp() != nil {
+			continue
+		}
+		desired, _, _ := unstructured.NestedInt64(revision.Object, "spec", "replicas")
+		active, _, _ := unstructured.NestedInt64(revision.Object, "status", "replicas")
+		if drift := desired - active; drift < 0 {
+			total -= drift
+		} else {
+			total += drift
+		}
+	}
+	return total
+}
+
+func (c *revisionController) revision(name string) (*revisionapi.Revision, error) {
+	obj, err := c.revisionLister.ByNamespace(c.o.namespace).Get(name)
+	if err != nil {
+		return nil, err
+	}
+	unstructuredRevision, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return nil, fmt.Errorf("cached Revision %s has type %T", name, obj)
+	}
+	var revision revisionapi.Revision
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredRevision.Object, &revision); err != nil {
+		return nil, err
+	}
+	return &revision, nil
+}
+
+func (c *revisionController) reconcileCached(ctx context.Context, name string, triggeredAt time.Time) error {
+	revision, err := c.revision(name)
+	if err != nil {
+		return err
+	}
+	pods, err := c.podLister.Pods(c.o.namespace).List(labels.SelectorFromSet(labels.Set{
+		LabelRevision: revision.Labels[LabelRevision],
+	}))
+	if err != nil {
+		return err
+	}
+	return c.o.reconcileRevisionPods(ctx, revision, pods, false, triggeredAt)
+}
+
+// reconcileRevision converges one Revision using deterministic replica slots.
+// It is also called synchronously by Apply and Scale as the low-latency path.
+func (o *Orchestrator) reconcileRevision(ctx context.Context, name string) error {
+	revision, err := o.revisions.Get(ctx, o.namespace, name)
+	if err != nil {
+		return err
+	}
+	revisionName := revision.Labels[LabelRevision]
+	podList, err := o.client.CoreV1().Pods(o.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labels.SelectorFromSet(labels.Set{LabelRevision: revisionName}).String(),
+	})
+	if err != nil {
+		return err
+	}
+	pods := make([]*corev1.Pod, 0, len(podList.Items))
+	for i := range podList.Items {
+		pods = append(pods, &podList.Items[i])
+	}
+	return o.reconcileRevisionPods(ctx, revision, pods, true, time.Now())
+}
+
+func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revisionapi.Revision, pods []*corev1.Pod, refresh bool, triggeredAt time.Time) error {
+	desired := revision.Spec.Replicas
+	deleting := revision.DeletionTimestamp != nil
+	if deleting {
+		// Foreground deletion waits for owned Pods. Pod delete events still
+		// reach this controller, so treating the old spec as authoritative
+		// would recreate dependents forever and deadlock garbage collection.
+		desired = 0
+	}
+	if desired < 0 {
+		desired = 0
+	}
+	active := make(map[int]*corev1.Pod)
+	var terminal []*corev1.Pod
+	var invalid []*corev1.Pod
+	for _, pod := range pods {
+		slot, slotErr := strconv.Atoi(pod.Labels[LabelReplicaSlot])
+		if slotErr != nil || slot < 0 {
+			invalid = append(invalid, pod)
+			continue
+		}
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			terminal = append(terminal, pod)
+			continue
+		}
+		if pod.DeletionTimestamp == nil {
+			if existing := active[slot]; existing != nil {
+				// Deterministically retain one slot owner if an old race or manual
+				// mutation produced a duplicate.
+				if pod.Name < existing.Name {
+					invalid = append(invalid, existing)
+					active[slot] = pod
+				} else {
+					invalid = append(invalid, pod)
+				}
+				continue
+			}
+			active[slot] = pod
+		}
+	}
+
+	for _, pod := range append(terminal, invalid...) {
+		if err := o.client.CoreV1().Pods(o.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if o.cfg.Metrics != nil {
+			o.cfg.Metrics.RecordRevisionPodDelete(ctx, "terminal_or_invalid")
+		}
+	}
+	for slot, pod := range active {
+		if int32(slot) < desired {
+			continue
+		}
+		if err := o.client.CoreV1().Pods(o.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if o.cfg.Metrics != nil {
+			reason := "scale_down"
+			if deleting {
+				reason = "revision_deleting"
+			}
+			o.cfg.Metrics.RecordRevisionPodDelete(ctx, reason)
+		}
+		delete(active, slot)
+	}
+	for slot := range desired {
+		if active[int(slot)] != nil {
+			continue
+		}
+		pod := buildRevisionPod(revision, int(slot))
+		_, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		if err == nil && o.cfg.Metrics != nil {
+			o.cfg.Metrics.RecordRevisionPodCreate(ctx, time.Since(triggeredAt).Seconds())
+		}
+	}
+	if deleting {
+		return nil
+	}
+
+	// Direct Apply/Scale callers refresh from the API immediately. Background
+	// workers stay cache-only; Pod watch events supply the next status pass.
+	if refresh {
+		podList, err := o.client.CoreV1().Pods(o.namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: LabelRevision + "=" + revision.Labels[LabelRevision],
+		})
+		if err != nil {
+			return err
+		}
+		pods = pods[:0]
+		for i := range podList.Items {
+			pods = append(pods, &podList.Items[i])
+		}
+	}
+	podValues := make([]corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		podValues = append(podValues, *pod)
+	}
+	return o.updateRevisionStatus(ctx, revision, podValues)
+}
+
+// updateRevisionStatus tolerates the intentional race between the synchronous
+// Apply/Scale fast path and the leader worker observing the same event. On a
+// conflict it refreshes the CR and re-derives status against the current spec,
+// so an API request never fails merely because the background controller won.
+func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revisionapi.Revision, pods []corev1.Pod) error {
+	candidate := revision
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		status := deriveRevisionStatus(candidate, pods)
+		if reflect.DeepEqual(candidate.Status, status) {
+			return nil
+		}
+		candidate.Status = status
+		_, err := o.revisions.UpdateStatus(ctx, o.namespace, candidate)
+		if apierrors.IsConflict(err) {
+			latest, getErr := o.revisions.Get(ctx, o.namespace, candidate.Name)
+			if getErr != nil {
+				return getErr
+			}
+			candidate = latest
+		}
+		return err
+	})
+}
+
+func buildRevisionPod(revision *revisionapi.Revision, slot int) *corev1.Pod {
+	podLabels := mapsClone(revision.Spec.Template.Labels)
+	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        podNameFor(revision.Name, slot),
+			Namespace:   revision.Namespace,
+			Labels:      podLabels,
+			Annotations: mapsClone(revision.Spec.Template.Annotations),
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind,
+				Name: revision.Name, UID: revision.UID, Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+			}},
+		},
+		Spec: *revision.Spec.Template.Spec.DeepCopy(),
+	}
+}
+
+func podNameFor(revisionName string, slot int) string {
+	suffix := "-" + strconv.Itoa(slot)
+	if len(revisionName)+len(suffix) <= 63 {
+		return revisionName + suffix
+	}
+	sum := sha256.Sum256([]byte(revisionName))
+	hash := hex.EncodeToString(sum[:4])
+	prefixLen := 63 - len(suffix) - len(hash) - 1
+	return strings.TrimRight(revisionName[:prefixLen], "-") + "-" + hash + suffix
+}
+
+func deriveRevisionStatus(revision *revisionapi.Revision, pods []corev1.Pod) revisionapi.Status {
+	status := revisionapi.Status{ObservedGeneration: revision.Generation}
+	seen := make(map[int]bool)
+	for i := range pods {
+		pod := &pods[i]
+		if pod.DeletionTimestamp != nil || pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+			continue
+		}
+		slot, err := strconv.Atoi(pod.Labels[LabelReplicaSlot])
+		if err != nil || slot < 0 || int32(slot) >= revision.Spec.Replicas || seen[slot] {
+			continue
+		}
+		seen[slot] = true
+		status.Replicas++
+		if podReadyForRevision(pod) {
+			status.ReadyReplicas++
+		}
+	}
+
+	condition := metav1.Condition{Type: revisionConditionReady, ObservedGeneration: revision.Generation}
+	switch {
+	case revision.Spec.Replicas == 0:
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, "ScaledToZero", "revision is scaled to zero"
+	case status.ReadyReplicas >= revision.Spec.Replicas:
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, "PodsReady", "all desired pods are ready"
+	case revisionTimedOut(revision):
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "ProgressDeadlineExceeded", revisionFailureMessage(pods)
+	default:
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionUnknown, "PodsNotReady", "waiting for desired pods to become ready"
+	}
+	status.Conditions = append([]metav1.Condition(nil), revision.Status.Conditions...)
+	metameta.SetStatusCondition(&status.Conditions, condition)
+	slices.SortFunc(status.Conditions, func(a, b metav1.Condition) int { return cmp.Compare(a.Type, b.Type) })
+	return status
+}
+
+func revisionTimedOut(revision *revisionapi.Revision) bool {
+	return revision.Spec.ReadyTimeoutSeconds > 0 && !revision.CreationTimestamp.IsZero() &&
+		time.Since(revision.CreationTimestamp.Time) >= time.Duration(revision.Spec.ReadyTimeoutSeconds)*time.Second
+}
+
+func revisionDeadlineDelay(revision *revisionapi.Revision) time.Duration {
+	if revision.Spec.ReadyTimeoutSeconds <= 0 || revision.CreationTimestamp.IsZero() {
+		return 0
+	}
+	for _, condition := range revision.Status.Conditions {
+		if condition.Type == revisionConditionReady && condition.Status != metav1.ConditionUnknown {
+			return 0
+		}
+	}
+	remaining := time.Until(revision.CreationTimestamp.Add(time.Duration(revision.Spec.ReadyTimeoutSeconds) * time.Second))
+	if remaining <= 0 {
+		return time.Millisecond
+	}
+	return remaining
+}
+
+func revisionFailureMessage(pods []corev1.Pod) string {
+	for i := range pods {
+		for _, condition := range pods[i].Status.Conditions {
+			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Message != "" {
+				return condition.Message
+			}
+		}
+		for _, status := range append(pods[i].Status.InitContainerStatuses, pods[i].Status.ContainerStatuses...) {
+			if status.State.Waiting != nil {
+				return fmt.Sprintf("pod %s: %s: %s", pods[i].Name, status.State.Waiting.Reason, status.State.Waiting.Message)
+			}
+		}
+	}
+	return "revision did not become ready before its progress deadline"
+}
+
+func podReadyForRevision(pod *corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+func mapsClone[K comparable, V any](in map[K]V) map[K]V {
+	out := make(map[K]V, len(in)+1)
+	maps.Copy(out, in)
+	return out
+}

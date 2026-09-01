@@ -268,6 +268,18 @@
           "type": "integer",
           "minimum": 0
         },
+        "revisionWorkers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "clientQPS": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "clientBurst": {
+          "type": "integer",
+          "minimum": 1
+        },
         "image": {
           "$ref": "#/$defs/pullableImage"
         },

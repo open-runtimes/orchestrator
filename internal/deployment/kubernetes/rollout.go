@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/deployment"
+	revisionapi "orchestrator/internal/revision"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -17,7 +17,7 @@ const rolloutInterval = 2 * time.Second
 
 // runRollouts drives the auto-cut loop until the context is cancelled
 // (Close). Kubernetes-native readiness is the trigger: a freshly minted
-// revision receives traffic only once its Deployment reports an available
+// revision receives traffic only once its Revision reports a ready
 // replica — a failed new revision never receives traffic, and rollback stays
 // a manual traffic edit (failure-semantics: no auto-rollback).
 func (o *Orchestrator) runRollouts(ctx context.Context) {
@@ -72,14 +72,14 @@ func (o *Orchestrator) reconcileRollout(ctx context.Context, m marker) error {
 		// protects lastReady and every weighted revision).
 		return o.retire(ctx, m)
 	}
-	dep, err := o.client.AppsV1().Deployments(o.namespace).Get(ctx, objectNameFor(m.LatestRevision), metav1.GetOptions{})
+	revision, err := o.revisions.Get(ctx, o.namespace, objectNameFor(m.LatestRevision))
 	if apierrors.IsNotFound(err) {
 		return nil // revision objects not materialized (yet)
 	}
 	if err != nil {
 		return apperrors.Internal("kubernetes.getRevision", err)
 	}
-	if !revisionAvailable(dep) {
+	if !revisionAvailable(revision) {
 		return nil // not ready (or failed) — never auto-cut
 	}
 
@@ -91,7 +91,7 @@ func (o *Orchestrator) reconcileRollout(ctx context.Context, m marker) error {
 	}
 	m.LastReady = m.LatestRevision
 	if o.cfg.Metrics != nil {
-		o.cfg.Metrics.RecordRolloutCut(ctx, time.Since(dep.CreationTimestamp.Time).Seconds())
+		o.cfg.Metrics.RecordRolloutCut(ctx, time.Since(revision.CreationTimestamp.Time).Seconds())
 	}
 	slog.Info("Rollout auto-cut to latest revision", "deploymentId", m.ID, "revision", m.LatestRevision)
 	return o.retire(ctx, m)
@@ -123,8 +123,8 @@ func (o *Orchestrator) retire(ctx context.Context, m marker) error {
 	return nil
 }
 
-// revisionAvailable reports whether a revision's Deployment has at least one
+// revisionAvailable reports whether a Revision has at least one
 // available replica — the auto-cut readiness gate.
-func revisionAvailable(dep *appsv1.Deployment) bool {
-	return dep.Status.AvailableReplicas >= 1
+func revisionAvailable(revision *revisionapi.Revision) bool {
+	return revision.Status.ReadyReplicas >= 1
 }
