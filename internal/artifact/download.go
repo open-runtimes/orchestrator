@@ -63,11 +63,15 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("download failed with status %d", resp.StatusCode)}
 	}
 
-	file, err := os.Create(destPath)
+	tmpPath := destPath + ".partial"
+	file, err := os.Create(tmpPath)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create file: %w", err)}
 	}
-	defer file.Close()
+	defer func() {
+		file.Close()
+		os.Remove(tmpPath) // no-op after the rename; removes debris on failure
+	}()
 
 	written, err := io.Copy(file, resp.Body)
 	if err != nil {
@@ -76,6 +80,13 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 
 	if err := file.Sync(); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to sync file: %w", err)}
+	}
+	if err := file.Close(); err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to close file: %w", err)}
+	}
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to move file into place: %w", err)}
 	}
 
 	slog.Debug("Downloaded file", "bytes", written, "path", destPath)

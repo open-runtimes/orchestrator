@@ -11,7 +11,7 @@ type Config struct {
 	ArtifactEndpoint string        // Base URL of the orchestrator (e.g., http://host.docker.internal:8080)
 	ArtifactToken    string        // Per-job bearer token for artifact reporting
 	ArtifactTimeout  time.Duration // Per-request timeout for artifact reporting
-	TimeoutSeconds   int
+	TimeoutSeconds   int           // Job deadline; 0 = unbounded workload (holds until the shutdown signal; artifact phases keep the default budget)
 	SharedVolumePath string
 	Meta             string
 	CallbackURL      string

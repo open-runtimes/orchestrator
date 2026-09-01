@@ -219,7 +219,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 	go func() { sidecarDone <- runner.Run(ctx, artifacts) }()
 
 	// Wait for pre-job artifacts to complete (ready marker written)
-	readyPath := filepath.Join(sharedDir, sidecar.ReadyFile)
+	readyPath := sidecar.ReadyMarkerPath(sharedDir)
 	testutil.MustWaitFor(t, func() bool {
 		_, err := os.Stat(readyPath)
 		return err == nil

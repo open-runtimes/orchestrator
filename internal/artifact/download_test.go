@@ -84,3 +84,23 @@ func TestDownload_Apply_CustomTimeout(t *testing.T) {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
 }
+
+func TestDownload_Apply_LeavesNoPartialFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	a := &Download{ID: "dl", In: server.URL, Out: "file.bin"}
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "file.bin.partial")); err == nil {
+		t.Fatal("partial file left behind after a successful download")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "file.bin")); err != nil {
+		t.Fatalf("final file missing: %v", err)
+	}
+}

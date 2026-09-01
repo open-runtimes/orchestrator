@@ -2,14 +2,8 @@ package sidecar
 
 import (
 	"orchestrator/internal/artifact"
-	"os"
 	"path/filepath"
 )
-
-// MountReadyFile marks that all artifact mounts are established. The Kubernetes
-// native sidecar writes it after mounting; the worker's startup probe waits on
-// it so the worker only starts once its mounts are present.
-const MountReadyFile = ".mounts-ready"
 
 // MountOpts configures a mount. The zero value is a plain read-only image
 // mount; Writable layers an overlay on top, and SizeMiB caps it (0 = kernel
@@ -43,12 +37,14 @@ func UpperDir(target string) string { return filepath.Join(target+".scratch", "u
 type Mounter interface {
 	Mount(source, target string, opts MountOpts) error
 	Unmount(target string) error
+	IsMounted(target string) (bool, error)
 }
 
-// CheckMountsReady reports whether the mounts-ready marker exists.
+// CheckMountsReady reports whether the mounts-ready marker exists. The
+// Kubernetes native sidecar writes it after mounting; the worker's startup
+// probe waits on it so the worker only starts once its mounts are present.
 func CheckMountsReady(sharedVolumePath string) bool {
-	_, err := os.Stat(filepath.Join(sharedVolumePath, MountReadyFile))
-	return err == nil
+	return markerMountsReady.exists(sharedVolumePath)
 }
 
 // splitMounts separates mount artifacts from the rest, preserving order.

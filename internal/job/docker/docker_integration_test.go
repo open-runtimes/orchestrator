@@ -240,7 +240,7 @@ func TestOrchestrator_HealthCheckMarker(t *testing.T) {
 	req := &job.Request{
 		ID:             jobID,
 		Image:          "alpine:latest",
-		Command:        fmt.Sprintf("test -f /workspace/%s && echo 'marker exists'", sidecar.ReadyFile),
+		Command:        fmt.Sprintf("test -f %s && echo 'marker exists'", sidecar.ReadyMarkerPath("/workspace")),
 		CPU:            1,
 		Memory:         128,
 		TimeoutSeconds: 60,

@@ -313,6 +313,10 @@ func (f *fakeMounter) Unmount(target string) error {
 	return nil
 }
 
+func (f *fakeMounter) IsMounted(string) (bool, error) {
+	return false, nil
+}
+
 // writeWorkspaceFile stands in for the artifact that would have produced the
 // image a mount consumes.
 func writeWorkspaceFile(t *testing.T, workspace, name string) {

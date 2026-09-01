@@ -57,8 +57,7 @@ func TestCheckReady(t *testing.T) {
 		t.Error("CheckReady should return false when marker doesn't exist")
 	}
 
-	markerPath := filepath.Join(tmpDir, ReadyFile)
-	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
+	if err := markerReady.write(tmpDir); err != nil {
 		t.Fatalf("Failed to create marker file: %v", err)
 	}
 
@@ -372,6 +371,7 @@ type fakeMounter struct {
 	opts      []MountOpts
 	mounted   []string
 	unmounted []string
+	active    map[string]bool
 }
 
 func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
@@ -380,6 +380,10 @@ func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
 	f.sources = append(f.sources, image)
 	f.opts = append(f.opts, opts)
 	f.mounted = append(f.mounted, target)
+	if f.active == nil {
+		f.active = map[string]bool{}
+	}
+	f.active[target] = true
 	return nil
 }
 
@@ -387,7 +391,16 @@ func (f *fakeMounter) Unmount(target string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unmounted = append(f.unmounted, target)
+	if f.active != nil {
+		f.active[target] = false
+	}
 	return nil
+}
+
+func (f *fakeMounter) IsMounted(target string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.active != nil && f.active[target], nil
 }
 
 // TestRunner_MountLifecycle verifies the post sidecar mounts before signaling
@@ -451,6 +464,46 @@ func TestRunner_MountLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunner_RunPostAdoptsMountAfterSidecarRestart(t *testing.T) {
+	workspace := t.TempDir()
+	createTarFile(t, filepath.Join(workspace, "data.tar.gz"), true, map[string]string{"index.js": "export default {}"})
+	target := filepath.Join(workspace, "runtime")
+	if err := os.MkdirAll(filepath.Join(target, ".lower"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeMounter{active: map[string]bool{target: true}}
+	sigFn, triggerDone := triggerSignal()
+	runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithSignalFunc(sigFn), WithMounter(fake))
+	artifacts := []artifact.Artifact{&artifact.Mount{ID: "m", In: "data.tar.gz", Out: "runtime", Writable: true}}
+
+	done := make(chan error, 1)
+	go func() { done <- runner.RunPost(t.Context(), artifacts) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !CheckMountsReady(workspace) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !CheckMountsReady(workspace) {
+		t.Fatal("restarted sidecar did not restore the mounts-ready marker")
+	}
+	fake.mu.Lock()
+	if len(fake.mounted) != 0 {
+		t.Fatalf("existing mount was re-established: %v", fake.mounted)
+	}
+	fake.mu.Unlock()
+
+	triggerDone()
+	if err := <-done; err != nil {
+		t.Fatalf("RunPost() error = %v", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.unmounted) != 1 || fake.unmounted[0] != target {
+		t.Fatalf("adopted mount was not cleaned up: %v", fake.unmounted)
+	}
+}
+
 func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 	for _, name := range []string{"data.tar", "data.tar.gz"} {
 		t.Run(name, func(t *testing.T) {
@@ -464,6 +517,13 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			fake := &fakeMounter{}
 			runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithMounter(fake))
 			mount := &artifact.Mount{ID: "m", In: name, Out: "runtime", Writable: true}
+			staleLower := filepath.Join(workspace, "runtime", ".lower")
+			if err := os.MkdirAll(staleLower, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(staleLower, "stale"), []byte("old"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
 			if err := runner.Mount(t.Context(), []artifact.Artifact{mount}); err != nil {
 				t.Fatalf("Mount() error = %v", err)
@@ -471,6 +531,9 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			defer runner.Release()
 
 			lower := filepath.Join(workspace, "runtime", ".lower")
+			if _, err := os.Stat(filepath.Join(lower, "stale")); !os.IsNotExist(err) {
+				t.Fatalf("stale lower entry survived re-extraction: %v", err)
+			}
 			content, err := os.ReadFile(filepath.Join(lower, "bin", "start"))
 			if err != nil {
 				t.Fatalf("read extracted lower: %v", err)
@@ -598,5 +661,215 @@ func TestWaitForPath_ExistingFileReturnsBeforeFirstTick(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed >= 100*time.Millisecond {
 		t.Errorf("waitForPath waited a full tick (%v) for a file that already existed", elapsed)
+	}
+}
+
+// TestRunner_HoldUntilShutdownLifecycle verifies the single-sidecar flow for
+// long-lived pods: downloads and mounts land before the ready marker (which
+// gates the app container), a total-duration report is emitted, and pod
+// shutdown tears the mounts down.
+func TestRunner_HoldUntilShutdownLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "data.sqfs"), []byte("hsqs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sigFn, triggerDone := triggerSignal()
+	fake := &fakeMounter{}
+	captured := &captureReporter{}
+	target := filepath.Join(tmpDir, "mnt", "data")
+
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[
+		{"id":"seed","type":"write","in":"hello","out":"pre.txt"},
+		{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}
+	]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	// timeoutSeconds 0: an unbounded workload that holds until pod shutdown.
+	runner := NewRunner("test-job", tmpDir, 0, reg,
+		WithSignalFunc(sigFn),
+		WithMounter(fake),
+		WithArtifactListener(captured.fn()),
+	)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx, artifacts) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !CheckReady(tmpDir) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !CheckReady(tmpDir) {
+		t.Fatal("ready marker not written within deadline")
+	}
+
+	fake.mu.Lock()
+	if len(fake.mounted) != 1 || fake.mounted[0] != target {
+		t.Fatalf("expected mount of %q before ready marker, got %v", target, fake.mounted)
+	}
+	if len(fake.unmounted) != 0 {
+		t.Fatalf("should not unmount while runtime is live, got %v", fake.unmounted)
+	}
+	fake.mu.Unlock()
+
+	triggerDone() // pod shutdown
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.unmounted) != 1 || fake.unmounted[0] != target {
+		t.Fatalf("expected unmount of %q on shutdown, got %v", target, fake.unmounted)
+	}
+}
+
+// TestRunner_HoldDeadline pins what TIMEOUT_SECONDS controls: a bounded job's
+// wait carries the job deadline (it is what unsticks a sidecar whose signal
+// never arrives), while an unbounded workload's (timeout 0) must not — the
+// deadline expiring would tear the code mount out from under a serving app.
+func TestRunner_HoldDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		timeoutSeconds int
+		wantDeadline   bool
+	}{
+		{"bounded job wait carries the deadline", 1, true},
+		{"unbounded workload wait has none", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			deadlineSet := make(chan bool, 1)
+			waitFn := func(ctx context.Context) {
+				_, ok := ctx.Deadline()
+				deadlineSet <- ok
+			}
+
+			reg := artifact.DefaultRegistry()
+			artifacts, err := reg.Unmarshal([]byte(`[{"id":"seed","type":"write","in":"hello","out":"pre.txt"}]`))
+			if err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+
+			runner := NewRunner("test-job", tmpDir, tc.timeoutSeconds, reg, WithSignalFunc(waitFn), WithMounter(&fakeMounter{}))
+			if err := runner.Run(t.Context(), artifacts); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if got := <-deadlineSet; got != tc.wantDeadline {
+				t.Fatalf("hold context deadline = %v, want %v", got, tc.wantDeadline)
+			}
+		})
+	}
+}
+
+// TestRunner_RestartAdoptsMounts verifies a restarted combined sidecar
+// recovers in place: the surviving mount is adopted rather than re-established,
+// the stale ready marker is replaced only after adoption, and shutdown still
+// unmounts the adopted target.
+func TestRunner_RestartAdoptsMounts(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "data.sqfs"), []byte("hsqs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Debris from the previous incarnation: ready and artifacts-complete
+	// markers alongside the completed download.
+	if err := markerReady.write(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := markerArtifactsComplete.write(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+
+	sigFn, triggerDone := triggerSignal()
+	target := filepath.Join(tmpDir, "mnt", "data")
+	fake := &fakeMounter{active: map[string]bool{target: true}}
+
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	runner := NewRunner("test-job", tmpDir, 0, reg, WithSignalFunc(sigFn), WithMounter(fake))
+
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(t.Context(), artifacts) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !CheckReady(tmpDir) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !CheckReady(tmpDir) {
+		t.Fatal("ready marker not rewritten within deadline")
+	}
+
+	fake.mu.Lock()
+	if len(fake.mounted) != 0 {
+		t.Fatalf("adopted mount must not be re-established, got Mount calls for %v", fake.mounted)
+	}
+	fake.mu.Unlock()
+
+	triggerDone()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.unmounted) != 1 || fake.unmounted[0] != target {
+		t.Fatalf("expected adopted mount %q unmounted on shutdown, got %v", target, fake.unmounted)
+	}
+}
+
+// TestRunner_RestartSkipsCompletedArtifacts verifies the artifacts-complete
+// marker: a restarted sidecar must not re-run a finished pre-job phase — it
+// could re-fetch, or replace, files a running workload is mounted on — while a
+// fresh workspace (no marker) runs it exactly once.
+func TestRunner_RestartSkipsCompletedArtifacts(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("archive")); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"source","type":"download","in":"` + server.URL + `","out":"code.tar.gz"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	run := func() {
+		sigFn, triggerDone := triggerSignal()
+		triggerDone() // no worker to wait for
+		runner := NewRunner("test-job", tmpDir, 0, reg, WithSignalFunc(sigFn), WithMounter(&fakeMounter{}))
+		if err := runner.Run(t.Context(), artifacts); err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	}
+
+	run()
+	if hits != 1 {
+		t.Fatalf("first run should download once, server saw %d requests", hits)
+	}
+
+	run() // same workspace: a container restart
+	if hits != 1 {
+		t.Fatalf("restart must not re-run the completed pre-job phase, server saw %d requests", hits)
+	}
+	if content, err := os.ReadFile(filepath.Join(tmpDir, "code.tar.gz")); err != nil || string(content) != "archive" {
+		t.Fatalf("downloaded artifact missing after restart: %q, %v", content, err)
 	}
 }

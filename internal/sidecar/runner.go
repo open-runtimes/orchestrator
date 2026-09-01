@@ -18,16 +18,15 @@ import (
 	"time"
 )
 
-// ReadyFile is the marker file written when pre-job artifacts are complete.
-// Docker orchestrator uses this with health checks to know when to start the worker.
-// Kubernetes uses startup probes on this file for native sidecar containers.
-const ReadyFile = ".ready"
-
 // defaultPostJobFileGrace bounds how long a post-job artifact waits for its
 // source file to appear. The worker has already exited by then, so the file
 // either exists or never will — a missing file must fail fast instead of
 // parking the job (and its complete callback) on the full job timeout.
 const defaultPostJobFileGrace = 10 * time.Second
+
+// defaultTimeoutSeconds mirrors the TIMEOUT_SECONDS config default and bounds
+// individual artifact phases when the job itself is unbounded.
+const defaultTimeoutSeconds = 1800
 
 // SignalFunc blocks until the worker has finished, then returns.
 // ctx is passed so the implementation can respect cancellation/timeout.
@@ -157,48 +156,101 @@ func waitForSignal(ctx context.Context) {
 	}
 }
 
-// Run executes the Docker-style sidecar flow:
+// Run executes the combined sidecar flow:
 // 1. Process pre-job artifacts (downloads, file writes, etc.)
-// 2. Write the ready marker so Docker's health check starts the worker
+// 2. Establish mounts, then write the ready marker that gates the worker
 // 3. Wait for completion signal (SIGUSR1 from Docker, SIGTERM from Kubernetes)
 // 4. Process post-job artifacts (uploads, events, etc.)
 //
 // If any pre-job artifact fails, the sidecar exits with an error.
+//
+// A container restart recovers in place, which is what makes this flow safe as
+// a Kubernetes native sidecar: a completed pre-job phase is not re-run (the
+// artifacts-complete marker), surviving mounts are adopted from the kernel
+// mount table, and the ready marker is cleared up front so the worker is only
+// ever admitted behind established mounts. On a fresh workspace every
+// recovery step is a no-op.
 func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	mounts, rest := splitMounts(artifacts)
 	preJob, postJob := artifact.Partition(rest)
 
-	logger := slog.With("jobId", r.jobID, "preJob", len(preJob), "mounts", len(mounts), "postJob", len(postJob))
+	logger := slog.With("jobId", r.jobID, "preJob", len(preJob), "mounts", len(mounts), "postJob", len(postJob), "timeoutSeconds", r.timeoutSeconds)
 	logger.Info("Sidecar starting")
 
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
-	defer cancel()
-
-	if err := r.processArtifacts(ctx, preJob, false); err != nil {
-		logger.Error("Pre-job artifact processing failed, aborting job", "error", err)
-		return fmt.Errorf("pre-job artifact processing failed: %w", err)
+	if err := markerReady.clear(r.sharedVolumePath); err != nil {
+		return err
 	}
 
-	if err := r.establishMounts(ctx, mounts); err != nil {
-		r.unmountAll() // roll back any mounts established before the failure
+	if markerArtifactsComplete.exists(r.sharedVolumePath) {
+		// A restarted sidecar: the phase finished before the crash and its
+		// outputs are in the workspace. Re-running it could re-fetch — or
+		// replace — files a running workload is mounted on.
+		logger.Info("Pre-job artifacts already complete, skipping")
+	} else {
+		setupCtx, cancel := context.WithTimeout(ctx, r.phaseTimeout())
+		err := r.processArtifacts(setupCtx, preJob, false)
+		cancel()
+		if err != nil {
+			logger.Error("Pre-job artifact processing failed, aborting job", "error", err)
+			return fmt.Errorf("pre-job artifact processing failed: %w", err)
+		}
+		if err := markerArtifactsComplete.write(r.sharedVolumePath); err != nil {
+			return err
+		}
+	}
+
+	adopted, err := r.adoptExistingMounts(mounts)
+	if err != nil {
+		return fmt.Errorf("mount adoption failed: %w", err)
+	}
+	if adopted {
+		// The overlay (and any restored upper) survived the restart; only the
+		// sync loops died with the process.
+		logger.Info("Adopted mounts from a previous incarnation")
+		for _, a := range mounts {
+			if m, ok := a.(*artifact.Mount); ok && m.Sync != "" {
+				r.startSync(m)
+			}
+		}
+	} else if err := r.Mount(ctx, artifacts); err != nil {
 		logger.Error("Mount setup failed, aborting job", "error", err)
 		return fmt.Errorf("mount setup failed: %w", err)
 	}
 
-	if err := r.writeReadyMarker(); err != nil {
+	if err := markerReady.write(r.sharedVolumePath); err != nil {
+		// The worker will never be admitted, so the mounts (and any sync
+		// loops) established above have no consumer — tear them down rather
+		// than leak them past this incarnation.
+		r.Release()
 		logger.Error("Failed to write ready marker", "error", err)
 		return err
 	}
 
+	// A bounded job's wait carries the job deadline — if the completion signal
+	// never arrives, this is what unsticks the sidecar. An unbounded workload
+	// (timeout 0) waits on the caller's context alone: the pod, not a job
+	// deadline, decides when it dies, and kubelet's SIGTERM ends the hold —
+	// a deadline there would tear the mounts out from under a serving workload.
+	holdCtx := ctx
+	if r.timeoutSeconds > 0 {
+		var cancelHold context.CancelFunc
+		holdCtx, cancelHold = context.WithTimeout(ctx, r.phaseTimeout())
+		defer cancelHold()
+	}
 	logger.Info("Waiting for worker completion signal")
-	r.waitFn(ctx)
+	r.waitFn(holdCtx)
 	logger.Info("Received worker completion signal")
 
-	if err := r.processArtifacts(ctx, postJob, true); err != nil {
+	// Detached and bounded, like RunPost: the completion signal may be the
+	// SIGTERM that also cancelled the caller's context, and post-job work
+	// must still fit inside the termination grace period.
+	postCtx, cancelPost := context.WithTimeout(context.Background(), r.phaseTimeout())
+	defer cancelPost()
+	if err := r.processArtifacts(postCtx, postJob, true); err != nil {
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
 
-	r.unmountAll()
+	r.Release()
 	logger.Info("Sidecar completed")
 	return nil
 }
@@ -217,7 +269,7 @@ func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) erro
 	logger := slog.With("jobId", r.jobID, "mode", "pre", "preJob", len(preJob))
 	logger.Info("Sidecar pre-mode starting")
 
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, r.phaseTimeout())
 	defer cancel()
 
 	if err := r.processArtifacts(ctx, preJob, false); err != nil {
@@ -247,7 +299,7 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 	// phase that just ran, so a missing one is never going to arrive. Without a
 	// deadline the wait would hang the claim request — and hold the pod claimed
 	// — rather than failing it.
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.timeoutSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, r.phaseTimeout())
 	defer cancel()
 
 	// A synced mount is restored before its overlay is stacked: the delta has to
@@ -288,7 +340,7 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 // last sync interval rather than the session, which is the whole reason the sync
 // runs continuously.
 func (r *Runner) Release() {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
 	defer cancel()
 	r.StopSync(ctx)
 	r.unmountAll()
@@ -306,15 +358,21 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	// the worker starts. The startup probe gates the worker on the marker.
 	if len(mounts) > 0 {
 		logger.Info("Establishing artifact mounts")
-		mountCtx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
-		err := r.establishMounts(mountCtx, mounts)
+		if err := markerMountsReady.clear(r.sharedVolumePath); err != nil {
+			return err
+		}
+		mountCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
+		adopted, err := r.adoptExistingMounts(mounts)
+		if err == nil && !adopted {
+			err = r.establishMounts(mountCtx, mounts)
+		}
 		cancel()
 		if err != nil {
 			r.unmountAll() // roll back any mounts established before the failure
 			logger.Error("Mount setup failed, aborting job", "error", err)
 			return fmt.Errorf("mount setup failed: %w", err)
 		}
-		if err := r.writeMountReadyMarker(); err != nil {
+		if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
 			logger.Error("Failed to write mounts-ready marker", "error", err)
 			return err
 		}
@@ -326,7 +384,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 
 	// Use a detached context with timeout so a parent cancellation (e.g. from
 	// the SIGTERM we just received) does not short-circuit post-artifact work.
-	postCtx, cancel := context.WithTimeout(context.Background(), time.Duration(r.timeoutSeconds)*time.Second)
+	postCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
 	defer cancel()
 
 	if err := r.processArtifacts(postCtx, postJob, true); err != nil {
@@ -338,20 +396,55 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	return nil
 }
 
-func (r *Runner) writeReadyMarker() error {
-	markerPath := filepath.Join(r.sharedVolumePath, ReadyFile)
-	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
-		return fmt.Errorf("failed to write ready marker: %w", err)
+// phaseTimeout bounds an individual artifact phase (downloads, mounts, the
+// post-job flush). It is the job timeout when the job is bounded; an unbounded
+// workload (timeoutSeconds == 0) still must not hang a phase forever, so
+// phases fall back to the default budget.
+func (r *Runner) phaseTimeout() time.Duration {
+	if r.timeoutSeconds > 0 {
+		return time.Duration(r.timeoutSeconds) * time.Second
 	}
-	return nil
+	return defaultTimeoutSeconds * time.Second
 }
 
-func (r *Runner) writeMountReadyMarker() error {
-	markerPath := filepath.Join(r.sharedVolumePath, MountReadyFile)
-	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
-		return fmt.Errorf("failed to write mounts-ready marker: %w", err)
+// adoptExistingMounts recovers ownership after a Kubernetes native-sidecar
+// restart. Mounts live in the pod's propagated mount namespace and can outlive
+// the container process that established them. If every requested target is
+// still mounted, track them so normal teardown unmounts them. A partial set is
+// stale state: tear it down before establishing the complete declaration.
+func (r *Runner) adoptExistingMounts(mounts []artifact.Artifact) (bool, error) {
+	targets := make([]string, 0, len(mounts))
+	mounted := make([]bool, 0, len(mounts))
+	count := 0
+	for _, a := range mounts {
+		m, ok := a.(*artifact.Mount)
+		if !ok {
+			continue
+		}
+		target := filepath.Join(r.sharedVolumePath, m.Out)
+		active, err := r.mounter.IsMounted(target)
+		if err != nil {
+			return false, fmt.Errorf("inspect mount %s: %w", m.ID, err)
+		}
+		targets = append(targets, target)
+		mounted = append(mounted, active)
+		if active {
+			count++
+		}
 	}
-	return nil
+
+	if count == len(targets) && count > 0 {
+		r.mounted = append(r.mounted, targets...)
+		return true, nil
+	}
+	for i := len(targets) - 1; i >= 0; i-- {
+		if mounted[i] {
+			if err := r.mounter.Unmount(targets[i]); err != nil {
+				return false, fmt.Errorf("remove partial mount %s: %w", targets[i], err)
+			}
+		}
+	}
+	return false, nil
 }
 
 // establishMounts mounts each image read-only into the workspace. A failure
@@ -416,6 +509,9 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 // and extraction made those inodes root-owned because the sidecar runs as root.
 func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lowerRel string) (string, error) {
 	lower := filepath.Join(r.sharedVolumePath, lowerRel)
+	if err := os.RemoveAll(lower); err != nil {
+		return "", fmt.Errorf("remove stale tar lower directory: %w", err)
+	}
 	if err := os.Mkdir(lower, 0o755); err != nil {
 		return "", fmt.Errorf("create tar lower directory: %w", err)
 	}
@@ -534,7 +630,5 @@ func (r *Runner) waitForPath(ctx context.Context, path string) error {
 // CheckReady checks if the ready marker file exists.
 // Used by Docker health checks to determine when worker can start.
 func CheckReady(sharedVolumePath string) bool {
-	markerPath := filepath.Join(sharedVolumePath, ReadyFile)
-	_, err := os.Stat(markerPath)
-	return err == nil
+	return markerReady.exists(sharedVolumePath)
 }
