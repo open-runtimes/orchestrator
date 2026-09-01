@@ -221,6 +221,12 @@ rules:
   - apiGroups: ["orchestrator.open-runtimes.io"]
     resources: ["revisions/scale"]
     verbs: ["get", "update", "patch"]
+  # Replica Pods set blockOwnerDeletion on their Revision; the
+  # OwnerReferencesPermissionEnforcement admission plugin (on by default on
+  # OpenShift) rejects that unless the creator may update the owner's finalizers.
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions/finalizers"]
+    verbs: ["update"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

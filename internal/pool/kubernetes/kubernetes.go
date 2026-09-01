@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
@@ -70,13 +71,17 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes pool orchestrator.
 func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
+	restCfg, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, 0, 0)
 	if err != nil {
 		return nil, err
 	}
-	gw, err := kube.NewGatewayClient(cfg.Kubeconfig, cfg.Context)
+	cs, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create kube client: %w", err)
+	}
+	gw, err := gatewayclient.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gateway client: %w", err)
 	}
 	return wireOrchestrator(cs, gw, cfg, nil), nil
 }

@@ -331,7 +331,8 @@ func (c *revisionController) reconcileCached(ctx context.Context, name string, t
 }
 
 // reconcileRevision converges one Revision using deterministic replica slots.
-// It is also called synchronously by Apply and Scale as the low-latency path.
+// It is also called synchronously by Apply and Scale as the low-latency path,
+// always from a fresh API read; only the cached worker path can be stale.
 func (o *Orchestrator) reconcileRevision(ctx context.Context, name string) error {
 	revision, err := o.revisions.Get(ctx, o.namespace, name)
 	if err != nil {
@@ -351,7 +352,7 @@ func (o *Orchestrator) reconcileRevision(ctx context.Context, name string) error
 	return o.reconcileRevisionPods(ctx, revision, pods, true, time.Now())
 }
 
-func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revisionapi.Revision, pods []*corev1.Pod, refresh bool, triggeredAt time.Time) error {
+func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revisionapi.Revision, pods []*corev1.Pod, direct bool, triggeredAt time.Time) error {
 	desired := revision.Spec.Replicas
 	deleting := revision.DeletionTimestamp != nil
 	if deleting {
@@ -364,9 +365,17 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 		desired = 0
 	}
 	active := make(map[int]*corev1.Pod)
+	terminating := make(map[int][]string)
 	var terminal []*corev1.Pod
 	var invalid []*corev1.Pod
 	for _, pod := range pods {
+		if podGeneration(pod) > revision.Generation {
+			// The Pod was built from a newer spec than this (cached) view of
+			// the Revision: acting on it would undo a concurrent Apply/Scale.
+			// The Revision's own update event reconciles once the cache
+			// catches up.
+			return nil
+		}
 		slot, slotErr := strconv.Atoi(pod.Labels[LabelReplicaSlot])
 		if slotErr != nil || slot < 0 {
 			invalid = append(invalid, pod)
@@ -376,20 +385,22 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 			terminal = append(terminal, pod)
 			continue
 		}
-		if pod.DeletionTimestamp == nil {
-			if existing := active[slot]; existing != nil {
-				// Deterministically retain one slot owner if an old race or manual
-				// mutation produced a duplicate.
-				if pod.Name < existing.Name {
-					invalid = append(invalid, existing)
-					active[slot] = pod
-				} else {
-					invalid = append(invalid, pod)
-				}
-				continue
-			}
-			active[slot] = pod
+		if pod.DeletionTimestamp != nil {
+			terminating[slot] = append(terminating[slot], pod.Name)
+			continue
 		}
+		if existing := active[slot]; existing != nil {
+			// Deterministically retain one slot owner if an old race or manual
+			// mutation produced a duplicate.
+			if pod.Name < existing.Name {
+				invalid = append(invalid, existing)
+				active[slot] = pod
+			} else {
+				invalid = append(invalid, pod)
+			}
+			continue
+		}
+		active[slot] = pod
 	}
 
 	for _, pod := range append(terminal, invalid...) {
@@ -416,14 +427,16 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 		}
 		delete(active, slot)
 	}
+	var createErr error
 	for slot := range desired {
 		if active[int(slot)] != nil {
 			continue
 		}
-		pod := buildRevisionPod(revision, int(slot))
+		pod := buildRevisionPod(revision, int(slot), terminating[int(slot)])
 		_, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return err
+			createErr = err
+			break
 		}
 		if err == nil && o.cfg.Metrics != nil {
 			o.cfg.Metrics.RecordRevisionPodCreate(ctx, time.Since(triggeredAt).Seconds())
@@ -435,7 +448,7 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 
 	// Direct Apply/Scale callers refresh from the API immediately. Background
 	// workers stay cache-only; Pod watch events supply the next status pass.
-	if refresh {
+	if direct {
 		podList, err := o.client.CoreV1().Pods(o.namespace).List(ctx, metav1.ListOptions{
 			LabelSelector: LabelRevision + "=" + revision.Labels[LabelRevision],
 		})
@@ -451,17 +464,28 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 	for _, pod := range pods {
 		podValues = append(podValues, *pod)
 	}
-	return o.updateRevisionStatus(ctx, revision, podValues)
+	if err := o.updateRevisionStatus(ctx, revision, podValues, createErr); err != nil {
+		return err
+	}
+	// A rejected create (quota, admission, a webhook) is reported through the
+	// Ready condition, which the deployment surfaces as `failed` with the
+	// message. Apply and Scale therefore still succeed, as they did when a
+	// ReplicaSet absorbed the rejection; the leader worker returns the error
+	// so the queue retries with backoff until the pod admits.
+	if direct {
+		return nil
+	}
+	return createErr
 }
 
 // updateRevisionStatus tolerates the intentional race between the synchronous
 // Apply/Scale fast path and the leader worker observing the same event. On a
 // conflict it refreshes the CR and re-derives status against the current spec,
 // so an API request never fails merely because the background controller won.
-func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revisionapi.Revision, pods []corev1.Pod) error {
+func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revisionapi.Revision, pods []corev1.Pod, createErr error) error {
 	candidate := revision
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		status := deriveRevisionStatus(candidate, pods)
+		status := deriveRevisionStatus(candidate, pods, createErr)
 		if reflect.DeepEqual(candidate.Status, status) {
 			return nil
 		}
@@ -478,15 +502,17 @@ func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revis
 	})
 }
 
-func buildRevisionPod(revision *revisionapi.Revision, slot int) *corev1.Pod {
+func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []string) *corev1.Pod {
 	podLabels := mapsClone(revision.Spec.Template.Labels)
 	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
+	annotations := mapsClone(revision.Spec.Template.Annotations)
+	annotations[AnnotationRevisionGeneration] = strconv.FormatInt(revision.Generation, 10)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        podNameFor(revision.Name, slot),
+			Name:        podNameFor(revision.Name, slot, terminating),
 			Namespace:   revision.Namespace,
 			Labels:      podLabels,
-			Annotations: mapsClone(revision.Spec.Template.Annotations),
+			Annotations: annotations,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind,
 				Name: revision.Name, UID: revision.UID, Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
@@ -496,8 +522,25 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int) *corev1.Pod {
 	}
 }
 
-func podNameFor(revisionName string, slot int) string {
+func podGeneration(pod *corev1.Pod) int64 {
+	generation, _ := strconv.ParseInt(pod.Annotations[AnnotationRevisionGeneration], 10, 64)
+	return generation
+}
+
+// podNameFor names a slot's Pod deterministically, so the synchronous and
+// cached reconcilers racing on one slot collide on AlreadyExists instead of
+// producing duplicates. While the slot's previous Pods are still terminating
+// their names are taken, so the replacement derives its suffix from that set:
+// both writers still agree on the name, and the slot regains capacity at
+// once, as under a ReplicaSet, rather than after the grace period (or never,
+// when the node went away with the pod).
+func podNameFor(revisionName string, slot int, terminating []string) string {
 	suffix := "-" + strconv.Itoa(slot)
+	if len(terminating) > 0 {
+		slices.Sort(terminating)
+		sum := sha256.Sum256([]byte(strings.Join(terminating, "\n")))
+		suffix += "-" + hex.EncodeToString(sum[:3])
+	}
 	if len(revisionName)+len(suffix) <= 63 {
 		return revisionName + suffix
 	}
@@ -507,7 +550,7 @@ func podNameFor(revisionName string, slot int) string {
 	return strings.TrimRight(revisionName[:prefixLen], "-") + "-" + hash + suffix
 }
 
-func deriveRevisionStatus(revision *revisionapi.Revision, pods []corev1.Pod) revisionapi.Status {
+func deriveRevisionStatus(revision *revisionapi.Revision, pods []corev1.Pod, createErr error) revisionapi.Status {
 	status := revisionapi.Status{ObservedGeneration: revision.Generation}
 	seen := make(map[int]bool)
 	for i := range pods {
@@ -532,36 +575,69 @@ func deriveRevisionStatus(revision *revisionapi.Revision, pods []corev1.Pod) rev
 		condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, "ScaledToZero", "revision is scaled to zero"
 	case status.ReadyReplicas >= revision.Spec.Replicas:
 		condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, "PodsReady", "all desired pods are ready"
+	case createErr != nil:
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "ReplicaFailure", createErr.Error()
 	case revisionTimedOut(revision):
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "ProgressDeadlineExceeded", revisionFailureMessage(pods)
+		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, progressDeadlineExceeded, revisionFailureMessage(pods)
 	default:
 		condition.Status, condition.Reason, condition.Message = metav1.ConditionUnknown, "PodsNotReady", "waiting for desired pods to become ready"
 	}
 	status.Conditions = append([]metav1.Condition(nil), revision.Status.Conditions...)
+	// A spec change restarts the progress clock: drop the condition written
+	// for the old generation so its replacement gets a fresh transition time.
+	if previous := metameta.FindStatusCondition(status.Conditions, revisionConditionReady); previous != nil && previous.ObservedGeneration != revision.Generation {
+		metameta.RemoveStatusCondition(&status.Conditions, revisionConditionReady)
+	}
 	metameta.SetStatusCondition(&status.Conditions, condition)
 	slices.SortFunc(status.Conditions, func(a, b metav1.Condition) int { return cmp.Compare(a.Type, b.Type) })
 	return status
 }
 
-func revisionTimedOut(revision *revisionapi.Revision) bool {
-	return revision.Spec.ReadyTimeoutSeconds > 0 && !revision.CreationTimestamp.IsZero() &&
-		time.Since(revision.CreationTimestamp.Time) >= time.Duration(revision.Spec.ReadyTimeoutSeconds)*time.Second
+// readyDeadline is when the running progress clock expires. The clock starts
+// when the Revision last stopped being ready under its current spec: the
+// Ready condition's transition into Unknown, or creation before any status
+// exists. It is never measured from creation for the Revision's whole life,
+// which would fail a revision scaled up after an hour at zero on its first
+// pass. No clock is running while the condition is True or False, or belongs
+// to an older generation: the status write this pass makes starts one.
+func readyDeadline(revision *revisionapi.Revision) (time.Time, bool) {
+	if revision.Spec.ReadyTimeoutSeconds <= 0 {
+		return time.Time{}, false
+	}
+	timeout := time.Duration(revision.Spec.ReadyTimeoutSeconds) * time.Second
+	condition := metameta.FindStatusCondition(revision.Status.Conditions, revisionConditionReady)
+	switch {
+	case condition == nil:
+		if revision.CreationTimestamp.IsZero() {
+			return time.Time{}, false
+		}
+		return revision.CreationTimestamp.Add(timeout), true
+	case condition.ObservedGeneration != revision.Generation, condition.Status != metav1.ConditionUnknown:
+		return time.Time{}, false
+	}
+	return condition.LastTransitionTime.Add(timeout), true
 }
 
+func revisionTimedOut(revision *revisionapi.Revision) bool {
+	// Once exceeded, the deadline stays exceeded until the pods actually
+	// become ready or the spec changes; re-arming it would oscillate.
+	if condition := metameta.FindStatusCondition(revision.Status.Conditions, revisionConditionReady); condition != nil &&
+		condition.Reason == progressDeadlineExceeded && condition.ObservedGeneration == revision.Generation {
+		return true
+	}
+	deadline, ok := readyDeadline(revision)
+	return ok && !time.Now().Before(deadline)
+}
+
+// revisionDeadlineDelay is how long until the Revision needs a deadline pass.
+// A deadline already behind us was written as exceeded by the pass that just
+// ran; the informer cache merely has not caught up, so nothing is scheduled.
 func revisionDeadlineDelay(revision *revisionapi.Revision) time.Duration {
-	if revision.Spec.ReadyTimeoutSeconds <= 0 || revision.CreationTimestamp.IsZero() {
+	deadline, ok := readyDeadline(revision)
+	if !ok {
 		return 0
 	}
-	for _, condition := range revision.Status.Conditions {
-		if condition.Type == revisionConditionReady && condition.Status != metav1.ConditionUnknown {
-			return 0
-		}
-	}
-	remaining := time.Until(revision.CreationTimestamp.Add(time.Duration(revision.Spec.ReadyTimeoutSeconds) * time.Second))
-	if remaining <= 0 {
-		return time.Millisecond
-	}
-	return remaining
+	return max(time.Until(deadline), 0)
 }
 
 func revisionFailureMessage(pods []corev1.Pod) string {

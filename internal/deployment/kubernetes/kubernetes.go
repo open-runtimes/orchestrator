@@ -24,6 +24,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	gatewayclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
@@ -47,17 +48,23 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes deployment orchestrator.
 func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	cs, err := kube.NewClientWithRate(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
+	// One rest config, so the configured budget is a single bucket shared by
+	// the typed, dynamic, and Gateway clients rather than one bucket each.
+	restCfg, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
 	if err != nil {
 		return nil, err
 	}
-	gw, err := kube.NewGatewayClientWithRate(cfg.Kubeconfig, cfg.Context, float32(cfg.ClientQPS), cfg.ClientBurst)
+	cs, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create kube client: %w", err)
 	}
-	dynamicClient, err := kube.NewDynamicClientWithRate(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
+	gw, err := gatewayclient.NewForConfig(restCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create gateway client: %w", err)
+	}
+	dynamicClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic kube client: %w", err)
 	}
 	return &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg}, nil
 }

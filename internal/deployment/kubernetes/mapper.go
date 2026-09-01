@@ -27,6 +27,10 @@ const (
 
 	// AnnotationHost carries the deployment's hostname on the marker ConfigMap.
 	AnnotationHost = "deployment.host"
+	// AnnotationRevisionGeneration records the Revision spec generation a
+	// replica Pod was built for, so a reconciler working from a stale cache
+	// can tell the Pod is newer than its view and leave it alone.
+	AnnotationRevisionGeneration = "deployment.revision-generation"
 
 	ContainerWorker      = "worker"
 	ContainerArtifactPre = "artifact-pre"

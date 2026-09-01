@@ -59,7 +59,7 @@ func TestRevisionLeaderAudit_UsesWarmCachesForTwoThousand(t *testing.T) {
 		revision := buildRevision(req, o.cfg, revisionName("fleet", i+1))
 		// Model the production restart case: the baseline is settled before
 		// leadership moves, so the audit should be a read-only cache walk.
-		revision.Status = deriveRevisionStatus(revision, nil)
+		revision.Status = deriveRevisionStatus(revision, nil, nil)
 		if _, err := o.revisions.Create(ctx, o.namespace, revision); err != nil {
 			t.Fatalf("seed Revision %d: %v", i, err)
 		}
@@ -150,14 +150,127 @@ func TestDirectPods_TransientCreateFailureHeals(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	if err := o.reconcileRevision(t.Context(), revision.Name); err == nil {
-		t.Fatal("first reconcile unexpectedly succeeded")
+	// The direct path reports the rejection through the Ready condition, as
+	// a ReplicaSet would, rather than failing Apply.
+	if err := o.reconcileRevision(t.Context(), revision.Name); err != nil {
+		t.Fatalf("direct reconcile surfaced the create failure: %v", err)
+	}
+	if got := readyCondition(t, o, revision.Name); got.Status != metav1.ConditionFalse || got.Reason != "ReplicaFailure" || got.Message != "transient API failure" {
+		t.Fatalf("condition after rejected create = %+v", got)
 	}
 	if err := o.reconcileRevision(t.Context(), revision.Name); err != nil {
 		t.Fatalf("retry did not heal: %v", err)
 	}
 	if _, err := cs.CoreV1().Pods(o.namespace).Get(t.Context(), "dep-web-00001-0", metav1.GetOptions{}); err != nil {
 		t.Fatalf("healed Pod missing: %v", err)
+	}
+	if got := readyCondition(t, o, revision.Name); got.Status != metav1.ConditionUnknown {
+		t.Fatalf("condition after heal = %+v, want PodsNotReady", got)
+	}
+}
+
+func TestDirectPods_WorkerReturnsCreateFailureForRetry(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	req := testRequest()
+	req.Replicas = 1
+	revision, err := o.revisions.Create(t.Context(), o.namespace, buildRevision(req, o.cfg, "web-00001"))
+	if err != nil {
+		t.Fatalf("create Revision: %v", err)
+	}
+	cs.PrependReactor("create", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("exceeded quota")
+	})
+	if err := o.reconcileRevisionPods(t.Context(), revision, nil, false, time.Now()); err == nil || err.Error() != "exceeded quota" {
+		t.Fatalf("worker reconcile error = %v, want the create failure for a rate-limited retry", err)
+	}
+	if got := readyCondition(t, o, revision.Name); got.Reason != "ReplicaFailure" {
+		t.Fatalf("condition = %+v", got)
+	}
+}
+
+func readyCondition(t *testing.T, o *Orchestrator, name string) metav1.Condition {
+	t.Helper()
+	revision, err := o.revisions.Get(t.Context(), o.namespace, name)
+	if err != nil {
+		t.Fatalf("get Revision: %v", err)
+	}
+	for _, condition := range revision.Status.Conditions {
+		if condition.Type == revisionConditionReady {
+			return condition
+		}
+	}
+	t.Fatalf("Revision %s has no Ready condition: %+v", name, revision.Status)
+	return metav1.Condition{}
+}
+
+func TestDirectPods_ReplacesTerminatingSlotImmediately(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	req := testRequest()
+	req.Replicas = 1
+	revision, err := o.revisions.Create(t.Context(), o.namespace, buildRevision(req, o.cfg, "web-00001"))
+	if err != nil {
+		t.Fatalf("create Revision: %v", err)
+	}
+	// A pod stuck Terminating (graceful shutdown, or a node that went away)
+	// still owns the deterministic slot name.
+	stuck := buildRevisionPod(revision, 0, nil)
+	now := metav1.Now()
+	stuck.DeletionTimestamp = &now
+	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), stuck, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed terminating pod: %v", err)
+	}
+	for range 2 {
+		// Idempotent: the second pass must not mint a third pod.
+		if err := o.reconcileRevision(t.Context(), revision.Name); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	pods, err := cs.CoreV1().Pods(o.namespace).List(t.Context(), metav1.ListOptions{LabelSelector: LabelRevision + "=web-00001"})
+	if err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	if len(pods.Items) != 2 {
+		t.Fatalf("pods = %d, want the terminating pod plus one replacement", len(pods.Items))
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Labels[LabelReplicaSlot] != "0" {
+			t.Errorf("pod %s slot = %q, want 0", pod.Name, pod.Labels[LabelReplicaSlot])
+		}
+		if pod.DeletionTimestamp == nil && pod.Name == stuck.Name {
+			t.Errorf("replacement reused the terminating pod's name %s", pod.Name)
+		}
+	}
+	updated, err := o.revisions.Get(t.Context(), o.namespace, revision.Name)
+	if err != nil {
+		t.Fatalf("get Revision: %v", err)
+	}
+	if updated.Status.Replicas != 1 {
+		t.Fatalf("status.replicas = %d, want 1 (terminating pods do not count)", updated.Status.Replicas)
+	}
+}
+
+func TestDirectPods_StaleCacheLeavesNewerPodsAlone(t *testing.T) {
+	t.Parallel()
+	o, cs := newTestOrchestrator(t)
+	req := testRequest()
+	req.Replicas = 0
+	revision := buildRevision(req, o.cfg, "web-00001")
+	revision.Generation = 3
+	// A pod created by the synchronous Scale path for generation 4, observed
+	// through a Revision cache still at generation 3 (replicas 0).
+	pod := buildRevisionPod(revision, 0, nil)
+	pod.Annotations[AnnotationRevisionGeneration] = "4"
+	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed pod: %v", err)
+	}
+	if err := o.reconcileRevisionPods(t.Context(), revision, []*corev1.Pod{pod}, false, time.Now()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := cs.CoreV1().Pods(o.namespace).Get(t.Context(), pod.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("stale reconcile deleted a pod from a newer generation: %v", err)
 	}
 }
 
@@ -328,9 +441,49 @@ func TestRevisionStatus_ProgressDeadline(t *testing.T) {
 	revision := buildRevision(testRequest(), Config{Namespace: "orchestrator"}, "web-00001")
 	revision.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Minute))
 	revision.Spec.ReadyTimeoutSeconds = 1
-	status := deriveRevisionStatus(revision, nil)
+	status := deriveRevisionStatus(revision, nil, nil)
 	if len(status.Conditions) != 1 || status.Conditions[0].Status != metav1.ConditionFalse || status.Conditions[0].Reason != progressDeadlineExceeded {
 		t.Fatalf("condition = %+v", status.Conditions)
+	}
+}
+
+func TestRevisionStatus_DeadlineRunsFromLastUnready(t *testing.T) {
+	t.Parallel()
+	revision := buildRevision(testRequest(), Config{Namespace: "orchestrator"}, "web-00001")
+	revision.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	revision.Generation = 2
+	revision.Spec.Replicas = 1
+	revision.Spec.ReadyTimeoutSeconds = 600
+	// Scaled to zero an hour ago under the previous generation, now raised.
+	revision.Status.Conditions = []metav1.Condition{{
+		Type: revisionConditionReady, Status: metav1.ConditionTrue, Reason: "ScaledToZero",
+		ObservedGeneration: 1, LastTransitionTime: metav1.NewTime(time.Now().Add(-time.Hour)),
+	}}
+	status := deriveRevisionStatus(revision, nil, nil)
+	if got := status.Conditions[0]; got.Status != metav1.ConditionUnknown || time.Since(got.LastTransitionTime.Time) > time.Minute {
+		t.Fatalf("cold start of an old Revision = %+v, want a fresh PodsNotReady clock", got)
+	}
+	revision.Status = status
+	if delay := revisionDeadlineDelay(revision); delay < 9*time.Minute || delay > 10*time.Minute {
+		t.Fatalf("deadline delay = %s, want ~10m from the transition", delay)
+	}
+
+	// Unready for longer than the timeout under the current generation.
+	revision.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(-11 * time.Minute))
+	if delay := revisionDeadlineDelay(revision); delay != 0 {
+		t.Fatalf("passed deadline delay = %s, want 0 (no hot loop)", delay)
+	}
+	status = deriveRevisionStatus(revision, nil, nil)
+	if got := status.Conditions[0]; got.Status != metav1.ConditionFalse || got.Reason != progressDeadlineExceeded {
+		t.Fatalf("condition = %+v", got)
+	}
+	// Exceeded stays exceeded until pods are ready; it does not re-arm.
+	revision.Status = status
+	if got := deriveRevisionStatus(revision, nil, nil).Conditions[0]; got.Reason != progressDeadlineExceeded {
+		t.Fatalf("condition re-armed to %+v", got)
+	}
+	if delay := revisionDeadlineDelay(revision); delay != 0 {
+		t.Fatalf("failed Revision scheduled a deadline pass in %s", delay)
 	}
 }
 
@@ -348,7 +501,7 @@ func TestRevisionStatus_ReportsImagePullFailure(t *testing.T) {
 			}},
 		}}},
 	}
-	status := deriveRevisionStatus(revision, []corev1.Pod{pod})
+	status := deriveRevisionStatus(revision, []corev1.Pod{pod}, nil)
 	if got := status.Conditions[0].Message; got != "pod dep-web-00001-0: ImagePullBackOff: image not found" {
 		t.Fatalf("failure message = %q", got)
 	}

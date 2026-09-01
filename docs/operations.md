@@ -259,6 +259,8 @@ Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=t
 
 On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.io/v1alpha1` `Revision`. The elected deployments-service controller creates its replica Pods directly using deterministic slots; Kubernetes `Deployment` and `ReplicaSet` controllers are not on the workload creation path. The `Revision` `/scale` subresource is shared by the autoscaler and cold-start activator.
 
+**Upgrading from the `apps/v1` backend.** There is deliberately no migration: releases before the `Revision` CRD materialised each revision as a Kubernetes `Deployment`, and this backend neither adopts nor deletes those objects (its Role no longer holds any `apps` verbs). Delete existing deployments through the API before upgrading, or remove the leftover `apps/v1` Deployments and their ReplicaSets by hand afterwards; until then the old pods keep serving while the API reports the deployment with no revisions.
+
 Each component can also autoscale on CPU (`autoscaling.enabled`, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 
 The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).

@@ -23,6 +23,9 @@ import (
 	"orchestrator/internal/server"
 	"os"
 	"time"
+
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
@@ -43,13 +46,17 @@ func run(ctx context.Context) error {
 
 	clientQPS := config.GetIntEnv("KUBE_CLIENT_QPS", 200)
 	clientBurst := config.GetIntEnv("KUBE_CLIENT_BURST", 400)
-	client, err := kube.NewClientWithRate(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics, float32(clientQPS), clientBurst)
+	restCfg, err := kube.NewConfig(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics, float32(clientQPS), clientBurst)
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := kube.NewDynamicClientWithRate(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics, float32(clientQPS), clientBurst)
+	client, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create kube client: %w", err)
+	}
+	dynamicClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create dynamic kube client: %w", err)
 	}
 
 	queue := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
