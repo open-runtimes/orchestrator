@@ -509,6 +509,13 @@ func (r *Runner) emitArtifact(a artifact.Artifact, res artifact.Result, start ti
 }
 
 func (r *Runner) waitForPath(ctx context.Context, path string) error {
+	// The path is usually already there (the dependency artifact completed
+	// before this one started), so check before the first tick — waiting a
+	// full period first taxed every mount-mode cold start 100ms for nothing.
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
