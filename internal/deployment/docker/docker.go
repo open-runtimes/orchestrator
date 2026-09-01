@@ -65,9 +65,6 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // stays idle; any change tears down the containers and volume and recreates
 // everything, re-running artifacts.
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
-	if req.Pool != "" {
-		return false, apperrors.Validation("pool", "deployment pools require the Kubernetes backend")
-	}
 	// Mounts are a Kubernetes capability: a pod's containers share a mount
 	// through propagation on a shared volume, which sibling Docker containers do
 	// not. Say so rather than serving a revision without its mount.

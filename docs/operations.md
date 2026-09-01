@@ -122,18 +122,21 @@ deployments:
   pools:
     - id: py
       image: python:3.12-slim
+      port: 8000
       size: 4                # warm pods kept ready
       cpu: 1
       memory: 512
-      burst: reject          # reject (429) | cold (create on demand)
+      burst: reject          # exhausted → direct fallback
     - id: node
       image: node:22-slim
       size: 2
       port: 3000             # >0 makes it an HTTP pool
+      cpu: 1
+      memory: 512
       burst: cold
 ```
 
-Each pool keeps `size` pods warm at all times. A deployment selects one with `pool` instead of `image`; its Revision claims pods for replica slots, and claimed pods are replenished off the request path. There is no pool API. See the [pools guide](pools.md).
+Each pool keeps `size` pods warm at all times. Deployment users always submit image, port, CPU, memory, and the rest of their desired spec; the controller automatically claims from an exact-shape match and replenishes claimed capacity off the request path. With no match or no accepted warm capacity it creates directly from the same Revision template. There is no deployment-pool API. See the [pools guide](pools.md).
 
 ## Sandboxes
 

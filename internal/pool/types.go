@@ -27,8 +27,8 @@ import (
 type Spec struct {
 	Image string `json:"image"`
 	// Command is the payload a claim execs when the request does not name one.
-	// Sandbox pools may set it as their default; deployment Revisions may
-	// late-bind their own command instead.
+	// Sandbox pools may set it as their default. Transparent deployment pools
+	// reject it because deployment requests always carry their own command.
 	Command string `json:"command,omitempty"`
 	// RuntimeClass is the isolation tier: runc (default) | gvisor | kata. Fixed
 	// for a pool, because warm pods are runtime-fixed at creation, so warm pools

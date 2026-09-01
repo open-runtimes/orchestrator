@@ -460,7 +460,7 @@ curl http://localhost:8080/v1/sandbox-pool
 {"pools": [{"id": "py", "image": "python:3.12-slim", "size": 4, "warm": 4, "claimed": 1}]}
 ```
 
-`GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). Pools are optional: the domain alone enables sandboxes, and [a poolless create](#a-sandbox-with-no-pool) needs none. They are configured exactly like [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — plus an optional `command` (overriding the installed agent) and `maxIdleSeconds`. They are a separate fleet because their image must serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
+`GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). Pools are optional: the domain alone enables sandboxes, and [a poolless create](#a-sandbox-with-no-pool) needs none. They share the base operator shape with [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — but retain explicit sandbox selection, optional `command` and `maxIdleSeconds`, and `reject` still maps to `429`. Deployment pools are instead matched transparently and fall back to direct creation. The fleets are separate because sandbox images serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
 
 ```yaml
 sandbox:

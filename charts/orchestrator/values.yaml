@@ -200,10 +200,13 @@ deployments:
   # limit. Deliberately no default cpu limit — see resource-model.md.
   limitRange:
     enabled: false
-  # Warm Revision pools (docs/pools.md): config-declared fleets a Revision
-  # claims replica pods from. Each entry is a internal/pool.Pool: {id, image, size, cpu,
-  # memory, port (required), burst (cold|reject; default cold), environment,
+  # Warm Revision pools (docs/pools.md): config-declared shapes matched
+  # transparently against complete deployment requests. Each entry is an
+  # internal/pool.Pool: {id, image, size, cpu (required), memory (required),
+  # port (required), burst (cold|reject; default cold),
   # volumes: [{source (PVC name), path, subPath, readonly}] mounted into every pod}.
+  # Command/environment defaults are intentionally unsupported here: both are
+  # late-bound from the deployment request. Fixed shapes must be unique.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
   pools: []
   # Image for the pool-shim (warm-pod entrypoint; installed into workload

@@ -64,30 +64,26 @@ func buildRevision(req *deployment.Request, cfg Config, revision string) *revisi
 }
 
 func revisionSpec(req *deployment.Request, cfg Config, revision string, labels map[string]string) revisionapi.Spec {
+	timeout := req.TimeoutSeconds
 	spec := revisionapi.Spec{
 		Replicas:            max(int32(req.Replicas), 0),
 		ReadyTimeoutSeconds: int32(req.ReadyTimeoutSeconds),
-	}
-	if req.Pool != "" {
-		timeout := req.TimeoutSeconds
-		spec.Pool = req.Pool
-		spec.Claim = &workload.ClaimRequest{
+		Template: &corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: labels},
+			Spec:       buildPodSpec(req, cfg, revision),
+		},
+		Claim: &workload.ClaimRequest{
 			ClaimID: revision,
 			Command: req.Command, Environment: req.Environment, Artifacts: req.Artifacts,
 			Port: req.Port, TimeoutSeconds: &timeout, Concurrency: req.Concurrency,
-		}
-		if req.Probes != nil && req.Probes.Readiness != nil {
-			probe := req.Probes.Readiness
-			spec.Claim.ReadinessPath = probe.Path
-			spec.Claim.ReadinessPeriodMillis = probe.PeriodMillis
-			spec.Claim.ReadinessTimeoutMillis = probe.TimeoutMillis
-			spec.Claim.ReadinessFailureThreshold = probe.FailureThreshold
-		}
-		return spec
+		},
 	}
-	spec.Template = &corev1.PodTemplateSpec{
-		ObjectMeta: metav1.ObjectMeta{Labels: labels},
-		Spec:       buildPodSpec(req, cfg, revision),
+	if req.Probes != nil && req.Probes.Readiness != nil {
+		probe := req.Probes.Readiness
+		spec.Claim.ReadinessPath = probe.Path
+		spec.Claim.ReadinessPeriodMillis = probe.PeriodMillis
+		spec.Claim.ReadinessTimeoutMillis = probe.TimeoutMillis
+		spec.Claim.ReadinessFailureThreshold = probe.FailureThreshold
 	}
 	return spec
 }
@@ -174,6 +170,10 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 				MatchLabels: map[string]string{LabelRevision: revision},
 			},
 		}},
+	}
+	if req.TerminationGracePeriodSeconds > 0 {
+		grace := int64(req.TerminationGracePeriodSeconds)
+		spec.TerminationGracePeriodSeconds = &grace
 	}
 	// Isolation tier (docs/operations.md): gvisor/kata stamp their mapped
 	// RuntimeClass; runc (the default) stamps nothing.

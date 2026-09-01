@@ -32,6 +32,22 @@ jobs:
     hostnames:
       - jobs.example.com
 
+# Run workload pods in their own hardened namespace: restricted Pod Security
+# admission, default-deny NetworkPolicy (requires an enforcing CNI), the
+# cloud-metadata egress block, and a capacity quota. This is chart-global
+# because deployment and sandbox workloads share it.
+workloadNamespace:
+  enabled: true
+  podSecurity: restricted
+  networkPolicy:
+    enabled: true
+    gatewayNamespace: traefik-system # where your gateway controller runs
+  resourceQuota:
+    enabled: true
+    pods: 200
+    requestsCpu: "100"
+    requestsMemory: 200Gi
+
 # ── Serving plane ────────────────────────────────────────────────────────────
 deployments:
   enabled: true
@@ -47,23 +63,9 @@ deployments:
     name: orchestrator
     namespace: "" # empty = release namespace
 
-  # Run workload pods in their own hardened namespace: restricted Pod
-  # Security admission, default-deny NetworkPolicy (requires an enforcing
-  # CNI), cloud-metadata egress block, and a capacity quota.
-  workloadNamespace:
-    enabled: true
-    podSecurity: restricted
-    networkPolicy:
-      enabled: true
-      gatewayNamespace: traefik-system # where your gateway controller runs
-    resourceQuota:
-      enabled: true
-      pods: 200
-      requestsCpu: "100"
-      requestsMemory: 200Gi
-
-  # Warm pools: standing capacity claimed by deployment Revisions
-  # (docs/pools.md). Resize with a values change + helm upgrade.
+  # Warm pools: standing capacity automatically matched to complete deployment
+  # specs by fixed image/port/resources/shape (docs/pools.md). Resize with a
+  # values change + helm upgrade; clients never name these ids.
   pools:
     - id: py
       image: python:3.12-slim
@@ -71,11 +73,13 @@ deployments:
       port: 8000 # required — the container port pooled Revisions serve on
       cpu: 1
       memory: 512
-      burst: reject # no free pod → 429; default "cold" creates on demand
+      burst: reject # no free pod → direct fallback; default "cold" creates on demand
     - id: node
       image: node:22-slim
       size: 2
       port: 3000
+      cpu: 1
+      memory: 512
 
   # CPU is compressible: request = limit / overcommit, no CPU limit.
   # 2 packs workloads twice as dense at the cost of contention under load.

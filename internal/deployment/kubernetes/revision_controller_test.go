@@ -3,8 +3,10 @@ package kubernetes
 import (
 	"context"
 	"errors"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
+	"orchestrator/internal/volume"
 	"orchestrator/internal/warm"
 	"orchestrator/internal/workload"
 	"sync/atomic"
@@ -36,7 +38,10 @@ func (*revisionPoolSidecar) Requests(context.Context, string) (int64, error) { r
 
 func TestRevisionClaimsWarmPoolPod(t *testing.T) {
 	o, cs := newTestOrchestrator(t)
-	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "node:22", Port: 3000}}
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
+		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128,
+	}}
+	o.cfg.Pools = []pool.Pool{p}
 	sidecar := &revisionPoolSidecar{}
 	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
 		Namespace: o.namespace, SidecarImage: "sidecar", ShimImage: "shim", RunAsUser: 65532,
@@ -56,7 +61,7 @@ func TestRevisionClaimsWarmPoolPod(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := testRequest()
-	req.Image, req.Pool, req.Port, req.CPU, req.Memory, req.Replicas = "", "node", 0, 0, 0, 1
+	req.Replicas = 1
 	if _, err := o.Apply(t.Context(), req); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -77,8 +82,139 @@ func TestRevisionClaimsWarmPoolPod(t *testing.T) {
 	if len(claimed.OwnerReferences) != 1 || claimed.OwnerReferences[0].Name != revision.Name {
 		t.Fatalf("owner references = %#v", claimed.OwnerReferences)
 	}
-	if sidecar.claim == nil || sidecar.claim.Port != 3000 || sidecar.claim.ClaimID == "" {
+	if sidecar.claim == nil || sidecar.claim.Port != 8080 || sidecar.claim.ClaimID == "" {
 		t.Fatalf("claim request = %#v", sidecar.claim)
+	}
+}
+
+func TestRevisionPoolExhaustionFallsBackToDirectPod(t *testing.T) {
+	o, cs := newTestOrchestrator(t)
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
+		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128,
+	}}
+	o.cfg.Pools = []pool.Pool{p}
+	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
+		Namespace: o.namespace, SidecarImage: "sidecar", ShimImage: "shim", RunAsUser: 65532,
+		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
+			Claim: "deployment.pool-claim", Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
+		Client: &revisionPoolSidecar{},
+	})
+	if err := o.pools.Verify(t.Context()); err != nil {
+		t.Fatalf("verify pools: %v", err)
+	}
+	req := testRequest()
+	req.Replicas = 1
+	if _, err := o.Apply(t.Context(), req); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	revision, err := o.revisions.Get(t.Context(), o.namespace, objectNameFor("web-00001"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Spec.AcquisitionKey == "" || revision.Spec.Pool != "" || revision.Spec.Template == nil {
+		t.Fatalf("revision must retain acquisition key and direct template: %+v", revision.Spec)
+	}
+	pods, err := cs.CoreV1().Pods(o.namespace).List(t.Context(), metav1.ListOptions{LabelSelector: LabelRevision + "=web-00001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pods.Items) != 1 || pods.Items[0].Labels[LabelPoolClaim] != "" || pods.Items[0].Name != "dep-web-00001-0" {
+		t.Fatalf("direct fallback pods = %#v", pods.Items)
+	}
+}
+
+func TestExistingRevisionUsesMatchingPoolAddedLater(t *testing.T) {
+	o, cs := newTestOrchestrator(t)
+	req := testRequest()
+	req.Replicas = 1
+	if _, err := o.Apply(t.Context(), req); err != nil {
+		t.Fatalf("initial direct apply: %v", err)
+	}
+
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
+		Image: req.Image, Port: req.Port, CPU: req.CPU, Memory: req.Memory,
+	}}
+	o.cfg.Pools = []pool.Pool{p}
+	sidecar := &revisionPoolSidecar{}
+	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
+		Namespace: o.namespace, SidecarImage: "sidecar", ShimImage: "shim", RunAsUser: 65532,
+		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
+			Claim: "deployment.pool-claim", Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
+		Client: sidecar,
+	})
+	if err := o.pools.Verify(t.Context()); err != nil {
+		t.Fatalf("verify pools: %v", err)
+	}
+	warmPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-node-later", Namespace: o.namespace,
+			Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"}},
+		Status: corev1.PodStatus{PodIP: "10.0.0.9", Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
+	}
+	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), warmPod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Scale(t.Context(), req.ID, 2); err != nil {
+		t.Fatalf("scale after adding pool: %v", err)
+	}
+	claimed, err := cs.CoreV1().Pods(o.namespace).Get(t.Context(), warmPod.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Labels[LabelRevision] != "web-00001" || claimed.Labels[LabelReplicaSlot] != "1" {
+		t.Fatalf("later pool claim labels = %#v", claimed.Labels)
+	}
+}
+
+func TestRequestMatchesPoolRequiresExactFixedShape(t *testing.T) {
+	base := testRequest()
+	p := pool.Pool{ID: "node", Spec: pool.Spec{
+		Image: base.Image, Port: base.Port, CPU: base.CPU, Memory: base.Memory,
+	}}
+	if !requestMatchesPool(base, &p) {
+		t.Fatal("equal shape did not match")
+	}
+	base.Volumes = []volume.Volume{{Source: "b", Path: "/b"}, {Source: "a", Path: "/a"}}
+	p.Volumes = []volume.Volume{{Source: "a", Path: "/a"}, {Source: "b", Path: "/b"}}
+	if !requestMatchesPool(base, &p) {
+		t.Fatal("semantically equal volumes in a different order did not match")
+	}
+	for name, mutate := range map[string]func(*deployment.Request){
+		"image":      func(r *deployment.Request) { r.Image = "nginx:other" },
+		"port":       func(r *deployment.Request) { r.Port++ },
+		"cpu":        func(r *deployment.Request) { r.CPU++ },
+		"memory":     func(r *deployment.Request) { r.Memory++ },
+		"workspace":  func(r *deployment.Request) { r.Workspace = "/srv" },
+		"no command": func(r *deployment.Request) { r.Command = "" },
+		"liveness": func(r *deployment.Request) {
+			r.Probes = &deployment.Probes{Liveness: &deployment.Probe{Path: "/health"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := *base
+			mutate(&candidate)
+			if requestMatchesPool(&candidate, &p) {
+				t.Fatalf("mismatched %s was accepted", name)
+			}
+		})
+	}
+}
+
+func TestValidateDeploymentPoolsRejectsNonMatchableAndDuplicateShapes(t *testing.T) {
+	shape := pool.Spec{Image: "node:22", Port: 3000, CPU: 1, Memory: 512}
+	if err := validateDeploymentPools([]pool.Pool{{ID: "node", Spec: shape}}); err != nil {
+		t.Fatalf("valid pool: %v", err)
+	}
+	for name, pools := range map[string][]pool.Pool{
+		"missing resources": {{ID: "node", Spec: pool.Spec{Image: "node:22", Port: 3000}}},
+		"command default":   {{ID: "node", Spec: pool.Spec{Image: "node:22", Port: 3000, CPU: 1, Memory: 512, Command: "node app.js"}}},
+		"environment":       {{ID: "node", Spec: pool.Spec{Image: "node:22", Port: 3000, CPU: 1, Memory: 512, Environment: map[string]string{"A": "1"}}}},
+		"duplicate":         {{ID: "a", Spec: shape}, {ID: "b", Spec: shape}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateDeploymentPools(pools); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
 	}
 }
 

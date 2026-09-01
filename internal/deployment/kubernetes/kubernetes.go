@@ -9,7 +9,9 @@
 package kubernetes
 
 import (
+	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +21,12 @@ import (
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/deployment/endpointflip"
 	"orchestrator/internal/kube"
+	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
+	"orchestrator/internal/volume"
 	"orchestrator/internal/warm"
 	"orchestrator/internal/workload"
+	"slices"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -51,6 +56,9 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes deployment orchestrator.
 func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
+	if err := validateDeploymentPools(cfg.Pools); err != nil {
+		return nil, err
+	}
 	// One rest config, so the configured budget is a single bucket shared by
 	// the typed, dynamic, and Gateway clients rather than one bucket each.
 	restCfg, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
@@ -81,6 +89,24 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 		})
 	}
 	return o, nil
+}
+
+func validateDeploymentPools(pools []pool.Pool) error {
+	for i := range pools {
+		p := &pools[i]
+		if p.CPU <= 0 || p.Memory <= 0 {
+			return fmt.Errorf("deployment pool %q: cpu and memory are required for exact shape matching", p.ID)
+		}
+		if p.Command != "" || len(p.Environment) != 0 {
+			return fmt.Errorf("deployment pool %q: command and environment are request-time fields and must not be configured on the pool", p.ID)
+		}
+		for j := range i {
+			if poolShapeKey(&pools[j].Spec) == poolShapeKey(&p.Spec) {
+				return fmt.Errorf("deployment pools %q and %q declare the same fixed shape", pools[j].ID, p.ID)
+			}
+		}
+	}
+	return nil
 }
 
 // Start surveys pre-existing managed deployments (their markers), then
@@ -225,9 +251,6 @@ func runWithinLeadershipTerm(ctx, term context.Context, run func(context.Context
 //     rollout reconciler auto-cuts once the new revision reports ready
 //     (unless traffic was pinned manually).
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
-	if err := o.resolvePoolRequest(req); err != nil {
-		return false, err
-	}
 	if err := o.checkRuntimeClass(ctx, req.RuntimeClass); err != nil {
 		return false, err
 	}
@@ -259,41 +282,94 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool
 	return false, o.mintNextRevision(ctx, req, m, string(specJSON))
 }
 
-func (o *Orchestrator) resolvePoolRequest(req *deployment.Request) error {
-	if req.Pool == "" {
+func requestMatchesPool(req *deployment.Request, p *pool.Pool) bool {
+	key := requestAcquisitionKey(req)
+	return key != "" && poolShapeKey(&p.Spec) == key
+}
+
+func requestAcquisitionKey(req *deployment.Request) string {
+	// The shim replaces the image entrypoint, so a claim must carry the
+	// command explicitly. A custom workspace and kubelet-run probes are also
+	// impossible to late-bind after a warm pod has started.
+	if req.Command == "" || workspaceOf(req) != workspacePath ||
+		(req.Probes != nil && (req.Probes.Liveness != nil || req.Probes.Startup != nil)) {
+		return ""
+	}
+	return poolShapeKey(&pool.Spec{
+		Image: req.Image, Port: req.Port, CPU: req.CPU, Memory: req.Memory,
+		RuntimeClass: req.RuntimeClass, Volumes: req.Volumes, Mounts: artifact.HasMount(req.Artifacts),
+		TerminationGracePeriodSeconds: req.TerminationGracePeriodSeconds,
+	})
+}
+
+func poolShapeKey(shape *pool.Spec) string {
+	canonical := struct {
+		Image                         string          `json:"image"`
+		Port                          int             `json:"port"`
+		CPU                           float64         `json:"cpu"`
+		Memory                        int             `json:"memory"`
+		RuntimeClass                  string          `json:"runtimeClass"`
+		Volumes                       []volume.Volume `json:"volumes,omitempty"`
+		Mounts                        bool            `json:"mounts,omitempty"`
+		TerminationGracePeriodSeconds int             `json:"terminationGracePeriodSeconds"`
+	}{
+		Image: shape.Image, Port: shape.Port, CPU: shape.CPU, Memory: shape.Memory,
+		RuntimeClass: runtimeTier(shape.RuntimeClass), Volumes: canonicalVolumes(shape.Volumes), Mounts: shape.Mounts,
+		TerminationGracePeriodSeconds: gracePeriodSeconds(shape.TerminationGracePeriodSeconds),
+	}
+	encoded, _ := json.Marshal(canonical)
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func canonicalVolumes(volumes []volume.Volume) []volume.Volume {
+	canonical := append([]volume.Volume(nil), volumes...)
+	slices.SortFunc(canonical, func(a, b volume.Volume) int {
+		if n := cmp.Compare(a.Source, b.Source); n != 0 {
+			return n
+		}
+		if n := cmp.Compare(a.Path, b.Path); n != 0 {
+			return n
+		}
+		if n := cmp.Compare(a.SubPath, b.SubPath); n != 0 {
+			return n
+		}
+		if a.ReadOnly == b.ReadOnly {
+			return 0
+		}
+		if !a.ReadOnly {
+			return -1
+		}
+		return 1
+	})
+	return canonical
+}
+
+func runtimeTier(tier string) string {
+	if tier == "" {
+		return deployment.RuntimeClassRunc
+	}
+	return tier
+}
+
+func gracePeriodSeconds(seconds int) int {
+	if seconds == 0 {
+		return 30
+	}
+	return seconds
+}
+
+func (o *Orchestrator) poolForRevision(revision *revisionapi.Revision) *pool.Pool {
+	if revision.Spec.AcquisitionKey != "" {
+		for i := range o.cfg.Pools {
+			if poolShapeKey(&o.cfg.Pools[i].Spec) == revision.Spec.AcquisitionKey {
+				return &o.cfg.Pools[i]
+			}
+		}
 		return nil
 	}
-	if o.pools == nil {
-		return apperrors.Validation("pool", fmt.Sprintf("pool %q is not configured", req.Pool))
-	}
-	p := o.pools.Pool(req.Pool)
-	if p == nil {
-		return apperrors.Validation("pool", fmt.Sprintf("pool %q is not configured", req.Pool))
-	}
-	if req.Port != 0 && req.Port != p.Port {
-		return apperrors.Validation("port", "port is fixed by the selected pool")
-	}
-	if req.CPU != 0 && req.CPU != p.CPU || req.Memory != 0 && req.Memory != p.Memory {
-		return apperrors.Validation("resources", "cpu and memory are fixed by the selected pool")
-	}
-	if req.RuntimeClass != "" && req.RuntimeClass != p.RuntimeClass {
-		return apperrors.Validation("runtimeClass", "runtimeClass is fixed by the selected pool")
-	}
-	if len(req.Volumes) > 0 || req.Workspace != "" {
-		return apperrors.Validation("pool", "workspace and volumes are fixed by the selected pool")
-	}
-	if req.Probes != nil && (req.Probes.Liveness != nil || req.Probes.Startup != nil) {
-		return apperrors.Validation("probes", "liveness and startup probes cannot be changed on an already-running pool pod")
-	}
-	if artifact.HasMount(req.Artifacts) && !p.Mounts {
-		return apperrors.Validation("artifacts", "selected pool does not allow mount artifacts")
-	}
-	req.Port, req.CPU, req.Memory, req.RuntimeClass = p.Port, p.CPU, p.Memory, p.RuntimeClass
-	if req.Command == "" {
-		req.Command = p.Command
-	}
-	if req.Command == "" {
-		return apperrors.Validation("command", "a pooled deployment requires command on the request or pool")
+	if revision.Spec.Pool != "" && o.pools != nil {
+		return o.pools.Pool(revision.Spec.Pool)
 	}
 	return nil
 }
@@ -364,7 +440,9 @@ func (o *Orchestrator) mintNextRevision(ctx context.Context, req *deployment.Req
 // revisions are immutable, so create-if-missing is also the heal for a
 // partial earlier Apply.
 func (o *Orchestrator) ensureRevisionObjects(ctx context.Context, req *deployment.Request, rev string) error {
-	revision, err := o.revisions.Create(ctx, o.namespace, buildRevision(req, o.cfg, rev))
+	candidate := buildRevision(req, o.cfg, rev)
+	candidate.Spec.AcquisitionKey = requestAcquisitionKey(req)
+	revision, err := o.revisions.Create(ctx, o.namespace, candidate)
 	if apierrors.IsAlreadyExists(err) {
 		revision, err = o.revisions.Get(ctx, o.namespace, objectNameFor(rev))
 	}
@@ -386,8 +464,22 @@ func (o *Orchestrator) ensureRevisionObjects(ctx context.Context, req *deploymen
 	if err != nil && !apierrors.IsAlreadyExists(err) {
 		return apperrors.Internal("kubernetes.createService", err)
 	}
-	// Fast path: materialize the initial slots before returning from Apply.
-	return o.reconcileRevision(ctx, objectNameFor(rev))
+	return o.reconcileBeforeStart(ctx, objectNameFor(rev))
+}
+
+// reconcileBeforeStart preserves the convenient synchronous behavior used by
+// small embeddings and unit tests. Once Start has installed the informer and
+// leader-gated workers, they are the sole pod writers. Letting every API
+// replica reconcile synchronously as well is harmless for deterministic
+// direct-pod names but can double-claim a warm slot across processes.
+func (o *Orchestrator) reconcileBeforeStart(ctx context.Context, revision string) error {
+	o.leaderMu.Lock()
+	started := o.started
+	o.leaderMu.Unlock()
+	if started {
+		return nil
+	}
+	return o.reconcileRevision(ctx, revision)
 }
 
 // Scale sets the replica count of the ROUTED revision via the scale
@@ -417,7 +509,7 @@ func (o *Orchestrator) Scale(ctx context.Context, id string, replicas int) error
 	if err := o.revisions.Scale(ctx, o.namespace, objectNameFor(rev), int32(replicas)); err != nil {
 		return apperrors.Internal("kubernetes.updateScale", err)
 	}
-	return o.reconcileRevision(ctx, objectNameFor(rev))
+	return o.reconcileBeforeStart(ctx, objectNameFor(rev))
 }
 
 // routedRevision picks the revision a whole-deployment operation acts on: a

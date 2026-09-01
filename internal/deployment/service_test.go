@@ -8,26 +8,22 @@ import (
 	"testing"
 )
 
-func TestValidate_ImageOrPool(t *testing.T) {
+func TestValidate_ImageRequired(t *testing.T) {
 	t.Parallel()
 	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
-	for name, req := range map[string]*Request{
-		"image": {ID: "app", Image: "nginx", Port: 8080},
-		"pool":  {ID: "app", Pool: "node"},
-	} {
-		s.applyDefaults(req)
-		if err := s.validate(req); err != nil {
-			t.Errorf("%s: %v", name, err)
-		}
+	req := &Request{ID: "app", Image: "nginx", Port: 8080}
+	s.applyDefaults(req)
+	if err := s.validate(req); err != nil {
+		t.Fatalf("image deployment: %v", err)
 	}
-	for name, req := range map[string]*Request{
-		"neither": {ID: "app"},
-		"both":    {ID: "app", Image: "nginx", Pool: "node", Port: 8080},
-	} {
-		s.applyDefaults(req)
-		if err := s.validate(req); !errors.Is(err, apperrors.ErrValidation) {
-			t.Errorf("%s: got %v", name, err)
-		}
+
+	missing := &Request{ID: "app", Port: 8080}
+	s.applyDefaults(missing)
+	if err := s.validate(missing); !errors.Is(err, apperrors.ErrValidation) {
+		t.Errorf("missing image: got %v", err)
+	}
+	if _, err := Parse([]byte(`{"id":"app","pool":"node"}`)); err == nil {
+		t.Error("public pool field must be rejected as unknown")
 	}
 }
 

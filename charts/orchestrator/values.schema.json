@@ -377,7 +377,7 @@
         },
         "pools": {
           "type": "array",
-          "description": "pkg/pool.Pool entries. id, image and port are required; the service rejects the rest at startup.",
+          "description": "Transparent deployment warm shapes. id, image, port, cpu and memory are required; command/environment defaults and duplicate fixed shapes are rejected by the service.",
           "items": {
             "$ref": "#/$defs/pool"
           }

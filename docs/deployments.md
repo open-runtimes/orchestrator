@@ -57,7 +57,7 @@ Each host is owned by exactly one deployment — claiming a host another deploym
 ```json
 {
   "id": "web",                    // required — RFC-1123 label, ≤63 chars; part of object names
-  "image": "ghcr.io/acme/web:v3", // exactly one of image or pool
+  "image": "ghcr.io/acme/web:v3", // required; warm capacity is matched transparently
   "port": 8080,                   // required — the container port serving HTTP
   "command": "server --flag",     // optional — overrides the image entrypoint
   "cpu": 1,                       // cores (limit); default 1
@@ -87,19 +87,14 @@ Each host is owned by exactly one deployment — claiming a host another deploym
   "runtimeClass": "gvisor",       // isolation tier: runc (default) | gvisor | kata — K8s only
   "timeoutSeconds": 300,              // per-request total → 504; default 300
   "startTimeoutSeconds": 300, // wait for capacity on a cold start → 503; default 300
-  "readyTimeoutSeconds": 600      // ready deadline before a rollout is marked failed; default 600
+  "readyTimeoutSeconds": 600,     // ready deadline before a rollout is marked failed; default 600
+  "terminationGracePeriodSeconds": 30 // fixed pod shape; default 30
 }
 ```
 
 Unknown fields are rejected with `400` naming the field, so a typo (`"replcias"`) fails loudly instead of silently deploying defaults.
 
-`pool` selects operator-configured warm capacity. It is mutually exclusive with `image`; the pool fixes image, port, resources, runtime class, volumes, and mount capability. The Revision still owns replica count, rollout, traffic, autoscaling, and deletion. See [Revision pools](pools.md).
-
-```json
-{"id": "web", "pool": "node", "command": "node server.js", "replicas": 2}
-```
-
-For a pooled deployment, omit `image` and the pod-shape fields fixed by the pool. Kubelet liveness/startup probes are also fixed before claim; the sidecar readiness probe remains late-bindable.
+There is no pool field in this API. On Kubernetes, the operator may keep warm pods for common fixed shapes. The controller compares this complete request with those shapes and claims one automatically when it matches; otherwise it creates the same pod directly. Pool availability therefore changes startup latency, never the requested workload or whether a valid deployment is accepted. See [Revision pools](pools.md).
 
 Probes: the **readiness** probe is run by the orchestrator's sidecar and honors sub-second periods — it gates whether a replica receives traffic. Liveness and startup probes are kubelet-run at whole-second granularity. Omitting `path` makes a probe a TCP connect check.
 

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"orchestrator/internal/apperrors"
+	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
 	"reflect"
 	"slices"
@@ -332,8 +334,8 @@ func (c *revisionController) reconcileCached(ctx context.Context, name string, t
 }
 
 // reconcileRevision converges one Revision using deterministic replica slots.
-// It is also called synchronously by Apply and Scale as the low-latency path,
-// always from a fresh API read; only the cached worker path can be stale.
+// Before Start, small embeddings and tests call it synchronously from Apply or
+// Scale. In a running service, only the leader's informer worker writes pods.
 func (o *Orchestrator) reconcileRevision(ctx context.Context, name string) error {
 	revision, err := o.revisions.Get(ctx, o.namespace, name)
 	if err != nil {
@@ -445,11 +447,27 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 			continue
 		}
 		var err error
-		if revision.Spec.Pool != "" {
-			_, err = o.claimRevisionPod(ctx, revision, int(slot))
-		} else {
-			pod := buildRevisionPod(revision, int(slot), terminating[int(slot)])
-			_, err = o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
+		claimed := false
+		matchedPool := o.poolForRevision(revision)
+		if matchedPool != nil && revision.Spec.Claim != nil && o.pools != nil {
+			_, err = o.claimRevisionPod(ctx, revision, matchedPool, int(slot))
+			switch {
+			case err == nil:
+				claimed = true
+			case errors.Is(err, apperrors.ErrExhausted):
+				// A transparent optimization cannot turn a valid image-backed
+				// deployment into a capacity error. Fall through to the complete
+				// direct template retained on every new Revision.
+				err = nil
+			}
+		}
+		if !claimed && err == nil {
+			if revision.Spec.Template == nil {
+				err = fmt.Errorf("revision %s has no direct template and its legacy pool %q is unavailable", revision.Name, revision.Spec.Pool)
+			} else {
+				pod := buildRevisionPod(revision, int(slot), terminating[int(slot)])
+				_, err = o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
+			}
 		}
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			createErr = err
@@ -463,7 +481,7 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 		return nil
 	}
 
-	// Direct Apply/Scale callers refresh from the API immediately. Background
+	// Pre-Start synchronous callers refresh from the API immediately. Running
 	// workers stay cache-only; Pod watch events supply the next status pass.
 	if direct {
 		podList, err := o.client.CoreV1().Pods(o.namespace).List(ctx, metav1.ListOptions{
@@ -539,21 +557,17 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []st
 	}
 }
 
-func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisionapi.Revision, slot int) (_ *corev1.Pod, outcomeErr error) {
+func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisionapi.Revision, p *pool.Pool, slot int) (_ *corev1.Pod, outcomeErr error) {
 	if o.pools == nil || revision.Spec.Claim == nil {
-		return nil, fmt.Errorf("revision %s selects unavailable pool %q", revision.Name, revision.Spec.Pool)
-	}
-	p := o.pools.Pool(revision.Spec.Pool)
-	if p == nil {
-		return nil, fmt.Errorf("revision %s selects unavailable pool %q", revision.Name, revision.Spec.Pool)
+		return nil, fmt.Errorf("revision %s has no claim-capable pool", revision.Name)
 	}
 	claim := *revision.Spec.Claim
 	claim.ClaimID = revisionClaimID(revision, slot)
 	started := time.Now()
 	if o.cfg.Metrics != nil {
-		o.cfg.Metrics.RecordPoolClaimStarted(ctx, "revision", revision.Spec.Pool)
+		o.cfg.Metrics.RecordPoolClaimStarted(ctx, "revision", p.ID)
 		defer func() {
-			o.cfg.Metrics.RecordPoolClaimFinished(ctx, "revision", revision.Spec.Pool, outcomeErr == nil, time.Since(started).Seconds())
+			o.cfg.Metrics.RecordPoolClaimFinished(ctx, "revision", p.ID, outcomeErr == nil, time.Since(started).Seconds())
 		}()
 	}
 	pod, err := o.pools.Claim(ctx, p, &claim)

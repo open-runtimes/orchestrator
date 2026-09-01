@@ -11,8 +11,7 @@ import (
 type Request struct {
 	ID           string            `json:"id"` // RFC-1123 label (≤63); part of object names
 	Meta         map[string]string `json:"meta,omitempty"`
-	Image        string            `json:"image,omitempty"`
-	Pool         string            `json:"pool,omitempty"`         // configured warm pool; mutually exclusive with image
+	Image        string            `json:"image"`
 	RuntimeClass string            `json:"runtimeClass,omitempty"` // isolation tier: runc (default) | gvisor | kata (K8s only)
 	Command      string            `json:"command,omitempty"`
 	CPU          float64           `json:"cpu"`    // limit (cores)
@@ -32,6 +31,9 @@ type Request struct {
 	TimeoutSeconds      int `json:"timeoutSeconds,omitempty"`      // per-request total → 504; default 300
 	StartTimeoutSeconds int `json:"startTimeoutSeconds,omitempty"` // activator wait for a ready endpoint → 503; default 300
 	ReadyTimeoutSeconds int `json:"readyTimeoutSeconds,omitempty"` // ready deadline → failed; default 600
+	// TerminationGracePeriodSeconds is part of the fixed pod shape used for
+	// transparent warm-pool matching. Zero means the Kubernetes default (30s).
+	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
 // Probes — only Readiness is sidecar-run (honors ms granularity); Liveness and

@@ -32,13 +32,13 @@ func testRequest() *deployment.Request {
 	}
 }
 
-func TestBuildRevision_PoolAcquisition(t *testing.T) {
+func TestBuildRevision_RetainsTemplateAndClaim(t *testing.T) {
 	req := testRequest()
-	req.Image, req.Pool, req.Port, req.Concurrency = "", "node", 3000, 7
+	req.Port, req.Concurrency = 3000, 7
 	req.Probes = &deployment.Probes{Readiness: &deployment.Probe{Path: "/ready", PeriodMillis: 250}}
 	revision := buildRevision(req, Config{Namespace: "orchestrator"}, "web-00001")
-	if revision.Spec.Template != nil || revision.Spec.Pool != "node" || revision.Spec.Claim == nil {
-		t.Fatalf("pool acquisition = %+v", revision.Spec)
+	if revision.Spec.Template == nil || revision.Spec.Pool != "" || revision.Spec.Claim == nil {
+		t.Fatalf("revision acquisition data = %+v", revision.Spec)
 	}
 	if revision.Spec.Claim.Port != 3000 || revision.Spec.Claim.Concurrency != 7 || revision.Spec.Claim.ReadinessPath != "/ready" {
 		t.Fatalf("claim = %+v", revision.Spec.Claim)
@@ -94,6 +94,15 @@ func TestBuildRevision_BasicStructure(t *testing.T) {
 	}
 	if len(spec.Containers) != 1 || spec.Containers[0].Name != ContainerWorker {
 		t.Fatalf("Containers: want [worker], got %+v", spec.Containers)
+	}
+}
+
+func TestBuildRevision_TerminationGraceIsPartOfTemplate(t *testing.T) {
+	req := testRequest()
+	req.TerminationGracePeriodSeconds = 45
+	spec := buildRevision(req, Config{}, "web-00001").Spec.Template.Spec
+	if spec.TerminationGracePeriodSeconds == nil || *spec.TerminationGracePeriodSeconds != 45 {
+		t.Fatalf("termination grace = %v", spec.TerminationGracePeriodSeconds)
 	}
 }
 

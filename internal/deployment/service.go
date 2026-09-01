@@ -240,10 +240,10 @@ func (s *Service) checkHostOwnership(ctx context.Context, req *Request) error {
 }
 
 func (s *Service) applyDefaults(req *Request) {
-	if req.Pool == "" && req.CPU <= 0 {
+	if req.CPU <= 0 {
 		req.CPU = 1
 	}
-	if req.Pool == "" && req.Memory <= 0 {
+	if req.Memory <= 0 {
 		req.Memory = 512
 	}
 	if req.Replicas <= 0 {
@@ -258,7 +258,7 @@ func (s *Service) applyDefaults(req *Request) {
 	if req.ReadyTimeoutSeconds <= 0 {
 		req.ReadyTimeoutSeconds = DefaultReadyTimeoutSeconds
 	}
-	if req.Pool == "" && req.Workspace == "" {
+	if req.Workspace == "" {
 		req.Workspace = DefaultWorkspace
 	}
 	if len(req.Hosts) == 0 && req.ID != "" {
@@ -289,16 +289,19 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("id", "deployment ID must be an RFC-1123 label (lowercase alphanumeric, interior hyphens)")
 	}
 
-	if (req.Image == "") == (req.Pool == "") {
-		return apperrors.Validation("image", "exactly one of image or pool is required")
+	if req.Image == "" {
+		return apperrors.Validation("image", "image is required")
 	}
 
 	if !ValidRuntimeClass(req.RuntimeClass) {
 		return apperrors.Validation("runtimeClass", fmt.Sprintf("runtimeClass must be one of %q, %q, %q", RuntimeClassRunc, RuntimeClassGvisor, RuntimeClassKata))
 	}
 
-	if (req.Pool == "" && req.Port <= 0) || req.Port > 65535 {
+	if req.Port <= 0 || req.Port > 65535 {
 		return apperrors.Validation("port", "port must be between 1 and 65535")
+	}
+	if req.TerminationGracePeriodSeconds < 0 {
+		return apperrors.Validation("terminationGracePeriodSeconds", "termination grace period must be non-negative")
 	}
 
 	if req.Workspace != "" && !path.IsAbs(req.Workspace) {
