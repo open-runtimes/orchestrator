@@ -57,8 +57,7 @@ func TestCheckReady(t *testing.T) {
 		t.Error("CheckReady should return false when marker doesn't exist")
 	}
 
-	markerPath := filepath.Join(tmpDir, ReadyFile)
-	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
+	if err := markerReady.write(tmpDir); err != nil {
 		t.Fatalf("Failed to create marker file: %v", err)
 	}
 
@@ -780,8 +779,12 @@ func TestRunner_RestartAdoptsMounts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmpDir, "data.sqfs"), []byte("hsqs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Debris from the previous incarnation: ready marker and completed download.
-	if err := os.WriteFile(filepath.Join(tmpDir, ReadyFile), []byte{}, 0o644); err != nil {
+	// Debris from the previous incarnation: ready and artifacts-complete
+	// markers alongside the completed download.
+	if err := markerReady.write(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := markerArtifactsComplete.write(tmpDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -823,5 +826,50 @@ func TestRunner_RestartAdoptsMounts(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.unmounted) != 1 || fake.unmounted[0] != target {
 		t.Fatalf("expected adopted mount %q unmounted on shutdown, got %v", target, fake.unmounted)
+	}
+}
+
+// TestRunner_RestartSkipsCompletedArtifacts verifies the artifacts-complete
+// marker: a restarted sidecar must not re-run a finished pre-job phase — it
+// could re-fetch, or replace, files a running workload is mounted on — while a
+// fresh workspace (no marker) runs it exactly once.
+func TestRunner_RestartSkipsCompletedArtifacts(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("archive")); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	reg := artifact.DefaultRegistry()
+	artifacts, err := reg.Unmarshal([]byte(`[{"id":"source","type":"download","in":"` + server.URL + `","out":"code.tar.gz"}]`))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	run := func() {
+		sigFn, triggerDone := triggerSignal()
+		triggerDone() // no worker to wait for
+		runner := NewRunner("test-job", tmpDir, 0, reg, WithSignalFunc(sigFn), WithMounter(&fakeMounter{}))
+		if err := runner.Run(t.Context(), artifacts); err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	}
+
+	run()
+	if hits != 1 {
+		t.Fatalf("first run should download once, server saw %d requests", hits)
+	}
+
+	run() // same workspace: a container restart
+	if hits != 1 {
+		t.Fatalf("restart must not re-run the completed pre-job phase, server saw %d requests", hits)
+	}
+	if content, err := os.ReadFile(filepath.Join(tmpDir, "code.tar.gz")); err != nil || string(content) != "archive" {
+		t.Fatalf("downloaded artifact missing after restart: %q, %v", content, err)
 	}
 }

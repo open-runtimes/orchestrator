@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,11 +17,6 @@ import (
 	"syscall"
 	"time"
 )
-
-// ReadyFile is the marker file written when pre-job artifacts are complete.
-// Docker orchestrator uses this with health checks to know when to start the worker.
-// Kubernetes uses startup probes on this file for native sidecar containers.
-const ReadyFile = ".ready"
 
 // defaultPostJobFileGrace bounds how long a post-job artifact waits for its
 // source file to appear. The worker has already exited by then, so the file
@@ -171,10 +165,11 @@ func waitForSignal(ctx context.Context) {
 // If any pre-job artifact fails, the sidecar exits with an error.
 //
 // A container restart recovers in place, which is what makes this flow safe as
-// a Kubernetes native sidecar: completed downloads of immutable sources are
-// kept (Download's skipIfExists), surviving mounts are adopted, and the ready
-// marker is cleared up front so the worker is only ever admitted behind
-// established mounts. On a fresh workspace every recovery step is a no-op.
+// a Kubernetes native sidecar: a completed pre-job phase is not re-run (the
+// artifacts-complete marker), surviving mounts are adopted from the kernel
+// mount table, and the ready marker is cleared up front so the worker is only
+// ever admitted behind established mounts. On a fresh workspace every
+// recovery step is a no-op.
 func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	mounts, rest := splitMounts(artifacts)
 	preJob, postJob := artifact.Partition(rest)
@@ -182,16 +177,26 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	logger := slog.With("jobId", r.jobID, "preJob", len(preJob), "mounts", len(mounts), "postJob", len(postJob), "timeoutSeconds", r.timeoutSeconds)
 	logger.Info("Sidecar starting")
 
-	if err := r.removeReadyMarker(); err != nil {
+	if err := markerReady.clear(r.sharedVolumePath); err != nil {
 		return err
 	}
 
-	setupCtx, cancel := context.WithTimeout(ctx, r.phaseTimeout())
-	err := r.processArtifacts(setupCtx, preJob, false)
-	cancel()
-	if err != nil {
-		logger.Error("Pre-job artifact processing failed, aborting job", "error", err)
-		return fmt.Errorf("pre-job artifact processing failed: %w", err)
+	if markerArtifactsComplete.exists(r.sharedVolumePath) {
+		// A restarted sidecar: the phase finished before the crash and its
+		// outputs are in the workspace. Re-running it could re-fetch — or
+		// replace — files a running workload is mounted on.
+		logger.Info("Pre-job artifacts already complete, skipping")
+	} else {
+		setupCtx, cancel := context.WithTimeout(ctx, r.phaseTimeout())
+		err := r.processArtifacts(setupCtx, preJob, false)
+		cancel()
+		if err != nil {
+			logger.Error("Pre-job artifact processing failed, aborting job", "error", err)
+			return fmt.Errorf("pre-job artifact processing failed: %w", err)
+		}
+		if err := markerArtifactsComplete.write(r.sharedVolumePath); err != nil {
+			return err
+		}
 	}
 
 	adopted, err := r.adoptExistingMounts(mounts)
@@ -212,7 +217,7 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 		return fmt.Errorf("mount setup failed: %w", err)
 	}
 
-	if err := r.writeReadyMarker(); err != nil {
+	if err := markerReady.write(r.sharedVolumePath); err != nil {
 		// The worker will never be admitted, so the mounts (and any sync
 		// loops) established above have no consumer — tear them down rather
 		// than leak them past this incarnation.
@@ -353,7 +358,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	// the worker starts. The startup probe gates the worker on the marker.
 	if len(mounts) > 0 {
 		logger.Info("Establishing artifact mounts")
-		if err := r.removeMountReadyMarker(); err != nil {
+		if err := markerMountsReady.clear(r.sharedVolumePath); err != nil {
 			return err
 		}
 		mountCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
@@ -367,7 +372,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 			logger.Error("Mount setup failed, aborting job", "error", err)
 			return fmt.Errorf("mount setup failed: %w", err)
 		}
-		if err := r.writeMountReadyMarker(); err != nil {
+		if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
 			logger.Error("Failed to write mounts-ready marker", "error", err)
 			return err
 		}
@@ -400,41 +405,6 @@ func (r *Runner) phaseTimeout() time.Duration {
 		return time.Duration(r.timeoutSeconds) * time.Second
 	}
 	return defaultTimeoutSeconds * time.Second
-}
-
-func (r *Runner) writeReadyMarker() error {
-	markerPath := filepath.Join(r.sharedVolumePath, ReadyFile)
-	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
-		return fmt.Errorf("failed to write ready marker: %w", err)
-	}
-	return nil
-}
-
-func (r *Runner) writeMountReadyMarker() error {
-	markerPath := filepath.Join(r.sharedVolumePath, MountReadyFile)
-	if err := os.WriteFile(markerPath, []byte{}, 0o644); err != nil {
-		return fmt.Errorf("failed to write mounts-ready marker: %w", err)
-	}
-	return nil
-}
-
-// removeReadyMarker clears a ready marker left in the shared volume by a
-// previous incarnation of a runtime-mode sidecar, so the app container's
-// startup probe only passes once this incarnation's mounts are established.
-func (r *Runner) removeReadyMarker() error {
-	markerPath := filepath.Join(r.sharedVolumePath, ReadyFile)
-	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale ready marker: %w", err)
-	}
-	return nil
-}
-
-func (r *Runner) removeMountReadyMarker() error {
-	markerPath := filepath.Join(r.sharedVolumePath, MountReadyFile)
-	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale mounts-ready marker: %w", err)
-	}
-	return nil
 }
 
 // adoptExistingMounts recovers ownership after a Kubernetes native-sidecar
@@ -660,7 +630,5 @@ func (r *Runner) waitForPath(ctx context.Context, path string) error {
 // CheckReady checks if the ready marker file exists.
 // Used by Docker health checks to determine when worker can start.
 func CheckReady(sharedVolumePath string) bool {
-	markerPath := filepath.Join(sharedVolumePath, ReadyFile)
-	_, err := os.Stat(markerPath)
-	return err == nil
+	return markerReady.exists(sharedVolumePath)
 }
