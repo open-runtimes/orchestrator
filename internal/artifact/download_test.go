@@ -84,3 +84,51 @@ func TestDownload_Apply_CustomTimeout(t *testing.T) {
 		t.Fatalf("Apply() error = %v", result.Error)
 	}
 }
+
+func TestDownload_Apply_SkipsExistingTarget(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "archive.tar.gz")
+	if err := os.WriteFile(destPath, []byte("previous incarnation"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Download{ID: "dl", In: server.URL, Out: "archive.tar.gz"}
+	result := a.Apply(t.Context(), tmpDir)
+	if result.Status != "success" || result.Error != nil {
+		t.Fatalf("Apply() = %v (%v), want success", result.Status, result.Error)
+	}
+	if hits != 0 {
+		t.Fatalf("existing target must not be re-fetched, server saw %d requests", hits)
+	}
+	content, err := os.ReadFile(destPath)
+	if err != nil || string(content) != "previous incarnation" {
+		t.Fatalf("existing target was modified: %q, %v", content, err)
+	}
+}
+
+func TestDownload_Apply_LeavesNoPartialFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	a := &Download{ID: "dl", In: server.URL, Out: "file.bin"}
+	if result := a.Apply(t.Context(), tmpDir); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "file.bin.partial")); err == nil {
+		t.Fatal("partial file left behind after a successful download")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "file.bin")); err != nil {
+		t.Fatalf("final file missing: %v", err)
+	}
+}
