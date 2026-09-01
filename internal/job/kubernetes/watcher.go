@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"orchestrator/internal/job"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -234,6 +235,7 @@ func (t *jobTracker) handleDelete() {
 		return
 	}
 	if !t.state.isExited {
+		t.logger.Info("Pod deleted before exit, job failed")
 		t.emit(job.Failed{Reason: "pod deleted"})
 	} else {
 		// Exit already fired; the pod vanished (e.g. force-delete) before a
@@ -288,12 +290,23 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 	}
 
 	// Pod-level failure before the worker ever ran (e.g. artifact-pre init
-	// failure, ImagePullBackOff, scheduler rejection).
-	if !t.state.isStarted && pod.Status.Phase == corev1.PodFailed && worker == nil {
+	// failure, ImagePullBackOff, scheduler rejection). "Never ran" is a state
+	// check, not a presence check: kubelet lists the worker in
+	// containerStatuses as waiting/PodInitializing even when an init container
+	// failure guarantees it will never start. Guarding on worker == nil alone
+	// left init-failed pods matching no branch at all — their jobs sat
+	// untracked, with no callback and no log, until pod retention deleted the
+	// pod ~15 minutes later and emitted a misleading "pod deleted" failure.
+	workerRan := worker != nil && (worker.State.Running != nil || worker.State.Terminated != nil)
+	if !t.state.isStarted && pod.Status.Phase == corev1.PodFailed && !workerRan {
 		reason := pod.Status.Reason
+		if reason == "" {
+			reason = initFailureReason(pod)
+		}
 		if reason == "" {
 			reason = "pod failed before worker started"
 		}
+		t.logger.Info("Pod failed before worker started", "reason", reason)
 		t.emit(job.Failed{Reason: reason})
 		return true
 	}
@@ -375,6 +388,19 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 	}
 
 	return false
+}
+
+// initFailureReason names the init container that doomed the pod, so the
+// callback carries "init container artifact-pre failed with exit code 1"
+// instead of a blank pod-level reason.
+func initFailureReason(pod *corev1.Pod) string {
+	for i := range pod.Status.InitContainerStatuses {
+		cs := &pod.Status.InitContainerStatuses[i]
+		if term := cs.State.Terminated; term != nil && term.ExitCode != 0 {
+			return "init container " + cs.Name + " failed with exit code " + strconv.Itoa(int(term.ExitCode))
+		}
+	}
+	return ""
 }
 
 // isPodTerminal reports whether every container in the pod has stopped —
