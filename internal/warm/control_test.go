@@ -80,7 +80,7 @@ func TestOrphanGC_DiscardsAfterTTL(t *testing.T) {
 	// Claimed by the sidecar's own account, but never labeled: the service
 	// crashed between accept and patch.
 	addPod(t, cs, warmPodFixture(m, "std", "pod-a", "10.0.0.1"))
-	sidecar.state["10.0.0.1"] = workload.ClaimState{Claimed: true, ActivationID: "lost"}
+	sidecar.state["10.0.0.1"] = workload.ClaimState{Claimed: true, ClaimID: "lost"}
 
 	c := m.Controller(Hooks{})
 	t0 := time.Now()

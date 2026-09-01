@@ -23,6 +23,8 @@ const (
 	LabelDeploymentID = "deployment.id"
 	LabelRevision     = "deployment.revision"
 	LabelReplicaSlot  = "deployment.replica-slot"
+	LabelPoolClaim    = "deployment.pool-claim"
+	LabelServing      = "deployment.serving"
 	ManagedByValue    = "deployments-service"
 
 	// AnnotationHost carries the deployment's hostname on the marker ConfigMap.
@@ -50,7 +52,6 @@ const (
 // by the direct-pod controller.
 func buildRevision(req *deployment.Request, cfg Config, revision string) *revisionapi.Revision {
 	labels := revisionLabels(req.ID, revision)
-	replicas := max(int32(req.Replicas), 0)
 	return &revisionapi.Revision{
 		TypeMeta: metav1.TypeMeta{APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind},
 		ObjectMeta: metav1.ObjectMeta{
@@ -58,15 +59,37 @@ func buildRevision(req *deployment.Request, cfg Config, revision string) *revisi
 			Namespace: cfg.Namespace,
 			Labels:    labels,
 		},
-		Spec: revisionapi.Spec{
-			Replicas:            replicas,
-			ReadyTimeoutSeconds: int32(req.ReadyTimeoutSeconds),
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec:       buildPodSpec(req, cfg, revision),
-			},
-		},
+		Spec: revisionSpec(req, cfg, revision, labels),
 	}
+}
+
+func revisionSpec(req *deployment.Request, cfg Config, revision string, labels map[string]string) revisionapi.Spec {
+	spec := revisionapi.Spec{
+		Replicas:            max(int32(req.Replicas), 0),
+		ReadyTimeoutSeconds: int32(req.ReadyTimeoutSeconds),
+	}
+	if req.Pool != "" {
+		timeout := req.TimeoutSeconds
+		spec.Pool = req.Pool
+		spec.Claim = &workload.ClaimRequest{
+			ClaimID: revision,
+			Command: req.Command, Environment: req.Environment, Artifacts: req.Artifacts,
+			Port: req.Port, TimeoutSeconds: &timeout, Concurrency: req.Concurrency,
+		}
+		if req.Probes != nil && req.Probes.Readiness != nil {
+			probe := req.Probes.Readiness
+			spec.Claim.ReadinessPath = probe.Path
+			spec.Claim.ReadinessPeriodMillis = probe.PeriodMillis
+			spec.Claim.ReadinessTimeoutMillis = probe.TimeoutMillis
+			spec.Claim.ReadinessFailureThreshold = probe.FailureThreshold
+		}
+		return spec
+	}
+	spec.Template = &corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: labels},
+		Spec:       buildPodSpec(req, cfg, revision),
+	}
+	return spec
 }
 
 // workspaceOf is the request's workspace (working directory and shared-volume

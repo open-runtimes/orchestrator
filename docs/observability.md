@@ -101,14 +101,14 @@ Rollout metrics come from the leader's reconciler; leadership and K8s API metric
 <a id="pools"></a>
 **Pool Metrics:**
 
-Warm pools serve two consumers — deployment-pool activations and [sandboxes](sandboxes.md) — and both are claim-and-late-bind, so they share one set of series. The `kind` label (`pool` | `sandbox`) says which, and pool ids may repeat across the two config lists without colliding.
+Warm pools serve two consumers — deployment `Revision` replicas and [sandboxes](sandboxes.md) — and both are claim-and-late-bind, so they share one set of series. The `kind` label (`revision` | `sandbox`) says which, and pool ids may repeat across the two config lists without colliding.
 
 | Signal | Metrics |
 |--------|---------|
-| Latency | `pool_activation_duration_seconds{kind,pool,success}` (claim through serving) |
-| Traffic | `pool_activations_total{kind,pool}`, `pool_burst_total{kind,pool,policy=reject\|cold}` |
+| Latency | `pool_claim_duration_seconds{kind,pool,success}` (claim through serving) |
+| Traffic | `pool_claims_total{kind,pool}`, `pool_burst_total{kind,pool,policy=reject\|cold}` |
 | Errors | `pool_poisoned_total{kind,pool}` (failed artifact materialization), `pool_claim_conflicts_total{kind,pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
-| Saturation | `pool_activations_active{kind,pool}`, `pool_warm{kind,pool}`, `pool_claimed{kind,pool}` |
+| Saturation | `pool_claims_active{kind,pool}`, `pool_warm{kind,pool}`, `pool_claimed{kind,pool}` |
 
 Warm/claimed capacity gauges are recorded by the leader's control loop each tick. `pool_warm` dropping to zero while `pool_burst_total{policy="reject"}` climbs is the signal to grow `size`.
 

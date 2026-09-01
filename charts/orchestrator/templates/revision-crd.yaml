@@ -33,7 +33,13 @@ spec:
           properties:
             spec:
               type: object
-              required: [replicas, template]
+              required: [replicas]
+
+              x-kubernetes-validations:
+                - rule: "has(self.template) != has(self.pool)"
+                  message: "exactly one of template or pool is required"
+                - rule: "has(self.claim) == has(self.pool)"
+                  message: "claim must be set exactly when pool is set"
               properties:
                 replicas:
                   type: integer
@@ -44,6 +50,12 @@ spec:
                   format: int32
                   minimum: 0
                 template:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                pool:
+                  type: string
+                  minLength: 1
+                claim:
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
             status:

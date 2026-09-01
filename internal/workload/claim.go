@@ -14,7 +14,7 @@ import (
 )
 
 // The claim protocol — the contract between the pool backends (which POST
-// activations), the sidecar (the pod's serialization point: it accepts exactly
+// claims), the sidecar (the pod's serialization point: it accepts exactly
 // one), and the pool-shim (which it signals over the FIFO). See docs/pools.md.
 const (
 	// EnvClaimToken arms pool mode: when set, the sidecar starts unclaimed
@@ -23,14 +23,14 @@ const (
 	// token the surface is 401.
 	EnvClaimToken = "POOL_CLAIM_TOKEN"
 
-	// ClaimPath accepts the activation: POST, Authorization: Bearer <token>.
+	// ClaimPath accepts the claim: POST, Authorization: Bearer <token>.
 	// 401 bad token; 409 already claimed (the racing loser retries the next
 	// warm pod); 422 artifacts failed (the pod is poisoned — never claimable
 	// again, reported failed until discarded); 200 claimed and signaled.
-	ClaimPath = "/activate"
+	ClaimPath = "/activate" // stable in-pod wire path; not part of the public API
 	// ClaimStatePath reports the sidecar's claim state: GET → ClaimState.
 	// The reconcile / orphan-GC source of truth.
-	ClaimStatePath = "/activation"
+	ClaimStatePath = "/activation" // stable in-pod wire path
 
 	// ShimFIFOName is the FIFO (relative to the shared workspace) the shim
 	// blocks on; the sidecar writes one ShimExec JSON line to trigger the exec.
@@ -46,11 +46,16 @@ const (
 
 // ClaimRequest is what a pool backend POSTs to claim the pod.
 type ClaimRequest struct {
-	ActivationID string            `json:"activationId"`
-	Command      string            `json:"command"`
-	Environment  map[string]string `json:"environment,omitempty"`
-	Artifacts    artifact.Set      `json:"artifacts,omitempty"`
-	Port         int               `json:"port"` // the container port the activation serves — the proxy target + readiness subject
+	ClaimID                   string            `json:"activationId"` // stable wire key for rolling sidecar compatibility
+	Command                   string            `json:"command"`
+	Environment               map[string]string `json:"environment,omitempty"`
+	Artifacts                 artifact.Set      `json:"artifacts,omitempty"`
+	Port                      int               `json:"port"` // the container port the claim serves — the proxy target + readiness subject
+	Concurrency               int               `json:"concurrency,omitempty"`
+	ReadinessPath             string            `json:"readinessPath,omitempty"`
+	ReadinessPeriodMillis     int               `json:"readinessPeriodMillis,omitempty"`
+	ReadinessTimeoutMillis    int               `json:"readinessTimeoutMillis,omitempty"`
+	ReadinessFailureThreshold int               `json:"readinessFailureThreshold,omitempty"`
 	// Ports are additional ports the workload serves, reachable via HeaderPort.
 	// Only Port is probed for readiness: a secondary port may come up late (a
 	// dev server started from an exec) without ever failing the sandbox.
@@ -66,10 +71,10 @@ type ClaimRequest struct {
 
 // ClaimState is the sidecar's authoritative claim record.
 type ClaimState struct {
-	Claimed      bool   `json:"claimed"`
-	ActivationID string `json:"activationId,omitempty"`
-	Failed       bool   `json:"failed,omitempty"` // artifacts/signal failed; pod is poisoned
-	Error        string `json:"error,omitempty"`
+	Claimed bool   `json:"claimed"`
+	ClaimID string `json:"activationId,omitempty"`
+	Failed  bool   `json:"failed,omitempty"` // artifacts/signal failed; pod is poisoned
+	Error   string `json:"error,omitempty"`
 }
 
 // ShimExec is the single JSON line written to the shim FIFO.

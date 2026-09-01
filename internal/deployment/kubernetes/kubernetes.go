@@ -15,10 +15,12 @@ import (
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/deployment/endpointflip"
 	"orchestrator/internal/kube"
 	revisionapi "orchestrator/internal/revision"
+	"orchestrator/internal/warm"
 	"orchestrator/internal/workload"
 	"sync"
 
@@ -38,6 +40,7 @@ type Orchestrator struct {
 	cfg        Config
 	stop       context.CancelFunc
 	controller *revisionController
+	pools      *warm.Manager
 
 	leaderMu      sync.Mutex
 	leaderTerm    context.Context
@@ -66,7 +69,18 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dynamic kube client: %w", err)
 	}
-	return &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg}, nil
+	o := &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg}
+	if len(cfg.Pools) > 0 {
+		o.pools = warm.New(cs, cfg.Pools, warm.Config{
+			Namespace: cfg.Namespace, SidecarImage: cfg.SidecarImage, ShimImage: cfg.PoolShimImage,
+			SidecarImagePullPolicy: cfg.SidecarImagePullPolicy, WorkerImagePullPolicy: cfg.WorkerImagePullPolicy,
+			RunAsUser: cfg.RunAsUser, Overcommit: cfg.Overcommit, Tolerations: cfg.Tolerations,
+			NodeSelector: cfg.NodeSelector, RuntimeClasses: cfg.RuntimeClasses, Metrics: cfg.Metrics,
+			Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
+				Claim: LabelPoolClaim, Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
+		})
+	}
+	return o, nil
 }
 
 // Start surveys pre-existing managed deployments (their markers), then
@@ -75,6 +89,11 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 // leader-election config: with election enabled only the lease holder runs
 // them; disabled, they run directly (single-replica mode).
 func (o *Orchestrator) Start(ctx context.Context) error {
+	if o.pools != nil {
+		if err := o.pools.Verify(ctx); err != nil {
+			return apperrors.Internal("kubernetes.verifyPools", err)
+		}
+	}
 	if _, err := o.revisions.List(ctx, o.namespace, metav1.ListOptions{Limit: 1}); err != nil {
 		return apperrors.Internal("kubernetes.listRevisions", err)
 	}
@@ -130,6 +149,9 @@ func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leadin
 // process lifetime when election is disabled), blocking until ctx ends.
 func (o *Orchestrator) runReconcilers(ctx context.Context) {
 	go o.controller.runLeader(ctx)
+	if o.pools != nil {
+		go o.pools.RunControl(ctx, warm.Hooks{})
+	}
 	if o.cfg.GatewayEnabled {
 		flip := endpointflip.New(o.client, o.namespace, endpointflip.Options{
 			ActivatorSelector:  o.cfg.ActivatorSelector,
@@ -203,6 +225,9 @@ func runWithinLeadershipTerm(ctx, term context.Context, run func(context.Context
 //     rollout reconciler auto-cuts once the new revision reports ready
 //     (unless traffic was pinned manually).
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
+	if err := o.resolvePoolRequest(req); err != nil {
+		return false, err
+	}
 	if err := o.checkRuntimeClass(ctx, req.RuntimeClass); err != nil {
 		return false, err
 	}
@@ -232,6 +257,45 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool
 	// Changed spec — or a marker whose spec Secret is gone, healed by minting
 	// a fresh head so the stored spec always describes latestRevision.
 	return false, o.mintNextRevision(ctx, req, m, string(specJSON))
+}
+
+func (o *Orchestrator) resolvePoolRequest(req *deployment.Request) error {
+	if req.Pool == "" {
+		return nil
+	}
+	if o.pools == nil {
+		return apperrors.Validation("pool", fmt.Sprintf("pool %q is not configured", req.Pool))
+	}
+	p := o.pools.Pool(req.Pool)
+	if p == nil {
+		return apperrors.Validation("pool", fmt.Sprintf("pool %q is not configured", req.Pool))
+	}
+	if req.Port != 0 && req.Port != p.Port {
+		return apperrors.Validation("port", "port is fixed by the selected pool")
+	}
+	if req.CPU != 0 && req.CPU != p.CPU || req.Memory != 0 && req.Memory != p.Memory {
+		return apperrors.Validation("resources", "cpu and memory are fixed by the selected pool")
+	}
+	if req.RuntimeClass != "" && req.RuntimeClass != p.RuntimeClass {
+		return apperrors.Validation("runtimeClass", "runtimeClass is fixed by the selected pool")
+	}
+	if len(req.Volumes) > 0 || req.Workspace != "" {
+		return apperrors.Validation("pool", "workspace and volumes are fixed by the selected pool")
+	}
+	if req.Probes != nil && (req.Probes.Liveness != nil || req.Probes.Startup != nil) {
+		return apperrors.Validation("probes", "liveness and startup probes cannot be changed on an already-running pool pod")
+	}
+	if artifact.HasMount(req.Artifacts) && !p.Mounts {
+		return apperrors.Validation("artifacts", "selected pool does not allow mount artifacts")
+	}
+	req.Port, req.CPU, req.Memory, req.RuntimeClass = p.Port, p.CPU, p.Memory, p.RuntimeClass
+	if req.Command == "" {
+		req.Command = p.Command
+	}
+	if req.Command == "" {
+		return apperrors.Validation("command", "a pooled deployment requires command on the request or pool")
+	}
+	return nil
 }
 
 // checkRuntimeClass verifies the tier's RuntimeClass is installed

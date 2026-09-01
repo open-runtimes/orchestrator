@@ -4,6 +4,7 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
+	"orchestrator/internal/pool"
 	"strconv"
 	"time"
 
@@ -41,7 +42,9 @@ type Config struct {
 	// Tolerations are stamped on every workload pod (internal/kube).
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every workload pod to a node pool (internal/kube).
-	NodeSelector map[string]string
+	NodeSelector  map[string]string
+	Pools         []pool.Pool
+	PoolShimImage string
 
 	// RuntimeClasses maps isolation tiers (gvisor, kata) to the
 	// RuntimeClass stamped on workload pods (KUBE_RUNTIME_CLASSES,

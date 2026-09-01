@@ -8,6 +8,29 @@ import (
 	"testing"
 )
 
+func TestValidate_ImageOrPool(t *testing.T) {
+	t.Parallel()
+	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
+	for name, req := range map[string]*Request{
+		"image": {ID: "app", Image: "nginx", Port: 8080},
+		"pool":  {ID: "app", Pool: "node"},
+	} {
+		s.applyDefaults(req)
+		if err := s.validate(req); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, req := range map[string]*Request{
+		"neither": {ID: "app"},
+		"both":    {ID: "app", Image: "nginx", Pool: "node", Port: 8080},
+	} {
+		s.applyDefaults(req)
+		if err := s.validate(req); !errors.Is(err, apperrors.ErrValidation) {
+			t.Errorf("%s: got %v", name, err)
+		}
+	}
+}
+
 func TestValidate_RuntimeClass(t *testing.T) {
 	t.Parallel()
 	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}

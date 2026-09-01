@@ -62,13 +62,13 @@ deployments:
       requestsCpu: "100"
       requestsMemory: 200Gi
 
-  # Warm pools: standing capacity for near-instant activations
+  # Warm pools: standing capacity claimed by deployment Revisions
   # (docs/pools.md). Resize with a values change + helm upgrade.
   pools:
     - id: py
       image: python:3.12-slim
       size: 4
-      port: 8000 # required — the container port activations serve on
+      port: 8000 # required — the container port pooled Revisions serve on
       cpu: 1
       memory: 512
       burst: reject # no free pod → 429; default "cold" creates on demand

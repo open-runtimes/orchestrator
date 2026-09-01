@@ -11,8 +11,8 @@ import (
 )
 
 // Teardown removes one claim. Consumers supply their own — deactivating an
-// activation tears down its route and Service too, where deleting a sandbox is
-// just the pod — and the idle rule calls it when a claim's window passes.
+// a sandbox teardown also removes its routing state, and the idle rule calls
+// it when a claim's window passes.
 type Teardown func(ctx context.Context, poolID, claimID string) error
 
 // Run brings the warm layer up: it verifies the pools, surveys the pods already

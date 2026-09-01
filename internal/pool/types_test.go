@@ -46,7 +46,7 @@ func TestLoadPools_RuntimeClass(t *testing.T) {
 	}
 }
 
-// An unset burst policy defaults to cold: an activation at an empty pool
+// An unset burst policy defaults to cold: a claim at an empty pool
 // pays the cold start rather than failing with 429.
 func TestLoadPools_BurstDefaultsToCold(t *testing.T) {
 	t.Parallel()

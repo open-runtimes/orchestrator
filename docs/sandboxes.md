@@ -225,7 +225,7 @@ The mount is established after the image is materialized and **before** the work
 
 **Why it is a pool dimension.** Mounting needs `CAP_SYS_ADMIN` and a loop device, and the mount has to cross from the sidecar that makes it into the container that reads it — so the sidecar runs **privileged as root** and the workspace carries mount propagation. Those are properties of a pod, and a warm pod is built long before your claim arrives. A `mount` against a pool without `mounts: true` is a `400` naming the setting.
 
-[Pool activations](pools.md#artifacts) follow the same rules over the same machinery, and [deployment revisions](deployments.md#the-request-spec) and [jobs](jobs.md#mount-artifact) mount too — they infer the capability per request, because their pods are built for one request rather than standing warm.
+[Pooled deployment revisions](pools.md) follow the same rules over the same machinery, and directly created [deployment revisions](deployments.md#the-request-spec) and [jobs](jobs.md#mount-artifact) mount too.
 
 **What that costs.** A privileged container sits in every pod of that pool, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work on pools without `mounts`, and treat a mounting pool as trusted infrastructure. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
 
@@ -261,7 +261,7 @@ What it is not:
 
 A restored tree is made writable to whoever the workload runs as, since the sidecar unpacks it as root and cannot know the image's uid. A destination with nothing at it yet is a first session, not an error; a destination that exists and cannot be read **fails the mount**, so a workspace we merely failed to read is never overwritten by an empty one.
 
-`sync` requires `writable` — there is nothing to sync from a read-only mount — and works the same way for [pool activations](pools.md#artifacts), [deployment revisions](deployments.md#the-request-spec) and [jobs](jobs.md#mount-artifact), since it is the same sidecar in all four.
+`sync` requires `writable` — there is nothing to sync from a read-only mount — and works the same way for [pooled revisions](pools.md), directly created [deployment revisions](deployments.md#the-request-spec), and [jobs](jobs.md#mount-artifact).
 
 ## Ports
 
@@ -351,7 +351,7 @@ A create returns once the sandbox is `ready` or `failed`; `creating` is what a c
 
 `idleTimeoutSeconds` tears the sandbox down after that long with no traffic (`0` = live until `DELETE`, where the pool allows it). Traffic on any port counts. A pool's `maxIdleSeconds` caps it and fills it in when omitted: an abandoned sandbox holds a warm pod hostage, so requesting more than the ceiling is a `400`.
 
-As with activations, a used pod is **never reused** — teardown discards it and the pool replenishes with a fresh one.
+As with Revision claims, a used pod is **never reused** — teardown discards it and the pool replenishes with a fresh one.
 
 ## Limits
 
@@ -538,7 +538,7 @@ Putting the contract in the image costs none of that and buys bring-your-own-ima
 
 ### Routing: wildcard, not per-sandbox routes
 
-Activations get a Service and HTTPRoute each, which is fine at tens-to-hundreds of long-lived activations. It does not extend to sandboxes, for two reasons — and the second is disqualifying:
+Deployment Revisions use stable Services and a deployment HTTPRoute, which is fine for long-lived services. It does not extend to sandboxes, for two reasons — and the second is disqualifying:
 
 1. **Churn.** Thousands of sandboxes with minute-scale lifetimes means a gateway config recompute and xDS push per create and per delete.
 2. **Programming latency.** A new HTTPRoute is not live until the gateway programs it, often seconds. We would return a URL that 503s for longer than the sub-second claim took — negating the entire reason to use a warm pool.

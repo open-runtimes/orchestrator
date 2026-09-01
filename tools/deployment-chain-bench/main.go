@@ -438,7 +438,7 @@ func revision(run, id string, replicas int32) *unstructured.Unstructured {
 		ObjectMeta: metav1.ObjectMeta{Name: "dep-" + id, Labels: labels},
 		Spec: revisionapi.Spec{
 			Replicas: replicas,
-			Template: template(labels),
+			Template: ptr(template(labels)),
 		},
 	}
 	object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(revision)

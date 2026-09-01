@@ -123,7 +123,7 @@ jobs:
     # Hostnames the route matches against.
     hostnames: []
 
-# Serving-plane API (deployments + deployment-pools). Disabled by default —
+# Serving-plane API (deployments, with optional warm Revision pools). Disabled by default —
 deployments:
   enabled: false
   # Empty uses "deployments" when the release is named "orchestrator",
@@ -200,8 +200,8 @@ deployments:
   # limit. Deliberately no default cpu limit — see resource-model.md.
   limitRange:
     enabled: false
-  # Warm pools (docs/pools.md): config-declared fleets an activation
-  # late-binds onto. Each entry is a internal/pool.Pool: {id, image, size, cpu,
+  # Warm Revision pools (docs/pools.md): config-declared fleets a Revision
+  # claims replica pods from. Each entry is a internal/pool.Pool: {id, image, size, cpu,
   # memory, port (required), burst (cold|reject; default cold), environment,
   # volumes: [{source (PVC name), path, subPath, readonly}] mounted into every pod}.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
@@ -286,7 +286,7 @@ workloadNamespace:
     requestsMemory: 200Gi
 
 # Image for the workload-sidecar: the reverse proxy in front of every serving
-# workload — deployment replicas, pool activations, and sandboxes. One image for
+# workload — deployment replicas (created or pool-claimed) and sandboxes. One image for
 # all three, because the pod-local invariants it owns (readiness, drain,
 # per-request timeout, concurrency cap, request counting, and the claim protocol)
 # are the same wherever it runs. Jobs have their own, at jobs.sidecarImage.

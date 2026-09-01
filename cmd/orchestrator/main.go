@@ -108,7 +108,6 @@ func main() {
 		ArtifactEmitter:   jobs.artifacts,
 		DeploymentService: deployments.service,
 		SandboxService:    sandboxes.service,
-		Dispatcher:        eventDispatcher,
 	})
 
 	if svcCfg.APIKey == "" {

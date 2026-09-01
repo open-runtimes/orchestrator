@@ -1,10 +1,10 @@
 # Callbacks Guide
 
-The orchestrator reports results by HTTP POST to a webhook you provide — on jobs, deployments, and pool activations alike. Every event is a [CloudEvents 1.0](https://cloudevents.io/) envelope, optionally signed with HMAC-SHA256, delivered asynchronously with retries and a circuit breaker.
+The orchestrator reports results by HTTP POST to a webhook you provide — on jobs and deployments alike. Every event is a [CloudEvents 1.0](https://cloudevents.io/) envelope, optionally signed with HMAC-SHA256, delivered asynchronously with retries and a circuit breaker.
 
 ## Configuring a callback
 
-The `callback` object is the same everywhere it appears (job spec, deployment spec, activation request):
+The `callback` object is the same everywhere it appears (job and deployment specs):
 
 ```json
 {
@@ -46,7 +46,7 @@ X-Signature-256: sha256=ab12...
 }
 ```
 
-`type` tells you what happened, `subject` which resource, and `data` the payload — schemas below. `source` is `orchestrator/service` for job events and `orchestrator/deployments` for deployment and pool events.
+`type` tells you what happened, `subject` which resource, and `data` the payload — schemas below. `source` is `orchestrator/service` for job events and `orchestrator/deployments` for deployment events.
 
 ## Event types
 
@@ -69,14 +69,6 @@ X-Signature-256: sha256=ab12...
 | `orchestrator.deployment.response` | An [async request](deployments.md#async-requests) completed | `{"deploymentId", "invocationId", "requestMethod", "requestPath", "requestHeaders", "durationSeconds", "statusCode", "body", "bodyEncoding", "bodyTruncated", "error"}` |
 
 `invocationId` matches the `X-Invocation-Id` header from the original `202`. `requestMethod`, `requestPath`, and `requestHeaders` echo the original request so a consumer can reconstruct its record from the callback alone — request headers double as a caller-defined metadata channel that round-trips. `requestHeaders` is a `{name: [values]}` map (repeated values are preserved); the orchestrator's own `Prefer`/`X-Invocation-Id` and credential headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) are never echoed, and if the headers exceed a size cap they're dropped in favor of `"requestHeadersTruncated": true`. `requestPath` is likewise bounded — an over-long path+query is cut with `"requestPathTruncated": true` — so a large request target can't make the callback undeliverable. `durationSeconds` is the workload round-trip time (it excludes any cold-start wait) and is absent when the request never reached a replica. `body` is the workload's response body; when it isn't valid UTF-8 it arrives base64-encoded with `"bodyEncoding": "base64"`, and bodies over 1 MiB are truncated with `"bodyTruncated": true`. If the request never reached a replica (cold-start timeout, forward failure), `statusCode` and `body` are absent and `error` says why.
-
-### Pools
-
-| Type | When | `data` |
-| --- | --- | --- |
-| `orchestrator.pool.activation.result` | An [async activation](pools.md#async-activations) finished | `{"poolId", "activationId", "status", "url", "error"}` |
-
-`url` is the activation's serving address on success; `status` is the activation's final [lifecycle state](pools.md#activation-lifecycle).
 
 ## Verifying signatures
 

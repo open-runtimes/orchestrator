@@ -1,6 +1,6 @@
 # Operations Guide
 
-How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), [pools](pools.md), and [sandboxes](sandboxes.md) guides instead.
+How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), and [sandboxes](sandboxes.md) guides; [pools](pools.md) describe optional Revision capacity.
 
 - [What gets deployed](#what-gets-deployed)
 - [Prerequisites](#prerequisites)
@@ -23,7 +23,7 @@ Every component is opt-in — a default install renders nothing.
 | Service | Enable with | Serves |
 | --- | --- | --- |
 | **jobs** | `jobs.enabled` | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
-| **deployments** | `deployments.enabled` | `/v1/deployments` and `/v1/deployment-pools` — long-lived HTTP workloads and warm pools |
+| **deployments** | `deployments.enabled` | `/v1/deployments` — long-lived HTTP workloads, optionally backed by warm pools |
 | **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
 | **sandbox** | `sandbox.enabled` | `/v1/sandbox` and `/v1/sandbox-pool` — live workspaces at their own hostnames |
 | **sandbox proxy** | `sandbox.proxy.enabled` | The data plane every sandbox request passes through, behind one wildcard route |
@@ -133,7 +133,7 @@ deployments:
       burst: cold
 ```
 
-Each pool keeps `size` pods warm at all times; claimed pods are replaced off the request path. See the [pools guide](pools.md) for the consumer side.
+Each pool keeps `size` pods warm at all times. A deployment selects one with `pool` instead of `image`; its Revision claims pods for replica slots, and claimed pods are replenished off the request path. There is no pool API. See the [pools guide](pools.md).
 
 ## Sandboxes
 
@@ -164,7 +164,7 @@ Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-b
 | --- | --- |
 | [Job](jobs.md#mount-artifact) | the request has a `mount` artifact — that pod only |
 | [Deployment revision](deployments.md#the-request-spec) | the request has a `mount` artifact — every replica of that revision |
-| [Sandbox](sandboxes.md#mounting-a-filesystem-image) / [activation](pools.md#artifacts) | the **pool** sets `mounts: true` — every pod in the pool, since warm pods predate the claim |
+| [Sandbox](sandboxes.md#mounting-a-filesystem-image) / [pooled Revision](pools.md) | the **pool** sets `mounts: true` — every pod in the pool, since warm pods predate the claim |
 
 The last row is the one to watch: standing capacity means the privileged container is there before any request arrives, so treat a mounting pool as trusted infrastructure and keep untrusted workloads on pools without the capability.
 

@@ -3,7 +3,10 @@ package kubernetes
 import (
 	"context"
 	"errors"
+	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
+	"orchestrator/internal/warm"
+	"orchestrator/internal/workload"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +20,67 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/workqueue"
 )
+
+type revisionPoolSidecar struct{ claim *workload.ClaimRequest }
+
+func (f *revisionPoolSidecar) Claim(_ context.Context, _ string, _ string, req *workload.ClaimRequest) error {
+	copy := *req
+	f.claim = &copy
+	return nil
+}
+func (*revisionPoolSidecar) State(context.Context, string) (*workload.ClaimState, error) {
+	return &workload.ClaimState{}, nil
+}
+func (*revisionPoolSidecar) Ready(context.Context, string) bool              { return true }
+func (*revisionPoolSidecar) Requests(context.Context, string) (int64, error) { return 0, nil }
+
+func TestRevisionClaimsWarmPoolPod(t *testing.T) {
+	o, cs := newTestOrchestrator(t)
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "node:22", Port: 3000}}
+	sidecar := &revisionPoolSidecar{}
+	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
+		Namespace: o.namespace, SidecarImage: "sidecar", ShimImage: "shim", RunAsUser: 65532,
+		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
+			Claim: "deployment.pool-claim", Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
+		Client: sidecar,
+	})
+	if err := o.pools.Verify(t.Context()); err != nil {
+		t.Fatalf("verify pools: %v", err)
+	}
+	warmPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-node-abc", Namespace: o.namespace,
+			Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"}},
+		Status: corev1.PodStatus{PodIP: "10.0.0.8", Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
+	}
+	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), warmPod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest()
+	req.Image, req.Pool, req.Port, req.CPU, req.Memory, req.Replicas = "", "node", 0, 0, 0, 1
+	if _, err := o.Apply(t.Context(), req); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	revision, err := o.revisions.Get(t.Context(), o.namespace, objectNameFor("web-00001"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := cs.CoreV1().Pods(o.namespace).Get(t.Context(), warmPod.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Labels[LabelRevision] != "web-00001" || claimed.Labels[LabelReplicaSlot] != "0" {
+		t.Fatalf("revision labels = %#v", claimed.Labels)
+	}
+	if claimed.Labels[LabelServing] != "true" {
+		t.Fatalf("claimed pod was exposed before serving: labels = %#v", claimed.Labels)
+	}
+	if len(claimed.OwnerReferences) != 1 || claimed.OwnerReferences[0].Name != revision.Name {
+		t.Fatalf("owner references = %#v", claimed.OwnerReferences)
+	}
+	if sidecar.claim == nil || sidecar.claim.Port != 3000 || sidecar.claim.ClaimID == "" {
+		t.Fatalf("claim request = %#v", sidecar.claim)
+	}
+}
 
 func TestDirectPods_ApplyCreatesDeterministicSlots(t *testing.T) {
 	t.Parallel()

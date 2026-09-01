@@ -11,7 +11,8 @@ import (
 type Request struct {
 	ID           string            `json:"id"` // RFC-1123 label (≤63); part of object names
 	Meta         map[string]string `json:"meta,omitempty"`
-	Image        string            `json:"image"`
+	Image        string            `json:"image,omitempty"`
+	Pool         string            `json:"pool,omitempty"`         // configured warm pool; mutually exclusive with image
 	RuntimeClass string            `json:"runtimeClass,omitempty"` // isolation tier: runc (default) | gvisor | kata (K8s only)
 	Command      string            `json:"command,omitempty"`
 	CPU          float64           `json:"cpu"`    // limit (cores)

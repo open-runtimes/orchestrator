@@ -345,7 +345,7 @@ func (p *Proxy) adminMux() *http.ServeMux {
 	mux.HandleFunc("GET /stats", p.handleStats)
 	mux.HandleFunc("GET "+workload.MountsReadyPath, p.handleMountsReady)
 	if p.pool != nil {
-		mux.HandleFunc("POST "+workload.ClaimPath, p.handleActivate)
+		mux.HandleFunc("POST "+workload.ClaimPath, p.handleClaim)
 		mux.HandleFunc("GET "+workload.ClaimStatePath, p.handleClaimState)
 	}
 	return mux

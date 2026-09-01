@@ -42,7 +42,7 @@ func TestBuildPod_Shape(t *testing.T) {
 		t.Errorf("labels: got %v", pod.Labels)
 	}
 	if pod.Labels[testNaming.Claim] != "" {
-		t.Error("a warm pod must not carry an activation label")
+		t.Error("a warm pod must not carry a claim label")
 	}
 	if len(pod.Annotations) != 0 {
 		t.Errorf("a warm pod must carry no annotations (tokens are derived, never stored): got %v", pod.Annotations)

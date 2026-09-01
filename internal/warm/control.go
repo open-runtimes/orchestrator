@@ -57,6 +57,11 @@ func (m *Manager) runControl(ctx context.Context, hooks Hooks) {
 	}
 }
 
+// RunControl runs inventory reconciliation for an already leader-gated
+// caller. It avoids starting a second Lease elector inside a control plane
+// that already owns a leadership term.
+func (m *Manager) RunControl(ctx context.Context, hooks Hooks) { m.runControl(ctx, hooks) }
+
 // Tick reconciles every pool once, then prunes loop memory for pods and claims
 // that no longer exist.
 func (c *Controller) Tick(ctx context.Context) {
@@ -222,7 +227,7 @@ func (c *Controller) countsWarm(ctx context.Context, pod *corev1.Pod) bool {
 		if !ok {
 			c.orphanSince[pod.Name] = c.Now()
 		} else if c.Now().Sub(first) > c.m.cfg.OrphanTTL {
-			slog.Warn("Deleting orphaned claimed pod", "pod", pod.Name, "claimId", state.ActivationID)
+			slog.Warn("Deleting orphaned claimed pod", "pod", pod.Name, "claimId", state.ClaimID)
 			_ = c.m.Delete(ctx, pod.Name)
 		}
 		return false

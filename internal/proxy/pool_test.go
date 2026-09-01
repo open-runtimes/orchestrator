@@ -130,10 +130,10 @@ func TestPoolClaimSignalsShim(t *testing.T) {
 	p := startProxy(t, cfg)
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-1",
-		Command:      "node index.js",
-		Environment:  map[string]string{"FOO": "bar"},
-		Port:         port,
+		ClaimID:     "act-1",
+		Command:     "node index.js",
+		Environment: map[string]string{"FOO": "bar"},
+		Port:        port,
 	})
 	if status != http.StatusOK {
 		t.Fatalf("claim: got %d, want 200", status)
@@ -148,10 +148,10 @@ func TestPoolClaimSignalsShim(t *testing.T) {
 		t.Fatal("shim never received the exec payload")
 	}
 
-	if s := claimState(t, p); !s.Claimed || s.Failed || s.ActivationID != "act-1" {
+	if s := claimState(t, p); !s.Claimed || s.Failed || s.ClaimID != "act-1" {
 		t.Fatalf("claimed state: got %+v, want claimed act-1", s)
 	}
-	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{ActivationID: "act-2", Command: "true", Port: port}); status != http.StatusConflict {
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{ClaimID: "act-2", Command: "true", Port: port}); status != http.StatusConflict {
 		t.Fatalf("second claim: got %d, want 409", status)
 	}
 }
@@ -168,8 +168,8 @@ func TestPoolClaimRace(t *testing.T) {
 		go func() {
 			<-start
 			statuses <- postActivate(t, p, testClaimToken, workload.ClaimRequest{
-				ActivationID: "act-" + strconv.Itoa(i),
-				Command:      "true",
+				ClaimID: "act-" + strconv.Itoa(i),
+				Command: "true",
 			})
 		}()
 	}
@@ -192,7 +192,7 @@ func TestPoolClaimRace(t *testing.T) {
 func TestPoolClaimBadToken(t *testing.T) {
 	p := startProxy(t, poolConfig(t))
 
-	if status := postActivate(t, p, "wrong-token", workload.ClaimRequest{ActivationID: "act-1", Command: "true"}); status != http.StatusUnauthorized {
+	if status := postActivate(t, p, "wrong-token", workload.ClaimRequest{ClaimID: "act-1", Command: "true"}); status != http.StatusUnauthorized {
 		t.Fatalf("bad token: got %d, want 401", status)
 	}
 	if s := claimState(t, p); s.Claimed {
@@ -234,7 +234,7 @@ func TestPoolClaimHTTP(t *testing.T) {
 	p := startProxy(t, cfg)
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID:   "act-http",
+		ClaimID:        "act-http",
 		Command:        "serve",
 		Port:           port,
 		TimeoutSeconds: ptrTo(1),
@@ -267,9 +267,9 @@ func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 	p := startProxy(t, poolConfig(t)) // no FIFO: artifacts fail before signaling
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-bad",
-		Command:      "true",
-		Artifacts:    []artifact.Artifact{&artifact.Read{ID: "missing", In: "does-not-exist.json"}},
+		ClaimID:   "act-bad",
+		Command:   "true",
+		Artifacts: []artifact.Artifact{&artifact.Read{ID: "missing", In: "does-not-exist.json"}},
 	})
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("failing claim: got %d, want 422", status)
@@ -282,7 +282,7 @@ func TestPoolClaimArtifactFailurePoisons(t *testing.T) {
 	if status, _ := get(t, localURL(t, p.AdminAddr(), "/ready")); status != http.StatusServiceUnavailable {
 		t.Fatalf("/ready poisoned: got %d, want 503", status)
 	}
-	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{ActivationID: "act-retry", Command: "true"}); status != http.StatusConflict {
+	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{ClaimID: "act-retry", Command: "true"}); status != http.StatusConflict {
 		t.Fatalf("claim after poison: got %d, want 409", status)
 	}
 }
@@ -339,9 +339,9 @@ func TestPoolClaim_RefusesAMountThePoolCannotPerform(t *testing.T) {
 	p := startProxy(t, poolConfig(t)) // Mounts defaults to false
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-mount",
-		Command:      "true",
-		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+		ClaimID:   "act-mount",
+		Command:   "true",
+		Artifacts: []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
 	})
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("claim with a mount: got %d, want 422", status)
@@ -366,10 +366,10 @@ func TestPoolClaim_MountsBeforeSignallingTheWorkload(t *testing.T) {
 	p.mounter = mounter
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-mount",
-		Command:      "serve",
-		Port:         backendOnLoopback(t, "ok"),
-		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+		ClaimID:   "act-mount",
+		Command:   "serve",
+		Port:      backendOnLoopback(t, "ok"),
+		Artifacts: []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
 	})
 	if status != http.StatusOK {
 		t.Fatalf("claim: got %d, want 200 (%+v)", status, claimState(t, p))
@@ -393,9 +393,9 @@ func TestPoolClaim_FailedMountPoisons(t *testing.T) {
 	p.mounter = &fakeMounter{err: errors.New("not a filesystem image")}
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-bad-mount",
-		Command:      "serve",
-		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+		ClaimID:   "act-bad-mount",
+		Command:   "serve",
+		Artifacts: []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
 	})
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("failed mount: got %d, want 422", status)
@@ -427,10 +427,10 @@ func TestPoolClaim_ReleasesMountsOnShutdown(t *testing.T) {
 	go func() { p.awaitShutdown(ctx); close(done) }()
 
 	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-mount",
-		Command:      "serve",
-		Port:         backendOnLoopback(t, "ok"),
-		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+		ClaimID:   "act-mount",
+		Command:   "serve",
+		Port:      backendOnLoopback(t, "ok"),
+		Artifacts: []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
 	}); status != http.StatusOK {
 		t.Fatalf("claim: got %d", status)
 	}
@@ -465,7 +465,7 @@ func TestPoolClaim_DrainWaitsAsLongAsTheClaimAllows(t *testing.T) {
 	p := startProxy(t, cfg)
 
 	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID:   "act-session",
+		ClaimID:        "act-session",
 		Command:        "serve",
 		Port:           backendPort(t, backend),
 		TimeoutSeconds: ptrTo(2),
@@ -527,7 +527,7 @@ func TestPoolClaim_TimeoutSeconds(t *testing.T) {
 			p := startProxy(t, cfg)
 
 			if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-				ActivationID:   "act-" + name,
+				ClaimID:        "act-" + name,
 				Command:        "serve",
 				Port:           backendOnLoopback(t, "ok"),
 				TimeoutSeconds: tc.claim,
@@ -558,10 +558,10 @@ func TestPoolClaim_ExtraPorts(t *testing.T) {
 	p := startProxy(t, cfg)
 
 	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-ports",
-		Command:      "serve",
-		Port:         primary,
-		Ports:        []int{extra},
+		ClaimID: "act-ports",
+		Command: "serve",
+		Port:    primary,
+		Ports:   []int{extra},
 	}); status != http.StatusOK {
 		t.Fatalf("claim: got %d, want 200", status)
 	}
@@ -600,7 +600,7 @@ func TestPoolClaim_PortHintStrippedFromUpstream(t *testing.T) {
 	execCh := shimReader(t, cfg.Workspace)
 	p := startProxy(t, cfg)
 	if status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-strip", Command: "serve", Port: port, Ports: []int{port},
+		ClaimID: "act-strip", Command: "serve", Port: port, Ports: []int{port},
 	}); status != http.StatusOK {
 		t.Fatalf("claim: got %d, want 200", status)
 	}
@@ -680,9 +680,9 @@ func TestPoolClaim_RefusedOnceShuttingDown(t *testing.T) {
 	waitFor(t, "teardown started", p.closing.Load)
 
 	status := postActivate(t, p, testClaimToken, workload.ClaimRequest{
-		ActivationID: "act-late",
-		Command:      "serve",
-		Artifacts:    []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
+		ClaimID:   "act-late",
+		Command:   "serve",
+		Artifacts: []artifact.Artifact{&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"}},
 	})
 	if status != http.StatusConflict {
 		t.Fatalf("a claim during teardown: got %d, want 409", status)

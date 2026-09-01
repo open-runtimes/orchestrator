@@ -3,10 +3,8 @@ package api
 import (
 	"net/http"
 	"orchestrator/internal/deployment"
-	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
-	"orchestrator/internal/pool"
 )
 
 // DeploymentsRouterConfig holds dependencies for the deployments API router.
@@ -15,11 +13,6 @@ type DeploymentsRouterConfig struct {
 	Metrics       *observability.Metrics
 	HealthChecker *health.Checker
 	APIKey        string
-
-	// PoolService mounts /v1/deployment-pools when pools are configured
-	// (nil = no pool routes). Dispatcher delivers async activation results.
-	PoolService *pool.Service
-	Dispatcher  dispatcher.Queue
 }
 
 // NewDeploymentsRouter creates the management router for the deployments
@@ -30,12 +23,11 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 		HealthChecker:     cfg.HealthChecker,
 		APIKey:            cfg.APIKey,
 		DeploymentService: cfg.Service,
-		PoolService:       cfg.PoolService,
-		Dispatcher:        cfg.Dispatcher,
 	})
 }
 
 // registerDeploymentRoutes mounts the deployments surface.
+//
 //nolint:dupl // a route table, not logic: the shape it shares with the other planes is the point
 func registerDeploymentRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *deployment.Service) {
 	h := &deploymentsHandler{svc: svc}

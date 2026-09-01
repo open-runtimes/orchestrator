@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"orchestrator/internal/workload"
 )
 
 const (
@@ -20,9 +21,11 @@ func Resource() schema.GroupVersionResource {
 }
 
 type Spec struct {
-	Replicas            int32                  `json:"replicas"`
-	ReadyTimeoutSeconds int32                  `json:"readyTimeoutSeconds,omitempty"`
-	Template            corev1.PodTemplateSpec `json:"template"`
+	Replicas            int32                   `json:"replicas"`
+	ReadyTimeoutSeconds int32                   `json:"readyTimeoutSeconds,omitempty"`
+	Template            *corev1.PodTemplateSpec `json:"template,omitempty"`
+	Pool                string                  `json:"pool,omitempty"`
+	Claim               *workload.ClaimRequest  `json:"claim,omitempty"`
 }
 
 type Status struct {

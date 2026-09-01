@@ -1,9 +1,8 @@
 // Package pool defines the warm-pool domain: config-declared pools of a
 // runtime image kept idle, onto which a claim late-binds a payload — claim +
 // inject + exec instead of schedule + pull + start. The Pool declaration is
-// shared by every consumer of standing warm capacity (deployment-pool
-// activations, sandboxes); Activation is the deployment-pool one. See
-// docs/pools.md.
+// shared by every consumer of standing warm capacity (deployment Revisions
+// and sandboxes). See docs/pools.md.
 package pool
 
 import (
@@ -11,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/volume"
@@ -29,8 +27,8 @@ import (
 type Spec struct {
 	Image string `json:"image"`
 	// Command is the payload a claim execs when the request does not name one.
-	// Sandbox pools set it (their image serves the sandbox contract);
-	// activations late-bind their own command instead.
+	// Sandbox pools may set it as their default; deployment Revisions may
+	// late-bind their own command instead.
 	Command string `json:"command,omitempty"`
 	// RuntimeClass is the isolation tier: runc (default) | gvisor | kata. Fixed
 	// for a pool, because warm pods are runtime-fixed at creation, so warm pools
@@ -150,60 +148,16 @@ func ByID(pools []Pool) map[string]*Pool {
 	return byID
 }
 
-// Activation is the runtime request late-bound onto a warm pod.
-type Activation struct {
-	ID                 string               `json:"id,omitempty"`   // caller-chosen (stable URL), RFC-1123 label; else generated
-	Host               string               `json:"host,omitempty"` // RFC-1123 hostname; else {id}.{pool-domain}
-	Command            string               `json:"command"`
-	Environment        map[string]string    `json:"environment,omitempty"`
-	Artifacts          artifact.Set         `json:"artifacts,omitempty"`
-	TimeoutSeconds     int                  `json:"timeoutSeconds,omitempty"`     // per-request bound → 504
-	IdleTimeoutSeconds int                  `json:"idleTimeoutSeconds,omitempty"` // tear down after idleness; 0 = until DELETE
-	Callback           *deployment.Callback `json:"callback,omitempty"`
-}
-
-// Parse decodes an API request body, rejecting unknown fields — a typo'd
-// field name must fail loudly, not silently activate with defaults.
-// Strictness belongs at the API edge only: stored specs (pod annotations)
-// decode leniently so version skew never strands them.
-func Parse(data []byte) (*Activation, error) {
-	var a Activation
-	if err := artifact.UnmarshalStrict(data, &a); err != nil {
-		return nil, err
-	}
-	return &a, nil
-}
-
-// Activation states.
-const (
-	StateActivating   = "activating"
-	StateReady        = "ready"
-	StateFailed       = "failed"
-	StateDeactivating = "deactivating"
-)
-
-// ActivationStatus is the API view of an activation.
-type ActivationStatus struct {
-	ID     string `json:"id"`
-	PoolID string `json:"poolId"`
-	PodID  string `json:"podId,omitempty"`
-	URL    string `json:"url,omitempty"`
-	State  string `json:"status"` // activating|ready|failed|deactivating
-	Error  string `json:"error,omitempty"`
-}
-
 // Status is the API view of a configured pool.
 type Status struct {
 	ID      string `json:"id"`
 	Image   string `json:"image"`
 	Size    int    `json:"size"`
 	Warm    int    `json:"warm"`    // unclaimed, warm-ready pods
-	Claimed int    `json:"claimed"` // pods bound to an activation
+	Claimed int    `json:"claimed"` // pods bound to a workload claim
 }
 
-// Lister is the part of a warm-pool backend that reports its pools. Both
-// consumers — activations and sandboxes — answer "what is this pool doing" the
-// same way, so the lookup below is theirs rather than either one's.
+// Lister is the part of a warm-pool backend that reports its pools.
 type Lister interface {
 	Pools(ctx context.Context) ([]Status, error)
 }

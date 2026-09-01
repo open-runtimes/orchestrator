@@ -51,7 +51,7 @@
 
 {{/*
   workloadSidecarImage: one image for every serving workload's sidecar —
-  deployment replicas, pool activations, and sandboxes.
+  deployment replicas (created or pool-claimed) and sandboxes.
 */}}
 {{- define "orchestrator.workloadSidecarImage" -}}
 {{- if .Values.workloadSidecarImage.ref -}}

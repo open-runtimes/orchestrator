@@ -4,7 +4,7 @@
 // MemoryStore for backends that hold state in memory.
 //
 // Its consumer is the jobs service, through pkg/job. Serving workloads —
-// deployments, pool activations, sandboxes — do not run to completion and have
+// deployments and sandboxes do not run to completion and have
 // their own vocabulary; they derive status from the backend rather than from a
 // store here. Keep this package free of anything shaped like either one: what
 // belongs here is what a workload does between starting and exiting.

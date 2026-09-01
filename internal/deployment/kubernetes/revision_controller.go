@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -70,7 +71,7 @@ func (c *revisionController) start(ctx context.Context) error {
 	podFactory := informers.NewSharedInformerFactoryWithOptions(c.o.client, 0,
 		informers.WithNamespace(c.o.namespace),
 		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
-			opts.LabelSelector = LabelManagedBy + "=" + ManagedByValue
+			opts.LabelSelector = LabelManagedBy + "=" + ManagedByValue + "," + LabelRevision
 		}),
 	)
 	pods := podFactory.Core().V1().Pods()
@@ -428,12 +429,28 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 		delete(active, slot)
 	}
 	var createErr error
+	for _, pod := range active {
+		if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
+			if err := o.finishRevisionClaim(ctx, pod); err != nil {
+				createErr = err
+				break
+			}
+		}
+	}
 	for slot := range desired {
+		if createErr != nil {
+			break
+		}
 		if active[int(slot)] != nil {
 			continue
 		}
-		pod := buildRevisionPod(revision, int(slot), terminating[int(slot)])
-		_, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
+		var err error
+		if revision.Spec.Pool != "" {
+			_, err = o.claimRevisionPod(ctx, revision, int(slot))
+		} else {
+			pod := buildRevisionPod(revision, int(slot), terminating[int(slot)])
+			_, err = o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
+		}
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			createErr = err
 			break
@@ -520,6 +537,63 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []st
 		},
 		Spec: *revision.Spec.Template.Spec.DeepCopy(),
 	}
+}
+
+func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisionapi.Revision, slot int) (_ *corev1.Pod, outcomeErr error) {
+	if o.pools == nil || revision.Spec.Claim == nil {
+		return nil, fmt.Errorf("revision %s selects unavailable pool %q", revision.Name, revision.Spec.Pool)
+	}
+	p := o.pools.Pool(revision.Spec.Pool)
+	if p == nil {
+		return nil, fmt.Errorf("revision %s selects unavailable pool %q", revision.Name, revision.Spec.Pool)
+	}
+	claim := *revision.Spec.Claim
+	claim.ClaimID = revisionClaimID(revision, slot)
+	started := time.Now()
+	if o.cfg.Metrics != nil {
+		o.cfg.Metrics.RecordPoolClaimStarted(ctx, "revision", revision.Spec.Pool)
+		defer func() {
+			o.cfg.Metrics.RecordPoolClaimFinished(ctx, "revision", revision.Spec.Pool, outcomeErr == nil, time.Since(started).Seconds())
+		}()
+	}
+	pod, err := o.pools.Claim(ctx, p, &claim)
+	if err != nil {
+		return nil, err
+	}
+	labels := revisionLabels(revision.Labels[LabelDeploymentID], revision.Labels[LabelRevision])
+	labels[LabelReplicaSlot] = strconv.Itoa(slot)
+	owners := []metav1.OwnerReference{{
+		APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind, Name: revision.Name, UID: revision.UID,
+		Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+	}}
+	if err := o.pools.BindOwned(ctx, pod.Name, claim.ClaimID, &claim, labels, owners); err != nil {
+		o.pools.Discard(ctx, pod.Name)
+		return nil, err
+	}
+	if err := o.finishRevisionClaim(ctx, pod); err != nil {
+		return nil, err
+	}
+	return pod, nil
+}
+
+func (o *Orchestrator) finishRevisionClaim(ctx context.Context, pod *corev1.Pod) error {
+	if reason, err := o.pools.Await(ctx, pod); err != nil {
+		return err
+	} else if reason != "" {
+		return errors.New(reason)
+	}
+	patch := []byte(`{"metadata":{"labels":{"` + LabelServing + `":"true"}}}`)
+	_, err := o.client.CoreV1().Pods(o.namespace).Patch(ctx, pod.Name, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+func revisionClaimID(revision *revisionapi.Revision, slot int) string {
+	seed := string(revision.UID)
+	if seed == "" {
+		seed = revision.Name
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return "rev-" + hex.EncodeToString(sum[:8]) + "-" + strconv.Itoa(slot)
 }
 
 func podGeneration(pod *corev1.Pod) int64 {
@@ -657,6 +731,9 @@ func revisionFailureMessage(pods []corev1.Pod) string {
 }
 
 func podReadyForRevision(pod *corev1.Pod) bool {
+	if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
+		return false
+	}
 	for _, condition := range pod.Status.Conditions {
 		if condition.Type == corev1.PodReady {
 			return condition.Status == corev1.ConditionTrue

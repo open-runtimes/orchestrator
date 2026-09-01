@@ -86,15 +86,15 @@ type Metrics struct {
 
 	// Pool metrics (Latency, Traffic, Errors, Saturation). Warm/claimed are
 	// recorded by the leader's control loop; claim conflicts are the racing
-	// losers (healthy at low rates), poisoned pods are failed activations.
-	PoolActivations        metric.Int64Counter
-	PoolActivationsActive  metric.Int64UpDownCounter
-	PoolActivationDuration metric.Float64Histogram
-	PoolClaimConflicts     metric.Int64Counter
-	PoolPoisoned           metric.Int64Counter
-	PoolBurst              metric.Int64Counter
-	PoolWarm               metric.Int64Gauge
-	PoolClaimed            metric.Int64Gauge
+	// losers (healthy at low rates), poisoned pods are failed claims.
+	PoolClaims         metric.Int64Counter
+	PoolClaimsActive   metric.Int64UpDownCounter
+	PoolClaimDuration  metric.Float64Histogram
+	PoolClaimConflicts metric.Int64Counter
+	PoolPoisoned       metric.Int64Counter
+	PoolBurst          metric.Int64Counter
+	PoolWarm           metric.Int64Gauge
+	PoolClaimed        metric.Int64Gauge
 }
 
 // instruments builds meters while accumulating the first error, sparing
@@ -228,16 +228,16 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	m.AutoscalerScrapeErrors = b.counter("autoscaler_scrape_errors_total", "Total failures scraping concurrency/queue sources")
 
 	// Pools.
-	m.PoolActivations = b.counter("pool_activations_total", "Total activations, per pool")
-	m.PoolActivationsActive = b.upDown("pool_activations_active", "Activations currently in flight, per pool (saturation)")
-	m.PoolActivationDuration = b.histogram("pool_activation_duration_seconds",
-		"Activation wall time (claim through serving), per pool and success",
+	m.PoolClaims = b.counter("pool_claims_total", "Total workload claims, per pool")
+	m.PoolClaimsActive = b.upDown("pool_claims_active", "Claims currently in flight, per pool (saturation)")
+	m.PoolClaimDuration = b.histogram("pool_claim_duration_seconds",
+		"Claim wall time through serving, per pool and success",
 		0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600, 1800)
 	m.PoolClaimConflicts = b.counter("pool_claim_conflicts_total", "Total 409 claim races lost (the loser retries the next warm pod)")
 	m.PoolPoisoned = b.counter("pool_poisoned_total", "Total pods poisoned by failed artifact materialization")
-	m.PoolBurst = b.counter("pool_burst_total", "Total activations arriving at an empty pool, labelled policy=reject|cold")
+	m.PoolBurst = b.counter("pool_burst_total", "Total claims arriving at an empty pool, labelled policy=reject|cold")
 	m.PoolWarm = b.gauge("pool_warm", "Unclaimed warm-ready pods, per pool")
-	m.PoolClaimed = b.gauge("pool_claimed", "Claimed (running-activation) pods, per pool")
+	m.PoolClaimed = b.gauge("pool_claimed", "Claimed workload pods, per pool")
 
 	if b.err != nil {
 		return nil, nil, b.err
@@ -427,18 +427,18 @@ func (m *Metrics) RecordAutoscalerScrapeError(ctx context.Context) {
 	m.AutoscalerScrapeErrors.Add(ctx, 1)
 }
 
-// RecordPoolActivationStarted records an activation entering flight.
-func (m *Metrics) RecordPoolActivationStarted(ctx context.Context, kind, id string) {
+// RecordPoolClaimStarted records a claim entering flight.
+func (m *Metrics) RecordPoolClaimStarted(ctx context.Context, kind, id string) {
 	attrs := metric.WithAttributes(kindAttr(kind), poolAttr(id))
-	m.PoolActivations.Add(ctx, 1, attrs)
-	m.PoolActivationsActive.Add(ctx, 1, attrs)
+	m.PoolClaims.Add(ctx, 1, attrs)
+	m.PoolClaimsActive.Add(ctx, 1, attrs)
 }
 
-// RecordPoolActivationFinished records an activation leaving flight with its
+// RecordPoolClaimFinished records a claim leaving flight with its
 // wall time (claim through serving).
-func (m *Metrics) RecordPoolActivationFinished(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
-	m.PoolActivationsActive.Add(ctx, -1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
-	m.PoolActivationDuration.Record(ctx, durationSeconds, metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
+func (m *Metrics) RecordPoolClaimFinished(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
+	m.PoolClaimsActive.Add(ctx, -1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
+	m.PoolClaimDuration.Record(ctx, durationSeconds, metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
 }
 
 // RecordPoolConflict records a lost claim race.

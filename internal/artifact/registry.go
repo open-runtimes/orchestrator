@@ -190,7 +190,7 @@ func ServingRegistry() *Registry {
 }
 
 // MountingRegistry returns the Registry for the warm-pool consumers — sandboxes
-// and pool activations — whose resident sidecar CAN establish a mount and
+// and pool-claimed Revisions — whose resident sidecar CAN establish a mount and
 // release it on shutdown, but only in a pod whose pool declared the capability.
 // That is per-pool and this is per-type, so the type is permitted here and the
 // pool gate lives in each service.

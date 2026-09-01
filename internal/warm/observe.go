@@ -9,7 +9,7 @@ import (
 )
 
 // Phase is the neutral lifecycle of a claimed pod. Consumers map it onto their
-// own published vocabulary — an activation is "activating" where a sandbox is
+// own published vocabulary — a claim may be "starting" where a sandbox is
 // "creating" — but the rule that decides which phase a pod is in lives here,
 // once, for every consumer.
 type Phase int

@@ -164,7 +164,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 // the agent the shim dropped in its workspace.
 func claimRequest(p *pool.Spec, req *sandbox.Request) *workload.ClaimRequest {
 	return &workload.ClaimRequest{
-		ActivationID:   req.ID,
+		ClaimID:        req.ID,
 		Command:        cmp.Or(req.Command, p.Command, agentPath),
 		Environment:    req.Environment,
 		Artifacts:      req.Artifacts,

@@ -32,6 +32,19 @@ func testRequest() *deployment.Request {
 	}
 }
 
+func TestBuildRevision_PoolAcquisition(t *testing.T) {
+	req := testRequest()
+	req.Image, req.Pool, req.Port, req.Concurrency = "", "node", 3000, 7
+	req.Probes = &deployment.Probes{Readiness: &deployment.Probe{Path: "/ready", PeriodMillis: 250}}
+	revision := buildRevision(req, Config{Namespace: "orchestrator"}, "web-00001")
+	if revision.Spec.Template != nil || revision.Spec.Pool != "node" || revision.Spec.Claim == nil {
+		t.Fatalf("pool acquisition = %+v", revision.Spec)
+	}
+	if revision.Spec.Claim.Port != 3000 || revision.Spec.Claim.Concurrency != 7 || revision.Spec.Claim.ReadinessPath != "/ready" {
+		t.Fatalf("claim = %+v", revision.Spec.Claim)
+	}
+}
+
 func mustSpecJSON(t *testing.T, req *deployment.Request) string {
 	t.Helper()
 	b, err := json.Marshal(req)

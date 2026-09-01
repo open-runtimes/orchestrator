@@ -8,11 +8,8 @@
 // Everything here is consumer-neutral, and that includes the sequence, not
 // just the primitives: claiming, binding, waiting for the workload to answer,
 // deriving a claimed pod's phase, reaping it when it goes idle, and running the
-// leader-elected control loop. Deployment-pool activations and sandboxes both
-// sit on it and differ only in how the pod is addressed once they hold it — an
-// activation publishes a Service and route, a sandbox is reached through the
-// wildcard edge by its capability token — and in the vocabulary they publish
-// its phases in.
+// inventory control loop. Deployment Revisions and sandboxes both sit on it;
+// the owning controller supplies routing and lifecycle once a pod is claimed.
 package warm
 
 import (
@@ -73,7 +70,7 @@ type Naming struct {
 	ManagedBy  string // LabelManagedBy value, e.g. "deployments-service"
 	Kind       string // metric attribute and log noun: "pool" | "sandbox"
 	Pool       string // label key carrying the pool id, e.g. "pool.id"
-	Claim      string // label key carrying the claim id, e.g. "pool.activation"
+	Claim      string // label key carrying the claim id
 	Spec       string // annotation key carrying the claimed spec JSON
 	NamePrefix string // warm pod name prefix, e.g. "pool"
 	SecretName string // claim-key Secret name (tokens are derived from it)
@@ -384,16 +381,27 @@ func (m *Manager) createClaimable(ctx context.Context, s *pool.Spec, poolID stri
 // consumer labels the claim routes by. Callers must strip secret material from
 // spec first — the pod object is not a safe place to rest it.
 func (m *Manager) Bind(ctx context.Context, podName, claimID string, spec any, labels map[string]string) error {
+	return m.BindOwned(ctx, podName, claimID, spec, labels, nil)
+}
+
+// BindOwned binds a claim and transfers controller ownership in the same
+// metadata patch. Revision-backed claims use this so a successful claim is
+// immediately reconstructable and garbage-collected with its Revision.
+func (m *Manager) BindOwned(ctx context.Context, podName, claimID string, spec any, labels map[string]string, owners []metav1.OwnerReference) error {
 	encoded, err := json.Marshal(spec)
 	if err != nil {
 		return apperrors.Internal("kubernetes.marshalSpec", err)
 	}
 	bound := map[string]string{m.cfg.Naming.Claim: claimID}
 	maps.Copy(bound, labels)
-	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
+	metadata := map[string]any{
 		"labels":      bound,
 		"annotations": map[string]string{m.cfg.Naming.Spec: string(encoded)},
-	}})
+	}
+	if owners != nil {
+		metadata["ownerReferences"] = owners
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": metadata})
 	if err != nil {
 		return apperrors.Internal("kubernetes.marshalPatch", err)
 	}

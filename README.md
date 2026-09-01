@@ -3,7 +3,7 @@
 A service for running containerized workloads on Docker or Kubernetes, in two shapes:
 
 - **Jobs** — run a container to completion, with file artifacts in and out, and CloudEvents callbacks reporting progress and results.
-- **Deployments** — run a container as a long-lived HTTP service behind a gateway, with immutable revisions, traffic splitting, concurrency-based autoscaling, and scale-to-zero. **Pools** keep pre-warmed capacity for near-instant activations.
+- **Deployments** — run a container as a long-lived HTTP service behind a gateway, with immutable revisions, traffic splitting, concurrency-based autoscaling, scale-to-zero, and optional warm-pool pod acquisition.
 
 The same API works against both backends (`ORCHESTRATOR_BACKEND=docker|kubernetes`): Docker for development, Kubernetes for production. The backend is the source of truth — the services are stateless, survive restarts, and any replica can serve any request.
 
@@ -41,7 +41,7 @@ Production is the other shape: the Helm chart runs each plane as its own image a
 | --- | --- |
 | [Jobs](docs/jobs.md) | Run-to-completion workloads: the jobs API, artifacts (download, write, archive, mount, …), dependency ordering |
 | [Deployments](docs/deployments.md) | Long-lived HTTP services: revisions, canary traffic, autoscaling, scale-to-zero, async requests |
-| [Pools](docs/pools.md) | Pre-warmed capacity: configuring pools, activations, burst policy |
+| [Pools](docs/pools.md) | Pre-warmed capacity for deployment revisions and its burst policy |
 | [Sandboxes](docs/sandboxes.md) | Live workspaces: the sandbox API, the in-sandbox exec/files contract, extra ports, sandbox pools, isolation tiers |
 | [Callbacks](docs/callbacks.md) | CloudEvents delivery: every event type, payload schemas, HMAC signature verification |
 | [Operations](docs/operations.md) | Deploying the orchestrator: Helm install, prerequisites, configuration reference, hardening |
@@ -64,9 +64,6 @@ GET    /v1/deployments/{id}                        # status, revisions, traffic,
 POST   /v1/deployments/{id}/traffic                # canary / rollback; empty targets = back to auto
 DELETE /v1/deployments/{id}                        # tear down
 
-GET    /v1/deployment-pools                        # configured pools + warm counts
-POST   /v1/deployment-pools/{id}/activations       # 201 — claim a warm pod, serve HTTP
-DELETE /v1/deployment-pools/{id}/activations/{aid} # deactivate
 ```
 
 ## Deploy to Kubernetes

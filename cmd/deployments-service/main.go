@@ -20,7 +20,6 @@ import (
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
 	"orchestrator/internal/pool"
-	poolkubernetes "orchestrator/internal/pool/kubernetes"
 	"orchestrator/internal/server"
 	"orchestrator/internal/workload"
 	"os"
@@ -42,7 +41,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	orchestrator, err := buildOrchestrator(ctx, backend, config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest"), metrics)
+	pools, err := pool.LoadPools(config.GetEnv("POOLS_JSON", ""))
+	if err != nil {
+		slog.Error("Invalid pool configuration", "error", err)
+		os.Exit(1)
+	}
+	orchestrator, err := buildOrchestrator(ctx, backend,
+		config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest"),
+		config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest"), pools, metrics)
 	if err != nil {
 		slog.Error("Failed to build orchestrator", "error", err)
 		os.Exit(1)
@@ -97,27 +103,8 @@ func main() {
 		go scaler.Run(scalerCtx)
 	}
 
-	// Pools are config-declared: no POOLS_JSON → no pool orchestrator, no
-	// pool routes.
-	pools, err := pool.LoadPools(config.GetEnv("POOLS_JSON", ""))
-	if err != nil {
-		slog.Error("Invalid pool configuration", "error", err)
-		os.Exit(1)
-	}
-	var poolSvc *pool.Service
 	if len(pools) > 0 {
-		poolOrchestrator, err := buildPoolOrchestrator(ctx, backend, pools, metrics)
-		if err != nil {
-			slog.Error("Failed to build pool orchestrator", "error", err)
-			os.Exit(1)
-		}
-		defer poolOrchestrator.Close()
-		if err := poolOrchestrator.Start(ctx); err != nil {
-			slog.Error("Failed to start pool orchestrator", "error", err)
-			os.Exit(1)
-		}
-		poolSvc = pool.NewService(poolOrchestrator, metrics, pools, artifact.MountingRegistry())
-		slog.Info("Pools configured", "count", len(pools))
+		slog.Info("Revision pools configured", "count", len(pools))
 	}
 
 	// Data-plane listener (Docker): requests can legitimately run for minutes —
@@ -138,8 +125,6 @@ func main() {
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
 		APIKey:        svcCfg.APIKey,
-		PoolService:   poolSvc,
-		Dispatcher:    eventDispatcher,
 	})
 
 	if svcCfg.APIKey == "" {
@@ -167,30 +152,12 @@ func main() {
 	}
 }
 
-func buildPoolOrchestrator(ctx context.Context, backend string, pools []pool.Pool, metrics *observability.Metrics) (pool.Orchestrator, error) {
-	sidecarImage := config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
-	shimImage := config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
+func buildOrchestrator(ctx context.Context, backend, sidecarImage, poolShimImage string, pools []pool.Pool, metrics *observability.Metrics) (deployment.Orchestrator, error) {
 	switch backend {
 	case "docker":
-		return nil, errors.New("pools require the Kubernetes backend")
-	case "kubernetes":
-		cfg, err := poolkubernetes.LoadConfigFromEnv()
-		if err != nil {
-			return nil, err
+		if len(pools) > 0 {
+			return nil, errors.New("pools require the Kubernetes backend")
 		}
-		cfg.SidecarImage = sidecarImage
-		cfg.ShimImage = shimImage
-		cfg.Pools = pools
-		cfg.Metrics = metrics
-		return poolkubernetes.NewOrchestrator(ctx, cfg)
-	default:
-		return nil, fmt.Errorf("unknown orchestrator backend %q (expected docker|kubernetes)", backend)
-	}
-}
-
-func buildOrchestrator(ctx context.Context, backend, sidecarImage string, metrics *observability.Metrics) (deployment.Orchestrator, error) {
-	switch backend {
-	case "docker":
 		cfg := depdocker.LoadConfigFromEnv()
 		cfg.SidecarImage = sidecarImage
 		return depdocker.NewOrchestrator(ctx, cfg)
@@ -200,6 +167,8 @@ func buildOrchestrator(ctx context.Context, backend, sidecarImage string, metric
 			return nil, err
 		}
 		cfg.SidecarImage = sidecarImage
+		cfg.PoolShimImage = poolShimImage
+		cfg.Pools = pools
 		cfg.Metrics = metrics
 		return depkubernetes.NewOrchestrator(ctx, cfg)
 	default:

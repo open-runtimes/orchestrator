@@ -25,8 +25,8 @@ var testNaming = Naming{
 	ManagedBy:  "deployments-service",
 	Kind:       "pool",
 	Pool:       "pool.id",
-	Claim:      "pool.activation",
-	Spec:       "pool.activation-spec",
+	Claim:      "test.claim",
+	Spec:       "test.claim-spec",
 	NamePrefix: "pool",
 	SecretName: "pool-claim-key",
 }
@@ -166,7 +166,7 @@ func TestClaim_ConflictRetriesNextPod(t *testing.T) {
 	addPod(t, cs, warmPodFixture(m, "std", "pod-b", "10.0.0.2"))
 	sidecar.conflict["10.0.0.1"] = true // a racing replica won pod-a
 
-	pod, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ActivationID: "act1", Command: "serve"})
+	pod, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1", Command: "serve"})
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestClaim_TokenIsDerivedFromPodName(t *testing.T) {
 	m, cs, sidecar := newTestManager(t, testPool("std"))
 	addPod(t, cs, warmPodFixture(m, "std", "pod-a", "10.0.0.1"))
 
-	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ActivationID: "act1"}); err != nil {
+	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1"}); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if len(sidecar.tokens) != 1 || sidecar.tokens[0] != deriveClaimToken(m.installKey, "pod-a") {
@@ -192,7 +192,7 @@ func TestClaim_ExhaustedRejects(t *testing.T) {
 	t.Parallel()
 	m, _, _ := newTestManager(t, testPool("std")) // burst: reject, and no warm pods
 
-	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ActivationID: "act1"}); err == nil {
+	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1"}); err == nil {
 		t.Fatal("want an exhausted-pool error")
 	}
 }
@@ -248,7 +248,7 @@ func TestCreateClaimed_DiscardsItsPodWhenTheCallerGoesAway(t *testing.T) {
 	cancelOnPodCreate(cs, cancel)
 
 	if _, err := m.CreateClaimed(ctx, &pool.Spec{Image: "img", Port: 3000}, "solo",
-		&workload.ClaimRequest{ActivationID: "solo", Command: "run"}); err == nil {
+		&workload.ClaimRequest{ClaimID: "solo", Command: "run"}); err == nil {
 		t.Fatal("a cancelled create must fail")
 	}
 

@@ -31,7 +31,7 @@ const (
 
 	// tokenBytes sizes the capability token in the hostname. 128 bits, because
 	// reaching the URL is sufficient to execute code inside the sandbox — the
-	// 32-bit ids that address activations would be guessable.
+	// 32-bit ids that address claims would be guessable.
 	tokenBytes = 16
 )
 
@@ -110,12 +110,12 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
 	logger := slog.With("poolId", req.Pool, "sandboxId", req.ID)
 	start := time.Now()
 	if s.metrics != nil {
-		s.metrics.RecordPoolActivationStarted(ctx, MetricKind, req.Pool)
+		s.metrics.RecordPoolClaimStarted(ctx, MetricKind, req.Pool)
 	}
 	status, err := s.orchestrator.Create(ctx, req)
 	if s.metrics != nil {
 		success := err == nil && status != nil && status.State != StateFailed
-		s.metrics.RecordPoolActivationFinished(ctx, MetricKind, req.Pool, success, time.Since(start).Seconds())
+		s.metrics.RecordPoolClaimFinished(ctx, MetricKind, req.Pool, success, time.Since(start).Seconds())
 	}
 	if err != nil {
 		logger.Error("Sandbox creation failed", "error", err)

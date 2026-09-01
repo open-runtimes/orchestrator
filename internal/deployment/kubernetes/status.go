@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/deployment"
-	"orchestrator/internal/kube"
 	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/workload"
 	"slices"
@@ -74,7 +73,7 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 	var endpoints []*url.URL
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if !routed[pod.Labels[LabelRevision]] || !kube.PodReady(pod) || pod.Status.PodIP == "" {
+		if !routed[pod.Labels[LabelRevision]] || !podReadyForRevision(pod) || pod.Status.PodIP == "" {
 			continue
 		}
 		endpoints = append(endpoints, &url.URL{

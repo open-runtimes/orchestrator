@@ -48,7 +48,7 @@ func (f *fakePoster) Post(_ context.Context, u Unit, _ *workload.ClaimRequest) e
 
 func unit(id string) Unit { return Unit{ID: id, Addr: "10.0.0.1", Token: "t"} }
 
-func req() *workload.ClaimRequest { return &workload.ClaimRequest{ActivationID: "act"} }
+func req() *workload.ClaimRequest { return &workload.ClaimRequest{ClaimID: "act"} }
 
 func TestClaimWinsFirstFreeUnit(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
@@ -79,7 +79,7 @@ func TestClaimSkipsTransientFailures(t *testing.T) {
 
 	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
 	if err != nil || won.ID != "b" {
-		t.Fatalf("won %v (%v), want b — one broken unit must not fail the activation", won, err)
+		t.Fatalf("won %v (%v), want b — one broken unit must not fail the claim", won, err)
 	}
 }
 
@@ -90,7 +90,7 @@ func TestClaimPoisonStopsAndStampsUnit(t *testing.T) {
 	_, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
 	var poison *Poison
 	if !errors.As(err, &poison) {
-		t.Fatalf("got %v, want Poison — the sidecar accepted, the activation is spent", err)
+		t.Fatalf("got %v, want Poison — the sidecar accepted, the claim is spent", err)
 	}
 	if poison.Unit != "a" {
 		t.Errorf("poison stamped %q, want a", poison.Unit)
