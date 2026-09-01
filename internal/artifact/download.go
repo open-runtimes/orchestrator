@@ -22,6 +22,14 @@ type Download struct {
 	Depends        string            `json:"depends,omitempty"`
 	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 	Headers        map[string]string `json:"headers,omitempty"`
+	// SkipIfExists treats an existing target as this download, already
+	// complete: writes land in a temp file and are renamed into place, so
+	// presence implies integrity. Declared for immutable sources (a build
+	// archive) so a restarted sidecar recovers in place instead of re-fetching
+	// — or truncating — a file a running workload may be mounted on. Leave
+	// unset for sources that change between fetches into a persistent
+	// workspace, like a workspace delta.
+	SkipIfExists bool `json:"skipIfExists,omitempty"`
 
 	creds config.S3Credentials // injected by the runner for s3:// URLs
 }
@@ -37,14 +45,11 @@ func (a *Download) SetS3Credentials(c config.S3Credentials) { a.creds = c }
 func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 	destPath := filepath.Join(basePath, a.Out)
 
-	// An existing target is a completed download from a previous incarnation
-	// of this sidecar: the body lands in a temp file and is renamed into place
-	// only once fully written and synced, so presence implies integrity. A
-	// restarted runtime-mode sidecar must not re-fetch — or worse, truncate —
-	// an archive a running workload may be mounted on.
-	if _, err := os.Stat(destPath); err == nil {
-		slog.Info("Download target already present, skipping", "path", destPath)
-		return &Result{Status: "success"}
+	if a.SkipIfExists {
+		if _, err := os.Stat(destPath); err == nil {
+			slog.Info("Download target already present, skipping", "path", destPath)
+			return &Result{Status: "success"}
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {

@@ -171,10 +171,10 @@ func waitForSignal(ctx context.Context) {
 // If any pre-job artifact fails, the sidecar exits with an error.
 //
 // A container restart recovers in place, which is what makes this flow safe as
-// a Kubernetes native sidecar: completed downloads are kept (Download skips an
-// existing target), surviving mounts are adopted, and the ready marker is
-// cleared up front so the worker is only ever admitted behind established
-// mounts. On a fresh workspace every recovery step is a no-op.
+// a Kubernetes native sidecar: completed downloads of immutable sources are
+// kept (Download's skipIfExists), surviving mounts are adopted, and the ready
+// marker is cleared up front so the worker is only ever admitted behind
+// established mounts. On a fresh workspace every recovery step is a no-op.
 func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	mounts, rest := splitMounts(artifacts)
 	preJob, postJob := artifact.Partition(rest)
@@ -213,6 +213,10 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	}
 
 	if err := r.writeReadyMarker(); err != nil {
+		// The worker will never be admitted, so the mounts (and any sync
+		// loops) established above have no consumer — tear them down rather
+		// than leak them past this incarnation.
+		r.Release()
 		logger.Error("Failed to write ready marker", "error", err)
 		return err
 	}
