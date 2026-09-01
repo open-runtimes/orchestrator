@@ -14,9 +14,14 @@ import (
 // work a running workload may depend on.
 //
 // Every marker lives under markerDir, a runner-owned corner of the workspace,
-// so an artifact's out path can never collide with runner state. Nothing
-// outside this binary reads the paths — probes exec the -check-* flags — so
-// the layout ships atomically with the sidecar.
+// so an artifact's out path can never collide with runner state. Probes never
+// read the paths — they exec the -check-* flags. The one marker whose path is
+// public is ready (see ReadyMarkerPath): workloads that gate themselves
+// in-process wait on it — e.g. an app container started in parallel with this
+// sidecar, spin-waiting at tens of milliseconds instead of sitting behind a
+// whole-second kubelet startup probe. That path is a stable contract; the pod
+// composer ships this binary and the workload's wait together, so moving it
+// is a breaking change.
 type marker string
 
 const (
@@ -69,9 +74,11 @@ func (m marker) clear(workspace string) error {
 	return nil
 }
 
-// ReadyMarkerPath is where the ready marker lives inside workspace. The
-// marker layout is private to this binary; this accessor exists for tests
-// that observe the marker from outside it.
+// ReadyMarkerPath is where the ready marker lives inside workspace: the
+// stable, workload-facing gate. It is written only once artifacts are
+// processed and mounts established, and cleared before an incarnation
+// (re)runs setup — so a workload booting during sidecar recovery only ever
+// starts behind re-established mounts.
 func ReadyMarkerPath(workspace string) string {
 	return markerReady.path(workspace)
 }
