@@ -342,3 +342,85 @@ func TestWatcher_Counts_PodFailedBeforeWorkerStarted(t *testing.T) {
 		t.Fatalf("want 1 tracker / 0 active, got %d / %d", trackers, active)
 	}
 }
+
+// podInitFailedWorkerWaiting models what kubelet actually reports when an init
+// container fails: pod Failed, the failing init container terminated non-zero,
+// and the worker PRESENT in containerStatuses but stuck waiting/PodInitializing
+// — it exists, it just never ran. (TestWatcher_Counts_PodFailedBeforeWorkerStarted
+// above models a pod with no container statuses at all; kubelet rarely reports
+// that shape, which is how the untracked-job bug survived its coverage.)
+func podInitFailedWorkerWaiting() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "test"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: "artifact-pre",
+					State: corev1.ContainerState{
+						Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"},
+					},
+				},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: ContainerWorker,
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"},
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestJobTracker_InitFailureBeforeWorkerRan pins the fixed loss mode: a pod
+// that fails during init must emit a Failed callback naming the culprit and
+// reach terminal state on first observation — previously it matched no branch
+// at all, and the job sat untracked (no callback, no log) until pod retention
+// deleted it ~15 minutes later.
+func TestJobTracker_InitFailureBeforeWorkerRan(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	var reasons []any
+	w.emitter.Register(func(e *job.CallbackEnvelope) {
+		if e.Payload != nil && e.Payload.Type == job.CallbackTypeExit {
+			reasons = append(reasons, e.Payload.Data["reason"])
+		}
+	})
+
+	pod := podInitFailedWorkerWaiting()
+	pod.Labels = map[string]string{LabelJobID: "init-failed-job"}
+	w.handle(t.Context(), pod, false)
+
+	capture.assertHasType(t, job.CallbackTypeExit)
+	want := "init container artifact-pre failed with exit code 1"
+	if len(reasons) != 1 || reasons[0] != want {
+		t.Errorf("want reason %q, got %v", want, reasons)
+	}
+	if trackers, active := w.Counts(); trackers != 1 || active != 0 {
+		t.Fatalf("want 1 tracker / 0 active, got %d / %d", trackers, active)
+	}
+}
+
+// TestJobTracker_InitFailureShapeDoesNotOvermatch guards the state-check fix:
+// a healthy pod whose worker is running takes the normal Started path even
+// with init container statuses present.
+func TestJobTracker_InitFailureShapeDoesNotOvermatch(t *testing.T) {
+	t.Parallel()
+	capture, w := newTrackerFixture(t)
+
+	pod := podWithWorkerRunning()
+	pod.Labels = map[string]string{LabelJobID: "healthy-job"}
+	pod.Annotations = map[string]string{AnnotationCallbackURL: "https://cb.example"}
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{
+		{Name: "artifact-pre", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}},
+	}
+	w.handle(t.Context(), pod, false)
+
+	capture.assertHasType(t, job.CallbackTypeStart)
+	if trackers, active := w.Counts(); trackers != 1 || active != 1 {
+		t.Fatalf("want 1 tracker / 1 active, got %d / %d", trackers, active)
+	}
+}
