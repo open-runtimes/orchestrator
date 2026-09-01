@@ -42,7 +42,7 @@ func TestTracker_InitFailureBeforeWorkerRan(t *testing.T) {
 	var events []*job.CallbackEnvelope
 	em.Register(func(env *job.CallbackEnvelope) { events = append(events, env) })
 
-	w := newK8sLifecycleWatcher(fake.NewSimpleClientset(), "ns", em, 0)
+	w := newK8sLifecycleWatcher(fake.NewClientset(), "ns", em, 0)
 	tr := newJobTracker(w, &watchConfig{jobID: "x", dest: &job.CallbackDest{URL: "http://cb"}})
 
 	tr.mu.Lock()
@@ -73,7 +73,7 @@ func TestTracker_WorkerRunningStillStarts(t *testing.T) {
 	pod.Status.InitContainerStatuses = nil
 	pod.Status.ContainerStatuses[0].State = corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}
 
-	w := newK8sLifecycleWatcher(fake.NewSimpleClientset(), "ns", em, 0)
+	w := newK8sLifecycleWatcher(fake.NewClientset(), "ns", em, 0)
 	tr := newJobTracker(w, &watchConfig{jobID: "x", dest: &job.CallbackDest{URL: "http://cb"}})
 
 	tr.mu.Lock()
