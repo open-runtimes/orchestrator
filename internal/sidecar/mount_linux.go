@@ -75,22 +75,24 @@ func (kernelMounter) Unmount(target string) error {
 	return nil
 }
 
-// IsMounted reports whether target is a mount point by comparing its mount ID
-// with its parent's. Unlike a marker file, the kernel mount table survives a
-// native-sidecar container restart and is authoritative for adoption.
+// IsMounted reports whether an artifact mount is stacked at target. Unlike a
+// marker file, the kernel mount table survives a native-sidecar container
+// restart and is authoritative for adoption.
+//
+// "Is a mount point" is not the question: the target may itself be a
+// Kubernetes volume mount point (the runtime pod nests the code volume inside
+// the workspace volume), so comparing mount IDs with the parent reports true
+// for a bare volume that carries no artifact mount at all — and adopting that
+// admits the workload against empty code. Instead the top mount entry at the
+// path is inspected: an artifact mount is an overlay (writable), an image
+// filesystem (squashfs, erofs), or a bind of an extracted tar tree, which is
+// recognizable by its .lower root.
 func (kernelMounter) IsMounted(target string) (bool, error) {
-	var targetStat, parentStat unix.Statx_t
-	if err := unix.Statx(unix.AT_FDCWD, target, unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &targetStat); err != nil {
-		if errors.Is(err, unix.ENOENT) {
-			return false, nil
-		}
-		return false, fmt.Errorf("stat mount target %s: %w", target, err)
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false, fmt.Errorf("read mountinfo: %w", err)
 	}
-	parent := filepath.Dir(filepath.Clean(target))
-	if err := unix.Statx(unix.AT_FDCWD, parent, unix.AT_STATX_SYNC_AS_STAT, unix.STATX_MNT_ID, &parentStat); err != nil {
-		return false, fmt.Errorf("stat mount parent %s: %w", parent, err)
-	}
-	return targetStat.Mnt_id != parentStat.Mnt_id, nil
+	return hasArtifactMount(string(data), target), nil
 }
 
 // overlayLower lives inside the directory that is about to become the mount
