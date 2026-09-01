@@ -581,3 +581,22 @@ func TestNewHTTPSink_SendsBearerToken(t *testing.T) {
 		t.Errorf("Authorization: want %q, got %q", "Bearer tok-1", gotAuth)
 	}
 }
+
+func TestWaitForPath_ExistingFileReturnsBeforeFirstTick(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "already-there")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	r := NewRunner("test-job", tmpDir, 10, artifact.DefaultRegistry())
+
+	start := time.Now()
+	if err := r.waitForPath(t.Context(), path); err != nil {
+		t.Fatalf("waitForPath: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 100*time.Millisecond {
+		t.Errorf("waitForPath waited a full tick (%v) for a file that already existed", elapsed)
+	}
+}
