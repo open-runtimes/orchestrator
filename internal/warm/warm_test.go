@@ -34,26 +34,24 @@ var testNaming = Naming{
 // fakeSidecar fakes the sidecar surface per pod IP: fake-clientset pods have no
 // reachable sidecars, and the pod IP is the claim protocol's address.
 type fakeSidecar struct {
-	mu         sync.Mutex
-	conflict   map[string]bool                // Claim → 409
-	poison     map[string]bool                // Claim → 422 (artifacts failed)
-	state      map[string]workload.ClaimState // State responses
-	notReady   map[string]bool                // Ready → false (default ready)
-	blockReady map[string]bool                // Ready blocks until its context ends
-	requests   map[string]int64               // Requests responses
-	claimed    []string                       // successful claim IPs, in order
-	tokens     []string                       // bearer tokens presented with them
-	last       *workload.ClaimRequest
+	mu       sync.Mutex
+	conflict map[string]bool                // Claim → 409
+	poison   map[string]bool                // Claim → 422 (artifacts failed)
+	state    map[string]workload.ClaimState // State responses
+	notReady map[string]bool                // Ready → false (default ready)
+	requests map[string]int64               // Requests responses
+	claimed  []string                       // successful claim IPs, in order
+	tokens   []string                       // bearer tokens presented with them
+	last     *workload.ClaimRequest
 }
 
 func newFakeSidecar() *fakeSidecar {
 	return &fakeSidecar{
-		conflict:   map[string]bool{},
-		poison:     map[string]bool{},
-		state:      map[string]workload.ClaimState{},
-		notReady:   map[string]bool{},
-		blockReady: map[string]bool{},
-		requests:   map[string]int64{},
+		conflict: map[string]bool{},
+		poison:   map[string]bool{},
+		state:    map[string]workload.ClaimState{},
+		notReady: map[string]bool{},
+		requests: map[string]int64{},
 	}
 }
 
@@ -79,15 +77,10 @@ func (f *fakeSidecar) State(_ context.Context, podIP string) (*workload.ClaimSta
 	return &state, nil
 }
 
-func (f *fakeSidecar) Ready(ctx context.Context, podIP string) bool {
+func (f *fakeSidecar) Ready(_ context.Context, podIP string) bool {
 	f.mu.Lock()
-	blocked, ready := f.blockReady[podIP], !f.notReady[podIP]
-	f.mu.Unlock()
-	if blocked {
-		<-ctx.Done()
-		return false
-	}
-	return ready
+	defer f.mu.Unlock()
+	return !f.notReady[podIP]
 }
 
 func (f *fakeSidecar) Requests(_ context.Context, podIP string) (int64, error) {
@@ -303,30 +296,5 @@ func TestAwait_UnservingPodThatWillNotDeleteIsAnError(t *testing.T) {
 	}
 	if unserved != "" {
 		t.Errorf("no reason may be returned when the pod is still running, got %q", unserved)
-	}
-}
-
-func TestAwaitUntil_HonorsEarlierConsumerDeadline(t *testing.T) {
-	t.Parallel()
-	m, cs, sidecar := newTestManager(t)
-	m.cfg.ServeWait = 500 * time.Millisecond
-	pod := warmPodFixture(m, "std", "pool-std-deadline", "10.0.0.2")
-	addPod(t, cs, pod)
-	sidecar.notReady["10.0.0.2"] = true
-	sidecar.blockReady["10.0.0.2"] = true
-
-	started := time.Now()
-	reason, err := m.AwaitUntil(t.Context(), pod, started.Add(10*time.Millisecond))
-	if err != nil {
-		t.Fatalf("AwaitUntil: %v", err)
-	}
-	if reason != "workload not serving before revision readiness deadline" {
-		t.Errorf("reason = %q", reason)
-	}
-	if elapsed := time.Since(started); elapsed >= 250*time.Millisecond {
-		t.Errorf("consumer deadline did not shorten the 500ms serve wait: %s", elapsed)
-	}
-	if _, err := cs.CoreV1().Pods(testNS).Get(t.Context(), pod.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Errorf("unserving pod was not discarded: %v", err)
 	}
 }

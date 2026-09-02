@@ -36,7 +36,12 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-const revisionConditionReady = "Ready"
+const (
+	revisionConditionReady = "Ready"
+	// claimPollInterval paces the serving probe of a claimed pod whose
+	// workload has not answered yet.
+	claimPollInterval = time.Second
+)
 
 // revisionController owns warm process-lifetime informer caches. Only its
 // queue workers are leader-gated, so a new leader never starts with cold API
@@ -112,12 +117,14 @@ func (c *revisionController) start(ctx context.Context) error {
 // caches warm; every acquisition enqueues the authoritative cached inventory.
 func (c *revisionController) runLeader(ctx context.Context) {
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
-	objects := c.revisionInformer.GetStore().List()
+	// Install the queue before listing the store: an event landing between the
+	// two would otherwise be dropped by add and missing from the snapshot.
 	c.mu.Lock()
 	c.queue = queue
 	c.pending = make(map[string]time.Time)
-	c.initial = make(map[string]struct{}, len(objects))
 	c.convergenceStarted = time.Now()
+	objects := c.revisionInformer.GetStore().List()
+	c.initial = make(map[string]struct{}, len(objects))
 	for _, obj := range objects {
 		if revision, ok := obj.(*unstructured.Unstructured); ok {
 			c.initial[revision.GetName()] = struct{}{}
@@ -186,7 +193,8 @@ func (c *revisionController) add(name string, at time.Time) {
 	c.mu.Lock()
 	queue := c.queue
 	if queue != nil {
-		if _, exists := c.pending[name]; !exists {
+		// A deferred pass parks a future time here; a real event supersedes it.
+		if existing, exists := c.pending[name]; !exists || existing.After(at) {
 			c.pending[name] = at
 		}
 	}
@@ -226,17 +234,37 @@ func (c *revisionController) processRevisionItem(ctx context.Context, queue work
 	}
 	c.markInitialConverged(ctx, name)
 	queue.Forget(name)
-	// A Pending pod may emit no event at the exact progress deadline. Arrange
-	// one deadline reconcile instead of globally resyncing thousands of CRs.
-	if revision, err := c.revision(name); err == nil {
-		if delay := revisionDeadlineDelay(revision); delay > 0 {
-			c.mu.Lock()
-			c.pending[name] = time.Now().Add(delay)
-			c.mu.Unlock()
-			queue.AddAfter(name, delay)
-		}
+	// A Pending pod may emit no event at the exact progress deadline, and a
+	// claimed pod's sidecar answering /ready is not a pod event at all. Arrange
+	// one deferred reconcile instead of globally resyncing thousands of CRs.
+	if delay := c.requeueDelay(name); delay > 0 {
+		c.mu.Lock()
+		c.pending[name] = time.Now().Add(delay)
+		c.mu.Unlock()
+		queue.AddAfter(name, delay)
 	}
 	return true
+}
+
+// requeueDelay is how long until the Revision needs another pass with no
+// event to trigger it: the progress deadline, or the claim poll while a
+// claimed pod has yet to serve.
+func (c *revisionController) requeueDelay(name string) time.Duration {
+	revision, err := c.revision(name)
+	if err != nil {
+		return 0
+	}
+	delay := revisionDeadlineDelay(revision)
+	pods, err := c.podLister.Pods(c.o.namespace).List(labels.SelectorFromSet(labels.Set{LabelRevision: revision.Labels[LabelRevision]}))
+	if err != nil {
+		return delay
+	}
+	for _, pod := range pods {
+		if pod.DeletionTimestamp == nil && claimedNotServing(pod) && (delay == 0 || claimPollInterval < delay) {
+			return claimPollInterval
+		}
+	}
+	return delay
 }
 
 func (c *revisionController) markInitialConverged(ctx context.Context, name string) {
@@ -415,8 +443,8 @@ func desiredRevisionReplicas(revision *revisionapi.Revision) (int32, bool) {
 	deleting := revision.DeletionTimestamp != nil
 	desired := revision.Spec.Replicas
 	if deleting || desired < 0 {
-		// Foreground deletion waits for owned Pods. Pod delete events still
-		// reach this controller, so recreating dependents would deadlock GC.
+		// A Revision with a deletion timestamp (a finalizer holding it) is on
+		// its way out; recreating its pods would only race the garbage collector.
 		desired = 0
 	}
 	return desired, deleting
@@ -488,8 +516,8 @@ func (o *Orchestrator) scaleDownRevisionPods(ctx context.Context, active map[int
 
 func (o *Orchestrator) ensureRevisionPods(ctx context.Context, revision *revisionapi.Revision, state revisionPodState, desired int32, triggeredAt time.Time) error {
 	for _, pod := range state.active {
-		if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
-			if err := o.finishRevisionClaim(ctx, revision, pod); err != nil {
+		if claimedNotServing(pod) {
+			if err := o.markServing(ctx, pod); err != nil {
 				return err
 			}
 		}
@@ -510,18 +538,14 @@ func (o *Orchestrator) ensureRevisionPods(ctx context.Context, revision *revisio
 }
 
 func (o *Orchestrator) ensureRevisionPod(ctx context.Context, revision *revisionapi.Revision, slot int, terminating []string) (bool, error) {
-	matchedPool := o.poolForRevision(revision)
-	if matchedPool != nil && revision.Spec.Claim != nil && o.pools != nil {
+	if matchedPool := o.poolForRevision(revision); matchedPool != nil && revision.Spec.Claim != nil && o.pools != nil {
 		if _, err := o.claimRevisionPod(ctx, revision, matchedPool, slot); err == nil {
 			return true, nil
 		} else if !errors.Is(err, apperrors.ErrExhausted) {
 			return false, err
 		}
 		// Exhaustion of a transparent optimization falls back to the full
-		// direct template retained on every new Revision.
-	}
-	if revision.Spec.Template == nil {
-		return false, fmt.Errorf("revision %s has no direct template and its legacy pool %q is unavailable", revision.Name, revision.Spec.Pool)
+		// direct template retained on every Revision.
 	}
 	pod := buildRevisionPod(revision, slot, terminating)
 	_, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -576,9 +600,6 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []st
 }
 
 func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisionapi.Revision, p *pool.Pool, slot int) (_ *corev1.Pod, outcomeErr error) {
-	if o.pools == nil || revision.Spec.Claim == nil {
-		return nil, fmt.Errorf("revision %s has no claim-capable pool", revision.Name)
-	}
 	claim := *revision.Spec.Claim
 	claim.ClaimID = revisionClaimID(revision, slot)
 	started := time.Now()
@@ -602,22 +623,25 @@ func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisiona
 		o.pools.Discard(ctx, pod.Name)
 		return nil, err
 	}
-	if err := o.finishRevisionClaim(ctx, revision, pod); err != nil {
-		return nil, err
-	}
-	return pod, nil
+	return pod, o.markServing(ctx, pod)
 }
 
-func (o *Orchestrator) finishRevisionClaim(ctx context.Context, revision *revisionapi.Revision, pod *corev1.Pod) error {
-	deadline, _ := readyDeadline(revision)
-	if reason, err := o.pools.AwaitUntil(ctx, pod, deadline); err != nil {
-		return err
-	} else if reason != "" {
-		return errors.New(reason)
+// markServing stamps the serving gate once the claimed pod's sidecar answers
+// /ready. A warm pod is kubelet-Ready before its claim, so pod readiness alone
+// cannot admit it. One probe per pass, never a wait: a slow or broken workload
+// must not hold a controller worker, and it is reported the same way as a
+// direct pod's — through the Revision's progress deadline.
+func (o *Orchestrator) markServing(ctx context.Context, pod *corev1.Pod) error {
+	if !o.pools.Serving(ctx, pod) {
+		return nil
 	}
 	patch := []byte(`{"metadata":{"labels":{"` + LabelServing + `":"true"}}}`)
 	_, err := o.client.CoreV1().Pods(o.namespace).Patch(ctx, pod.Name, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
+}
+
+func claimedNotServing(pod *corev1.Pod) bool {
+	return pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true"
 }
 
 func revisionClaimID(revision *revisionapi.Revision, slot int) string {
@@ -764,7 +788,7 @@ func revisionFailureMessage(pods []corev1.Pod) string {
 }
 
 func podReadyForRevision(pod *corev1.Pod) bool {
-	if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
+	if claimedNotServing(pod) {
 		return false
 	}
 	for _, condition := range pod.Status.Conditions {

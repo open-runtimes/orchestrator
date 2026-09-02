@@ -56,39 +56,24 @@ func (m *Manager) onLeadership(ctx context.Context, identity string, leading boo
 // it (a claimed pod is normally live), and the caller, having been told this
 // failed, will never delete it.
 func (m *Manager) Await(ctx context.Context, pod *corev1.Pod) (string, error) {
-	return m.AwaitUntil(ctx, pod, time.Time{})
-}
-
-// AwaitUntil is Await with an optional earlier caller deadline. Consumers
-// whose own readiness contract is shorter than ServeWait use this so a warm
-// activation cannot keep reconciliation blocked past the workload deadline.
-// The caller context deliberately remains live at the deadline: cleanup and
-// the following status write still need to reach the API server.
-func (m *Manager) AwaitUntil(ctx context.Context, pod *corev1.Pod, until time.Time) (string, error) {
 	deadline := time.Now().Add(m.cfg.ServeWait)
-	reason := fmt.Sprintf("workload not serving within %s", m.cfg.ServeWait)
-	if !until.IsZero() && until.Before(deadline) {
-		deadline = until
-		reason = "workload not serving before revision readiness deadline"
-	}
-	for {
-		if !time.Now().Before(deadline) {
+	for !m.sc.Ready(ctx, pod.Status.PodIP) {
+		if time.Now().After(deadline) {
 			if err := m.DiscardErr(ctx, pod.Name); err != nil {
 				return "", err
 			}
-			return reason, nil
-		}
-		// A sidecar that exited with its workload no longer answers. Bound the
-		// HTTP probe itself by the readiness deadline without cancelling the
-		// parent context needed for pod cleanup and the Revision status write.
-		probeCtx, cancel := context.WithDeadline(ctx, deadline)
-		ready := m.sc.Ready(probeCtx, pod.Status.PodIP)
-		cancel()
-		if ready {
-			return "", nil
+			return fmt.Sprintf("workload not serving within %s", m.cfg.ServeWait), nil
 		}
 		if err := m.sleep(ctx); err != nil {
 			return "", err
 		}
 	}
+	return "", nil
+}
+
+// Serving reports whether a claimed pod's sidecar answers /ready right now:
+// one probe, no wait, for consumers that poll from a reconcile loop rather
+// than block a request on Await.
+func (m *Manager) Serving(ctx context.Context, pod *corev1.Pod) bool {
+	return pod.Status.PodIP != "" && m.sc.Ready(ctx, pod.Status.PodIP)
 }

@@ -37,7 +37,7 @@ func TestBuildRevision_RetainsTemplateAndClaim(t *testing.T) {
 	req.Port, req.Concurrency = 3000, 7
 	req.Probes = &deployment.Probes{Readiness: &deployment.Probe{Path: "/ready", PeriodMillis: 250}}
 	revision := buildRevision(req, Config{Namespace: "orchestrator"}, "web-00001")
-	if revision.Spec.Template == nil || revision.Spec.Pool != "" || revision.Spec.Claim == nil {
+	if revision.Spec.Template == nil || revision.Spec.Claim == nil {
 		t.Fatalf("revision acquisition data = %+v", revision.Spec)
 	}
 	if revision.Spec.Claim.Port != 3000 || revision.Spec.Claim.Concurrency != 7 || revision.Spec.Claim.ReadinessPath != "/ready" {

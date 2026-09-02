@@ -64,9 +64,6 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes sandbox orchestrator.
 func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	if err := pool.ValidateTransparent(cfg.Pools, "sandbox"); err != nil {
-		return nil, err
-	}
 	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
 	if err != nil {
 		return nil, err

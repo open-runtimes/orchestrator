@@ -52,9 +52,6 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes deployment orchestrator.
 func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	if err := validateDeploymentPools(cfg.Pools); err != nil {
-		return nil, err
-	}
 	// One rest config, so the configured budget is a single bucket shared by
 	// the typed, dynamic, and Gateway clients rather than one bucket each.
 	restCfg, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
@@ -297,16 +294,10 @@ func requestAcquisitionKey(req *deployment.Request) string {
 }
 
 func (o *Orchestrator) poolForRevision(revision *revisionapi.Revision) *pool.Pool {
-	if revision.Spec.AcquisitionKey != "" {
-		for i := range o.cfg.Pools {
-			if pool.ShapeKey(&o.cfg.Pools[i].Spec) == revision.Spec.AcquisitionKey {
-				return &o.cfg.Pools[i]
-			}
+	for i := range o.cfg.Pools {
+		if revision.Spec.AcquisitionKey != "" && pool.ShapeKey(&o.cfg.Pools[i].Spec) == revision.Spec.AcquisitionKey {
+			return &o.cfg.Pools[i]
 		}
-		return nil
-	}
-	if revision.Spec.Pool != "" && o.pools != nil {
-		return o.pools.Pool(revision.Spec.Pool)
 	}
 	return nil
 }
@@ -495,10 +486,7 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 // deleteRevisionObjects removes one revision's Revision, Pods, PDB, and Service,
 // tolerating already-gone objects (not every revision has a PDB).
 func (o *Orchestrator) deleteRevisionObjects(ctx context.Context, rev string) error {
-	prop := metav1.DeletePropagationForeground
-	err := o.revisions.Delete(ctx, o.namespace, objectNameFor(rev), metav1.DeleteOptions{
-		PropagationPolicy: &prop,
-	})
+	err := o.revisions.Delete(ctx, o.namespace, objectNameFor(rev), metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return apperrors.Internal("kubernetes.deleteRevision", err)
 	}

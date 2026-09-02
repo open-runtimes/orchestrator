@@ -15,6 +15,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,7 +24,10 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-type revisionPoolSidecar struct{ claim *workload.ClaimRequest }
+type revisionPoolSidecar struct {
+	claim    *workload.ClaimRequest
+	notReady bool // Ready → false: the claimed workload has not answered yet
+}
 
 func (f *revisionPoolSidecar) Claim(_ context.Context, _, _ string, req *workload.ClaimRequest) error {
 	claim := *req
@@ -33,7 +37,7 @@ func (f *revisionPoolSidecar) Claim(_ context.Context, _, _ string, req *workloa
 func (*revisionPoolSidecar) State(context.Context, string) (*workload.ClaimState, error) {
 	return &workload.ClaimState{}, nil
 }
-func (*revisionPoolSidecar) Ready(context.Context, string) bool              { return true }
+func (f *revisionPoolSidecar) Ready(context.Context, string) bool            { return !f.notReady }
 func (*revisionPoolSidecar) Requests(context.Context, string) (int64, error) { return 0, nil }
 
 func TestRevisionClaimsWarmPoolPod(t *testing.T) {
@@ -87,6 +91,97 @@ func TestRevisionClaimsWarmPoolPod(t *testing.T) {
 	}
 }
 
+// A claimed workload that has not answered yet must neither block the
+// reconcile nor be discarded: the pod stays, unexposed, and the Revision
+// reports it through the same not-ready path as a direct pod, until the
+// sidecar answers and a later pass stamps the serving gate.
+func TestRevisionClaimDoesNotWaitForServing(t *testing.T) {
+	o, cs := newTestOrchestrator(t)
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
+		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128,
+	}}
+	o.cfg.Pools = []pool.Pool{p}
+	sidecar := &revisionPoolSidecar{notReady: true}
+	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
+		Namespace: o.namespace, SidecarImage: "sidecar", ShimImage: "shim", RunAsUser: 65532,
+		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
+			Claim: "deployment.pool-claim", Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
+		Client: sidecar,
+	})
+	if err := o.pools.Verify(t.Context()); err != nil {
+		t.Fatalf("verify pools: %v", err)
+	}
+	warmPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-node-slow", Namespace: o.namespace,
+			Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"}},
+		Status: corev1.PodStatus{PodIP: "10.0.0.7", Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
+	}
+	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), warmPod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	req := testRequest()
+	req.Replicas = 1
+	done := make(chan error, 1)
+	go func() { _, err := o.Apply(t.Context(), req); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply blocked waiting for the claimed workload to serve")
+	}
+	claimed, err := cs.CoreV1().Pods(o.namespace).Get(t.Context(), warmPod.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("claimed pod was discarded: %v", err)
+	}
+	if claimed.Labels[LabelReplicaSlot] != "0" || claimed.Labels[LabelServing] != "" {
+		t.Fatalf("labels = %#v", claimed.Labels)
+	}
+	revision, err := o.revisions.Get(t.Context(), o.namespace, objectNameFor("web-00001"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Status.ReadyReplicas != 0 || revision.Status.Replicas != 1 {
+		t.Fatalf("status = %+v", revision.Status)
+	}
+	if c := metameta.FindStatusCondition(revision.Status.Conditions, revisionConditionReady); c == nil || c.Reason != "PodsNotReady" {
+		t.Fatalf("condition = %+v", c)
+	}
+
+	sidecar.notReady = false
+	if err := o.reconcileRevision(t.Context(), revision.Name); err != nil {
+		t.Fatalf("reconcile after serving: %v", err)
+	}
+	claimed, err = cs.CoreV1().Pods(o.namespace).Get(t.Context(), warmPod.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Labels[LabelServing] != "true" {
+		t.Fatalf("serving gate not stamped once the sidecar answered: %#v", claimed.Labels)
+	}
+}
+
+// A real event must supersede the future time parked by a deferred pass, or
+// the queue-wait metric records a negative wait.
+func TestRevisionQueue_EventSupersedesDeferredPending(t *testing.T) {
+	t.Parallel()
+	c := newRevisionController(&Orchestrator{})
+	c.queue = workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
+	defer c.queue.ShutDown()
+	future := time.Now().Add(time.Hour)
+	c.add("rev", future)
+	now := time.Now()
+	c.add("rev", now)
+	if got := c.pending["rev"]; !got.Equal(now) {
+		t.Fatalf("pending = %v, want the event time %v", got, now)
+	}
+	c.add("rev", future)
+	if got := c.pending["rev"]; !got.Equal(now) {
+		t.Fatalf("a later deferred pass overwrote the earlier event time: %v", got)
+	}
+}
+
 func TestRevisionPoolExhaustionFallsBackToDirectPod(t *testing.T) {
 	o, cs := newTestOrchestrator(t)
 	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
@@ -111,7 +206,7 @@ func TestRevisionPoolExhaustionFallsBackToDirectPod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if revision.Spec.AcquisitionKey == "" || revision.Spec.Pool != "" || revision.Spec.Template == nil {
+	if revision.Spec.AcquisitionKey == "" || revision.Spec.Template == nil {
 		t.Fatalf("revision must retain acquisition key and direct template: %+v", revision.Spec)
 	}
 	pods, err := cs.CoreV1().Pods(o.namespace).List(t.Context(), metav1.ListOptions{LabelSelector: LabelRevision + "=web-00001"})

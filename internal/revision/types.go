@@ -25,10 +25,8 @@ type Spec struct {
 	ReadyTimeoutSeconds int32                   `json:"readyTimeoutSeconds,omitempty"`
 	Template            *corev1.PodTemplateSpec `json:"template,omitempty"`
 	// AcquisitionKey is the canonical fixed-shape fingerprint used to resolve
-	// current operator pools for each missing replica slot. Pool is retained
-	// only to read pool-selected Revisions created by the previous design.
+	// current operator pools for each missing replica slot.
 	AcquisitionKey string                 `json:"acquisitionKey,omitempty"`
-	Pool           string                 `json:"pool,omitempty"`
 	Claim          *workload.ClaimRequest `json:"claim,omitempty"`
 }
 

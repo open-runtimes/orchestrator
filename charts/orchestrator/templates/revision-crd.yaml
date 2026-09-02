@@ -33,16 +33,7 @@ spec:
           properties:
             spec:
               type: object
-              required: [replicas]
-
-              x-kubernetes-validations:
-                # New Revisions always retain a direct template and claim
-                # payload. The looser first rule keeps pre-redesign CRs
-                # readable/updatable during a control-plane rollout.
-                - rule: "has(self.template) || has(self.pool)"
-                  message: "template is required unless this is a legacy pool-only revision"
-                - rule: "!has(self.pool) || has(self.claim)"
-                  message: "claim must be set when pool is set"
+              required: [replicas, template]
               properties:
                 replicas:
                   type: integer
@@ -56,9 +47,6 @@ spec:
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
                 acquisitionKey:
-                  type: string
-                  minLength: 1
-                pool:
                   type: string
                   minLength: 1
                 claim:
