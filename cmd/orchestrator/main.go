@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -36,6 +37,19 @@ import (
 )
 
 func main() {
+	var checkReady bool
+	flag.BoolVar(&checkReady, "check-ready", false, "exit 0 if the API reports ready, 1 otherwise")
+	flag.Parse()
+
+	// Probe path for container healthchecks: the image carries no shell or
+	// curl, so the binary probes itself. Stays silent (no log setup).
+	if checkReady {
+		if ready(config.GetEnv("PORT", "8080")) {
+			os.Exit(0)
+		}
+		os.Exit(1)
+	}
+
 	ctx := context.Background()
 	svcCfg := config.LoadServiceConfig()
 	svcCfg.JobSidecarImage = configuredSidecarImage("JOB_SIDECAR_IMAGE", "job-sidecar")
@@ -282,4 +296,20 @@ func startSandboxes(ctx context.Context, domain string, metrics *observability.M
 		service:      sandbox.NewService(orchestrator, metrics, pools, artifact.MountingRegistry()),
 		proxy:        proxy,
 	}, nil
+}
+
+// ready reports whether the API on the given local port answers /readyz.
+func ready(port string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+port+"/readyz", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
