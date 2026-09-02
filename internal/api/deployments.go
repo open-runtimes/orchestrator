@@ -27,8 +27,6 @@ func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
 }
 
 // registerDeploymentRoutes mounts the deployments surface.
-//
-//nolint:dupl // a route table, not logic: the shape it shares with the other planes is the point
 func registerDeploymentRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *deployment.Service) {
 	h := &deploymentsHandler{svc: svc}
 	mux.Handle("POST /v1/deployments", auth(http.HandlerFunc(h.apply)))

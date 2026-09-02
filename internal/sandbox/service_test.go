@@ -238,7 +238,7 @@ func TestCreate_MountNeedsThePoolCapability(t *testing.T) {
 		t.Fatalf("a non-matching mount request must create directly: %v", err)
 	}
 	if plainReq.Pool != "" {
-		t.Errorf("plain pool must not match a mount-capable shape")
+		t.Error("plain pool must not match a mount-capable shape")
 	}
 
 	// Declared: accepted, and the backend gets the mount to perform.

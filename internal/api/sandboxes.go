@@ -37,8 +37,6 @@ type sandboxesHandler struct {
 }
 
 // registerSandboxRoutes mounts the sandbox routes.
-//
-//nolint:dupl // a route table, not logic: the shape it shares with the other planes is the point
 func registerSandboxRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *sandbox.Service) {
 	h := &sandboxesHandler{svc: svc}
 	mux.Handle("POST /v1/sandbox", auth(http.HandlerFunc(h.create)))
