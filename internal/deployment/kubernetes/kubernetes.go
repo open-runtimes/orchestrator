@@ -89,7 +89,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 
 // NewRevisionPoolManager builds the request-path half of Revision pooling.
 // The deployments service uses it to claim and bind warm pods; the standalone
-// revision-pool-controller uses the same contract to maintain inventory.
+// pool-controller uses the same contract to maintain inventory.
 func NewRevisionPoolManager(client kubernetes.Interface, cfg Config) (*warm.Manager, error) {
 	cfg.applyDefaults()
 	if err := validateDeploymentPools(cfg.Pools); err != nil {

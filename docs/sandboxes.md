@@ -464,7 +464,7 @@ curl http://localhost:8080/v1/sandbox-pool
 
 ```yaml
 sandbox:
-  enabled: true                     # the sandboxes service: serves /v1/sandbox and reconciles the pools
+  enabled: true                     # serves /v1/sandbox and owns claimed-sandbox lifecycle
   domain: sandboxes.example.com     # needs a wildcard DNS record for *.sandboxes.example.com
   pools:
     - id: py
@@ -476,6 +476,8 @@ sandbox:
   proxy:
     enabled: true
 ```
+
+The generic `pool-controller` reconciles the unclaimed bare pods behind these pools. `sandbox-service` only claims them and retains sandbox-specific lifecycle such as idle expiry.
 
 The **sandbox proxy** is the component every sandbox request passes through: one wildcard `HTTPRoute` for `*.{domain}` sends traffic to it, and it resolves the sandbox from the capability token in the request's `Host`.
 

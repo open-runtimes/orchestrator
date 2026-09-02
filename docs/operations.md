@@ -23,7 +23,8 @@ Every component is opt-in — a default install renders nothing.
 | Service | Enable with | Serves |
 | --- | --- | --- |
 | **jobs** | `jobs.enabled` | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
-| **deployments** | `deployments.enabled` | `/v1/deployments` plus the independent Revision pool controller — long-lived HTTP workloads, optionally backed by warm capacity |
+| **deployments** | `deployments.enabled` | `/v1/deployments` — long-lived HTTP workloads, optionally backed by warm capacity |
+| **pool controller** | `poolController.enabled` | Bare warm-pod inventory for every enabled Revision and sandbox pool kind |
 | **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
 | **sandbox** | `sandbox.enabled` | `/v1/sandbox` and `/v1/sandbox-pool` — live workspaces at their own hostnames |
 | **sandbox proxy** | `sandbox.proxy.enabled` | The data plane every sandbox request passes through, behind one wildcard route |
@@ -136,7 +137,7 @@ deployments:
       burst: cold
 ```
 
-Each pool keeps `size` pods warm at all times. Deployment users always submit image, port, CPU, memory, and the rest of their desired spec; the deployments service claims from an exact-shape match, while the independent `revision-pool-controller` replenishes capacity off the request path. With no match or no accepted warm capacity the deployments service creates directly from the same Revision template. There is no deployment-pool API. See the [pools guide](pools.md).
+Each pool keeps `size` pods warm at all times. Deployment users always submit image, port, CPU, memory, and the rest of their desired spec; the deployments service claims from an exact-shape match, while the generic `pool-controller` replenishes bare capacity off the request path. The same binary maintains sandbox pools under their separate pod contract. With no match or no accepted warm capacity the deployments service creates directly from the same Revision template. There is no deployment-pool API. See the [pools guide](pools.md).
 
 ## Sandboxes
 
@@ -189,8 +190,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.gateway.{enabled,name,namespace}` | `true`, `orchestrator`, release ns | The Gateway that HTTPRoutes attach to |
 | `deployments.dataPort` | `8081` | Docker-backend data plane / activator data port |
 | `deployments.pools` | `[]` | Warm pool declarations (above) |
-| `deployments.poolController.enabled` | `true` | Run the independent warm-inventory reconciler (also cleans removed pools) |
-| `deployments.poolController.replicaCount` | `1` | Warm-inventory controller replicas |
+| `poolController.enabled` | `true` | Run bare warm-pod inventory for every enabled pool kind (also cleans removed pools) |
+| `poolController.replicaCount` | `1` | Replicas of each per-kind pool-controller workload |
 | `sandbox.enabled` | `false` | Install the sandboxes service |
 | `sandbox.domain` | `""` | Wildcard domain sandboxes are addressed at (required when enabled) |
 | `workloadNamespace.*` | disabled | Hardened namespace for workload pods (below) |
@@ -202,7 +203,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `jobs.workloadNodeSelector` | `{}` | Same, independently for job pods |
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
 | `deployments.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss can delay Pod creation by roughly the lease duration |
-| `deployments.poolController.leaderElection.enabled` | `false` | Required when the pool controller has more than one replica; uses its own Lease |
+| `poolController.leaderElection.enabled` | `false` | Required above one replica; each pool kind uses a distinct Lease |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
 | `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
@@ -261,7 +262,7 @@ The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the pl
 
 ## Scaling the control plane
 
-Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=true`: all replicas serve the API (any replica can answer anything — state lives in the cluster), while rollout auto-cut, endpoint flip, and autoscaling run on the elected deployments-service leader. Pool inventory has a separate failure domain: set `deployments.poolController.replicaCount > 1` with `deployments.poolController.leaderElection.enabled=true`. It uses a distinct Lease, so a slow or failed pool reconciliation cannot take leadership away from Revision reconciliation. The activator scales independently via `deployments.activator.replicaCount`. The chart fails fast when either multi-replica controller lacks its own leader election.
+Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=true`: all replicas serve the API (any replica can answer anything — state lives in the cluster), while rollout auto-cut, endpoint flip, and autoscaling run on the elected deployments-service leader. Pool inventory has a separate failure domain: set `poolController.replicaCount > 1` with `poolController.leaderElection.enabled=true`. Revision and sandbox inventory use distinct Leases and workloads, so either can fail without taking leadership away from consumer reconciliation or the other pool kind. The activator scales independently via `deployments.activator.replicaCount`. The chart fails fast when any multi-replica controller lacks leader election.
 
 On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.io/v1alpha1` `Revision`. The elected deployments-service controller creates its replica Pods directly using deterministic slots; Kubernetes `Deployment` and `ReplicaSet` controllers are not on the workload creation path. The `Revision` `/scale` subresource is shared by the autoscaler and cold-start activator.
 

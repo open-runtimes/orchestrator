@@ -375,9 +375,9 @@ func TestDelete_IdleSandboxTornDownByTheControlLoop(t *testing.T) {
 	}).Hooks())
 	t0 := time.Now()
 	c.Now = func() time.Time { return t0 }
-	c.Tick(t.Context()) // baseline
+	c.TickClaims(t.Context()) // baseline
 	c.Now = func() time.Time { return t0.Add(61 * time.Second) }
-	c.Tick(t.Context()) // no traffic across the window → torn down
+	c.TickClaims(t.Context()) // no traffic across the window → torn down
 
 	if !podGone(t, cs, "sbx-py-aaaaa") {
 		t.Error("want the abandoned sandbox reaped — it holds a warm pod hostage")

@@ -49,27 +49,27 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.revisionPoolControllerName" -}}
-{{- printf "%s-pool-controller" (include "orchestrator.deploymentsName" .) | trunc 63 | trimSuffix "-" -}}
+{{- define "orchestrator.poolControllerName" -}}
+{{- printf "%s-pool-controller" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "orchestrator.revisionPoolControllerImage" -}}
-{{- if .Values.deployments.poolController.image.ref -}}
-{{- .Values.deployments.poolController.image.ref -}}
+{{- define "orchestrator.poolControllerImage" -}}
+{{- if .Values.poolController.image.ref -}}
+{{- .Values.poolController.image.ref -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.deployments.poolController.image.repository (default .Chart.AppVersion .Values.deployments.poolController.image.tag) -}}
+{{- printf "%s:%s" .Values.poolController.image.repository (default .Chart.AppVersion .Values.poolController.image.tag) -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "orchestrator.revisionPoolControllerLabels" -}}
+{{- define "orchestrator.poolControllerLabels" -}}
 {{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: revision-pool-controller
+app.kubernetes.io/component: pool-controller
 {{- end -}}
 
-{{- define "orchestrator.revisionPoolControllerSelectorLabels" -}}
+{{- define "orchestrator.poolControllerSelectorLabels" -}}
 app.kubernetes.io/name: {{ include "orchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: revision-pool-controller
+app.kubernetes.io/component: pool-controller
 {{- end -}}
 
 {{/*

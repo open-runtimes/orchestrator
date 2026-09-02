@@ -18,7 +18,7 @@ SANDBOXES_ENABLED = config.parse().get('sandbox', False)
 JOBS_SERVICE_IMAGE        = 'ko.local/jobs-service'
 JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
-REVISION_POOL_CONTROLLER_IMAGE = 'ko.local/revision-pool-controller'
+POOL_CONTROLLER_IMAGE = 'ko.local/pool-controller'
 SANDBOX_SERVICE_IMAGE = 'ko.local/sandbox-service'
 WORKLOAD_SIDECAR_IMAGE = 'ko.local/workload-sidecar'
 DEPLOYMENTS_ACTIVATOR_IMAGE = 'ko.local/deployments-activator'
@@ -56,22 +56,22 @@ helm_set = []
 if DEPLOYMENTS_ENABLED or SANDBOXES_ENABLED:
     ko_build(WORKLOAD_SIDECAR_IMAGE, './cmd/workload-sidecar', ['cmd/workload-sidecar', 'internal'])
     ko_build(POOL_SHIM_IMAGE, './cmd/pool-shim', ['cmd/pool-shim', 'internal'])
+    ko_build(POOL_CONTROLLER_IMAGE, './cmd/pool-controller', ['cmd/pool-controller', 'internal'])
     helm_set += [
         'workloadSidecarImage.repository=' + WORKLOAD_SIDECAR_IMAGE,
         'deployments.shimImage.repository=' + POOL_SHIM_IMAGE,
+        'poolController.image.repository=' + POOL_CONTROLLER_IMAGE,
+        'poolController.image.pullPolicy=Never',
     ]
 
 if DEPLOYMENTS_ENABLED:
     ko_build(DEPLOYMENTS_SERVICE_IMAGE, './cmd/deployments-service', ['cmd/deployments-service', 'internal'])
-    ko_build(REVISION_POOL_CONTROLLER_IMAGE, './cmd/revision-pool-controller', ['cmd/revision-pool-controller', 'internal'])
     ko_build(DEPLOYMENTS_ACTIVATOR_IMAGE, './cmd/deployments-activator', ['cmd/deployments-activator', 'internal'])
     helm_set += [
         'deployments.enabled=true',
         'deployments.activator.enabled=true',
         'deployments.image.repository=' + DEPLOYMENTS_SERVICE_IMAGE,
         'deployments.image.pullPolicy=Never',
-        'deployments.poolController.image.repository=' + REVISION_POOL_CONTROLLER_IMAGE,
-        'deployments.poolController.image.pullPolicy=Never',
         'deployments.activator.image.repository=' + DEPLOYMENTS_ACTIVATOR_IMAGE,
         'deployments.activator.image.pullPolicy=Never',
     ]

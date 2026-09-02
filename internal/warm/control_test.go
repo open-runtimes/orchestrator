@@ -216,6 +216,18 @@ func TestTick_NeverSweepsDirectWorkloadWithoutPoolLabel(t *testing.T) {
 	}
 }
 
+func TestTickClaims_DoesNotReconcileBareInventory(t *testing.T) {
+	t.Parallel()
+	p := testPool("std")
+	p.Size = 2
+	m, cs, _ := newTestManager(t, p)
+
+	m.Controller(Hooks{}).TickClaims(t.Context())
+	if got := unlabeledPods(t, cs, p.ID); got != 0 {
+		t.Fatalf("consumer lifecycle created %d warm pods; inventory belongs to pool-controller", got)
+	}
+}
+
 func TestTick_ReplacesUnclaimedPodAfterPoolSpecChange(t *testing.T) {
 	t.Parallel()
 	old := testPool("changed")

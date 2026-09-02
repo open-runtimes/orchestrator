@@ -1,7 +1,7 @@
 // Package kubernetes implements the sandbox.Orchestrator interface using the
-// Kubernetes API. Everything about standing warm capacity — the pods, the
-// claim, the serving wait, replenishment, poison and orphan GC, the idle rule
-// — belongs to internal/warm. What a SANDBOX adds on top of a claimed pod is
+// Kubernetes API. The shared warm package supplies claim and lifecycle
+// primitives, while the standalone pool-controller owns bare inventory.
+// What a SANDBOX adds on top of a claimed pod is
 // small on purpose: a capability token stamped as a label, and the addresses
 // that token resolves to. There is no per-sandbox Service or route; the sandbox
 // edge resolves the token from the request's Host behind one wildcard route,
@@ -26,8 +26,8 @@ import (
 )
 
 // Label and annotation contract for sandbox pods. Deliberately distinct from
-// the pool backend's keys: two consumers share the cluster, and each one's
-// control loop must see exactly its own pods.
+// the Revision pool keys: two consumers share the pool-controller binary, and
+// each per-kind instance must see exactly its own pods.
 const (
 	LabelPoolID    = "sandbox.pool"
 	LabelSandboxID = "sandbox.id"
@@ -88,11 +88,18 @@ func wireOrchestrator(cs kubernetes.Interface, cfg Config, tune func(*warm.Confi
 	}
 }
 
-// Start brings the warm layer up: pool verification, the restart survey, and
-// the leader-elected control loop, whose idle rule deletes a sandbox that goes
-// quiet for its window — the pool's ceiling makes sure every sandbox has one.
+// NewPoolManager builds the shared warm-pod contract for sandbox pools. The
+// sandbox service uses it to claim pods; pool-controller uses it to maintain
+// the same inventory independently.
+func NewPoolManager(client kubernetes.Interface, cfg Config) *warm.Manager {
+	cfg.applyDefaults()
+	return warm.New(client, cfg.Pools, cfg.warmConfig())
+}
+
+// Start verifies the claim contract and runs only claimed-sandbox lifecycle.
+// Bare warm inventory is reconciled by the standalone pool-controller.
 func (o *Orchestrator) Start(ctx context.Context) error {
-	return o.warm.Run(ctx, func(ctx context.Context, _, sandboxID string) error {
+	return o.warm.RunClaims(ctx, func(ctx context.Context, _, sandboxID string) error {
 		return o.Delete(ctx, sandboxID)
 	})
 }

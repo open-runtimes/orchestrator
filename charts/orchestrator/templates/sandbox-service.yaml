@@ -8,7 +8,7 @@ metadata:
     {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
 spec:
   {{- if and (gt (int .Values.sandbox.replicaCount) 1) (not .Values.sandbox.leaderElection.enabled) }}
-  {{- fail "sandbox.replicaCount > 1 requires sandbox.leaderElection.enabled=true (pool replenishment and GC must be leader-gated)" }}
+  {{- fail "sandbox.replicaCount > 1 requires sandbox.leaderElection.enabled=true (claimed-sandbox lifecycle must be leader-gated)" }}
   {{- end }}
   {{- if not .Values.sandbox.autoscaling.enabled }}
   replicas: {{ .Values.sandbox.replicaCount }}
@@ -191,7 +191,8 @@ metadata:
   labels:
     {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
 rules:
-  # Create/claim/discard warm pods.
+  # Claim/discard pooled pods and create poolless or burst-cold pods. Standing
+  # inventory creation belongs to pool-controller.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -223,7 +224,7 @@ subjects:
     namespace: {{ .Release.Namespace }}
 ---
 # Isolation tiers (docs/operations.md): the service validates a sandbox's
-# RuntimeClass exists before replenishing pools. RuntimeClasses are
+# RuntimeClass before poolless/burst creation. RuntimeClasses are
 # cluster-scoped, so this is the service's one cluster-scoped grant.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

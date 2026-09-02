@@ -53,14 +53,14 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/component: deployments
-        {{- if .Values.deployments.poolController.enabled }}
+        {{- end }}
+        {{- if .Values.poolController.enabled }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
-              app.kubernetes.io/component: revision-pool-controller
-        {{- end }}
+              app.kubernetes.io/component: pool-controller
         {{- end }}
         {{- if .Values.sandbox.enabled }}
         - namespaceSelector:

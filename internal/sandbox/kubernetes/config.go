@@ -68,8 +68,8 @@ type Config struct {
 
 	OrphanTTL time.Duration // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 
-	// LeaderElection gates the control loop (replenishment + GC) to one
-	// replica; disabled = single-replica mode.
+	// LeaderElection gates claimed-sandbox lifecycle (idle expiry) to one
+	// replica; bare inventory is independently leader-elected by pool-controller.
 	LeaderElection kube.LeaderElectionConfig
 
 	// Metrics receives K8s API, leadership, and warm-pool telemetry. Set by
