@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/config"
@@ -28,21 +29,27 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "revision-pool-controller"))
+	if err := run(ctx); err != nil {
+		slog.Error("Revision pool controller failed", "error", err)
+		os.Exit(1)
+	}
+}
 
+func run(ctx context.Context) error {
 	pools, err := pool.LoadPools(config.GetEnv("POOLS_JSON", ""))
 	if err != nil {
-		fatal("Invalid pool configuration", err)
+		return fmt.Errorf("invalid pool configuration: %w", err)
 	}
 	cfg, err := depkubernetes.LoadConfigFromEnv()
 	if err != nil {
-		fatal("Invalid Kubernetes configuration", err)
+		return fmt.Errorf("invalid Kubernetes configuration: %w", err)
 	}
 	cfg.SidecarImage = config.GetEnv("WORKLOAD_SIDECAR_IMAGE", "workload-sidecar:latest")
 	cfg.PoolShimImage = config.GetEnv("POOL_SHIM_IMAGE", "pool-shim:latest")
 	cfg.Pools = pools
 	metrics, metricsHandler, err := observability.NewMetrics(ctx)
 	if err != nil {
-		fatal("Failed to initialize metrics", err)
+		return fmt.Errorf("initialize metrics: %w", err)
 	}
 	cfg.Metrics = metrics
 	cfg.LeaderElection = kube.LeaderElectionConfig{
@@ -59,22 +66,22 @@ func main() {
 
 	restCfg, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, nil, float32(cfg.ClientQPS), cfg.ClientBurst)
 	if err != nil {
-		fatal("Failed to build Kubernetes configuration", err)
+		return fmt.Errorf("build Kubernetes configuration: %w", err)
 	}
 	client, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		fatal("Failed to create Kubernetes client", err)
+		return fmt.Errorf("create Kubernetes client: %w", err)
 	}
 	manager, err := depkubernetes.NewRevisionPoolManager(client, cfg)
 	if err != nil {
-		fatal("Invalid Revision pool configuration", err)
+		return fmt.Errorf("invalid Revision pool configuration: %w", err)
 	}
 	if err := manager.Verify(ctx); err != nil {
-		fatal("Failed to start Revision pool controller", err)
+		return fmt.Errorf("verify Revision pools: %w", err)
 	}
 	statuses, err := manager.PoolStatuses(ctx)
 	if err != nil {
-		fatal("Failed to survey Revision pools", err)
+		return fmt.Errorf("survey Revision pools: %w", err)
 	}
 	for _, status := range statuses {
 		slog.Info("Pool reconciled", "pool", status.ID, "size", status.Size, "warm", status.Warm, "claimed", status.Claimed)
@@ -100,16 +107,12 @@ func main() {
 	select {
 	case <-ctx.Done():
 	case err := <-serverErr:
-		fatal("Metrics server failed", err)
+		return fmt.Errorf("metrics server: %w", err)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("Metrics server shutdown failed", "error", err)
 	}
-}
-
-func fatal(message string, err error) {
-	slog.Error(message, "error", err)
-	os.Exit(1)
+	return nil
 }
