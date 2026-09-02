@@ -209,6 +209,29 @@ deployments:
   # late-bound from the deployment request. Fixed shapes must be unique.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
   pools: []
+  # Independent controller for warm Revision inventory. It intentionally runs
+  # even when pools is empty so a removed pool's unclaimed pods are collected.
+  poolController:
+    enabled: true
+    replicaCount: 1
+    image:
+      ref: ""
+      repository: ghcr.io/open-runtimes/orchestrator/revision-pool-controller
+      tag: "" # defaults to the chart's appVersion
+      pullPolicy: IfNotPresent
+    leaderElection:
+      enabled: false
+      # Empty = "<deployments name>-pool-controller-leader".
+      leaseName: ""
+      leaseDurationSeconds: 15
+      renewDeadlineSeconds: 10
+      retryPeriodSeconds: 2
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
   # Image for the pool-shim (warm-pod entrypoint; installed into workload
   # containers by the shim-install init container). Shared by deployment pools
   # and sandbox pools.

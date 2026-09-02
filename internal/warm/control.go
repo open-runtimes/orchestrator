@@ -72,8 +72,10 @@ func (c *Controller) Tick(ctx context.Context) {
 	}
 	if c.m.cfg.ReapUnpooled {
 		c.reapUnpooled(ctx, seenPods, seenClaims)
-		c.sweepUnclaimed(ctx)
 	}
+	// Unclaimed pods whose pool disappeared are never live workloads. Sweep
+	// them for every consumer; ReapUnpooled gates only claimed workloads.
+	c.sweepUnclaimed(ctx)
 	for name := range c.orphanSince {
 		if !seenPods[name] {
 			delete(c.orphanSince, name)
@@ -132,7 +134,10 @@ func (c *Controller) reapUnpooled(ctx context.Context, seenPods, seenClaims map[
 // mid-claim — and deleting one of those would fail a create that was going to
 // succeed.
 func (c *Controller) sweepUnclaimed(ctx context.Context) {
-	pods, err := c.m.list(ctx, c.m.managed()+",!"+c.m.cfg.Naming.Claim)
+	// The pool-label existence term is essential for consumers whose direct
+	// workloads share the same managed-by value. Without it, a direct Revision
+	// pod has neither a pool nor claim label and looks like abandoned capacity.
+	pods, err := c.m.list(ctx, c.m.managed()+","+c.m.cfg.Naming.Pool+",!"+c.m.cfg.Naming.Claim)
 	if err != nil {
 		slog.Warn("Unclaimed sweep list failed", "error", err)
 		return
@@ -175,6 +180,13 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 			claimed++
 			if c.hooks.Reap != nil {
 				c.hooks.Reap(ctx, p, pod, claimID, c.Now())
+			}
+			continue
+		}
+		if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(&p.Spec) {
+			slog.Info("Discarding stale warm pod after pool spec change", "pod", pod.Name, "poolId", p.ID)
+			if err := c.m.Delete(ctx, pod.Name); err != nil {
+				slog.Warn("Failed to discard stale warm pod", "pod", pod.Name, "error", err)
 			}
 			continue
 		}

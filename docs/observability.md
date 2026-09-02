@@ -110,7 +110,7 @@ Warm pools serve two consumers — deployment `Revision` replicas and [sandboxes
 | Errors | `pool_poisoned_total{kind,pool}` (failed artifact materialization), `pool_claim_conflicts_total{kind,pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
 | Saturation | `pool_claims_active{kind,pool}`, `pool_warm{kind,pool}`, `pool_claimed{kind,pool}` |
 
-Warm/claimed capacity gauges are recorded by the leader's control loop each tick. `pool_warm` dropping to zero while `pool_burst_total{policy="reject"}` climbs is the signal to grow `size`.
+Warm/claimed capacity gauges are recorded by each leader's control loop each tick. For `kind="revision"` they are exported by the independent `revision-pool-controller`; claim latency, conflicts, and burst counters remain on `deployments-service`, where claims occur. `pool_warm` dropping to zero while `pool_burst_total{policy="reject"}` climbs is the signal to grow `size`.
 
 ### Dispatcher Statistics
 

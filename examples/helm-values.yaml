@@ -98,6 +98,12 @@ deployments:
   leaderElection:
     enabled: true
 
+  # Warm inventory is a separate controller and a separate failure domain.
+  poolController:
+    replicaCount: 2
+    leaderElection:
+      enabled: true
+
   # The buffering edge for cold-start and async traffic — autoscaled on CPU.
   # Required for scale-to-zero and async requests.
   activator:

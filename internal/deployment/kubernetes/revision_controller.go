@@ -489,7 +489,7 @@ func (o *Orchestrator) scaleDownRevisionPods(ctx context.Context, active map[int
 func (o *Orchestrator) ensureRevisionPods(ctx context.Context, revision *revisionapi.Revision, state revisionPodState, desired int32, triggeredAt time.Time) error {
 	for _, pod := range state.active {
 		if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
-			if err := o.finishRevisionClaim(ctx, pod); err != nil {
+			if err := o.finishRevisionClaim(ctx, revision, pod); err != nil {
 				return err
 			}
 		}
@@ -602,14 +602,15 @@ func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisiona
 		o.pools.Discard(ctx, pod.Name)
 		return nil, err
 	}
-	if err := o.finishRevisionClaim(ctx, pod); err != nil {
+	if err := o.finishRevisionClaim(ctx, revision, pod); err != nil {
 		return nil, err
 	}
 	return pod, nil
 }
 
-func (o *Orchestrator) finishRevisionClaim(ctx context.Context, pod *corev1.Pod) error {
-	if reason, err := o.pools.Await(ctx, pod); err != nil {
+func (o *Orchestrator) finishRevisionClaim(ctx context.Context, revision *revisionapi.Revision, pod *corev1.Pod) error {
+	deadline, _ := readyDeadline(revision)
+	if reason, err := o.pools.AwaitUntil(ctx, pod, deadline); err != nil {
 		return err
 	} else if reason != "" {
 		return errors.New(reason)

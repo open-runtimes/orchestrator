@@ -2,7 +2,10 @@ package warm
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"maps"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
@@ -21,8 +24,9 @@ const (
 	workspacePath   = config.DefaultWorkspace
 	shimPath        = workspacePath + "/.pool/shim"
 
-	portNameProxy = "proxy"
-	portNameAdmin = "admin"
+	portNameProxy          = "proxy"
+	portNameAdmin          = "admin"
+	annotationPoolSpecHash = "warm.orchestrator.open-runtimes.io/pool-spec-hash"
 
 	// envSharedVolume is where the sidecar and shim expect the workspace.
 	envSharedVolume = config.EnvSharedVolume
@@ -70,8 +74,8 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 	cfg := m.cfg
 	warmPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: m.PoolLabels(poolID),
+			Name: name, Labels: m.PoolLabels(poolID),
+			Annotations: map[string]string{annotationPoolSpecHash: poolSpecHash(p)},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                 corev1.RestartPolicyNever,
@@ -90,13 +94,17 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 	// Isolation tier (docs/operations.md): a POOL dimension — warm pods are
 	// runtime-fixed at creation, so warm pools are keyed by (image,
 	// runtimeClass). gvisor/kata stamp their mapped RuntimeClass; runc (the
-	// default) stamps nothing. NOTE: replenishment only tops counts up — it
-	// does not replace existing warm pods on config drift, so a tier change
-	// applies to newly created pods only.
+	// default) stamps nothing.
 	if rc := kube.RuntimeClassFor(cfg.RuntimeClasses, p.RuntimeClass); rc != "" {
 		warmPod.Spec.RuntimeClassName = &rc
 	}
 	return warmPod
+}
+
+func poolSpecHash(spec *pool.Spec) string {
+	encoded, _ := json.Marshal(spec)
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
 // initContainers builds the pod's init containers in order: the shim install,

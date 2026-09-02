@@ -79,16 +79,31 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	}
 	o := &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg}
 	if len(cfg.Pools) > 0 {
-		o.pools = warm.New(cs, cfg.Pools, warm.Config{
-			Namespace: cfg.Namespace, SidecarImage: cfg.SidecarImage, ShimImage: cfg.PoolShimImage,
-			SidecarImagePullPolicy: cfg.SidecarImagePullPolicy, WorkerImagePullPolicy: cfg.WorkerImagePullPolicy,
-			RunAsUser: cfg.RunAsUser, Overcommit: cfg.Overcommit, Tolerations: cfg.Tolerations,
-			NodeSelector: cfg.NodeSelector, RuntimeClasses: cfg.RuntimeClasses, Metrics: cfg.Metrics,
-			Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
-				Claim: LabelPoolClaim, Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
-		})
+		o.pools, err = NewRevisionPoolManager(cs, cfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return o, nil
+}
+
+// NewRevisionPoolManager builds the request-path half of Revision pooling.
+// The deployments service uses it to claim and bind warm pods; the standalone
+// revision-pool-controller uses the same contract to maintain inventory.
+func NewRevisionPoolManager(client kubernetes.Interface, cfg Config) (*warm.Manager, error) {
+	cfg.applyDefaults()
+	if err := validateDeploymentPools(cfg.Pools); err != nil {
+		return nil, err
+	}
+	return warm.New(client, cfg.Pools, warm.Config{
+		Namespace: cfg.Namespace, SidecarImage: cfg.SidecarImage, ShimImage: cfg.PoolShimImage,
+		SidecarImagePullPolicy: cfg.SidecarImagePullPolicy, WorkerImagePullPolicy: cfg.WorkerImagePullPolicy,
+		RunAsUser: cfg.RunAsUser, Overcommit: cfg.Overcommit, Tolerations: cfg.Tolerations,
+		NodeSelector: cfg.NodeSelector, RuntimeClasses: cfg.RuntimeClasses, Metrics: cfg.Metrics,
+		LeaderElection: cfg.LeaderElection,
+		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
+			Claim: LabelPoolClaim, Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
+	}), nil
 }
 
 func validateDeploymentPools(pools []pool.Pool) error {
@@ -175,9 +190,6 @@ func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leadin
 // process lifetime when election is disabled), blocking until ctx ends.
 func (o *Orchestrator) runReconcilers(ctx context.Context) {
 	go o.controller.runLeader(ctx)
-	if o.pools != nil {
-		go o.pools.RunControl(ctx, warm.Hooks{})
-	}
 	if o.cfg.GatewayEnabled {
 		flip := endpointflip.New(o.client, o.namespace, endpointflip.Options{
 			ActivatorSelector:  o.cfg.ActivatorSelector,

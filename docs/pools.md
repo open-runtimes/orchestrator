@@ -18,7 +18,7 @@ Pools have no public API, user-visible ids, or activation resources. `POST /v1/d
 
 The match key is everything that already exists on a warm pod: image, port, CPU, memory, runtime class, volumes, mount capability, termination grace period, and the default workspace. Image tags compare as strings, so pin digests when identical bytes matter. A request with a custom workspace, an omitted command, or kubelet liveness/startup probes takes the direct path because those properties cannot be late-bound safely. Command, environment, artifacts, request timeout, concurrency, hosts, the sidecar readiness probe, replica policy, and autoscaling remain request-time fields.
 
-Deployment pools must declare positive CPU and memory, must not declare command or environment defaults, and must have unique fixed shapes. The service fails fast on ambiguous or non-matchable configuration.
+Deployment pools must declare positive CPU and memory, must not declare command or environment defaults, and must have unique fixed shapes. Both components fail fast on ambiguous or non-matchable configuration.
 
 Each desired Revision slot atomically claims one warm pod through its sidecar. The pod then carries the normal `deployment.revision` and `deployment.replica-slot` labels and a controller owner reference to the Revision. From that point routing and lifecycle are identical to a directly created revision pod. A scaled-down, failed, or deleted claimed pod is discarded, never returned to the warm set; inventory reconciliation replenishes the pool off the request path.
 
@@ -32,3 +32,5 @@ Every Revision retains the complete direct template plus the late-bind claim pay
 Changing the deployment spec mints a new immutable Revision. Changing operator pool capacity does not change the deployment spec or require client coordination. Rollout and traffic-cut behavior are unchanged.
 
 Configure pools through `deployments.pools` in Helm; see [operations](operations.md#pools). Pools require the Kubernetes backend.
+
+Pool responsibilities are deliberately split. `deployments-service` performs only the request-path claim, bind, readiness wait, and Revision reconciliation. The independent `revision-pool-controller` creates replacement warm pods and removes poisoned, orphaned, or obsolete unclaimed pods. It keeps running with an empty pool list so removing the final pool also cleans up its standing capacity; already-claimed Revision pods remain Revision-owned and are never reclaimed by pool cleanup.

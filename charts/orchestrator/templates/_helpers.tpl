@@ -49,6 +49,29 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.revisionPoolControllerName" -}}
+{{- printf "%s-pool-controller" (include "orchestrator.deploymentsName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "orchestrator.revisionPoolControllerImage" -}}
+{{- if .Values.deployments.poolController.image.ref -}}
+{{- .Values.deployments.poolController.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.deployments.poolController.image.repository (default .Chart.AppVersion .Values.deployments.poolController.image.tag) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.revisionPoolControllerLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: revision-pool-controller
+{{- end -}}
+
+{{- define "orchestrator.revisionPoolControllerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: revision-pool-controller
+{{- end -}}
+
 {{/*
   workloadSidecarImage: one image for every serving workload's sidecar —
   deployment replicas (created or pool-claimed) and sandboxes.

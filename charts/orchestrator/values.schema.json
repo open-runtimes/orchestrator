@@ -381,6 +381,18 @@
           "items": {
             "$ref": "#/$defs/pool"
           }
+        },
+        "poolController": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "replicaCount": { "type": "integer", "minimum": 0 },
+            "image": { "$ref": "#/$defs/pullableImage" },
+            "leaderElection": { "$ref": "#/$defs/leaderElection" },
+            "resources": { "$ref": "#/$defs/resources" }
+          }
         }
       }
     },

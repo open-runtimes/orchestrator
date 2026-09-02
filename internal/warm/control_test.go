@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -166,6 +167,78 @@ func TestTick_LeavesUnpooledClaimsAloneWhenNotOptedIn(t *testing.T) {
 
 	if len(reaped) != 0 {
 		t.Errorf("nothing should have been reaped, got %v", reaped)
+	}
+}
+
+func TestTick_CleansRemovedPoolWarmPodsWithoutReapingClaims(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset()
+	m := New(cs, nil, Config{
+		Namespace: testNS, Naming: testNaming, Client: newFakeSidecar(),
+		ColdWait: time.Second, OrphanTTL: time.Second,
+	})
+	now := time.Now()
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "pool-removed-warm", Namespace: testNS,
+		Labels: m.PoolLabels("removed"), CreationTimestamp: metav1.NewTime(now.Add(-time.Minute)),
+	}}
+	if _, err := cs.CoreV1().Pods(testNS).Create(t.Context(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	c := m.Controller(Hooks{})
+	c.Now = func() time.Time { return now }
+	c.Tick(t.Context())
+	if _, err := cs.CoreV1().Pods(testNS).Get(t.Context(), pod.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("warm pod from removed pool was not deleted: %v", err)
+	}
+}
+
+func TestTick_NeverSweepsDirectWorkloadWithoutPoolLabel(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset()
+	m := New(cs, nil, Config{
+		Namespace: testNS, Naming: testNaming, Client: newFakeSidecar(),
+		ColdWait: time.Second, OrphanTTL: time.Second,
+	})
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "direct-revision-pod", Namespace: testNS,
+		Labels:            map[string]string{LabelManagedBy: testNaming.ManagedBy},
+		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
+	}}
+	if _, err := cs.CoreV1().Pods(testNS).Create(t.Context(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	m.Controller(Hooks{}).Tick(t.Context())
+	if _, err := cs.CoreV1().Pods(testNS).Get(t.Context(), pod.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("direct workload entered pool cleanup: %v", err)
+	}
+}
+
+func TestTick_ReplacesUnclaimedPodAfterPoolSpecChange(t *testing.T) {
+	t.Parallel()
+	old := testPool("changed")
+	old.Size = 1
+	old.Image = "old-image"
+	current := old
+	current.Image = "new-image"
+	m, cs, _ := newTestManager(t, current)
+	stale := warmPodFixture(New(cs, []pool.Pool{old}, Config{
+		Namespace: testNS, Naming: testNaming, Client: newFakeSidecar(),
+	}), old.ID, "pool-changed-stale", "10.0.0.8")
+	addPod(t, cs, stale)
+
+	m.Controller(Hooks{}).Tick(t.Context())
+	if _, err := cs.CoreV1().Pods(testNS).Get(t.Context(), stale.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stale warm pod was not deleted: %v", err)
+	}
+	pods, err := cs.CoreV1().Pods(testNS).List(t.Context(), metav1.ListOptions{LabelSelector: testNaming.Pool + "=changed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pods.Items) != 1 || pods.Items[0].Spec.Containers[0].Image != "new-image" {
+		t.Fatalf("replacement does not use current pool spec: %#v", pods.Items)
 	}
 }
 
