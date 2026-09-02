@@ -52,6 +52,14 @@ services:
       # API_KEY_FILE: /run/secrets/api-key   # uncomment to require Bearer auth
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    # The image has no shell or curl; the binary probes its own /readyz, so
+    # `docker compose up --wait` returns only once the API is listening.
+    healthcheck:
+      test: ["CMD", "/ko-app/orchestrator", "-check-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     networks: [orchestrator]
 
 networks:
