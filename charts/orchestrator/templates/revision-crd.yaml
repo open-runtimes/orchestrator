@@ -1,0 +1,81 @@
+{{- if .Values.deployments.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: revisions.orchestrator.open-runtimes.io
+  annotations:
+    # Revisions are durable deployment state; uninstalling or temporarily
+    # disabling the serving plane must not cascade-delete every workload.
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+spec:
+  group: orchestrator.open-runtimes.io
+  scope: Namespaced
+  names:
+    plural: revisions
+    singular: revision
+    kind: Revision
+    shortNames: [rev]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.replicas
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [replicas, template]
+              properties:
+                replicas:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                readyTimeoutSeconds:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                template:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                acquisitionKey:
+                  type: string
+                  minLength: 1
+                claim:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                replicas:
+                  type: integer
+                  format: int32
+                readyReplicas:
+                  type: integer
+                  format: int32
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    required: [lastTransitionTime, message, reason, status, type]
+                    properties:
+                      type: {type: string}
+                      status: {type: string}
+                      observedGeneration: {type: integer, format: int64}
+                      lastTransitionTime: {type: string, format: date-time}
+                      reason: {type: string}
+                      message: {type: string}
+{{- end }}

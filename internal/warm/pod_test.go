@@ -42,10 +42,10 @@ func TestBuildPod_Shape(t *testing.T) {
 		t.Errorf("labels: got %v", pod.Labels)
 	}
 	if pod.Labels[testNaming.Claim] != "" {
-		t.Error("a warm pod must not carry an activation label")
+		t.Error("a warm pod must not carry a claim label")
 	}
-	if len(pod.Annotations) != 0 {
-		t.Errorf("a warm pod must carry no annotations (tokens are derived, never stored): got %v", pod.Annotations)
+	if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(mapperPool()) {
+		t.Errorf("warm pod must identify its fixed pool spec without storing a token: got %v", pod.Annotations)
 	}
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Errorf("restart policy: want Never, got %s", pod.Spec.RestartPolicy)

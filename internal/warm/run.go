@@ -3,39 +3,28 @@ package warm
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"orchestrator/internal/kube"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Teardown removes one claim. Consumers supply their own — deactivating an
-// activation tears down its route and Service too, where deleting a sandbox is
-// just the pod — and the idle rule calls it when a claim's window passes.
+// Teardown removes one claim. Consumers supply their own — a sandbox teardown
+// also removes its routing state, and the idle rule calls
+// it when a claim's window passes.
 type Teardown func(ctx context.Context, poolID, claimID string) error
 
-// Run brings the warm layer up: it verifies the pools, surveys the pods already
-// standing (the state a service restart reconstructs), then launches the
-// leader-elected control loop — replenishment, poison and orphan GC, and idle
-// teardown. Call Stop to halt it.
-func (m *Manager) Run(ctx context.Context, teardown Teardown) error {
+// RunClaims starts only the leader-elected claimed-workload lifecycle loop.
+// Consumer services use this after bare-pod inventory moved to pool-controller.
+func (m *Manager) RunClaims(ctx context.Context, teardown Teardown) error {
 	if err := m.Verify(ctx); err != nil {
 		return err
-	}
-	statuses, err := m.PoolStatuses(ctx)
-	if err != nil {
-		return err
-	}
-	for _, s := range statuses {
-		slog.Info("Pool reconciled", "kind", m.cfg.Naming.Kind, "pool", s.ID,
-			"size", s.Size, "warm", s.Warm, "claimed", s.Claimed)
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.stop = cancel
 	hooks := NewIdleReaper(m, teardown).Hooks()
 	go kube.RunLeaderElected(runCtx, m.client, m.cfg.Namespace, m.cfg.LeaderElection,
-		func(loopCtx context.Context) { m.runControl(loopCtx, hooks) }, m.onLeadership)
+		func(loopCtx context.Context) { m.RunClaimControl(loopCtx, hooks) }, m.onLeadership)
 	return nil
 }
 
@@ -80,4 +69,11 @@ func (m *Manager) Await(ctx context.Context, pod *corev1.Pod) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// Serving reports whether a claimed pod's sidecar answers /ready right now:
+// one probe, no wait, for consumers that poll from a reconcile loop rather
+// than block a request on Await.
+func (m *Manager) Serving(ctx context.Context, pod *corev1.Pod) bool {
+	return pod.Status.PodIP != "" && m.sc.Ready(ctx, pod.Status.PodIP)
 }

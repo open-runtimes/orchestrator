@@ -78,6 +78,9 @@ func isReady(pod *corev1.Pod) bool {
 	if pod.DeletionTimestamp != nil || pod.Status.PodIP == "" {
 		return false
 	}
+	if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
+		return false
+	}
 	for _, cond := range pod.Status.Conditions {
 		if cond.Type == corev1.PodReady {
 			return cond.Status == corev1.ConditionTrue

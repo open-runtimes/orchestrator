@@ -22,11 +22,11 @@ import (
 
 // shimOpenTimeout bounds how long a claim waits for the shim's read end of
 // the FIFO to appear. If it never does, the shim isn't running and the pod
-// must be poisoned rather than left half-activated.
+// must be poisoned rather than left half-claimed.
 const shimOpenTimeout = 10 * time.Second
 
 // pool is the claim surface armed by Config.ClaimToken: the proxy starts with
-// no target and accepts exactly one activation. The pod is the serialization
+// no target and accepts exactly one claim. The pod is the serialization
 // point — racing pool backends get 409 and retry another warm pod, so the
 // service stays stateless. See claim.go for the wire protocol.
 type pool struct {
@@ -54,10 +54,10 @@ func (pl *pool) authorized(r *http.Request) bool {
 		subtle.ConstantTimeCompare([]byte(token), []byte(pl.token)) == 1
 }
 
-// handleActivate accepts the activation (POST workload.ClaimPath): 401 bad token, 409
+// handleClaim accepts the claim (POST workload.ClaimPath): 401 bad token, 409
 // already claimed or poisoned, 400 undecodable claim, 422 artifacts or shim
 // signaling failed (poisoned), 200 claimed and signaled.
-func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) handleClaim(w http.ResponseWriter, r *http.Request) {
 	pl := p.pool
 	if !pl.authorized(r) {
 		http.Error(w, "invalid claim token", http.StatusUnauthorized)
@@ -85,9 +85,9 @@ func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
 		writeClaimState(w, http.StatusBadRequest, pl.snapshot())
 		return
 	}
-	pl.publish(workload.ClaimState{Claimed: true, ActivationID: req.ActivationID})
-	if err := p.activate(r.Context(), req); err != nil {
-		pl.publish(workload.ClaimState{Claimed: true, ActivationID: req.ActivationID, Failed: true, Error: err.Error()})
+	pl.publish(workload.ClaimState{Claimed: true, ClaimID: req.ClaimID})
+	if err := p.claim(r.Context(), req); err != nil {
+		pl.publish(workload.ClaimState{Claimed: true, ClaimID: req.ClaimID, Failed: true, Error: err.Error()})
 		writeClaimState(w, http.StatusUnprocessableEntity, pl.snapshot())
 		return
 	}
@@ -96,7 +96,7 @@ func (p *Proxy) handleActivate(w http.ResponseWriter, r *http.Request) {
 
 // handleClaimState reports the authoritative claim record (GET
 // workload.ClaimStatePath) — the backends' reconcile / orphan-GC source of truth.
-// Unauthenticated by design: it leaks only an activation id.
+// Unauthenticated by design: it leaks only a claim id.
 func (p *Proxy) handleClaimState(w http.ResponseWriter, _ *http.Request) {
 	writeClaimState(w, http.StatusOK, p.pool.snapshot())
 }
@@ -110,7 +110,7 @@ func writeClaimState(w http.ResponseWriter, status int, s workload.ClaimState) {
 // activate materializes the payload onto the pod: artifacts into the
 // workspace, one workload.ShimExec line down the FIFO, then the late-bound data
 // plane. Any error poisons the pod (the caller publishes it).
-func (p *Proxy) activate(ctx context.Context, req workload.ClaimRequest) error {
+func (p *Proxy) claim(ctx context.Context, req workload.ClaimRequest) error {
 	// Artifacts keep a bound even when the requests they serve do not: an
 	// unbounded claim means long-lived SESSIONS, not an unbounded download.
 	timeoutSeconds := int(p.cfg.Timeout / time.Second)
@@ -133,7 +133,7 @@ func (p *Proxy) activate(ctx context.Context, req workload.ClaimRequest) error {
 	if p.mounter != nil {
 		opts = append(opts, sidecar.WithMounter(p.mounter))
 	}
-	runner := sidecar.NewRunner(req.ActivationID, p.pool.workspace, timeoutSeconds, artifact.DefaultRegistry(), opts...)
+	runner := sidecar.NewRunner(req.ClaimID, p.pool.workspace, timeoutSeconds, artifact.DefaultRegistry(), opts...)
 	if err := runner.RunPre(ctx, req.Artifacts); err != nil {
 		return err
 	}
@@ -177,6 +177,19 @@ func (p *Proxy) arm(req workload.ClaimRequest) {
 	// bound at all — the reason this is a pointer.
 	if req.TimeoutSeconds != nil {
 		cfg.Timeout = time.Duration(*req.TimeoutSeconds) * time.Second
+	}
+	cfg.Concurrency = req.Concurrency
+	if req.ReadinessPath != "" {
+		cfg.ReadinessPath = req.ReadinessPath
+	}
+	if req.ReadinessPeriodMillis > 0 {
+		cfg.ReadinessPeriod = time.Duration(req.ReadinessPeriodMillis) * time.Millisecond
+	}
+	if req.ReadinessTimeoutMillis > 0 {
+		cfg.ReadinessTimeout = time.Duration(req.ReadinessTimeoutMillis) * time.Millisecond
+	}
+	if req.ReadinessFailureThreshold > 0 {
+		cfg.ReadinessFailureThreshold = req.ReadinessFailureThreshold
 	}
 	// Secondary ports are addressable but never probed — see workload.ClaimRequest.Ports.
 	cfg.ExtraPorts = req.Ports

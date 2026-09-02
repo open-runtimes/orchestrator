@@ -41,9 +41,9 @@ func (m *Manager) Controller(hooks Hooks) *Controller {
 	return &Controller{m: m, hooks: hooks, Now: time.Now, orphanSince: make(map[string]time.Time)}
 }
 
-// runControl is the leader-elected control loop entrypoint: one Controller per
+// runControlLoop is the leader-elected control loop entrypoint: one Controller per
 // leadership term, ticking until the term (or process) ends.
-func (m *Manager) runControl(ctx context.Context, hooks Hooks) {
+func (m *Manager) runControlLoop(ctx context.Context, hooks Hooks) {
 	c := m.Controller(hooks)
 	ticker := time.NewTicker(controlTick)
 	defer ticker.Stop()
@@ -57,6 +57,61 @@ func (m *Manager) runControl(ctx context.Context, hooks Hooks) {
 	}
 }
 
+// RunControl runs inventory reconciliation for an already leader-gated
+// caller. It avoids starting a second Lease elector inside a control plane
+// that already owns a leadership term.
+func (m *Manager) RunControl(ctx context.Context, hooks Hooks) { m.runControlLoop(ctx, hooks) }
+
+// RunClaimControl runs only consumer lifecycle hooks over claimed pods. It
+// deliberately does no warm inventory work: the standalone pool-controller
+// owns replenishment and unclaimed-pod garbage collection.
+func (m *Manager) RunClaimControl(ctx context.Context, hooks Hooks) {
+	c := m.Controller(hooks)
+	ticker := time.NewTicker(controlTick)
+	defer ticker.Stop()
+	for {
+		c.TickClaims(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// TickClaims applies consumer lifecycle hooks to every claimed pod once.
+func (c *Controller) TickClaims(ctx context.Context) {
+	pods, err := c.m.Claimed(ctx, "", "")
+	if err != nil {
+		slog.Warn("Claim lifecycle list failed", "error", err)
+		return
+	}
+	live := make(map[string]bool, len(pods))
+	now := c.Now()
+	for i := range pods {
+		pod := &pods[i]
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		claimID := c.m.ClaimID(pod)
+		if claimID == "" {
+			continue
+		}
+		live[claimID] = true
+		if c.hooks.Reap == nil {
+			continue
+		}
+		p := c.m.byID[c.m.PoolID(pod)]
+		if p == nil {
+			p = &pool.Pool{ID: c.m.PoolID(pod)}
+		}
+		c.hooks.Reap(ctx, p, pod, claimID, now)
+	}
+	if c.hooks.Forget != nil {
+		c.hooks.Forget(live)
+	}
+}
+
 // Tick reconciles every pool once, then prunes loop memory for pods and claims
 // that no longer exist.
 func (c *Controller) Tick(ctx context.Context) {
@@ -67,8 +122,10 @@ func (c *Controller) Tick(ctx context.Context) {
 	}
 	if c.m.cfg.ReapUnpooled {
 		c.reapUnpooled(ctx, seenPods, seenClaims)
-		c.sweepUnclaimed(ctx)
 	}
+	// Unclaimed pods whose pool disappeared are never live workloads. Sweep
+	// them for every consumer; ReapUnpooled gates only claimed workloads.
+	c.sweepUnclaimed(ctx)
 	for name := range c.orphanSince {
 		if !seenPods[name] {
 			delete(c.orphanSince, name)
@@ -127,7 +184,10 @@ func (c *Controller) reapUnpooled(ctx context.Context, seenPods, seenClaims map[
 // mid-claim — and deleting one of those would fail a create that was going to
 // succeed.
 func (c *Controller) sweepUnclaimed(ctx context.Context) {
-	pods, err := c.m.list(ctx, c.m.managed()+",!"+c.m.cfg.Naming.Claim)
+	// The pool-label existence term is essential for consumers whose direct
+	// workloads share the same managed-by value. Without it, a direct Revision
+	// pod has neither a pool nor claim label and looks like abandoned capacity.
+	pods, err := c.m.list(ctx, c.m.managed()+","+c.m.cfg.Naming.Pool+",!"+c.m.cfg.Naming.Claim)
 	if err != nil {
 		slog.Warn("Unclaimed sweep list failed", "error", err)
 		return
@@ -170,6 +230,13 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 			claimed++
 			if c.hooks.Reap != nil {
 				c.hooks.Reap(ctx, p, pod, claimID, c.Now())
+			}
+			continue
+		}
+		if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(&p.Spec) {
+			slog.Info("Discarding stale warm pod after pool spec change", "pod", pod.Name, "poolId", p.ID)
+			if err := c.m.Delete(ctx, pod.Name); err != nil {
+				slog.Warn("Failed to discard stale warm pod", "pod", pod.Name, "error", err)
 			}
 			continue
 		}
@@ -222,7 +289,7 @@ func (c *Controller) countsWarm(ctx context.Context, pod *corev1.Pod) bool {
 		if !ok {
 			c.orphanSince[pod.Name] = c.Now()
 		} else if c.Now().Sub(first) > c.m.cfg.OrphanTTL {
-			slog.Warn("Deleting orphaned claimed pod", "pod", pod.Name, "claimId", state.ActivationID)
+			slog.Warn("Deleting orphaned claimed pod", "pod", pod.Name, "claimId", state.ClaimID)
 			_ = c.m.Delete(ctx, pod.Name)
 		}
 		return false

@@ -28,6 +28,8 @@ const (
 	LabelManagedBy    = "managed-by"
 	LabelDeploymentID = "deployment.id"
 	LabelRevision     = "deployment.revision"
+	LabelPoolClaim    = "deployment.pool-claim"
+	LabelServing      = "deployment.serving"
 	ManagedByValue    = "deployments-service"
 )
 

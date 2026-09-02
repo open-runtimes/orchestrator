@@ -1,7 +1,7 @@
 // Package kubernetes implements the sandbox.Orchestrator interface using the
-// Kubernetes API. Everything about standing warm capacity — the pods, the
-// claim, the serving wait, replenishment, poison and orphan GC, the idle rule
-// — belongs to internal/warm. What a SANDBOX adds on top of a claimed pod is
+// Kubernetes API. The shared warm package supplies claim and lifecycle
+// primitives, while the standalone pool-controller owns bare inventory.
+// What a SANDBOX adds on top of a claimed pod is
 // small on purpose: a capability token stamped as a label, and the addresses
 // that token resolves to. There is no per-sandbox Service or route; the sandbox
 // edge resolves the token from the request's Host behind one wildcard route,
@@ -26,8 +26,8 @@ import (
 )
 
 // Label and annotation contract for sandbox pods. Deliberately distinct from
-// the pool backend's keys: two consumers share the cluster, and each one's
-// control loop must see exactly its own pods.
+// the Revision pool keys: two consumers share the pool-controller binary, and
+// each per-kind instance must see exactly its own pods.
 const (
 	LabelPoolID    = "sandbox.pool"
 	LabelSandboxID = "sandbox.id"
@@ -88,31 +88,33 @@ func wireOrchestrator(cs kubernetes.Interface, cfg Config, tune func(*warm.Confi
 	}
 }
 
-// Start brings the warm layer up: pool verification, the restart survey, and
-// the leader-elected control loop, whose idle rule deletes a sandbox that goes
-// quiet for its window — the pool's ceiling makes sure every sandbox has one.
+// NewPoolManager builds the shared warm-pod contract for sandbox pools. The
+// sandbox service uses it to claim pods; pool-controller uses it to maintain
+// the same inventory independently.
+func NewPoolManager(client kubernetes.Interface, cfg Config) *warm.Manager {
+	cfg.applyDefaults()
+	return warm.New(client, cfg.Pools, cfg.warmConfig())
+}
+
+// Start verifies the claim contract and runs only claimed-sandbox lifecycle.
+// Bare warm inventory is reconciled by the standalone pool-controller.
 func (o *Orchestrator) Start(ctx context.Context) error {
-	return o.warm.Run(ctx, func(ctx context.Context, _, sandboxID string) error {
+	return o.warm.RunClaims(ctx, func(ctx context.Context, _, sandboxID string) error {
 		return o.Delete(ctx, sandboxID)
 	})
 }
 
-// Pools reports the configured sandbox pools with live warm/claimed counts.
-func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
-	return o.warm.PoolStatuses(ctx)
-}
-
-// Create claims a warm pod for the sandbox, stamps it with the sandbox id and
-// its capability token, and waits for the image's contract to answer.
+// Create claims an exact-shape warm pod when one is configured, otherwise
+// creates the same bare pod directly. Pool choice never changes the request.
 func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandbox.Status, error) {
-	// A declared pool fixes the shape; a poolless sandbox describes its own.
 	shape := req.Shape()
 	var p *pool.Pool
 	if req.Pool != "" {
 		if p = o.warm.Pool(req.Pool); p == nil {
-			return nil, apperrors.NotFound("pool", req.Pool)
+			// Configuration can roll between API matching and acquisition. Treat
+			// that exactly like no match: direct creation preserves the request.
+			req.Pool = ""
 		}
-		shape = p.Spec
 	}
 	if existing, err := o.warm.Claimed(ctx, "", req.ID); err != nil {
 		return nil, err
@@ -126,10 +128,17 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	// labeled with the sandbox's own id so it is never offered to another claim.
 	var pod *corev1.Pod
 	var err error
+	direct := p == nil
 	if p == nil {
 		pod, err = o.warm.CreateClaimed(ctx, &shape, req.ID, claimRequest(&shape, req))
 	} else {
 		pod, err = o.warm.Claim(ctx, p, claimRequest(&p.Spec, req))
+		if errors.Is(err, apperrors.ErrExhausted) {
+			// A transparent pool only improves latency. In particular, a reject
+			// burst policy must not turn an otherwise valid request into a 429.
+			direct = true
+			pod, err = o.warm.CreateClaimed(ctx, &shape, req.ID, claimRequest(&shape, req))
+		}
 	}
 	if err != nil {
 		var poison *claim.Poison
@@ -150,7 +159,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		// never got one belongs to no pool the control loop reconciles, so if the
 		// bind is what failed — a cancelled request, a lost API server — this is
 		// the last place that can reclaim it.
-		if p == nil {
+		if direct {
 			o.warm.Discard(ctx, pod.Name)
 		}
 		return nil, err
@@ -164,7 +173,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 // the agent the shim dropped in its workspace.
 func claimRequest(p *pool.Spec, req *sandbox.Request) *workload.ClaimRequest {
 	return &workload.ClaimRequest{
-		ActivationID:   req.ID,
+		ClaimID:        req.ID,
 		Command:        cmp.Or(req.Command, p.Command, agentPath),
 		Environment:    req.Environment,
 		Artifacts:      req.Artifacts,
@@ -193,8 +202,7 @@ func (o *Orchestrator) awaitServing(ctx context.Context, p *pool.Spec, req *sand
 		// URL was ever handed out and nothing may be left holding the pod. Await
 		// deletes it when the workload merely fails to serve in time; this is the
 		// same rule for the case where we stop waiting. A sandbox with no pool
-		// behind it has no idle ceiling to collect it later, and a pooled one has
-		// one only if its pool declares maxIdleSeconds.
+		// behind it may have no idle timeout to collect it later.
 		o.warm.Discard(ctx, pod.Name)
 		return nil, err
 	}
@@ -252,8 +260,8 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 		State:  sandboxState(obs.Phase),
 		Error:  obs.Error,
 	}
-	if p := o.warm.Pool(status.PoolID); p != nil {
-		status.URLs = o.addr.URLs(token, p.Port, spec.Ports)
+	if spec.Port > 0 {
+		status.URLs = o.addr.URLs(token, spec.Port, spec.Ports)
 	}
 	// Recorded at create, so this describes the pod that is running rather than
 	// whatever its pool says today — the pool may have been re-imaged or removed

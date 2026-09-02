@@ -103,6 +103,12 @@ spec:
               value: {{ .Values.deployments.cpuOvercommit | quote }}
             - name: KUBE_MEMORY_OVERCOMMIT
               value: {{ .Values.deployments.memoryOvercommit | quote }}
+            - name: KUBE_REVISION_WORKERS
+              value: {{ .Values.deployments.revisionWorkers | quote }}
+            - name: KUBE_CLIENT_QPS
+              value: {{ .Values.deployments.clientQPS | quote }}
+            - name: KUBE_CLIENT_BURST
+              value: {{ .Values.deployments.clientBurst | quote }}
             {{- with .Values.deployments.workloadTolerations }}
             - name: KUBE_WORKLOAD_TOLERATIONS
               value: {{ toJson . | quote }}
@@ -116,8 +122,6 @@ spec:
               value: {{ .Values.deployments.pools | toJson | quote }}
             - name: POOL_SHIM_IMAGE
               value: {{ include "orchestrator.poolShimImage" . | quote }}
-            - name: POOL_DOMAIN
-              value: {{ .Values.deployments.domain | quote }}
             {{- end }}
             {{- if .Values.deployments.leaderElection.enabled }}
             - name: KUBE_LEADER_ELECTION
@@ -206,22 +210,28 @@ metadata:
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 rules:
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments/scale"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions/status"]
     verbs: ["get", "update", "patch"]
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions/scale"]
+    verbs: ["get", "update", "patch"]
+  # Replica Pods set blockOwnerDeletion on their Revision; the
+  # OwnerReferencesPermissionEnforcement admission plugin (on by default on
+  # OpenShift) rejects that unless the creator may update the owner's finalizers.
+  - apiGroups: ["orchestrator.open-runtimes.io"]
+    resources: ["revisions/finalizers"]
+    verbs: ["update"]
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Pools create/claim/discard warm pods and read exec output from their logs.
+  # Revision reconciliation creates direct pods and creates/claims/discards warm pods.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

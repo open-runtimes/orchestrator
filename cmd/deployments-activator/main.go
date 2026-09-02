@@ -19,9 +19,13 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
+	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/server"
 	"os"
 	"time"
+
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
@@ -40,13 +44,23 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("failed to init metrics: %w", err)
 	}
 
-	client, err := kube.NewClient(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics)
+	clientQPS := config.GetIntEnv("KUBE_CLIENT_QPS", 200)
+	clientBurst := config.GetIntEnv("KUBE_CLIENT_BURST", 400)
+	restCfg, err := kube.NewConfig(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics, float32(clientQPS), clientBurst)
 	if err != nil {
 		return err
 	}
+	client, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create kube client: %w", err)
+	}
+	dynamicClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create dynamic kube client: %w", err)
+	}
 
 	queue := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
-	act := activator.NewRevisionActivator(client, queue, activator.RevisionConfig{
+	act := activator.NewRevisionActivator(client, revisionapi.NewClient(dynamicClient), queue, activator.RevisionConfig{
 		Namespace:    config.GetEnv("KUBE_NAMESPACE", "orchestrator"),
 		StartTimeout: time.Duration(config.GetIntEnv("START_TIMEOUT_SECONDS", 300)) * time.Second,
 	}, metrics)

@@ -57,10 +57,17 @@ type Metrics struct {
 
 	// Deployment metrics (Latency, Traffic, Saturation). Rollout duration is
 	// revision-minted → traffic-cut, observed by the leader's reconciler.
-	DeploymentsApplied metric.Int64Counter
-	DeploymentsActive  metric.Int64Gauge
-	RolloutDuration    metric.Float64Histogram
-	RolloutCuts        metric.Int64Counter
+	DeploymentsApplied        metric.Int64Counter
+	DeploymentsActive         metric.Int64Gauge
+	RolloutDuration           metric.Float64Histogram
+	RolloutCuts               metric.Int64Counter
+	RevisionReconcileDuration metric.Float64Histogram
+	RevisionReconcileErrors   metric.Int64Counter
+	RevisionQueueWait         metric.Float64Histogram
+	RevisionPodCreateDuration metric.Float64Histogram
+	RevisionPodCreates        metric.Int64Counter
+	RevisionPodDeletes        metric.Int64Counter
+	RevisionLeaderConvergence metric.Float64Histogram
 
 	// Activator metrics: the cold/async edge. Hold duration is the time a
 	// request waits for serving capacity (the client-visible cold-start cost);
@@ -79,15 +86,15 @@ type Metrics struct {
 
 	// Pool metrics (Latency, Traffic, Errors, Saturation). Warm/claimed are
 	// recorded by the leader's control loop; claim conflicts are the racing
-	// losers (healthy at low rates), poisoned pods are failed activations.
-	PoolActivations        metric.Int64Counter
-	PoolActivationsActive  metric.Int64UpDownCounter
-	PoolActivationDuration metric.Float64Histogram
-	PoolClaimConflicts     metric.Int64Counter
-	PoolPoisoned           metric.Int64Counter
-	PoolBurst              metric.Int64Counter
-	PoolWarm               metric.Int64Gauge
-	PoolClaimed            metric.Int64Gauge
+	// losers (healthy at low rates), poisoned pods are failed claims.
+	PoolClaims         metric.Int64Counter
+	PoolClaimsActive   metric.Int64UpDownCounter
+	PoolClaimDuration  metric.Float64Histogram
+	PoolClaimConflicts metric.Int64Counter
+	PoolPoisoned       metric.Int64Counter
+	PoolBurst          metric.Int64Counter
+	PoolWarm           metric.Int64Gauge
+	PoolClaimed        metric.Int64Gauge
 }
 
 // instruments builds meters while accumulating the first error, sparing
@@ -191,6 +198,21 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 		"Time from a revision being minted to traffic auto-cutting to it",
 		1, 2.5, 5, 10, 30, 60, 120, 300, 600)
 	m.RolloutCuts = b.counter("deployment_rollout_cuts_total", "Total traffic auto-cuts to a newly ready revision")
+	m.RevisionReconcileDuration = b.histogram("revision_reconcile_duration_seconds",
+		"Direct-Pod Revision reconciliation duration",
+		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5)
+	m.RevisionReconcileErrors = b.counter("revision_reconcile_errors_total", "Failed Revision reconciliations")
+	m.RevisionQueueWait = b.histogram("revision_queue_wait_seconds",
+		"Time a Revision waited in the controller queue",
+		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30)
+	m.RevisionPodCreateDuration = b.histogram("revision_desired_to_pod_created_seconds",
+		"Time from a Revision event reaching the controller to a successful Pod create",
+		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
+	m.RevisionPodCreates = b.counter("revision_pod_creates_total", "Pods created directly by the Revision controller")
+	m.RevisionPodDeletes = b.counter("revision_pod_deletes_total", "Pods deleted by the Revision controller, by reason")
+	m.RevisionLeaderConvergence = b.histogram("revision_leader_convergence_seconds",
+		"Time from leader worker start until the initial cached Revision inventory converges",
+		0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60)
 
 	// Activator.
 	m.ActivatorHoldDuration = b.histogram("activator_hold_duration_seconds",
@@ -206,16 +228,16 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	m.AutoscalerScrapeErrors = b.counter("autoscaler_scrape_errors_total", "Total failures scraping concurrency/queue sources")
 
 	// Pools.
-	m.PoolActivations = b.counter("pool_activations_total", "Total activations, per pool")
-	m.PoolActivationsActive = b.upDown("pool_activations_active", "Activations currently in flight, per pool (saturation)")
-	m.PoolActivationDuration = b.histogram("pool_activation_duration_seconds",
-		"Activation wall time (claim through serving), per pool and success",
+	m.PoolClaims = b.counter("pool_claims_total", "Total workload claims, per pool")
+	m.PoolClaimsActive = b.upDown("pool_claims_active", "Claims currently in flight, per pool (saturation)")
+	m.PoolClaimDuration = b.histogram("pool_claim_duration_seconds",
+		"Claim wall time through serving, per pool and success",
 		0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600, 1800)
 	m.PoolClaimConflicts = b.counter("pool_claim_conflicts_total", "Total 409 claim races lost (the loser retries the next warm pod)")
 	m.PoolPoisoned = b.counter("pool_poisoned_total", "Total pods poisoned by failed artifact materialization")
-	m.PoolBurst = b.counter("pool_burst_total", "Total activations arriving at an empty pool, labelled policy=reject|cold")
+	m.PoolBurst = b.counter("pool_burst_total", "Total claims arriving at an empty pool, labelled policy=reject|cold")
 	m.PoolWarm = b.gauge("pool_warm", "Unclaimed warm-ready pods, per pool")
-	m.PoolClaimed = b.gauge("pool_claimed", "Claimed (running-activation) pods, per pool")
+	m.PoolClaimed = b.gauge("pool_claimed", "Claimed workload pods, per pool")
 
 	if b.err != nil {
 		return nil, nil, b.err
@@ -346,6 +368,30 @@ func (m *Metrics) RecordRolloutCut(ctx context.Context, durationSeconds float64)
 	m.RolloutDuration.Record(ctx, durationSeconds)
 }
 
+func (m *Metrics) RecordRevisionReconcile(ctx context.Context, success bool, durationSeconds float64) {
+	m.RevisionReconcileDuration.Record(ctx, durationSeconds, metric.WithAttributes(successAttr(success)))
+	if !success {
+		m.RevisionReconcileErrors.Add(ctx, 1)
+	}
+}
+
+func (m *Metrics) RecordRevisionQueueWait(ctx context.Context, durationSeconds float64) {
+	m.RevisionQueueWait.Record(ctx, durationSeconds)
+}
+
+func (m *Metrics) RecordRevisionPodCreate(ctx context.Context, durationSeconds float64) {
+	m.RevisionPodCreates.Add(ctx, 1)
+	m.RevisionPodCreateDuration.Record(ctx, durationSeconds)
+}
+
+func (m *Metrics) RecordRevisionPodDelete(ctx context.Context, reason string) {
+	m.RevisionPodDeletes.Add(ctx, 1, metric.WithAttributes(reasonAttr(reason)))
+}
+
+func (m *Metrics) RecordRevisionLeaderConvergence(ctx context.Context, durationSeconds float64) {
+	m.RevisionLeaderConvergence.Record(ctx, durationSeconds)
+}
+
 // RecordActivatorHold records a completed capacity hold.
 func (m *Metrics) RecordActivatorHold(ctx context.Context, component, outcome string, durationSeconds float64) {
 	m.ActivatorHoldDuration.Record(ctx, durationSeconds, metric.WithAttributes(componentAttr(component), outcomeAttr(outcome)))
@@ -381,18 +427,18 @@ func (m *Metrics) RecordAutoscalerScrapeError(ctx context.Context) {
 	m.AutoscalerScrapeErrors.Add(ctx, 1)
 }
 
-// RecordPoolActivationStarted records an activation entering flight.
-func (m *Metrics) RecordPoolActivationStarted(ctx context.Context, kind, id string) {
+// RecordPoolClaimStarted records a claim entering flight.
+func (m *Metrics) RecordPoolClaimStarted(ctx context.Context, kind, id string) {
 	attrs := metric.WithAttributes(kindAttr(kind), poolAttr(id))
-	m.PoolActivations.Add(ctx, 1, attrs)
-	m.PoolActivationsActive.Add(ctx, 1, attrs)
+	m.PoolClaims.Add(ctx, 1, attrs)
+	m.PoolClaimsActive.Add(ctx, 1, attrs)
 }
 
-// RecordPoolActivationFinished records an activation leaving flight with its
+// RecordPoolClaimFinished records a claim leaving flight with its
 // wall time (claim through serving).
-func (m *Metrics) RecordPoolActivationFinished(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
-	m.PoolActivationsActive.Add(ctx, -1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
-	m.PoolActivationDuration.Record(ctx, durationSeconds, metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
+func (m *Metrics) RecordPoolClaimFinished(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
+	m.PoolClaimsActive.Add(ctx, -1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
+	m.PoolClaimDuration.Record(ctx, durationSeconds, metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
 }
 
 // RecordPoolConflict records a lost claim race.

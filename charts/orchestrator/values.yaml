@@ -22,6 +22,31 @@ fullnameOverride: ""
 # chart; their credentials go on the account they run as (docs/operations.md).
 imagePullSecrets: []
 
+# Bare warm-pod inventory for every enabled workload plane. The chart runs the
+# same small pool-controller binary once per enabled consumer so each retains
+# its own placement, credentials, metrics, and failure domain.
+poolController:
+  enabled: true
+  replicaCount: 1
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/pool-controller
+    tag: "" # defaults to the chart's appVersion
+    pullPolicy: IfNotPresent
+  leaderElection:
+    enabled: false
+    # Empty derives a distinct Lease for each pool kind.
+    leaseName: ""
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
 # The chart ships one API today (jobs). Future APIs (deployments, statefulsets, ...)
 # will be added as additional Deployments + Services in the same chart, each
 # with its own component name. Resource naming for the jobs API lives under
@@ -123,13 +148,19 @@ jobs:
     # Hostnames the route matches against.
     hostnames: []
 
-# Serving-plane API (deployments + deployment-pools). Disabled by default —
+# Serving-plane API (deployments, with optional warm Revision pools). Disabled by default —
 deployments:
   enabled: false
   # Empty uses "deployments" when the release is named "orchestrator",
   # otherwise "<release>-deployments".
   fullnameOverride: ""
   replicaCount: 1
+  # Concurrent Revision reconciles. Bursty clusters benefit from enough
+  # workers to issue direct Pod creates in parallel.
+  revisionWorkers: 32
+  # Client-side API rate budget for Revision status and direct Pod writes.
+  clientQPS: 200
+  clientBurst: 400
   image:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/deployments-service
@@ -194,10 +225,13 @@ deployments:
   # limit. Deliberately no default cpu limit — see resource-model.md.
   limitRange:
     enabled: false
-  # Warm pools (docs/pools.md): config-declared fleets an activation
-  # late-binds onto. Each entry is a internal/pool.Pool: {id, image, size, cpu,
-  # memory, port (required), burst (cold|reject; default cold), environment,
+  # Warm Revision pools (docs/pools.md): config-declared shapes matched
+  # transparently against complete deployment requests. Each entry is an
+  # internal/pool.Pool: {id, image, size, cpu (required), memory (required),
+  # port (required), burst (cold|reject; default cold),
   # volumes: [{source (PVC name), path, subPath, readonly}] mounted into every pod}.
+  # Command/environment defaults are intentionally unsupported here: both are
+  # late-bound from the deployment request. Fixed shapes must be unique.
   # Adding/resizing/removing a pool is a values change + rollout, not an API call.
   pools: []
   # Image for the pool-shim (warm-pod entrypoint; installed into workload
@@ -280,7 +314,7 @@ workloadNamespace:
     requestsMemory: 200Gi
 
 # Image for the workload-sidecar: the reverse proxy in front of every serving
-# workload — deployment replicas, pool activations, and sandboxes. One image for
+# workload — deployment replicas (created or pool-claimed) and sandboxes. One image for
 # all three, because the pod-local invariants it owns (readiness, drain,
 # per-request timeout, concurrency cap, request counting, and the claim protocol)
 # are the same wherever it runs. Jobs have their own, at jobs.sidecarImage.
@@ -320,15 +354,15 @@ sandbox:
   # Annotations on the sandbox-service pod.
   podAnnotations: {}
   # Same resource model as deployments.cpuOvercommit/memoryOvercommit,
-  # applied to warm-pool and poolless sandbox pods.
+  # applied to matched-pool and directly created sandbox pods.
   cpuOvercommit: 1
   memoryOvercommit: 1
   # Tolerations / node selector stamped on every sandbox pod, independent
   # from the deployments and jobs equivalents.
   workloadTolerations: []
   workloadNodeSelector: {}
-  # Leader election gates pool replenishment and GC to one replica. Required
-  # when replicaCount > 1.
+  # Leader election gates claimed-sandbox lifecycle (including idle expiry) to
+  # one replica. Bare inventory uses poolController.leaderElection instead.
   leaderElection:
     enabled: false
     # Empty = "<sandbox name>-leader".
@@ -355,19 +389,18 @@ sandbox:
     name: orchestrator
     # Empty = release namespace.
     namespace: ""
-  # Sandbox pools. Same schema as deployments.pools. The image needs to serve
-  # nothing: the open-runtimes/sandbox agent is copied into every sandbox's
-  # workspace at pod creation and run there, so any runtime image works and
-  # `port` is simply where the agent listens. Declare `command` only to override
-  # it (an image that serves the contract itself, say).
+  # Operator-only warm sandbox shapes. Callers always submit the complete pod
+  # shape and never name a pool; an exact match is claimed transparently, while
+  # no match or exhausted reject capacity creates that same bare pod directly.
+  # CPU and memory are required and shapes must be unique. Command and
+  # environment remain request-time fields and cannot be declared here.
+  # The open-runtimes/sandbox agent is copied into every sandbox's workspace,
+  # so any runtime image works and `port` is where the agent listens.
   # Untrusted, model-generated code is the expected workload here, so set
   # runtimeClass: gvisor (or kata) and map it with KUBE_RUNTIME_CLASSES.
-  # maxIdleSeconds caps how long an abandoned sandbox may hold a warm pod.
   #
-  # Pools are optional: a caller may also create a sandbox with no pool at all,
-  # naming an image in the request (docs/sandboxes.md). That costs a cold start
-  # per sandbox and cannot be capped by maxIdleSeconds, so declare pools for any
-  # workload that creates sandboxes at a rate.
+  # Pools are optional and affect startup latency only. The sandbox API and
+  # requested runtime semantics are identical with or without a matching pool.
   #
   # mounts lets this pool's sandboxes use the `mount` artifact (a tar archive,
   # squashfs image, or erofs image, optionally with a tmpfs overlay).
@@ -380,13 +413,16 @@ sandbox:
   #   - id: py
   #     image: python:3.12-slim
   #     port: 3000
+  #     cpu: 1
+  #     memory: 512
   #     size: 4
   #     runtimeClass: gvisor
-  #     maxIdleSeconds: 900
   #
   #   - id: restore          # a pool that mounts filesystem images
   #     image: python:3.12-slim
   #     port: 3000
+  #     cpu: 1
+  #     memory: 512
   #     size: 2
   #     mounts: true
   pools: []
@@ -407,8 +443,8 @@ sandbox:
   # when enabled. Requires a wildcard DNS record (*.{domain}) pointing at the
   # gateway. Each sandbox's hostname carries a 128-bit capability token, so
   # treat the URL as a secret: reaching it is enough to run code in the
-  # sandbox. Pools are optional warm capacity — a domain alone serves
-  # /v1/sandbox for poolless, image-named creates.
+  # sandbox. Pools are optional operator-only warm capacity; callers always
+  # submit complete image-backed shapes to /v1/sandbox.
   domain: ""
   # Scheme handed back in sandbox URLs (https where the gateway terminates TLS).
   scheme: http

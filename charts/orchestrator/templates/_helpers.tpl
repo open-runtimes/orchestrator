@@ -49,9 +49,32 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.poolControllerName" -}}
+{{- printf "%s-pool-controller" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "orchestrator.poolControllerImage" -}}
+{{- if .Values.poolController.image.ref -}}
+{{- .Values.poolController.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.poolController.image.repository (default .Chart.AppVersion .Values.poolController.image.tag) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.poolControllerLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: pool-controller
+{{- end -}}
+
+{{- define "orchestrator.poolControllerSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: pool-controller
+{{- end -}}
+
 {{/*
   workloadSidecarImage: one image for every serving workload's sidecar —
-  deployment replicas, pool activations, and sandboxes.
+  deployment replicas (created or pool-claimed) and sandboxes.
 */}}
 {{- define "orchestrator.workloadSidecarImage" -}}
 {{- if .Values.workloadSidecarImage.ref -}}

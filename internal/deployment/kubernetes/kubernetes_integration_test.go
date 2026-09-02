@@ -86,15 +86,18 @@ func setup(t *testing.T) (*Orchestrator, func()) {
 	}
 
 	// teardown stops the reconcilers and deletes all managed objects
-	// (revision Deployments with their pods, Services, markers, HTTPRoutes),
+	// (Revisions with their pods, Services, markers, HTTPRoutes),
 	// so successive runs don't pollute each other.
 	teardown := func() {
 		_ = o.Close()
 		ctx := context.Background()
 		managed := metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + ManagedByValue}
-		prop := metav1.DeletePropagationBackground
-		_ = o.client.AppsV1().Deployments(testNamespace).DeleteCollection(
-			ctx, metav1.DeleteOptions{PropagationPolicy: &prop}, managed)
+		if revisions, err := o.revisions.List(ctx, testNamespace, managed); err == nil {
+			for i := range revisions.Items {
+				_ = o.revisions.Delete(ctx, testNamespace, revisions.Items[i].Name, metav1.DeleteOptions{})
+			}
+		}
+		_ = o.client.CoreV1().Pods(testNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, managed)
 		_ = o.client.CoreV1().ConfigMaps(testNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, managed)
 		_ = o.client.CoreV1().Secrets(testNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, managed)
 		// Services and HTTPRoutes don't support DeleteCollection; one by one.
@@ -208,16 +211,16 @@ func TestIntegration_RevisionLifecycle(t *testing.T) {
 	}
 
 	// Applying the identical spec mints nothing and touches no workload.
-	before, err := o.client.AppsV1().Deployments(testNamespace).Get(t.Context(), objectNameFor(rev1), metav1.GetOptions{})
+	before, err := o.revisions.Get(t.Context(), testNamespace, objectNameFor(rev1))
 	if err != nil {
-		t.Fatalf("get revision Deployment: %v", err)
+		t.Fatalf("get Revision: %v", err)
 	}
 	if _, err := o.Apply(t.Context(), serverRequest(id)); err != nil {
 		t.Fatalf("no-op Apply: %v", err)
 	}
-	after, err := o.client.AppsV1().Deployments(testNamespace).Get(t.Context(), objectNameFor(rev1), metav1.GetOptions{})
+	after, err := o.revisions.Get(t.Context(), testNamespace, objectNameFor(rev1))
 	if err != nil {
-		t.Fatalf("get revision Deployment: %v", err)
+		t.Fatalf("get Revision: %v", err)
 	}
 	if after.Generation != before.Generation {
 		t.Errorf("no-op Apply bumped Generation %d → %d", before.Generation, after.Generation)

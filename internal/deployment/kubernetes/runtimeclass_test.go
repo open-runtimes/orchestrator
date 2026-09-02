@@ -11,7 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestBuildDeployment_RuntimeClass(t *testing.T) {
+func TestBuildRevision_RuntimeClass(t *testing.T) {
 	t.Parallel()
 	cfg := Config{SidecarImage: "sidecar:latest"}
 	cfg.applyDefaults()
@@ -25,7 +25,7 @@ func TestBuildDeployment_RuntimeClass(t *testing.T) {
 	} {
 		req := testRequest()
 		req.RuntimeClass = tier
-		got := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.RuntimeClassName
+		got := buildRevision(req, cfg, "web-00001").Spec.Template.Spec.RuntimeClassName
 		switch {
 		case want == "" && got != nil:
 			t.Errorf("tier %q: want no runtimeClassName, got %q", tier, *got)
@@ -73,11 +73,11 @@ func TestApply_RuntimeClassChecked(t *testing.T) {
 	if _, err := o.Apply(ctx, req); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	dep, err := cs.AppsV1().Deployments(o.namespace).Get(ctx, "dep-web-00001", metav1.GetOptions{})
+	revision, err := o.revisions.Get(ctx, o.namespace, "dep-web-00001")
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
-	if rc := dep.Spec.Template.Spec.RuntimeClassName; rc == nil || *rc != "gvisor" {
+	if rc := revision.Spec.Template.Spec.RuntimeClassName; rc == nil || *rc != "gvisor" {
 		t.Errorf("runtimeClassName: want gvisor, got %v", rc)
 	}
 }

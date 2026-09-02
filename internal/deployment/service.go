@@ -300,6 +300,9 @@ func (s *Service) validate(req *Request) error {
 	if req.Port <= 0 || req.Port > 65535 {
 		return apperrors.Validation("port", "port must be between 1 and 65535")
 	}
+	if req.TerminationGracePeriodSeconds < 0 {
+		return apperrors.Validation("terminationGracePeriodSeconds", "termination grace period must be non-negative")
+	}
 
 	if req.Workspace != "" && !path.IsAbs(req.Workspace) {
 		return apperrors.Validation("workspace", "workspace must be an absolute path")

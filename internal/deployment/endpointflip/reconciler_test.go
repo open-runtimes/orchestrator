@@ -143,6 +143,24 @@ func TestWarmUsesReadyRevisionPods(t *testing.T) {
 	}
 }
 
+func TestClaimedRevisionPodWaitsForServingGate(t *testing.T) {
+	pod := revisionPod("web-a", "web-00001", "10.0.0.1", true)
+	pod.Labels[LabelPoolClaim] = "rev-slot"
+	r, client := newTestReconciler(
+		revisionService("web-00001", "web"), pod,
+		activatorPod("act-0", "10.9.0.0", true),
+	)
+	mustReconcile(t, r, "dep-web-00001")
+	assertSlice(t, getSlice(t, client, "dep-web-00001"), []string{"10.9.0.0"}, testActivatorPort)
+
+	pod.Labels[LabelServing] = "true"
+	if _, err := client.CoreV1().Pods(testNS).Update(t.Context(), pod, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	mustReconcile(t, r, "dep-web-00001")
+	assertSlice(t, getSlice(t, client, "dep-web-00001"), []string{"10.0.0.1"}, testProxyPort)
+}
+
 func TestFlipDownToActivators(t *testing.T) {
 	pod := revisionPod("web-a", "web-00001", "10.0.0.1", true)
 	r, client := newTestReconciler(

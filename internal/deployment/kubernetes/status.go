@@ -8,24 +8,20 @@ import (
 	"net/url"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/deployment"
-	"orchestrator/internal/kube"
+	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/workload"
 	"slices"
 	"strconv"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// progressDeadlineExceeded is the Progressing condition reason set by the
-// deployment controller when the k8s-native spec.progressDeadlineSeconds
-// (mapped from our readyTimeoutSeconds) elapses without progress. Not
-// exported by k8s.io/api.
+// progressDeadlineExceeded is the Ready condition reason set by the direct-pod
+// controller when readyTimeoutSeconds elapses without progress.
 const progressDeadlineExceeded = "ProgressDeadlineExceeded"
 
 // Status returns the deployment's current state, aggregated marker-first:
-// revisions from the existing revision Deployments, the traffic table from
+// revisions from the existing Revision CRs, the traffic table from
 // the route, replica counts summed over the traffic-weighted revisions.
 func (o *Orchestrator) Status(ctx context.Context, id string) (*deployment.StatusResponse, error) {
 	m, err := o.getMarker(ctx, id)
@@ -77,7 +73,7 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 	var endpoints []*url.URL
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if !routed[pod.Labels[LabelRevision]] || !kube.PodReady(pod) || pod.Status.PodIP == "" {
+		if !routed[pod.Labels[LabelRevision]] || !podReadyForRevision(pod) || pod.Status.PodIP == "" {
 			continue
 		}
 		endpoints = append(endpoints, &url.URL{
@@ -90,7 +86,7 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 
 // deriveStatus assembles the StatusResponse for one marker.
 func (o *Orchestrator) deriveStatus(ctx context.Context, m marker) (*deployment.StatusResponse, error) {
-	deps, err := o.revisionDeployments(ctx, m.ID)
+	revisions, err := o.revisionResources(ctx, m.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,22 +98,22 @@ func (o *Orchestrator) deriveStatus(ctx context.Context, m marker) (*deployment.
 	}
 	resp := deployment.StatusResponse{
 		ID:        m.ID,
-		Revisions: make([]string, 0, len(deps)),
+		Revisions: make([]string, 0, len(revisions)),
 		Traffic:   targets,
 		Mode:      mode,
 	}
-	byRevision := make(map[string]*appsv1.Deployment, len(deps))
-	for i := range deps {
-		rev := deps[i].Labels[LabelRevision]
+	byRevision := make(map[string]*revisionapi.Revision, len(revisions))
+	for i := range revisions {
+		rev := revisions[i].Labels[LabelRevision]
 		resp.Revisions = append(resp.Revisions, rev)
-		byRevision[rev] = &deps[i]
+		byRevision[rev] = &revisions[i]
 	}
 
 	routed := routedSet(targets)
 	for rev := range routed {
-		if dep := byRevision[rev]; dep != nil {
-			resp.DesiredReplicas += desiredReplicas(dep)
-			resp.AvailableReplicas += int(dep.Status.AvailableReplicas)
+		if revision := byRevision[rev]; revision != nil {
+			resp.DesiredReplicas += int(revision.Spec.Replicas)
+			resp.AvailableReplicas += int(revision.Status.ReadyReplicas)
 		}
 	}
 
@@ -135,7 +131,7 @@ func (o *Orchestrator) deriveStatus(ctx context.Context, m marker) (*deployment.
 //   - some available                  → degraded
 //   - none available: failed when a routed revision's controller gave up
 //     (deadline exceeded / replica failure), else pending
-func deriveState(m marker, desired, available int, byRevision map[string]*appsv1.Deployment, routed map[string]bool) (state, message string) {
+func deriveState(m marker, desired, available int, byRevision map[string]*revisionapi.Revision, routed map[string]bool) (state, message string) {
 	switch {
 	case m.Deleting:
 		return deployment.StateDeleting, ""
@@ -165,32 +161,32 @@ func deriveState(m marker, desired, available int, byRevision map[string]*appsv1
 	return deployment.StatePending, ""
 }
 
-// revisionDeployments lists the deployment's revision Deployments, newest
+// revisionResources lists the deployment's Revisions, newest
 // first.
-func (o *Orchestrator) revisionDeployments(ctx context.Context, id string) ([]appsv1.Deployment, error) {
-	deps, err := o.client.AppsV1().Deployments(o.namespace).List(ctx, metav1.ListOptions{
+func (o *Orchestrator) revisionResources(ctx context.Context, id string) ([]revisionapi.Revision, error) {
+	revisions, err := o.revisions.List(ctx, o.namespace, metav1.ListOptions{
 		LabelSelector: LabelManagedBy + "=" + ManagedByValue + "," + LabelDeploymentID + "=" + id,
 	})
 	if err != nil {
 		return nil, apperrors.Internal("kubernetes.listRevisions", err)
 	}
-	slices.SortFunc(deps.Items, func(a, b appsv1.Deployment) int {
+	slices.SortFunc(revisions.Items, func(a, b revisionapi.Revision) int {
 		return cmp.Compare(revisionNumber(b.Labels[LabelRevision]), revisionNumber(a.Labels[LabelRevision]))
 	})
-	return deps.Items, nil
+	return revisions.Items, nil
 }
 
-// revisionNames returns every revision name that still has a Deployment or a
+// revisionNames returns every revision name that still has a Revision or a
 // Service, newest first — the teardown and retire inventory.
 func (o *Orchestrator) revisionNames(ctx context.Context, id string) ([]string, error) {
-	deps, err := o.revisionDeployments(ctx, id)
+	revisions, err := o.revisionResources(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]bool, len(deps))
-	names := make([]string, 0, len(deps))
-	for i := range deps {
-		rev := deps[i].Labels[LabelRevision]
+	seen := make(map[string]bool, len(revisions))
+	names := make([]string, 0, len(revisions))
+	for i := range revisions {
+		rev := revisions[i].Labels[LabelRevision]
 		seen[rev] = true
 		names = append(names, rev)
 	}
@@ -221,21 +217,11 @@ func routedSet(targets []deployment.Target) map[string]bool {
 	return set
 }
 
-func desiredReplicas(dep *appsv1.Deployment) int {
-	if dep.Spec.Replicas != nil {
-		return int(*dep.Spec.Replicas)
-	}
-	return 1
-}
-
-// rolloutFailure reports whether the deployment controller has given up on
-// the revision, with the condition message explaining why.
-func rolloutFailure(dep *appsv1.Deployment) (string, bool) {
-	for _, c := range dep.Status.Conditions {
-		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse && c.Reason == progressDeadlineExceeded {
-			return c.Message, true
-		}
-		if c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue {
+// rolloutFailure reports whether the revision controller has given up waiting
+// for readiness, with the condition message explaining why.
+func rolloutFailure(revision *revisionapi.Revision) (string, bool) {
+	for _, c := range revision.Status.Conditions {
+		if c.Type == revisionConditionReady && c.Status == metav1.ConditionFalse {
 			return c.Message, true
 		}
 	}

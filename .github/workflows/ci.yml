@@ -76,6 +76,7 @@ jobs:
           go build -o /dev/null ./cmd/jobs-service
           go build -o /dev/null ./cmd/job-sidecar
           go build -o /dev/null ./cmd/deployments-service
+          go build -o /dev/null ./cmd/pool-controller
           go build -o /dev/null ./cmd/sandbox-service
           go build -o /dev/null ./cmd/workload-sidecar
           go build -o /dev/null ./cmd/deployments-activator
@@ -152,6 +153,15 @@ jobs:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/deployments-service
         run: |
           ko build ./cmd/deployments-service \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push pool-controller
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/pool-controller
+        run: |
+          ko build ./cmd/pool-controller \
             --bare \
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
@@ -292,6 +302,8 @@ jobs:
 
       - uses: ko-build/setup-ko@v0.9
 
+      - uses: azure/setup-helm@v5
+
       - name: Create kind cluster
         uses: helm/kind-action@v1
         with:
@@ -304,11 +316,24 @@ jobs:
           KO_DOCKER_REPO=ko.local/job-sidecar ko build --local --bare ./cmd/job-sidecar
           KO_DOCKER_REPO=ko.local/workload-sidecar ko build --local --bare ./cmd/workload-sidecar
           KO_DOCKER_REPO=ko.local/deployments-activator ko build --local --bare ./cmd/deployments-activator
+          KO_DOCKER_REPO=ko.local/pool-controller ko build --local --bare ./cmd/pool-controller
           KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
-          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-shim:latest --name orchestrator-dev
+          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-controller:latest ko.local/pool-shim:latest --name orchestrator-dev
 
       - name: Install Gateway API + Traefik
         run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-gateway.sh
+
+      - name: Install Revision CRD
+        run: |
+          helm template orchestrator charts/orchestrator \
+            --namespace orchestrator-integration \
+            --set deployments.enabled=true \
+            --show-only templates/revision-crd.yaml \
+            | kubectl --context kind-orchestrator-dev apply -f -
+          kubectl --context kind-orchestrator-dev wait \
+            --for=condition=Established \
+            crd/revisions.orchestrator.open-runtimes.io \
+            --timeout=60s
 
       - name: Preload worker images
         # Speeds up tests by avoiding kubelet pulling from upstream during each run.

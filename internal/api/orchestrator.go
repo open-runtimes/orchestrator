@@ -3,11 +3,9 @@ package api
 import (
 	"net/http"
 	"orchestrator/internal/deployment"
-	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
 	"orchestrator/internal/observability"
-	"orchestrator/internal/pool"
 	"orchestrator/internal/sandbox"
 )
 
@@ -25,11 +23,7 @@ type OrchestratorRouterConfig struct {
 	ArtifactEmitter ArtifactEmitter
 
 	DeploymentService *deployment.Service
-	PoolService       *pool.Service
 	SandboxService    *sandbox.Service
-
-	// Dispatcher delivers async pool activation results.
-	Dispatcher dispatcher.Queue
 }
 
 // NewOrchestratorRouter mounts every configured plane on one mux behind one
@@ -44,9 +38,6 @@ func NewOrchestratorRouter(cfg OrchestratorRouterConfig) http.Handler {
 	}
 	if cfg.DeploymentService != nil {
 		registerDeploymentRoutes(mux, auth, cfg.DeploymentService)
-	}
-	if cfg.PoolService != nil {
-		registerPoolRoutes(mux, auth, cfg.PoolService, cfg.Dispatcher)
 	}
 	if cfg.SandboxService != nil {
 		registerSandboxRoutes(mux, auth, cfg.SandboxService)

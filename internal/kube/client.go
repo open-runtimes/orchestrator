@@ -10,12 +10,16 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	gatewayclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
+	"k8s.io/client-go/util/flowcontrol"
 )
 
-// NewClient builds a Kubernetes client. When metrics is non-nil, all API
-// requests are instrumented with latency/error recorders.
-func NewClient(kubeconfig, kubeContext string, metrics *observability.Metrics) (*kubernetes.Clientset, error) {
+// NewConfig resolves the rest config every client of one process is built
+// from. When metrics is non-nil, all API requests are instrumented with
+// latency/error recorders. A positive qps installs one shared token bucket,
+// so typed, dynamic, and Gateway clients derived from the same config draw on
+// a single budget rather than one bucket each; zero retains client-go
+// defaults.
+func NewConfig(kubeconfig, kubeContext string, metrics *observability.Metrics, qps float32, burst int) (*rest.Config, error) {
 	restCfg, err := buildRestConfig(kubeconfig, kubeContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build kube config: %w", err)
@@ -23,23 +27,21 @@ func NewClient(kubeconfig, kubeContext string, metrics *observability.Metrics) (
 	if metrics != nil {
 		restCfg.Wrap(newMetricsTransport(metrics))
 	}
+	if qps > 0 {
+		restCfg.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(qps, max(burst, 1))
+	}
+	return restCfg, nil
+}
+
+// NewClient builds a Kubernetes client with client-go's default rate limits.
+func NewClient(kubeconfig, kubeContext string, metrics *observability.Metrics) (*kubernetes.Clientset, error) {
+	restCfg, err := NewConfig(kubeconfig, kubeContext, metrics, 0, 0)
+	if err != nil {
+		return nil, err
+	}
 	cs, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kube client: %w", err)
-	}
-	return cs, nil
-}
-
-// NewGatewayClient builds a Gateway API client (HTTPRoute reconciliation),
-// resolving its rest config exactly like NewClient.
-func NewGatewayClient(kubeconfig, kubeContext string) (*gatewayclient.Clientset, error) {
-	restCfg, err := buildRestConfig(kubeconfig, kubeContext)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build kube config: %w", err)
-	}
-	cs, err := gatewayclient.NewForConfig(restCfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gateway client: %w", err)
 	}
 	return cs, nil
 }

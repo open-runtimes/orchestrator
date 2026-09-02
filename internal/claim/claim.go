@@ -1,5 +1,5 @@
 // Package claim owns the warm-unit claim protocol shared by every consumer of
-// standing warm capacity — pool activations, sandboxes, deployment cold
+// standing warm capacity — deployment Revisions and sandboxes, including cold
 // starts: iterate the free warm units, win one via the sidecar claim POST (the
 // POST is the claim — the sidecar is the serialization point), fall to the
 // fleet's burst policy on exhaustion, and retry once when a cold-created unit
@@ -32,12 +32,12 @@ const (
 )
 
 // ErrConflict is the racing loser's result: the unit's sidecar already
-// accepted another activation. The flow retries the next warm unit.
+// accepted another claim. The flow retries the next warm unit.
 var ErrConflict = errors.New("unit already claimed")
 
 // Poison is the 422 claim outcome: the sidecar accepted the claim but
 // artifact materialization failed — the unit is poisoned (never resold) and
-// the activation has failed.
+// the claim has failed.
 //
 //nolint:errname // single-word names; the package is the namespace
 type Poison struct {
@@ -81,7 +81,7 @@ type Poster interface {
 
 // Claim wins one warm unit for the request. With no free unit the pool's
 // burst policy decides: reject (429-mapped) or cold-create. Returns
-// *Poison when the winning unit's artifacts failed — the activation is
+// *Poison when the winning unit's artifacts failed — the claim is
 // failed, not errored.
 func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID, burst string, req *workload.ClaimRequest) (*Unit, error) {
 	unit, ok, err := tryWarm(ctx, inv, post, rec, poolID, req)
@@ -93,14 +93,14 @@ func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID
 		if rec != nil {
 			rec.RecordPoolBurst(ctx, poolID, BurstReject)
 		}
-		slog.Warn("Pool exhausted, rejecting activation", "poolId", poolID, "activationId", req.ActivationID)
+		slog.Warn("Pool exhausted, rejecting claim", "poolId", poolID, "claimId", req.ClaimID)
 		return nil, exhausted(poolID)
 	}
 
 	if rec != nil {
 		rec.RecordPoolBurst(ctx, poolID, BurstCold)
 	}
-	slog.Warn("Pool exhausted, cold-creating capacity", "poolId", poolID, "activationId", req.ActivationID)
+	slog.Warn("Pool exhausted, cold-creating capacity", "poolId", poolID, "claimId", req.ClaimID)
 	created, err := inv.Create(ctx)
 	if err != nil {
 		return nil, err
@@ -110,7 +110,7 @@ func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID
 	case err == nil:
 		return created, nil
 	case errors.Is(err, ErrConflict):
-		// The cold unit was stolen by a racing activation; one more warm pass.
+		// The cold unit was stolen by a racing claim; one more warm pass.
 		if rec != nil {
 			rec.RecordPoolConflict(ctx, poolID)
 		}
@@ -136,8 +136,8 @@ func recordPoison(ctx context.Context, rec Recorder, poolID string, err error) e
 // tryWarm claims the first free unit that accepts; ok=false with nil error
 // means none was free. Conflicts move to the next unit; transient claim
 // failures are logged and skipped — one broken unit must not fail an
-// activation while others are free. Poison stops the pass: the sidecar
-// accepted, so the activation is spent.
+// claim while others are free. Poison stops the pass: the sidecar accepted,
+// so the claim is spent.
 func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID string, req *workload.ClaimRequest) (*Unit, bool, error) {
 	units, err := inv.Free(ctx)
 	if err != nil {
@@ -183,7 +183,7 @@ func Outcome(err error, unitID string) error {
 	return apperrors.Internal("pool.claim", err)
 }
 
-// httpPoster is the production Poster: it POSTs the activation to the unit's
+// httpPoster is the production Poster: it POSTs the claim to the unit's
 // sidecar admin port with the unit's bearer token.
 type httpPoster struct {
 	client *http.Client

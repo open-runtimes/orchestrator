@@ -31,6 +31,9 @@ type Request struct {
 	TimeoutSeconds      int `json:"timeoutSeconds,omitempty"`      // per-request total → 504; default 300
 	StartTimeoutSeconds int `json:"startTimeoutSeconds,omitempty"` // activator wait for a ready endpoint → 503; default 300
 	ReadyTimeoutSeconds int `json:"readyTimeoutSeconds,omitempty"` // ready deadline → failed; default 600
+	// TerminationGracePeriodSeconds is part of the fixed pod shape used for
+	// transparent warm-pool matching. Zero means the Kubernetes default (30s).
+	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
 // Probes — only Readiness is sidecar-run (honors ms granularity); Liveness and

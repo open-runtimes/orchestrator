@@ -154,7 +154,8 @@ func podGone(t *testing.T, cs *fake.Clientset, name string) bool {
 func ptrTo[T any](v T) *T { return &v }
 
 func request(id string) *sandbox.Request {
-	return &sandbox.Request{ID: id, Pool: "py", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300)}
+	return &sandbox.Request{ID: id, Pool: "py", Image: "node:22-slim", Port: 3000,
+		Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300)}
 }
 
 func TestCreate_ClaimsAndStampsTheToken(t *testing.T) {
@@ -375,9 +376,9 @@ func TestDelete_IdleSandboxTornDownByTheControlLoop(t *testing.T) {
 	}).Hooks())
 	t0 := time.Now()
 	c.Now = func() time.Time { return t0 }
-	c.Tick(t.Context()) // baseline
+	c.TickClaims(t.Context()) // baseline
 	c.Now = func() time.Time { return t0.Add(61 * time.Second) }
-	c.Tick(t.Context()) // no traffic across the window → torn down
+	c.TickClaims(t.Context()) // no traffic across the window → torn down
 
 	if !podGone(t, cs, "sbx-py-aaaaa") {
 		t.Error("want the abandoned sandbox reaped — it holds a warm pod hostage")
@@ -561,6 +562,28 @@ func TestCreate_PoollessTakesItsShapeFromTheRequest(t *testing.T) {
 		return v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == "tenant-pvc"
 	}) {
 		t.Errorf("the PVC was not attached to the pod: %+v", pod.Spec.Volumes)
+	}
+}
+
+func TestCreate_ExhaustedMatchingPoolFallsBackToDirectPod(t *testing.T) {
+	t.Parallel()
+	p := testPool("py")
+	o, cs, _ := newTestOrchestrator(t, p)
+	readyOnCreate(cs, "10.0.0.9")
+
+	status, err := o.Create(t.Context(), request("agent"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if status.State != sandbox.StateReady {
+		t.Fatalf("state = %q, want ready", status.State)
+	}
+	pods, err := cs.CoreV1().Pods(testNS).List(t.Context(), metav1.ListOptions{})
+	if err != nil || len(pods.Items) != 1 {
+		t.Fatalf("direct fallback pods = %d (%v), want 1", len(pods.Items), err)
+	}
+	if got := pods.Items[0].Labels[LabelPoolID]; got != "agent" {
+		t.Errorf("fallback pod pool label = %q, want request-unique label", got)
 	}
 }
 

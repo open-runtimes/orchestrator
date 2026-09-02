@@ -8,6 +8,25 @@ import (
 	"testing"
 )
 
+func TestValidate_ImageRequired(t *testing.T) {
+	t.Parallel()
+	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
+	req := &Request{ID: "app", Image: "nginx", Port: 8080}
+	s.applyDefaults(req)
+	if err := s.validate(req); err != nil {
+		t.Fatalf("image deployment: %v", err)
+	}
+
+	missing := &Request{ID: "app", Port: 8080}
+	s.applyDefaults(missing)
+	if err := s.validate(missing); !errors.Is(err, apperrors.ErrValidation) {
+		t.Errorf("missing image: got %v", err)
+	}
+	if _, err := Parse([]byte(`{"id":"app","pool":"node"}`)); err == nil {
+		t.Error("public pool field must be rejected as unknown")
+	}
+}
+
 func TestValidate_RuntimeClass(t *testing.T) {
 	t.Parallel()
 	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}

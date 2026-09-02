@@ -32,6 +32,19 @@ func testRequest() *deployment.Request {
 	}
 }
 
+func TestBuildRevision_RetainsTemplateAndClaim(t *testing.T) {
+	req := testRequest()
+	req.Port, req.Concurrency = 3000, 7
+	req.Probes = &deployment.Probes{Readiness: &deployment.Probe{Path: "/ready", PeriodMillis: 250}}
+	revision := buildRevision(req, Config{Namespace: "orchestrator"}, "web-00001")
+	if revision.Spec.Template == nil || revision.Spec.Claim == nil {
+		t.Fatalf("revision acquisition data = %+v", revision.Spec)
+	}
+	if revision.Spec.Claim.Port != 3000 || revision.Spec.Claim.Concurrency != 7 || revision.Spec.Claim.ReadinessPath != "/ready" {
+		t.Fatalf("claim = %+v", revision.Spec.Claim)
+	}
+}
+
 func mustSpecJSON(t *testing.T, req *deployment.Request) string {
 	t.Helper()
 	b, err := json.Marshal(req)
@@ -41,12 +54,12 @@ func mustSpecJSON(t *testing.T, req *deployment.Request) string {
 	return string(b)
 }
 
-func TestBuildDeployment_BasicStructure(t *testing.T) {
+func TestBuildRevision_BasicStructure(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	cfg := Config{SidecarImage: "sidecar:latest", ServiceAccount: "deployments", RunAsUser: 65532}
 
-	d := buildDeployment(req, cfg, "web-00001")
+	d := buildRevision(req, cfg, "web-00001")
 
 	if d.Name != "dep-web-00001" {
 		t.Errorf("Name: want dep-web-00001, got %s", d.Name)
@@ -56,16 +69,11 @@ func TestBuildDeployment_BasicStructure(t *testing.T) {
 			t.Errorf("labels: got %v", labels)
 		}
 	}
-	if d.Spec.Replicas == nil || *d.Spec.Replicas != 2 {
+	if d.Spec.Replicas != 2 {
 		t.Errorf("Replicas: want 2, got %v", d.Spec.Replicas)
 	}
-	if d.Spec.ProgressDeadlineSeconds == nil || *d.Spec.ProgressDeadlineSeconds != 600 {
-		t.Errorf("ProgressDeadlineSeconds: want 600, got %v", d.Spec.ProgressDeadlineSeconds)
-	}
-	// Pod selector is the revision label ALONE — each immutable revision owns
-	// exactly its own pods.
-	if !reflect.DeepEqual(d.Spec.Selector.MatchLabels, map[string]string{LabelRevision: "web-00001"}) {
-		t.Errorf("Selector: got %v", d.Spec.Selector.MatchLabels)
+	if d.Spec.ReadyTimeoutSeconds != 600 {
+		t.Errorf("ReadyTimeoutSeconds: want 600, got %v", d.Spec.ReadyTimeoutSeconds)
 	}
 
 	spec := d.Spec.Template.Spec
@@ -89,12 +97,21 @@ func TestBuildDeployment_BasicStructure(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_ProxySidecar(t *testing.T) {
+func TestBuildRevision_TerminationGraceIsPartOfTemplate(t *testing.T) {
+	req := testRequest()
+	req.TerminationGracePeriodSeconds = 45
+	spec := buildRevision(req, Config{}, "web-00001").Spec.Template.Spec
+	if spec.TerminationGracePeriodSeconds == nil || *spec.TerminationGracePeriodSeconds != 45 {
+		t.Fatalf("termination grace = %v", spec.TerminationGracePeriodSeconds)
+	}
+}
+
+func TestBuildRevision_ProxySidecar(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	cfg := Config{SidecarImage: "sidecar:latest", SidecarImagePullPolicy: "Never", RunAsUser: 65532}
 
-	p := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.InitContainers[0]
+	p := buildRevision(req, cfg, "web-00001").Spec.Template.Spec.InitContainers[0]
 
 	if p.Image != "sidecar:latest" || p.ImagePullPolicy != corev1.PullNever {
 		t.Errorf("image/pull: got %s/%s", p.Image, p.ImagePullPolicy)
@@ -127,14 +144,14 @@ func TestBuildDeployment_ProxySidecar(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_ProxyReadinessEnv(t *testing.T) {
+func TestBuildRevision_ProxyReadinessEnv(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	req.Probes = &deployment.Probes{
 		Readiness: &deployment.Probe{Path: "/healthz", PeriodMillis: 250, TimeoutMillis: 100, FailureThreshold: 5},
 	}
 
-	p := buildDeployment(req, Config{}, "web-00001").Spec.Template.Spec.InitContainers[0]
+	p := buildRevision(req, Config{}, "web-00001").Spec.Template.Spec.InitContainers[0]
 
 	for name, want := range map[string]string{
 		"PROXY_READINESS_PATH":              "/healthz",
@@ -150,13 +167,13 @@ func TestBuildDeployment_ProxyReadinessEnv(t *testing.T) {
 
 // A custom workspace flows to the worker's WorkingDir and every workspace
 // mount, so the shared-volume contract holds across containers.
-func TestBuildDeployment_CustomWorkspace(t *testing.T) {
+func TestBuildRevision_CustomWorkspace(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	req.Workspace = "/usr/local/server"
 	cfg := Config{WorkerImagePullPolicy: "IfNotPresent"}
 
-	w := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.Containers[0]
+	w := buildRevision(req, cfg, "web-00001").Spec.Template.Spec.Containers[0]
 
 	if w.WorkingDir != "/usr/local/server" {
 		t.Errorf("WorkingDir: got %s", w.WorkingDir)
@@ -168,12 +185,12 @@ func TestBuildDeployment_CustomWorkspace(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_Worker(t *testing.T) {
+func TestBuildRevision_Worker(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	cfg := Config{WorkerImagePullPolicy: "IfNotPresent"}
 
-	w := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec.Containers[0]
+	w := buildRevision(req, cfg, "web-00001").Spec.Template.Spec.Containers[0]
 
 	if w.Image != "nginx:1.27" || w.ImagePullPolicy != corev1.PullIfNotPresent {
 		t.Errorf("image/pull: got %s/%s", w.Image, w.ImagePullPolicy)
@@ -212,18 +229,18 @@ func TestBuildDeployment_Worker(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_Tolerations(t *testing.T) {
+func TestBuildRevision_Tolerations(t *testing.T) {
 	t.Parallel()
 	cfg := Config{Tolerations: []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}}
-	got := buildDeployment(testRequest(), cfg, "web-00001").Spec.Template.Spec.Tolerations
+	got := buildRevision(testRequest(), cfg, "web-00001").Spec.Template.Spec.Tolerations
 	if len(got) != 1 || got[0].Key != "workload" {
 		t.Errorf("tolerations: want workload=edge-builds:NoSchedule, got %+v", got)
 	}
 }
 
-func TestBuildDeployment_ProxyResources(t *testing.T) {
+func TestBuildRevision_ProxyResources(t *testing.T) {
 	t.Parallel()
-	p := buildDeployment(testRequest(), Config{}, "web-00001").Spec.Template.Spec.InitContainers[0]
+	p := buildRevision(testRequest(), Config{}, "web-00001").Spec.Template.Spec.InitContainers[0]
 
 	if cpu := p.Resources.Requests.Cpu(); cpu.MilliValue() != 25 {
 		t.Errorf("proxy cpu request: want 25m, got %s", cpu)
@@ -239,9 +256,9 @@ func TestBuildDeployment_ProxyResources(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_TopologySpread(t *testing.T) {
+func TestBuildRevision_TopologySpread(t *testing.T) {
 	t.Parallel()
-	spec := buildDeployment(testRequest(), Config{}, "web-00001").Spec.Template.Spec
+	spec := buildRevision(testRequest(), Config{}, "web-00001").Spec.Template.Spec
 
 	if len(spec.TopologySpreadConstraints) != 1 {
 		t.Fatalf("TopologySpreadConstraints: want 1, got %+v", spec.TopologySpreadConstraints)
@@ -310,11 +327,11 @@ func TestBuildPDB_Shape(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_WorkerNoCommandNoResources(t *testing.T) {
+func TestBuildRevision_WorkerNoCommandNoResources(t *testing.T) {
 	t.Parallel()
 	req := &deployment.Request{ID: "bare", Image: "nginx", Port: 80}
 
-	d := buildDeployment(req, Config{}, "bare-00001")
+	d := buildRevision(req, Config{}, "bare-00001")
 
 	w := d.Spec.Template.Spec.Containers[0]
 	if w.Command != nil {
@@ -323,15 +340,15 @@ func TestBuildDeployment_WorkerNoCommandNoResources(t *testing.T) {
 	if len(w.Resources.Limits) != 0 || len(w.Resources.Requests) != 0 {
 		t.Errorf("Resources: want empty, got %+v", w.Resources)
 	}
-	if d.Spec.Replicas != nil {
-		t.Errorf("Replicas: want nil (K8s default 1), got %v", *d.Spec.Replicas)
+	if d.Spec.Replicas != 0 {
+		t.Errorf("Replicas: want 0 for an unnormalised request, got %v", d.Spec.Replicas)
 	}
-	if d.Spec.ProgressDeadlineSeconds != nil {
-		t.Errorf("ProgressDeadlineSeconds: want nil (K8s default), got %v", *d.Spec.ProgressDeadlineSeconds)
+	if d.Spec.ReadyTimeoutSeconds != 0 {
+		t.Errorf("ReadyTimeoutSeconds: want 0, got %v", d.Spec.ReadyTimeoutSeconds)
 	}
 }
 
-func TestBuildDeployment_KubeletProbes(t *testing.T) {
+func TestBuildRevision_KubeletProbes(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	req.Probes = &deployment.Probes{
@@ -339,7 +356,7 @@ func TestBuildDeployment_KubeletProbes(t *testing.T) {
 		Startup:  &deployment.Probe{PeriodMillis: 1000},
 	}
 
-	w := buildDeployment(req, Config{}, "web-00001").Spec.Template.Spec.Containers[0]
+	w := buildRevision(req, Config{}, "web-00001").Spec.Template.Spec.Containers[0]
 
 	live := w.LivenessProbe
 	if live == nil || live.HTTPGet == nil || live.HTTPGet.Path != "/live" || live.HTTPGet.Port.IntValue() != 8080 {
@@ -359,20 +376,20 @@ func TestBuildDeployment_KubeletProbes(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_NoProbes(t *testing.T) {
+func TestBuildRevision_NoProbes(t *testing.T) {
 	t.Parallel()
-	w := buildDeployment(testRequest(), Config{}, "web-00001").Spec.Template.Spec.Containers[0]
+	w := buildRevision(testRequest(), Config{}, "web-00001").Spec.Template.Spec.Containers[0]
 	if w.LivenessProbe != nil || w.StartupProbe != nil {
 		t.Errorf("want no kubelet probes, got liveness=%+v startup=%+v", w.LivenessProbe, w.StartupProbe)
 	}
 }
 
-func TestBuildDeployment_PersistentVolume(t *testing.T) {
+func TestBuildRevision_PersistentVolume(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	req.Volumes = []volume.Volume{{Source: "state-pvc", Path: "/state"}}
 
-	spec := buildDeployment(req, Config{}, "web-00001").Spec.Template.Spec
+	spec := buildRevision(req, Config{}, "web-00001").Spec.Template.Spec
 
 	var claim string
 	for _, v := range spec.Volumes {
@@ -389,14 +406,14 @@ func TestBuildDeployment_PersistentVolume(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_Artifacts(t *testing.T) {
+func TestBuildRevision_Artifacts(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	req.Artifacts = []artifact.Artifact{
 		&artifact.Write{ID: "w", In: "hello", Out: "index.html"},
 	}
 
-	spec := buildDeployment(req, Config{SidecarImage: "sidecar:latest", JobSidecarImage: "artifact:latest"}, "web-00001").Spec.Template.Spec
+	spec := buildRevision(req, Config{SidecarImage: "sidecar:latest", JobSidecarImage: "artifact:latest"}, "web-00001").Spec.Template.Spec
 
 	if len(spec.InitContainers) != 2 {
 		t.Fatalf("InitContainers: want [artifact-pre proxy], got %d", len(spec.InitContainers))
@@ -423,13 +440,13 @@ func TestBuildDeployment_Artifacts(t *testing.T) {
 	}
 }
 
-func TestBuildDeployment_SecurityFloor(t *testing.T) {
+func TestBuildRevision_SecurityFloor(t *testing.T) {
 	t.Parallel()
 	req := testRequest()
 	req.Artifacts = []artifact.Artifact{&artifact.Write{ID: "w", In: "x", Out: "y"}}
 	cfg := Config{SidecarImage: "sidecar:latest", RunAsUser: 65532}
 
-	spec := buildDeployment(req, cfg, "web-00001").Spec.Template.Spec
+	spec := buildRevision(req, cfg, "web-00001").Spec.Template.Spec
 	all := append(spec.InitContainers, spec.Containers...)
 	if len(all) != 3 {
 		t.Fatalf("want 3 containers, got %d", len(all))
@@ -530,13 +547,13 @@ func envValue(env []corev1.EnvVar, name string) string {
 // the privilege is per-request, so an ordinary revision keeps its hardened
 // sidecar. The workload is held by a startup probe until the mounts are in
 // place, which is what makes the sidecar's mount visible to it in time.
-func TestBuildDeployment_MountCapabilityIsPerRequest(t *testing.T) {
+func TestBuildRevision_MountCapabilityIsPerRequest(t *testing.T) {
 	t.Parallel()
 	base := func(arts ...artifact.Artifact) *deployment.Request {
 		return &deployment.Request{ID: "web", Image: "app:v1", Port: 8080, Artifacts: arts}
 	}
 
-	plain := buildDeployment(base(), Config{RunAsUser: 65532}, "web-00001").Spec.Template.Spec
+	plain := buildRevision(base(), Config{RunAsUser: 65532}, "web-00001").Spec.Template.Spec
 	sidecar := containerNamed(t, plain, ContainerProxy)
 	if sidecar.SecurityContext.Privileged != nil && *sidecar.SecurityContext.Privileged {
 		t.Error("a revision that does not mount must not get a privileged sidecar")
@@ -551,7 +568,7 @@ func TestBuildDeployment_MountCapabilityIsPerRequest(t *testing.T) {
 		t.Error("the sidecar has no business knowing about artifacts it will not mount")
 	}
 
-	mounting := buildDeployment(base(
+	mounting := buildRevision(base(
 		&artifact.Download{ID: "img", In: "https://acme.test/x.erofs", Out: "x.erofs"},
 		&artifact.Mount{ID: "tree", In: "x.erofs", Out: "work", Depends: "img"},
 	), Config{RunAsUser: 65532}, "web-00001").Spec.Template.Spec

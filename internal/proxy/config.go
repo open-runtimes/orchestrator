@@ -1,5 +1,5 @@
 // Package proxy is the workload-sidecar: a reverse proxy fronting the user
-// container in every deployment replica, pool activation and sandbox. Traffic
+// container in every deployment replica and sandbox. Traffic
 // reaches the container only through it. It owns the pod-local invariants:
 // readiness gating, graceful drain, per-request timeout, and the hard
 // concurrency cap. See docs/deployments.md.

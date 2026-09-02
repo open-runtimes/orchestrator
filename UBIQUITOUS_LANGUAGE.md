@@ -57,7 +57,7 @@
 | --- | --- | --- |
 | **Callback** | An HTTP webhook the orchestrator calls to report job, deployment, or activation events | Webhook, notification, event |
 | **CloudEvent** | The CloudEvents 1.0 envelope used to structure each callback payload | Event, message |
-| **Event type** | The string classifying a callback (`orchestrator.job.start`, `.artifact`, `.log`, `.exit`, `orchestrator.pool.activation.result`) | Event name, topic |
+| **Event type** | The string classifying a callback (`orchestrator.job.start`, `.artifact`, `.log`, `.exit`) | Event name, topic |
 | **Signing key** | An HMAC-SHA256 secret used to sign callback payloads for verification | Secret, token, API key |
 | **Event filter** | The `events` list on a Callback that restricts which event types are delivered; empty means all | Subscription, event mask |
 
@@ -80,7 +80,7 @@
 | **Host** | A hostname routing external traffic to exactly one Deployment; a Deployment may own several, the first being primary | Domain, URL, alias |
 | **Marker** | The per-Deployment record of lifecycle state: latest revision, last ready revision, traffic mode | State ConfigMap, metadata |
 | **Spec Secret** | The at-rest store of a Deployment's full spec, including secret material like signing keys | Spec annotation, marker spec |
-| **Workload sidecar** | The reverse proxy in front of every serving workload — Revision replica, pool activation, or Sandbox: readiness, drain, per-request timeout, concurrency cap, request counting, and the Claim endpoint | Deployment sidecar, sidecar (unqualified), queue-proxy |
+| **Workload sidecar** | The reverse proxy in front of every serving workload — created or pool-claimed Revision replica, or Sandbox: readiness, drain, per-request timeout, concurrency cap, request counting, and the Claim endpoint | Deployment sidecar, sidecar (unqualified), queue-proxy |
 | **Gateway** | The Gateway API edge that terminates Hosts and applies the traffic table | Ingress, load balancer |
 
 ## Traffic

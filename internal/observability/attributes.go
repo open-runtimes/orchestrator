@@ -27,6 +27,7 @@ const (
 	attrPool       = "pool"
 	attrKind       = "kind" // which warm-pool consumer: pool | sandbox
 	attrPolicy     = "policy"
+	attrReason     = "reason"
 )
 
 func methodAttr(method string) attribute.KeyValue {
@@ -98,6 +99,10 @@ func poolAttr(id string) attribute.KeyValue {
 
 func policyAttr(policy string) attribute.KeyValue {
 	return attribute.String(attrPolicy, policy)
+}
+
+func reasonAttr(reason string) attribute.KeyValue {
+	return attribute.String(attrReason, reason)
 }
 
 // WithMethod returns a metric option with the method attribute.

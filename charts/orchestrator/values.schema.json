@@ -24,6 +24,18 @@
     "imagePullSecrets": {
       "$ref": "#/$defs/imagePullSecrets"
     },
+    "poolController": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "image": { "$ref": "#/$defs/pullableImage" },
+        "leaderElection": { "$ref": "#/$defs/leaderElection" },
+        "resources": { "$ref": "#/$defs/resources" }
+      }
+    },
     "replicaCount": {
       "type": "integer",
       "minimum": 0
@@ -268,6 +280,18 @@
           "type": "integer",
           "minimum": 0
         },
+        "revisionWorkers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "clientQPS": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "clientBurst": {
+          "type": "integer",
+          "minimum": 1
+        },
         "image": {
           "$ref": "#/$defs/pullableImage"
         },
@@ -365,7 +389,7 @@
         },
         "pools": {
           "type": "array",
-          "description": "pkg/pool.Pool entries. id, image and port are required; the service rejects the rest at startup.",
+          "description": "Transparent deployment warm shapes. id, image, port, cpu and memory are required; command/environment defaults and duplicate fixed shapes are rejected by the service.",
           "items": {
             "$ref": "#/$defs/pool"
           }
@@ -434,7 +458,7 @@
         },
         "pools": {
           "type": "array",
-          "description": "internal/pool.Pool entries, same schema as deployments.pools. The image must serve the sandbox contract, so command and port name its entrypoint and listen port.",
+          "description": "Operator-only warm pod shapes matched transparently against complete sandbox requests. Pool IDs are never part of the sandbox API.",
           "items": {
             "$ref": "#/$defs/pool"
           }
@@ -556,7 +580,9 @@
       "required": [
         "id",
         "image",
-        "port"
+        "port",
+        "cpu",
+        "memory"
       ],
       "properties": {
         "id": {
@@ -566,9 +592,6 @@
         "image": {
           "type": "string",
           "minLength": 1
-        },
-        "command": {
-          "type": "string"
         },
         "port": {
           "$ref": "#/$defs/port"
@@ -599,15 +622,8 @@
             "reject"
           ]
         },
-        "maxIdleSeconds": {
-          "type": "integer",
-          "minimum": 0
-        },
         "mounts": {
           "type": "boolean"
-        },
-        "environment": {
-          "$ref": "#/$defs/stringMap"
         },
         "volumes": {
           "type": "array",

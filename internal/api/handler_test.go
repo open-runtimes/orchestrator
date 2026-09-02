@@ -37,6 +37,24 @@ func TestRoutePattern(t *testing.T) {
 	}
 }
 
+func TestParseSandboxRejectsPublicPoolSelection(t *testing.T) {
+	t.Parallel()
+	_, err := parseSandbox([]byte(`{"image":"node:22-slim","port":3000,"pool":"py"}`))
+	if err == nil {
+		t.Fatal("pool must be an unknown API field")
+	}
+}
+
+func TestSandboxPoolRoutesAreAbsent(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	registerSandboxRoutes(mux, func(h http.Handler) http.Handler { return h }, nil)
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/sandbox-pool", nil)
+	if got := routePattern(mux, request); got != "other" {
+		t.Fatalf("removed sandbox pool route matched %q", got)
+	}
+}
+
 // The probes are mounted for every plane by registerHealthRoutes, so they are
 // tested through the mux rather than through a handler method.
 func TestHealthRoutes(t *testing.T) {

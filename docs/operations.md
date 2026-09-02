@@ -1,6 +1,6 @@
 # Operations Guide
 
-How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), [pools](pools.md), and [sandboxes](sandboxes.md) guides instead.
+How to deploy and configure the orchestrator. Consumers of the API want the [jobs](jobs.md), [deployments](deployments.md), and [sandboxes](sandboxes.md) guides; [pools](pools.md) describe optional Revision capacity.
 
 - [What gets deployed](#what-gets-deployed)
 - [Prerequisites](#prerequisites)
@@ -23,9 +23,10 @@ Every component is opt-in — a default install renders nothing.
 | Service | Enable with | Serves |
 | --- | --- | --- |
 | **jobs** | `jobs.enabled` | `/v1/jobs` — run-to-completion workloads (`batch/v1.Job` + a native sidecar per job) |
-| **deployments** | `deployments.enabled` | `/v1/deployments` and `/v1/deployment-pools` — long-lived HTTP workloads and warm pools |
+| **deployments** | `deployments.enabled` | `/v1/deployments` — long-lived HTTP workloads, optionally backed by warm capacity |
+| **pool controller** | `poolController.enabled` | Bare warm-pod inventory for every enabled Revision and sandbox pool kind |
 | **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
-| **sandbox** | `sandbox.enabled` | `/v1/sandbox` and `/v1/sandbox-pool` — live workspaces at their own hostnames |
+| **sandbox** | `sandbox.enabled` | `/v1/sandbox` — live workspaces at their own hostnames |
 | **sandbox proxy** | `sandbox.proxy.enabled` | The data plane every sandbox request passes through, behind one wildcard route |
 
 All derive their state from the cluster: restarts and replica failovers lose nothing, and there is no database.
@@ -122,22 +123,25 @@ deployments:
   pools:
     - id: py
       image: python:3.12-slim
+      port: 8000
       size: 4                # warm pods kept ready
       cpu: 1
       memory: 512
-      burst: reject          # reject (429) | cold (create on demand)
+      burst: reject          # exhausted → direct fallback
     - id: node
       image: node:22-slim
       size: 2
       port: 3000             # >0 makes it an HTTP pool
+      cpu: 1
+      memory: 512
       burst: cold
 ```
 
-Each pool keeps `size` pods warm at all times; claimed pods are replaced off the request path. See the [pools guide](pools.md) for the consumer side.
+Each pool keeps `size` pods warm at all times. Deployment users always submit image, port, CPU, memory, and the rest of their desired spec; the deployments service claims from an exact-shape match, while the generic `pool-controller` replenishes bare capacity off the request path. The same binary maintains sandbox pools under their separate pod contract. With no match or no accepted warm capacity the deployments service creates directly from the same Revision template. There is no deployment-pool API. See the [pools guide](pools.md).
 
 ## Sandboxes
 
-[Sandboxes](sandboxes.md) are live workspaces reached at their own hostnames. A caller either claims one from a warm pool you declare, or [creates one without a pool](sandboxes.md#a-sandbox-with-no-pool) by naming an image — so `sandbox.pools` is optional, and a domain plus the proxy is enough to serve the API. Pools buy sub-second creates; poolless costs a cold start and needs no capacity planning. Operator config:
+[Sandboxes](sandboxes.md) are live workspaces reached at their own hostnames. Callers always submit a complete pod shape; `sandbox.pools` is optional operator-only capacity that is matched transparently. An exact match buys a sub-second claim, while no match or exhausted capacity creates the same pod directly. Operator config:
 
 ```yaml
 sandbox:
@@ -147,9 +151,10 @@ sandbox:
     - id: py
       image: python:3.12-slim    # any runtime image: the agent is installed into it
       port: 3000                 # where the agent listens; no command needed
+      cpu: 1
+      memory: 512
       size: 4
       runtimeClass: gvisor       # untrusted code is the expected workload here
-      maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod
   proxy:
     enabled: true                # the wildcard data plane every sandbox request passes through
 ```
@@ -164,7 +169,7 @@ Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-b
 | --- | --- |
 | [Job](jobs.md#mount-artifact) | the request has a `mount` artifact — that pod only |
 | [Deployment revision](deployments.md#the-request-spec) | the request has a `mount` artifact — every replica of that revision |
-| [Sandbox](sandboxes.md#mounting-a-filesystem-image) / [activation](pools.md#artifacts) | the **pool** sets `mounts: true` — every pod in the pool, since warm pods predate the claim |
+| [Sandbox](sandboxes.md#mounting-a-filesystem-image) / [pooled Revision](pools.md) | the **pool** sets `mounts: true` — every pod in the pool, since warm pods predate the claim |
 
 The last row is the one to watch: standing capacity means the privileged container is there before any request arrives, so treat a mounting pool as trusted infrastructure and keep untrusted workloads on pools without the capability.
 
@@ -180,10 +185,14 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `jobs.gateway.{enabled,gatewayClassName,listeners}` | disabled | Renders a `Gateway` for the jobs API (above) |
 | `jobs.httpRoute.{enabled,parentRefs,hostnames}` | disabled | Renders an `HTTPRoute` for the jobs API (above) |
 | `deployments.enabled` | `false` | Install the deployments service + activator |
+| `deployments.revisionWorkers` | `32` | Concurrent direct-Pod Revision reconciles |
+| `deployments.clientQPS` / `deployments.clientBurst` | `200` / `400` | Client-side K8s API write budget for Revision and Pod bursts |
 | `deployments.domain` | `localhost` | Base domain for auto-assigned hosts |
 | `deployments.gateway.{enabled,name,namespace}` | `true`, `orchestrator`, release ns | The Gateway that HTTPRoutes attach to |
 | `deployments.dataPort` | `8081` | Docker-backend data plane / activator data port |
 | `deployments.pools` | `[]` | Warm pool declarations (above) |
+| `poolController.enabled` | `true` | Run bare warm-pod inventory for every enabled pool kind (also cleans removed pools) |
+| `poolController.replicaCount` | `1` | Replicas of each per-kind pool-controller workload |
 | `sandbox.enabled` | `false` | Install the sandboxes service |
 | `sandbox.domain` | `""` | Wildcard domain sandboxes are addressed at (required when enabled) |
 | `workloadNamespace.*` | disabled | Hardened namespace for workload pods (below) |
@@ -194,6 +203,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.workloadNodeSelector` | `{}` | Node selector pinning workload pods to a node pool |
 | `jobs.workloadNodeSelector` | `{}` | Same, independently for job pods |
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
+| `deployments.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss can delay Pod creation by roughly the lease duration |
+| `poolController.leaderElection.enabled` | `false` | Required above one replica; each pool kind uses a distinct Lease |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
 | `service.apiPort` / `service.metricsPort` | `8080` / `9090` | API and Prometheus ports |
@@ -252,7 +263,11 @@ The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the pl
 
 ## Scaling the control plane
 
-Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=true`: all replicas serve the API (any replica can answer anything — state lives in the cluster), while the background reconcilers (rollout auto-cut, endpoint flip, autoscaler, pool control) run on the elected leader only. The activator scales independently via `deployments.activator.replicaCount`. The chart **fails fast at render time** if you ask for multiple replicas without leader election.
+Set `deployments.replicaCount > 1` **and** `deployments.leaderElection.enabled=true`: all replicas serve the API (any replica can answer anything — state lives in the cluster), while rollout auto-cut, endpoint flip, and autoscaling run on the elected deployments-service leader. Pool inventory has a separate failure domain: set `poolController.replicaCount > 1` with `poolController.leaderElection.enabled=true`. Revision and sandbox inventory use distinct Leases and workloads, so either can fail without taking leadership away from consumer reconciliation or the other pool kind. The activator scales independently via `deployments.activator.replicaCount`. The chart fails fast when any multi-replica controller lacks leader election.
+
+On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.io/v1alpha1` `Revision`. The elected deployments-service controller creates its replica Pods directly using deterministic slots; Kubernetes `Deployment` and `ReplicaSet` controllers are not on the workload creation path. The `Revision` `/scale` subresource is shared by the autoscaler and cold-start activator.
+
+**Upgrading from the `apps/v1` backend.** There is deliberately no migration: releases before the `Revision` CRD materialised each revision as a Kubernetes `Deployment`, and this backend neither adopts nor deletes those objects (its Role no longer holds any `apps` verbs). Delete existing deployments through the API before upgrading, or remove the leftover `apps/v1` Deployments and their ReplicaSets by hand afterwards; until then the old pods keep serving while the API reports the deployment with no revisions.
 
 Each component can also autoscale on CPU (`autoscaling.enabled`, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 

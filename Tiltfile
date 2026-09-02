@@ -18,6 +18,7 @@ SANDBOXES_ENABLED = config.parse().get('sandbox', False)
 JOBS_SERVICE_IMAGE        = 'ko.local/jobs-service'
 JOB_SIDECAR_IMAGE         = 'ko.local/job-sidecar'
 DEPLOYMENTS_SERVICE_IMAGE = 'ko.local/deployments-service'
+POOL_CONTROLLER_IMAGE = 'ko.local/pool-controller'
 SANDBOX_SERVICE_IMAGE = 'ko.local/sandbox-service'
 WORKLOAD_SIDECAR_IMAGE = 'ko.local/workload-sidecar'
 DEPLOYMENTS_ACTIVATOR_IMAGE = 'ko.local/deployments-activator'
@@ -55,9 +56,12 @@ helm_set = []
 if DEPLOYMENTS_ENABLED or SANDBOXES_ENABLED:
     ko_build(WORKLOAD_SIDECAR_IMAGE, './cmd/workload-sidecar', ['cmd/workload-sidecar', 'internal'])
     ko_build(POOL_SHIM_IMAGE, './cmd/pool-shim', ['cmd/pool-shim', 'internal'])
+    ko_build(POOL_CONTROLLER_IMAGE, './cmd/pool-controller', ['cmd/pool-controller', 'internal'])
     helm_set += [
         'workloadSidecarImage.repository=' + WORKLOAD_SIDECAR_IMAGE,
         'deployments.shimImage.repository=' + POOL_SHIM_IMAGE,
+        'poolController.image.repository=' + POOL_CONTROLLER_IMAGE,
+        'poolController.image.pullPolicy=Never',
     ]
 
 if DEPLOYMENTS_ENABLED:

@@ -89,26 +89,28 @@ Both the deployments service and the standalone activator (K8s) expose the same 
 
 | Signal | Metrics |
 |--------|---------|
-| Latency | `deployment_rollout_duration_seconds` (revision minted → traffic cut), `activator_hold_duration_seconds{component,outcome=served\|timeout}` (the client-visible cold-start cost) |
-| Traffic | `deployments_applied_total{created}`, `deployment_rollout_cuts_total`, `activator_raises_total{component}`, `activator_async_total{component,result=delivered\|failed}`, `autoscaler_scale_events_total{direction=up\|down}` |
-| Errors | `autoscaler_scrape_errors_total` (failed concurrency scrapes while replicas are serving) |
-| Saturation | `deployments_active`, `activator_queued{component}` (requests held for capacity), `autoscaler_desired_replicas{deployment}` |
+| Latency | `deployment_rollout_duration_seconds` (revision minted → traffic cut), `revision_queue_wait_seconds`, `revision_reconcile_duration_seconds{success}`, `revision_desired_to_pod_created_seconds`, `revision_leader_convergence_seconds`, `activator_hold_duration_seconds{component,outcome=served\|timeout}` (the client-visible cold-start cost) |
+| Traffic | `deployments_applied_total{created}`, `deployment_rollout_cuts_total`, `revision_pod_creates_total`, `revision_pod_deletes_total{reason}`, `activator_raises_total{component}`, `activator_async_total{component,result=delivered\|failed}`, `autoscaler_scale_events_total{direction=up\|down}` |
+| Errors | `revision_reconcile_errors_total`, `autoscaler_scrape_errors_total` (failed concurrency scrapes while replicas are serving) |
+| Saturation | `deployments_active`, `revision_queue_depth`, `revision_queue_oldest_age_seconds`, `revision_replica_drift`, `activator_queued{component}` (requests held for capacity), `autoscaler_desired_replicas{deployment}` |
+
+Revision queue and drift gauges read the leader's live informer state and return zero on followers. `revision_leader_convergence_seconds` measures acquisition to completion of the initial warm-cache audit; compare it with the configured Lease duration when separating failover detection from controller recovery. `revision_replica_drift` is the total absolute desired-to-active difference across the current Revision fleet and should return to zero after a burst; it has no per-Revision label to accumulate stale time series as revisions churn.
 
 Rollout metrics come from the leader's reconciler; leadership and K8s API metrics apply to the deployments service and activator exactly as to jobs. The broker behind these series runs in two components, and the `component` label says which — `deployments-activator` or `sandbox-proxy`, matching their `app.kubernetes.io/component` labels, so a PromQL series and a pod selector read the same. A sandbox hold never reads as a deployment cold start, and `activator_raises_total` is only ever the activator's: the sandbox proxy has nothing to raise.
 
 <a id="pools"></a>
 **Pool Metrics:**
 
-Warm pools serve two consumers — deployment-pool activations and [sandboxes](sandboxes.md) — and both are claim-and-late-bind, so they share one set of series. The `kind` label (`pool` | `sandbox`) says which, and pool ids may repeat across the two config lists without colliding.
+Warm pools serve two consumers — deployment `Revision` replicas and [sandboxes](sandboxes.md) — and both are claim-and-late-bind, so they share one set of series. The `kind` label (`revision` | `sandbox`) says which, and pool ids may repeat across the two config lists without colliding.
 
 | Signal | Metrics |
 |--------|---------|
-| Latency | `pool_activation_duration_seconds{kind,pool,success}` (claim through serving) |
-| Traffic | `pool_activations_total{kind,pool}`, `pool_burst_total{kind,pool,policy=reject\|cold}` |
+| Latency | `pool_claim_duration_seconds{kind,pool,success}` (claim through serving) |
+| Traffic | `pool_claims_total{kind,pool}`, `pool_burst_total{kind,pool,policy=reject\|cold}` |
 | Errors | `pool_poisoned_total{kind,pool}` (failed artifact materialization), `pool_claim_conflicts_total{kind,pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
-| Saturation | `pool_activations_active{kind,pool}`, `pool_warm{kind,pool}`, `pool_claimed{kind,pool}` |
+| Saturation | `pool_claims_active{kind,pool}`, `pool_warm{kind,pool}`, `pool_claimed{kind,pool}` |
 
-Warm/claimed capacity gauges are recorded by the leader's control loop each tick. `pool_warm` dropping to zero while `pool_burst_total{policy="reject"}` climbs is the signal to grow `size`.
+Warm/claimed capacity gauges are exported by the matching per-kind `pool-controller` each tick. Claim latency, conflicts, and burst counters remain on the consumer service where claims occur. `pool_warm` dropping to zero while `pool_burst_total{policy="reject"}` climbs is the signal to grow `size`.
 
 ### Dispatcher Statistics
 
@@ -178,6 +180,12 @@ sum(jobs_active)
 
 # Job duration P95
 histogram_quantile(0.95, sum(rate(job_duration_seconds_bucket[5m])) by (le))
+
+# Revision queue-wait P99 on the active deployments-service leader
+histogram_quantile(0.99, sum(rate(revision_queue_wait_seconds_bucket[5m])) by (le))
+
+# Revisions whose desired and active replica counts have not converged
+revision_replica_drift
 ```
 
 ## Grafana Dashboard
@@ -203,3 +211,7 @@ A pre-configured dashboard is included at `grafana/dashboards/orchestrator.json`
 | Service down | `up == 0` for 1m | Critical |
 | Dispatcher buffer full | dropped events >0 for 1m | Warning |
 | Circuit breakers open | >0 open breakers for 5m | Warning |
+| Revision queue stalled | `revision_queue_oldest_age_seconds > 5` for 2m | Critical |
+| Revision reconcile errors | increase in `revision_reconcile_errors_total` for 5m | Warning |
+| Revision drift | `revision_replica_drift != 0` for 5m | Critical |
+| Slow leader recovery | P99 `revision_leader_convergence_seconds > 5` for 15m | Warning |
