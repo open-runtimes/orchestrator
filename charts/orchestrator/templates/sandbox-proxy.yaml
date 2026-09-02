@@ -1,6 +1,6 @@
 {{- if .Values.sandbox.proxy.enabled }}
 {{- if not .Values.sandbox.enabled }}
-{{- fail "sandbox.proxy.enabled requires sandbox.enabled: the sandboxes service is what serves /v1/sandbox and reconciles sandbox pools" }}
+{{- fail "sandbox.proxy.enabled requires sandbox.enabled: the sandboxes service is what serves /v1/sandbox" }}
 {{- end }}
 {{- /*
 The sandbox proxy: one wildcard HTTPRoute for *.{domain} sends every sandbox

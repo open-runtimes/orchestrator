@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -25,8 +24,7 @@ const (
 	maxArtifacts   = 64
 	defaultTimeout = 300
 	maxPorts       = 16
-	// inlinePrefix names generated ids for poolless sandboxes, where there is no
-	// pool name to take one from.
+	// inlinePrefix keeps generated ids independent of operator pool identities.
 	inlinePrefix = "sbx"
 
 	// tokenBytes sizes the capability token in the hostname. 128 bits, because
@@ -42,7 +40,7 @@ var idPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 type Service struct {
 	orchestrator Orchestrator
 	metrics      *observability.Metrics // may be nil in tests
-	pools        map[string]*pool.Pool
+	pools        []pool.Pool
 	artifacts    *artifact.Registry
 }
 
@@ -51,24 +49,14 @@ func NewService(orchestrator Orchestrator, metrics *observability.Metrics, pools
 	return &Service{
 		orchestrator: orchestrator,
 		metrics:      metrics,
-		pools:        pool.ByID(pools),
+		pools:        pools,
 		artifacts:    artifacts,
 	}
 }
 
-// Pools lists the configured sandbox pools with live counts.
-func (s *Service) Pools(ctx context.Context) ([]pool.Status, error) {
-	return s.orchestrator.Pools(ctx)
-}
-
-// Pool returns one sandbox pool's status.
-func (s *Service) Pool(ctx context.Context, poolID string) (*pool.Status, error) {
-	return pool.StatusFor(ctx, s.orchestrator, s.pools, poolID)
-}
-
-// Create validates the request (applying defaults and the pool's idle
-// ceiling), mints the capability token its hostname carries, and claims a warm
-// pod — blocking until the sandbox's contract is served.
+// Create validates the complete request, mints the capability token its
+// hostname carries, and acquires a matching warm or direct pod — blocking
+// until the sandbox's contract is served.
 func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
 	if err := s.validateSource(req); err != nil {
 		return nil, err
@@ -76,28 +64,21 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
 	if err := workload.NormalizeEnv(req.Environment); err != nil {
 		return nil, err
 	}
-	// The id comes first: a poolless sandbox's pool is keyed by it, which is what
-	// keeps the pod created for this request from being offered to another.
+	shape := req.Shape()
+	req.Pool = ""
+	p := pool.Match(s.pools, &shape)
+	if p != nil {
+		req.Pool = p.ID
+	}
+	// Generated ids no longer reveal (or depend on) an operator pool name.
 	if req.ID == "" {
-		id, err := generateID(cmp.Or(req.Pool, inlinePrefix))
+		id, err := generateID(inlinePrefix)
 		if err != nil {
 			return nil, apperrors.Internal("sandbox.generateID", err)
 		}
 		req.ID = id
 	}
-	// A declared pool fixes the shape; a poolless sandbox describes its own.
-	// Only the pooled path has a pool — p stays nil otherwise, because there is
-	// no standing capacity to have a policy about.
-	shape := req.Shape()
-	var p *pool.Pool
-	if req.Pool != "" {
-		declared, ok := s.pools[req.Pool]
-		if !ok {
-			return nil, apperrors.NotFound("pool", req.Pool)
-		}
-		p, shape = declared, declared.Spec
-	}
-	if err := s.validate(req, &shape, p); err != nil {
+	if err := s.validate(req, &shape); err != nil {
 		return nil, err
 	}
 	token, err := mintToken()
@@ -151,28 +132,14 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// validateSource enforces the one choice a create has to make: claim from a
-// pool, or describe a pod for this sandbox alone. Both would be ambiguous —
-// which image wins — and neither leaves nothing to run.
+// validateSource validates the complete pod shape every caller submits. Pools
+// are matched later and never change what the caller asked to run.
 func (s *Service) validateSource(req *Request) error {
-	switch {
-	case req.Pool != "" && req.Image != "":
-		return apperrors.Validation("pool", "give either pool (claim from warm capacity) or image (create a pod for this sandbox), not both")
-	case req.Pool == "" && req.Image == "":
-		return apperrors.Validation("pool", "pool or image is required")
-	case req.Pool != "":
-		// These are pool dimensions. Accepting and ignoring them is the worst
-		// outcome: a sandbox that asked for a volume, a CPU limit, or an
-		// isolation tier would run without it and say nothing.
-		if named := req.PoolFixed(); len(named) > 0 {
-			return apperrors.Validation(named[0], fmt.Sprintf(
-				"pool %q fixes the sandbox's pod: drop %s from the request, or give an image instead of a pool to shape it per sandbox",
-				req.Pool, strings.Join(named, ", ")))
-		}
-		return nil
+	if req.Image == "" {
+		return apperrors.Validation("image", "image is required")
 	}
 	if req.Port <= 0 || req.Port > 65535 {
-		return apperrors.Validation("port", "port is required with image, and must be 1-65535")
+		return apperrors.Validation("port", "port is required and must be 1-65535")
 	}
 	// An unknown tier would resolve to no RuntimeClassName at all, which means a
 	// sandbox that asked to be isolated would quietly run with the platform
@@ -196,7 +163,7 @@ func (s *Service) validateSource(req *Request) error {
 	return nil
 }
 
-func (s *Service) validate(req *Request, shape *pool.Spec, p *pool.Pool) error {
+func (s *Service) validate(req *Request, shape *pool.Spec) error {
 	// No command check: a sandbox whose pool names none runs the agent the
 	// backend installs into its workspace, which is the point — the image is
 	// just a runtime, and it serves the contract without implementing it.
@@ -221,33 +188,11 @@ func (s *Service) validate(req *Request, shape *pool.Spec, p *pool.Pool) error {
 	if req.IdleTimeoutSeconds < 0 {
 		return apperrors.Validation("idleTimeoutSeconds", "idle timeout must be non-negative")
 	}
-	// A pool's ceiling is operator policy: an abandoned sandbox holds a warm
-	// pod hostage, so "until DELETE" is only honored where the pool allows it.
-	// A poolless sandbox holds nothing standing, so there is no ceiling to apply.
-	if p != nil && p.MaxIdleSeconds > 0 {
-		if req.IdleTimeoutSeconds > p.MaxIdleSeconds {
-			return apperrors.Validation("idleTimeoutSeconds",
-				fmt.Sprintf("idle timeout exceeds pool %q maximum of %ds", p.ID, p.MaxIdleSeconds))
-		}
-		if req.IdleTimeoutSeconds == 0 {
-			req.IdleTimeoutSeconds = p.MaxIdleSeconds
-		}
-	}
 	if err := validatePorts(req.Ports, shape.Port); err != nil {
 		return err
 	}
 	if len(req.Artifacts) > maxArtifacts {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
-	}
-	// Mounting is a property of the pod, fixed when the warm pod was created:
-	// the sidecar performing it runs privileged and the workspace propagates. So
-	// the pool decides whether its sandboxes may mount, and this is where a
-	// request that cannot be honoured is refused — before a pod is claimed for
-	// it. A poolless sandbox needs no permission: its pod is built for the
-	// request, so the capability follows the artifacts (see Request.Shape).
-	if p != nil && !p.Mounts && artifact.HasMount(req.Artifacts) {
-		return apperrors.Validation("artifacts", fmt.Sprintf(
-			"pool %q does not allow mounts: set mounts on the pool to give its pods the capability", p.ID))
 	}
 	for i, a := range req.Artifacts {
 		if err := s.artifacts.Validate(i, a); err != nil {

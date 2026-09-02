@@ -26,7 +26,7 @@ Every component is opt-in — a default install renders nothing.
 | **deployments** | `deployments.enabled` | `/v1/deployments` — long-lived HTTP workloads, optionally backed by warm capacity |
 | **pool controller** | `poolController.enabled` | Bare warm-pod inventory for every enabled Revision and sandbox pool kind |
 | **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
-| **sandbox** | `sandbox.enabled` | `/v1/sandbox` and `/v1/sandbox-pool` — live workspaces at their own hostnames |
+| **sandbox** | `sandbox.enabled` | `/v1/sandbox` — live workspaces at their own hostnames |
 | **sandbox proxy** | `sandbox.proxy.enabled` | The data plane every sandbox request passes through, behind one wildcard route |
 
 All derive their state from the cluster: restarts and replica failovers lose nothing, and there is no database.
@@ -141,7 +141,7 @@ Each pool keeps `size` pods warm at all times. Deployment users always submit im
 
 ## Sandboxes
 
-[Sandboxes](sandboxes.md) are live workspaces reached at their own hostnames. A caller either claims one from a warm pool you declare, or [creates one without a pool](sandboxes.md#a-sandbox-with-no-pool) by naming an image — so `sandbox.pools` is optional, and a domain plus the proxy is enough to serve the API. Pools buy sub-second creates; poolless costs a cold start and needs no capacity planning. Operator config:
+[Sandboxes](sandboxes.md) are live workspaces reached at their own hostnames. Callers always submit a complete pod shape; `sandbox.pools` is optional operator-only capacity that is matched transparently. An exact match buys a sub-second claim, while no match or exhausted capacity creates the same pod directly. Operator config:
 
 ```yaml
 sandbox:
@@ -151,9 +151,10 @@ sandbox:
     - id: py
       image: python:3.12-slim    # any runtime image: the agent is installed into it
       port: 3000                 # where the agent listens; no command needed
+      cpu: 1
+      memory: 512
       size: 4
       runtimeClass: gvisor       # untrusted code is the expected workload here
-      maxIdleSeconds: 900        # ceiling on how long one may hold a warm pod
   proxy:
     enabled: true                # the wildcard data plane every sandbox request passes through
 ```

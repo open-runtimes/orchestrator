@@ -18,10 +18,6 @@ type fakeOrchestrator struct {
 }
 
 func (f *fakeOrchestrator) Start(context.Context) error { return nil }
-func (f *fakeOrchestrator) Pools(context.Context) ([]pool.Status, error) {
-	return []pool.Status{{ID: "py", Warm: 2}}, nil
-}
-
 func (f *fakeOrchestrator) Create(_ context.Context, req *Request) (*Status, error) {
 	f.last = req
 	return &Status{ID: req.ID, PoolID: req.Pool, State: StateReady, URL: "http://s-" + req.Token + ".example.test"}, nil
@@ -37,17 +33,53 @@ func (f *fakeOrchestrator) Close() error                           { return nil 
 
 func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 	if len(pools) == 0 {
-		pools = []pool.Pool{{ID: "py", Size: 1, Spec: pool.Spec{Image: "img", Command: "/usr/local/bin/sandbox", Port: 3000}}}
+		pools = []pool.Pool{{ID: "py", Size: 1, Spec: pool.Spec{Image: "img", Port: 3000, CPU: 1, Memory: 512}}}
 	}
 	orch := &fakeOrchestrator{}
 	return NewService(orch, nil, pools, artifact.MountingRegistry()), orch
+}
+
+func standardRequest() *Request { return &Request{Image: "img", Port: 3000, CPU: 1, Memory: 512} }
+
+func TestLoadPools_RequiresUnambiguousFixedShapes(t *testing.T) {
+	t.Parallel()
+	valid := `[{"id":"py","image":"img","port":3000,"cpu":1,"memory":512}]`
+	if _, err := LoadPools(valid); err != nil {
+		t.Fatalf("valid transparent pool: %v", err)
+	}
+	for name, raw := range map[string]string{
+		"missing resources": `[{"id":"py","image":"img","port":3000}]`,
+		"command default":   `[{"id":"py","image":"img","port":3000,"cpu":1,"memory":512,"command":"run"}]`,
+		"idle policy":       `[{"id":"py","image":"img","port":3000,"cpu":1,"memory":512,"maxIdleSeconds":900}]`,
+		"duplicate shape":   `[{"id":"a","image":"img","port":3000,"cpu":1,"memory":512},{"id":"b","image":"img","port":3000,"cpu":1,"memory":512}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadPools(raw); err == nil {
+				t.Fatal("want invalid transparent pool config")
+			}
+		})
+	}
+}
+
+func TestCreate_AutomaticallyMatchesTheCompleteShape(t *testing.T) {
+	t.Parallel()
+	svc, orch := testService()
+	req := standardRequest()
+	if _, err := svc.Create(t.Context(), req); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if req.Pool != "py" || orch.last.Pool != "py" {
+		t.Fatalf("matched pool: request=%q backend=%q", req.Pool, orch.last.Pool)
+	}
 }
 
 func TestCreate_MintsAnUnguessableTokenIndependentOfTheID(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()
 
-	first, err := svc.Create(context.Background(), &Request{ID: "my-agent", Pool: "py"})
+	req := standardRequest()
+	req.ID = "my-agent"
+	first, err := svc.Create(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -60,7 +92,9 @@ func TestCreate_MintsAnUnguessableTokenIndependentOfTheID(t *testing.T) {
 	}
 
 	// Same id, new sandbox, new capability: the token is not derived from the id.
-	if _, err := svc.Create(context.Background(), &Request{ID: "my-agent", Pool: "py"}); err != nil {
+	req = standardRequest()
+	req.ID = "my-agent"
+	if _, err := svc.Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if orch.last.Token == firstToken {
@@ -72,21 +106,24 @@ func TestCreate_GeneratesIDWhenAbsent(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()
 
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py"}); err != nil {
+	if _, err := svc.Create(context.Background(), standardRequest()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if !strings.HasPrefix(orch.last.ID, "py-") {
+	if !strings.HasPrefix(orch.last.ID, "sbx-") {
 		t.Errorf("generated id: got %q", orch.last.ID)
 	}
 }
 
-func TestCreate_UnknownPoolNotFound(t *testing.T) {
+func TestCreate_NoMatchingPoolStillCreatesDirectly(t *testing.T) {
 	t.Parallel()
 	svc, _ := testService()
 
-	_, err := svc.Create(context.Background(), &Request{Pool: "nope"})
-	if !errors.Is(err, apperrors.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
+	req := &Request{Image: "different", Port: 8080}
+	if _, err := svc.Create(context.Background(), req); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if orch := req.Pool; orch != "" {
+		t.Fatalf("unmatched request selected pool %q", orch)
 	}
 }
 
@@ -94,7 +131,7 @@ func TestCreate_LeavesTheCommandToTheBackend(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()
 
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py"}); err != nil {
+	if _, err := svc.Create(context.Background(), standardRequest()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if orch.last.Command != "" {
@@ -105,8 +142,8 @@ func TestCreate_LeavesTheCommandToTheBackend(t *testing.T) {
 	// is just a runtime, and the backend runs the agent it installed into the
 	// workspace.
 	bare, _ := testService(pool.Pool{ID: "py", Spec: pool.Spec{Image: "node:22-slim", Port: 3000}})
-	if _, err := bare.Create(context.Background(), &Request{Pool: "py"}); err != nil {
-		t.Fatalf("a pool without a command must be accepted: %v", err)
+	if _, err := bare.Create(context.Background(), &Request{Image: "node:22-slim", Port: 3000}); err != nil {
+		t.Fatalf("a matching pool without a command must be accepted: %v", err)
 	}
 }
 
@@ -115,35 +152,40 @@ func TestCreate_ValidatesID(t *testing.T) {
 	svc, _ := testService()
 
 	for _, id := range []string{"Bad-Case", "under_score", "-leading", strings.Repeat("a", 64)} {
-		if _, err := svc.Create(context.Background(), &Request{ID: id, Pool: "py"}); !errors.Is(err, apperrors.ErrValidation) {
+		req := standardRequest()
+		req.ID = id
+		if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 			t.Errorf("id %q: want a validation error, got %v", id, err)
 		}
 	}
 }
 
-// A pool's idle ceiling is operator policy: an abandoned sandbox holds a warm
-// pod hostage, so "until DELETE" is only honored where the pool allows it.
-func TestCreate_AppliesThePoolIdleCeiling(t *testing.T) {
+// Pool selection cannot alter request semantics: idle expiry belongs to the
+// sandbox request whether acquisition is warm or direct.
+func TestCreate_PreservesTheRequestedIdleTimeout(t *testing.T) {
 	t.Parallel()
-	svc, orch := testService(pool.Pool{ID: "py", MaxIdleSeconds: 900, Spec: pool.Spec{Image: "img", Command: "run", Port: 3000}})
+	svc, orch := testService(pool.Pool{ID: "py", MaxIdleSeconds: 900, Spec: pool.Spec{Image: "img", Port: 3000}})
 
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py"}); err != nil {
+	if _, err := svc.Create(context.Background(), standardRequest()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if orch.last.IdleTimeoutSeconds != 900 {
-		t.Errorf("omitted idle timeout must take the pool ceiling, got %d", orch.last.IdleTimeoutSeconds)
+	if orch.last.IdleTimeoutSeconds != 0 {
+		t.Errorf("omitted idle timeout changed to %d", orch.last.IdleTimeoutSeconds)
 	}
 
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py", IdleTimeoutSeconds: 60}); err != nil {
+	req := standardRequest()
+	req.IdleTimeoutSeconds = 60
+	if _, err := svc.Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if orch.last.IdleTimeoutSeconds != 60 {
 		t.Errorf("a shorter idle timeout must be honored, got %d", orch.last.IdleTimeoutSeconds)
 	}
 
-	_, err := svc.Create(context.Background(), &Request{Pool: "py", IdleTimeoutSeconds: 5000})
-	if !errors.Is(err, apperrors.ErrValidation) {
-		t.Fatalf("over the ceiling: want a validation error, got %v", err)
+	req = standardRequest()
+	req.IdleTimeoutSeconds = 5000
+	if _, err := svc.Create(context.Background(), req); err != nil {
+		t.Fatalf("pool policy must not reject a valid request: %v", err)
 	}
 }
 
@@ -151,48 +193,33 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()
 
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py"}); err != nil {
+	if _, err := svc.Create(context.Background(), standardRequest()); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if orch.last.TimeoutSeconds == nil || *orch.last.TimeoutSeconds != defaultTimeout {
 		t.Errorf("omitted timeoutSeconds must take the default: got %v", orch.last.TimeoutSeconds)
 	}
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: ptrTo(maxTimeoutSecs + 1)}); !errors.Is(err, apperrors.ErrValidation) {
+	req := standardRequest()
+	req.TimeoutSeconds = ptrTo(maxTimeoutSecs + 1)
+	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error over the timeout ceiling")
 	}
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: ptrTo(-1)}); !errors.Is(err, apperrors.ErrValidation) {
+	req = standardRequest()
+	req.TimeoutSeconds = ptrTo(-1)
+	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error for a negative timeout")
 	}
 
 	// An explicit 0 is the documented escape hatch for long-lived sessions
 	// (WebSocket terminals, language servers). It must survive validation, or
 	// the connection it was asked for is cut at the default five minutes.
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py", TimeoutSeconds: ptrTo(0)}); err != nil {
+	req = standardRequest()
+	req.TimeoutSeconds = ptrTo(0)
+	if _, err := svc.Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if orch.last.TimeoutSeconds == nil || *orch.last.TimeoutSeconds != 0 {
 		t.Errorf("explicit 0 must reach the backend unchanged: got %v", orch.last.TimeoutSeconds)
-	}
-}
-
-// Ports are per-sandbox (a container may bind any port at any time), but not
-// unconstrained: the sidecar's own ports and the pool's primary are refused.
-// A mount needs a job's post-phase sidecar. A sandbox has none, so asking for
-// one is a 400 — it used to be accepted and silently dropped, and the caller got
-// a ready sandbox with nothing mounted.
-func TestCreate_RejectsAMountItCannotHonour(t *testing.T) {
-	t.Parallel()
-	svc, _ := testService()
-
-	req := &Request{ID: "sbx", Pool: "py", Artifacts: artifact.Set{
-		&artifact.Mount{ID: "data", In: "data.sqfs", Out: "data"},
-	}}
-	_, err := svc.Create(t.Context(), req)
-	if err == nil {
-		t.Fatal("want a rejection")
-	}
-	if got := apperrors.HTTPStatus(err); got != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 (%v)", got, err)
 	}
 }
 
@@ -206,24 +233,25 @@ func TestCreate_MountNeedsThePoolCapability(t *testing.T) {
 	}
 
 	plain, _ := testService()
-	_, err := plain.Create(t.Context(), &Request{ID: "sbx", Pool: "py", Artifacts: mount()})
-	if err == nil {
-		t.Fatal("want a rejection from a pool that cannot mount")
+	plainReq := &Request{ID: "sbx", Image: "img", Port: 3000, Artifacts: mount()}
+	if _, err := plain.Create(t.Context(), plainReq); err != nil {
+		t.Fatalf("a non-matching mount request must create directly: %v", err)
 	}
-	if got := apperrors.HTTPStatus(err); got != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 (%v)", got, err)
-	}
-	if !strings.Contains(err.Error(), "mounts on the pool") {
-		t.Errorf("the error should name the pool setting, got %q", err)
+	if plainReq.Pool != "" {
+		t.Errorf("plain pool must not match a mount-capable shape")
 	}
 
 	// Declared: accepted, and the backend gets the mount to perform.
 	capable, orch := testService(pool.Pool{ID: "sqfs", Size: 1, Spec: pool.Spec{Image: "img", Port: 3000, Mounts: true}})
-	if _, err := capable.Create(t.Context(), &Request{ID: "sbx", Pool: "sqfs", Artifacts: mount()}); err != nil {
+	capableReq := &Request{ID: "sbx", Image: "img", Port: 3000, Artifacts: mount()}
+	if _, err := capable.Create(t.Context(), capableReq); err != nil {
 		t.Fatalf("a pool that declares mounts should accept one: %v", err)
 	}
 	if len(orch.last.Artifacts) != 1 {
 		t.Errorf("the mount must reach the backend, got %v", orch.last.Artifacts)
+	}
+	if capableReq.Pool != "sqfs" {
+		t.Errorf("mount-capable shape selected pool %q", capableReq.Pool)
 	}
 }
 
@@ -231,7 +259,9 @@ func TestCreate_ValidatesPorts(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()
 
-	if _, err := svc.Create(context.Background(), &Request{Pool: "py", Ports: []int{5173, 9229}}); err != nil {
+	req := standardRequest()
+	req.Ports = []int{5173, 9229}
+	if _, err := svc.Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if len(orch.last.Ports) != 2 {
@@ -246,16 +276,17 @@ func TestCreate_ValidatesPorts(t *testing.T) {
 		"zero":               {0},
 		"duplicate":          {5173, 5173},
 	} {
-		if _, err := svc.Create(context.Background(), &Request{Pool: "py", Ports: ports}); !errors.Is(err, apperrors.ErrValidation) {
+		req := standardRequest()
+		req.Ports = ports
+		if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 			t.Errorf("%s (%v): want a validation error, got %v", name, ports, err)
 		}
 	}
 }
 
-// A sandbox may describe its own pod instead of naming a pool — the deployments
-// shape. Exactly one of the two, because both would be ambiguous and neither
-// leaves nothing to run.
-func TestCreate_PoolOrImageButNotBoth(t *testing.T) {
+// Every sandbox describes its complete pod shape. Pool configuration is never
+// a request source and therefore cannot make an otherwise valid request fail.
+func TestCreate_RequiresACompleteShape(t *testing.T) {
 	t.Parallel()
 	svc, orch := testService()
 
@@ -264,9 +295,8 @@ func TestCreate_PoolOrImageButNotBoth(t *testing.T) {
 		req  *Request
 		want string
 	}{
-		{"neither", &Request{ID: "a"}, "pool or image is required"},
-		{"both", &Request{ID: "a", Pool: "py", Image: "img", Port: 3000}, "not both"},
-		{"image without a port", &Request{ID: "a", Image: "img"}, "port is required with image"},
+		{"no image", &Request{ID: "a"}, "image is required"},
+		{"image without a port", &Request{ID: "a", Image: "img"}, "port is required"},
 		{"port out of range", &Request{ID: "a", Image: "img", Port: 70000}, "must be 1-65535"},
 		{"negative cpu", &Request{ID: "a", Image: "img", Port: 3000, CPU: -1}, "cpu must not be negative"},
 	}
@@ -327,26 +357,26 @@ func TestShape_IsTheRequestsOwnPod(t *testing.T) {
 	}
 }
 
-// Shape fields a pool has already fixed cannot be honoured at claim time. The
-// silent-drop this replaced is the dangerous outcome: a sandbox that asked for a
-// volume or an isolation tier and quietly ran without it.
-func TestCreate_RejectsPoolFixedFields(t *testing.T) {
+// Fixed-shape differences simply bypass the pool; they are never ignored and
+// never rejected because an operator happened to configure warm capacity.
+func TestCreate_FixedShapeDifferencesBypassThePool(t *testing.T) {
 	t.Parallel()
 	svc, _ := testService()
 
 	for _, tc := range []struct {
-		name  string
-		req   *Request
-		field string
+		name string
+		req  *Request
 	}{
-		{"volumes", &Request{Pool: "py", Volumes: []volume.Volume{{Source: "pvc", Path: "/data"}}}, "volumes"},
-		{"cpu", &Request{Pool: "py", CPU: 2}, "cpu"},
-		{"runtimeClass", &Request{Pool: "py", RuntimeClass: "kata"}, "runtimeClass"},
+		{"volumes", &Request{Image: "img", Port: 3000, Volumes: []volume.Volume{{Source: "pvc", Path: "/data"}}}},
+		{"cpu", &Request{Image: "img", Port: 3000, CPU: 2}},
+		{"runtimeClass", &Request{Image: "img", Port: 3000, RuntimeClass: "kata"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := svc.Create(context.Background(), tc.req)
-			if err == nil || !strings.Contains(err.Error(), tc.field) {
-				t.Errorf("want a validation error naming %q, got %v", tc.field, err)
+			if _, err := svc.Create(context.Background(), tc.req); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if tc.req.Pool != "" {
+				t.Errorf("different shape selected pool %q", tc.req.Pool)
 			}
 		})
 	}

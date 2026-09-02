@@ -3,10 +3,27 @@ package pool
 import (
 	"encoding/json"
 	"orchestrator/internal/claim"
+	"orchestrator/internal/volume"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestShapeKeyNormalizesEquivalentPodShapes(t *testing.T) {
+	t.Parallel()
+	a := Spec{Image: "img", Port: 3000, CPU: 1, Memory: 256,
+		Volumes: []volume.Volume{{Source: "b", Path: "/b"}, {Source: "a", Path: "/a"}}}
+	b := Spec{Image: "img", Port: 3000, CPU: 1, Memory: 256, RuntimeClass: "runc",
+		TerminationGracePeriodSeconds: 30,
+		Volumes: []volume.Volume{{Source: "a", Path: "/a"}, {Source: "b", Path: "/b"}}}
+	if ShapeKey(&a) != ShapeKey(&b) {
+		t.Fatal("equivalent runtime, grace, and volume ordering must match")
+	}
+	b.Mounts = true
+	if ShapeKey(&a) == ShapeKey(&b) {
+		t.Fatal("a pod-shaping capability must change the key")
+	}
+}
 
 func TestLoadPools_Volumes(t *testing.T) {
 	t.Parallel()

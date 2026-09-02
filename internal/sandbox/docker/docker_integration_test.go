@@ -146,6 +146,10 @@ func testToken(id string) string {
 // does: the token is minted by pkg/sandbox, never by a caller.
 func create(t *testing.T, o *Orchestrator, req *sandbox.Request) *sandbox.Status {
 	t.Helper()
+	if req.Image == "" {
+		req.Image = sandboxTestImage()
+		req.Port = 3000
+	}
 	if req.Token == "" {
 		req.Token = testToken(req.ID)
 	}
@@ -525,27 +529,6 @@ func TestSandboxIdleSweep(t *testing.T) {
 	o.reapIdle(t.Context(), marks)
 	if _, err := o.Status(t.Context(), "it-idle"); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Errorf("idle sandbox must be torn down, got %v", err)
-	}
-}
-
-// TestSandboxPools reports configured pools with no warm capacity — Docker
-// pre-warms nothing, and saying otherwise would be a lie.
-func TestSandboxPools(t *testing.T) {
-	o := newTestOrchestrator(t, testNetwork(t))
-	create(t, o, &sandbox.Request{ID: "it-pools", Pool: "py"})
-
-	pools, err := o.Pools(t.Context())
-	if err != nil {
-		t.Fatalf("Pools: %v", err)
-	}
-	if len(pools) != 1 || pools[0].ID != "py" {
-		t.Fatalf("Pools: got %+v", pools)
-	}
-	if pools[0].Warm != 0 {
-		t.Errorf("Docker has no warm capacity, got warm=%d", pools[0].Warm)
-	}
-	if pools[0].Claimed != 1 {
-		t.Errorf("claimed: want 1, got %d", pools[0].Claimed)
 	}
 }
 

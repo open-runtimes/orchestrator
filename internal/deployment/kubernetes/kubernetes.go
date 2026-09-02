@@ -9,9 +9,7 @@
 package kubernetes
 
 import (
-	"cmp"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,10 +21,8 @@ import (
 	"orchestrator/internal/kube"
 	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
-	"orchestrator/internal/volume"
 	"orchestrator/internal/warm"
 	"orchestrator/internal/workload"
-	"slices"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -107,21 +103,7 @@ func NewRevisionPoolManager(client kubernetes.Interface, cfg Config) (*warm.Mana
 }
 
 func validateDeploymentPools(pools []pool.Pool) error {
-	for i := range pools {
-		p := &pools[i]
-		if p.CPU <= 0 || p.Memory <= 0 {
-			return fmt.Errorf("deployment pool %q: cpu and memory are required for exact shape matching", p.ID)
-		}
-		if p.Command != "" || len(p.Environment) != 0 {
-			return fmt.Errorf("deployment pool %q: command and environment are request-time fields and must not be configured on the pool", p.ID)
-		}
-		for j := range i {
-			if poolShapeKey(&pools[j].Spec) == poolShapeKey(&p.Spec) {
-				return fmt.Errorf("deployment pools %q and %q declare the same fixed shape", pools[j].ID, p.ID)
-			}
-		}
-	}
-	return nil
+	return pool.ValidateTransparent(pools, "deployment")
 }
 
 // Start surveys pre-existing managed deployments (their markers), then
@@ -296,7 +278,7 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool
 
 func requestMatchesPool(req *deployment.Request, p *pool.Pool) bool {
 	key := requestAcquisitionKey(req)
-	return key != "" && poolShapeKey(&p.Spec) == key
+	return key != "" && pool.ShapeKey(&p.Spec) == key
 }
 
 func requestAcquisitionKey(req *deployment.Request) string {
@@ -307,74 +289,17 @@ func requestAcquisitionKey(req *deployment.Request) string {
 		(req.Probes != nil && (req.Probes.Liveness != nil || req.Probes.Startup != nil)) {
 		return ""
 	}
-	return poolShapeKey(&pool.Spec{
+	return pool.ShapeKey(&pool.Spec{
 		Image: req.Image, Port: req.Port, CPU: req.CPU, Memory: req.Memory,
 		RuntimeClass: req.RuntimeClass, Volumes: req.Volumes, Mounts: artifact.HasMount(req.Artifacts),
 		TerminationGracePeriodSeconds: req.TerminationGracePeriodSeconds,
 	})
 }
 
-func poolShapeKey(shape *pool.Spec) string {
-	canonical := struct {
-		Image                         string          `json:"image"`
-		Port                          int             `json:"port"`
-		CPU                           float64         `json:"cpu"`
-		Memory                        int             `json:"memory"`
-		RuntimeClass                  string          `json:"runtimeClass"`
-		Volumes                       []volume.Volume `json:"volumes,omitempty"`
-		Mounts                        bool            `json:"mounts,omitempty"`
-		TerminationGracePeriodSeconds int             `json:"terminationGracePeriodSeconds"`
-	}{
-		Image: shape.Image, Port: shape.Port, CPU: shape.CPU, Memory: shape.Memory,
-		RuntimeClass: runtimeTier(shape.RuntimeClass), Volumes: canonicalVolumes(shape.Volumes), Mounts: shape.Mounts,
-		TerminationGracePeriodSeconds: gracePeriodSeconds(shape.TerminationGracePeriodSeconds),
-	}
-	encoded, _ := json.Marshal(canonical)
-	sum := sha256.Sum256(encoded)
-	return fmt.Sprintf("sha256:%x", sum[:])
-}
-
-func canonicalVolumes(volumes []volume.Volume) []volume.Volume {
-	canonical := append([]volume.Volume(nil), volumes...)
-	slices.SortFunc(canonical, func(a, b volume.Volume) int {
-		if n := cmp.Compare(a.Source, b.Source); n != 0 {
-			return n
-		}
-		if n := cmp.Compare(a.Path, b.Path); n != 0 {
-			return n
-		}
-		if n := cmp.Compare(a.SubPath, b.SubPath); n != 0 {
-			return n
-		}
-		if a.ReadOnly == b.ReadOnly {
-			return 0
-		}
-		if !a.ReadOnly {
-			return -1
-		}
-		return 1
-	})
-	return canonical
-}
-
-func runtimeTier(tier string) string {
-	if tier == "" {
-		return deployment.RuntimeClassRunc
-	}
-	return tier
-}
-
-func gracePeriodSeconds(seconds int) int {
-	if seconds == 0 {
-		return 30
-	}
-	return seconds
-}
-
 func (o *Orchestrator) poolForRevision(revision *revisionapi.Revision) *pool.Pool {
 	if revision.Spec.AcquisitionKey != "" {
 		for i := range o.cfg.Pools {
-			if poolShapeKey(&o.cfg.Pools[i].Spec) == revision.Spec.AcquisitionKey {
+			if pool.ShapeKey(&o.cfg.Pools[i].Spec) == revision.Spec.AcquisitionKey {
 				return &o.cfg.Pools[i]
 			}
 		}

@@ -130,7 +130,10 @@ sandbox:
 ```jsonc
 POST /v1/sandbox
 {
-  "pool": "agent",
+  "image": "python:3.12-slim",
+  "port": 3000,
+  "cpu": 1,
+  "memory": 512,
   "artifacts": [
     // restore: fetch last session's image and mount it writable, changes in tmpfs
     {"id": "img",   "type": "download", "in": "s3://acme/sessions/42.erofs", "out": "session.erofs"},

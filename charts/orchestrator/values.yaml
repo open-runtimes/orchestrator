@@ -354,7 +354,7 @@ sandbox:
   # Annotations on the sandbox-service pod.
   podAnnotations: {}
   # Same resource model as deployments.cpuOvercommit/memoryOvercommit,
-  # applied to warm-pool and poolless sandbox pods.
+  # applied to matched-pool and directly created sandbox pods.
   cpuOvercommit: 1
   memoryOvercommit: 1
   # Tolerations / node selector stamped on every sandbox pod, independent
@@ -389,19 +389,18 @@ sandbox:
     name: orchestrator
     # Empty = release namespace.
     namespace: ""
-  # Sandbox pools. Same schema as deployments.pools. The image needs to serve
-  # nothing: the open-runtimes/sandbox agent is copied into every sandbox's
-  # workspace at pod creation and run there, so any runtime image works and
-  # `port` is simply where the agent listens. Declare `command` only to override
-  # it (an image that serves the contract itself, say).
+  # Operator-only warm sandbox shapes. Callers always submit the complete pod
+  # shape and never name a pool; an exact match is claimed transparently, while
+  # no match or exhausted reject capacity creates that same bare pod directly.
+  # CPU and memory are required and shapes must be unique. Command and
+  # environment remain request-time fields and cannot be declared here.
+  # The open-runtimes/sandbox agent is copied into every sandbox's workspace,
+  # so any runtime image works and `port` is where the agent listens.
   # Untrusted, model-generated code is the expected workload here, so set
   # runtimeClass: gvisor (or kata) and map it with KUBE_RUNTIME_CLASSES.
-  # maxIdleSeconds caps how long an abandoned sandbox may hold a warm pod.
   #
-  # Pools are optional: a caller may also create a sandbox with no pool at all,
-  # naming an image in the request (docs/sandboxes.md). That costs a cold start
-  # per sandbox and cannot be capped by maxIdleSeconds, so declare pools for any
-  # workload that creates sandboxes at a rate.
+  # Pools are optional and affect startup latency only. The sandbox API and
+  # requested runtime semantics are identical with or without a matching pool.
   #
   # mounts lets this pool's sandboxes use the `mount` artifact (a tar archive,
   # squashfs image, or erofs image, optionally with a tmpfs overlay).
@@ -414,13 +413,16 @@ sandbox:
   #   - id: py
   #     image: python:3.12-slim
   #     port: 3000
+  #     cpu: 1
+  #     memory: 512
   #     size: 4
   #     runtimeClass: gvisor
-  #     maxIdleSeconds: 900
   #
   #   - id: restore          # a pool that mounts filesystem images
   #     image: python:3.12-slim
   #     port: 3000
+  #     cpu: 1
+  #     memory: 512
   #     size: 2
   #     mounts: true
   pools: []
@@ -441,8 +443,8 @@ sandbox:
   # when enabled. Requires a wildcard DNS record (*.{domain}) pointing at the
   # gateway. Each sandbox's hostname carries a 128-bit capability token, so
   # treat the URL as a secret: reaching it is enough to run code in the
-  # sandbox. Pools are optional warm capacity — a domain alone serves
-  # /v1/sandbox for poolless, image-named creates.
+  # sandbox. Pools are optional operator-only warm capacity; callers always
+  # submit complete image-backed shapes to /v1/sandbox.
   domain: ""
   # Scheme handed back in sandbox URLs (https where the gateway terminates TLS).
   scheme: http

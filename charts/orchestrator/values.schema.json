@@ -458,7 +458,7 @@
         },
         "pools": {
           "type": "array",
-          "description": "internal/pool.Pool entries, same schema as deployments.pools. The image must serve the sandbox contract, so command and port name its entrypoint and listen port.",
+          "description": "Operator-only warm pod shapes matched transparently against complete sandbox requests. Pool IDs are never part of the sandbox API.",
           "items": {
             "$ref": "#/$defs/pool"
           }
@@ -580,7 +580,9 @@
       "required": [
         "id",
         "image",
-        "port"
+        "port",
+        "cpu",
+        "memory"
       ],
       "properties": {
         "id": {
@@ -590,9 +592,6 @@
         "image": {
           "type": "string",
           "minLength": 1
-        },
-        "command": {
-          "type": "string"
         },
         "port": {
           "$ref": "#/$defs/port"
@@ -623,15 +622,8 @@
             "reject"
           ]
         },
-        "maxIdleSeconds": {
-          "type": "integer",
-          "minimum": 0
-        },
         "mounts": {
           "type": "boolean"
-        },
-        "environment": {
-          "$ref": "#/$defs/stringMap"
         },
         "volumes": {
           "type": "array",

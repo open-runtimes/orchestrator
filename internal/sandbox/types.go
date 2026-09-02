@@ -3,8 +3,9 @@
 // files, tear it down. Where a job runs to completion and a deployment serves
 // traffic under a stable name, a sandbox does neither; it waits for you.
 //
-// A sandbox is created from a warm pool (pkg/pool), so creation is a claim
-// rather than a container start. Exec and files are NOT part of this API: they
+// A sandbox declares a complete pod shape and transparently claims matching
+// warm capacity when available, otherwise creating directly. Exec and files are
+// NOT part of this API: they
 // are an HTTP contract the sandbox IMAGE serves at the sandbox's own URL
 // (open-runtimes/sandbox is the reference image), which keeps the control plane
 // off the data path. See docs/sandboxes.md.
@@ -14,7 +15,6 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/volume"
-	"slices"
 )
 
 // Request creates a sandbox.
@@ -28,7 +28,7 @@ type Request struct {
 	// which is the usual case (the pool's image already serves the contract).
 	Command     string            `json:"command,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
-	// Ports are extra ports this sandbox serves, beyond the pool's own. Each
+	// Ports are extra ports this sandbox serves, beyond its primary port. Each
 	// gets its own hostname, so a caller can reach a dev server, an LSP, or a
 	// terminal socket alongside the contract. Unlike volumes and the isolation
 	// tier, ports are NOT fixed by the warm pod: a container may bind any port
@@ -42,37 +42,27 @@ type Request struct {
 	TimeoutSeconds     *int `json:"timeoutSeconds,omitempty"`
 	IdleTimeoutSeconds int  `json:"idleTimeoutSeconds,omitempty"` // tear down after this long with no traffic; 0 = until DELETE
 
-	// Pool names the sandbox pool to claim from — the fast path: a warm pod is
-	// already running, so a create is a claim. Leave it empty and declare an
-	// Image instead for a sandbox with no pool behind it: the pod is created on
-	// demand, which costs a cold start but needs no standing capacity and takes
-	// its shape from this request rather than from an operator's config.
-	//
-	// Exactly one of Pool or Image.
-	Pool string `json:"pool,omitempty"`
+	// Pool is the operator pool selected by exact fixed-shape matching. It is
+	// internal coordination state, never accepted from or exposed to API users.
+	Pool string `json:"-"`
 
-	// Image is the runtime image for a poolless sandbox. The agent is installed
-	// into it exactly as it is into a pool's image, so any image works.
+	// Image is the runtime image. The agent is installed into it, so any image
+	// works. Required for every API request.
 	Image string `json:"image,omitempty"`
-	// Port is where the contract is served in a poolless sandbox — what a pool
-	// would otherwise declare. Required with Image.
+	// Port is where the contract is served. Required with Image.
 	Port int `json:"port,omitempty"`
-	// CPU and Memory size a poolless sandbox's workload container. Zero takes
-	// the platform default, as a pool's would.
+	// CPU and Memory size the sandbox's workload container. Zero takes the
+	// platform default.
 	CPU    float64 `json:"cpu,omitempty"`
 	Memory int     `json:"memory,omitempty"`
-	// RuntimeClass is the isolation tier for a poolless sandbox (runc | gvisor |
-	// kata). Unlike a pool's, this is per-sandbox: the pod is built for this
-	// request, so nothing was fixed before it arrived.
+	// RuntimeClass is the isolation tier (runc | gvisor | kata).
 	RuntimeClass string `json:"runtimeClass,omitempty"`
-	// TerminationGracePeriodSeconds bounds teardown for a poolless sandbox: the
+	// TerminationGracePeriodSeconds bounds teardown: the
 	// drain, the post-phase artifacts, and the unmount happen inside it. Raise it
 	// if this sandbox snapshots itself on the way out.
 	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
 
-	// Volumes attach existing storage to a poolless sandbox. Also per-sandbox
-	// for the same reason — a pool cannot do this because its pods are already
-	// running when you claim one.
+	// Volumes attach existing storage and participate in exact pool matching.
 	Volumes []volume.Volume `json:"volumes,omitempty"`
 
 	// Token is the capability the sandbox's hostname carries — minted by the
@@ -80,10 +70,8 @@ type Request struct {
 	Token string `json:"-"`
 }
 
-// Shape is the pod this request describes, for a sandbox with no pool behind
-// it. It is not a pool: nothing about it stands, replenishes, or is offered to a
-// second claim — the fields below are simply the shape a pool would otherwise
-// have fixed before the request arrived. Mounting is inferred from the
+// Shape is the pod this request describes. The fields below are exactly those
+// a warm pod must already share to be claimable. Mounting is inferred from the
 // artifacts, as it is for a job or a revision, because the pod is built for
 // this request.
 func (r *Request) Shape() pool.Spec {
@@ -115,31 +103,6 @@ func (r *Request) Recorded(shape pool.Spec) *Request {
 	return &recorded
 }
 
-// PoolFixed names the shape fields this request set that a pool fixes before it
-// arrives. A warm pod is already running when it is claimed, so none of these
-// can be honoured on a pooled create — naming one has to be an error, because
-// the alternative is a sandbox that quietly runs with different storage,
-// resources, or isolation than it asked for.
-func (r *Request) PoolFixed() []string {
-	set := map[string]bool{
-		"image":                         r.Image != "",
-		"port":                          r.Port != 0,
-		"cpu":                           r.CPU != 0,
-		"memory":                        r.Memory != 0,
-		"runtimeClass":                  r.RuntimeClass != "",
-		"volumes":                       len(r.Volumes) > 0,
-		"terminationGracePeriodSeconds": r.TerminationGracePeriodSeconds != 0,
-	}
-	named := make([]string, 0, len(set))
-	for field, given := range set {
-		if given {
-			named = append(named, field)
-		}
-	}
-	slices.Sort(named)
-	return named
-}
-
 // Sandbox states.
 const (
 	StateCreating = "creating" // claimed; artifacts materializing
@@ -158,12 +121,13 @@ const MetricKind = "sandbox"
 // sandbox, so it must stay out of logs, error bodies, and event payloads.
 type Status struct {
 	ID string `json:"id"`
-	// PoolID names the pool it was claimed from, absent for a poolless sandbox.
-	PoolID string `json:"poolId,omitempty"`
+	// PoolID is retained internally for backend reconstruction and diagnostics;
+	// pool identity is operator detail and is not part of the public API.
+	PoolID string `json:"-"`
 	State  string `json:"status"` // creating|ready|failed|deleting
 	URL    string `json:"url,omitempty"`
 	// URLs addresses every port the sandbox serves, keyed by port number
-	// (including the pool's own). Present so callers never build a hostname
+	// (including the primary). Present so callers never build a hostname
 	// themselves — the token in it is not derivable from the id.
 	URLs map[string]string `json:"urls,omitempty"`
 	// Image, CPU and Memory are the shape the sandbox is running in — read
@@ -186,5 +150,12 @@ type ListResponse struct {
 // contract, and their pods are reached by wildcard rather than a per-workload
 // route.
 func LoadPools(raw string) ([]pool.Pool, error) {
-	return pool.Load(raw, "SANDBOX_POOLS_JSON")
+	pools, err := pool.Load(raw, "SANDBOX_POOLS_JSON")
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.ValidateTransparent(pools, "sandbox"); err != nil {
+		return nil, err
+	}
+	return pools, nil
 }

@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"orchestrator/internal/pool"
 )
 
 // Orchestrator materializes sandboxes on a backend. The backend is the source
@@ -14,13 +13,9 @@ type Orchestrator interface {
 	// leader-elected replenishment and reaping loops.
 	Start(ctx context.Context) error
 
-	// Pools reports the configured sandbox pools with live warm/claimed counts.
-	Pools(ctx context.Context) ([]pool.Status, error)
-
 	// Create claims a warm pod, materializes the request's artifacts on it, and
-	// returns once the sandbox's contract is being served at its URL. No free
-	// warm pod → the pool's burst policy decides (cold create, or a 429-mapped
-	// error).
+	// returns once the sandbox's contract is being served at its URL. Matching
+	// warm capacity is an optimization; a valid request can always start cold.
 	Create(ctx context.Context, req *Request) (*Status, error)
 
 	// Status returns one sandbox's state, derived from the backend.

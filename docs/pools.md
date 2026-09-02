@@ -1,8 +1,8 @@
-# Revision Pools
+# Warm Pod Pools
 
-A deployment pool is standing warm capacity for ordinary [deployment revisions](deployments.md). The operator declares a fixed pod shape; users continue to submit complete image-backed deployment specs. When the fixed fields match exactly, the Revision claims a warm pod instead of waiting for scheduling and image pull.
+A pool is standing warm capacity for ordinary [deployment revisions](deployments.md) or [sandboxes](sandboxes.md). The operator declares a fixed pod shape; users continue to submit complete image-backed workload specs. When the fixed fields match exactly, the consumer claims a warm bare pod instead of waiting for scheduling and image pull.
 
-Pools have no public API, user-visible ids, or activation resources. `POST /v1/deployments` remains the only deployment create/update surface, and the resulting Revision owns rollout, status, autoscaling, routing, and pod deletion whether its pods were created or claimed.
+Pools have no public API or user-visible IDs. `POST /v1/deployments` and `POST /v1/sandbox` remain the only create surfaces; their returned state never reveals whether acquisition was warm or direct.
 
 ```json
 {
@@ -32,5 +32,7 @@ Every Revision retains the complete direct template plus the late-bind claim pay
 Changing the deployment spec mints a new immutable Revision. Changing operator pool capacity does not change the deployment spec or require client coordination. Rollout and traffic-cut behavior are unchanged.
 
 Configure pools through `deployments.pools` in Helm; see [operations](operations.md#pools). Pools require the Kubernetes backend.
+
+Sandbox pools use `sandbox.pools` and the same fixed-shape key. Sandbox command, environment, artifacts, extra ports, and timeouts are late-bound; a complete request with no match creates directly. Sandbox and Revision inventories remain separate workload kinds even though the matching and controller machinery are shared.
 
 Pool responsibilities are deliberately split. Consumer services perform request-path claim/bind/readiness and own claimed-workload lifecycle. The generic `pool-controller` owns bare warm-pod inventory for both Revision and sandbox pools: it creates replacements and removes poisoned, orphaned, obsolete, or shape-stale unclaimed pods. The chart runs the same binary independently for each enabled pool kind, preserving each plane's placement and S3 credentials. It keeps running with an empty pool list so removing the final pool also cleans up its standing capacity; claimed pods are never reclaimed by inventory cleanup.

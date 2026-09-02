@@ -6,13 +6,14 @@
 package pool
 
 import (
-	"context"
+	"cmp"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/volume"
+	"slices"
 )
 
 // Spec is the pod shape: what a claimed workload runs in — image, port,
@@ -26,9 +27,8 @@ import (
 // Embedded rather than nested, so the config and API wire formats stay flat.
 type Spec struct {
 	Image string `json:"image"`
-	// Command is the payload a claim execs when the request does not name one.
-	// Sandbox pools may set it as their default. Transparent deployment pools
-	// reject it because deployment requests always carry their own command.
+	// Command is retained for the shared claim shape, but transparent pools
+	// reject it: command is always late-bound from the workload request.
 	Command string `json:"command,omitempty"`
 	// RuntimeClass is the isolation tier: runc (default) | gvisor | kata. Fixed
 	// for a pool, because warm pods are runtime-fixed at creation, so warm pools
@@ -66,13 +66,13 @@ type Pool struct {
 
 	Size int `json:"size"` // warm pods kept ready
 
-	// Burst controls what happens when a claim arrives and no warm pod is
-	// free: "cold" (default) → create a pod on demand and pay the cold start;
-	// "reject" → 429. Always logged either way.
+	// Burst controls acquisition when no warm pod is free: "cold" (default)
+	// creates through the pool; "reject" declines the warm optimization and
+	// lets the consumer use its retained direct template. Always logged.
 	Burst string `json:"burst,omitempty"`
 
-	// MaxIdleSeconds caps a claim's requested idle timeout (0 = uncapped).
-	// Sandbox pools want one: an abandoned sandbox holds a warm pod hostage.
+	// MaxIdleSeconds is retained so older config fails with an actionable error.
+	// Transparent pools cannot alter request-time idle policy and reject it.
 	MaxIdleSeconds int `json:"maxIdleSeconds,omitempty"`
 }
 
@@ -148,6 +148,86 @@ func ByID(pools []Pool) map[string]*Pool {
 	return byID
 }
 
+// ShapeKey returns a stable identity for the fields fixed when a pod is
+// created. Request-time fields and capacity policy are deliberately excluded.
+func ShapeKey(shape *Spec) string {
+	runtimeClass := shape.RuntimeClass
+	if runtimeClass == "" {
+		runtimeClass = deployment.RuntimeClassRunc
+	}
+	grace := shape.TerminationGracePeriodSeconds
+	if grace == 0 {
+		grace = 30
+	}
+	volumes := append([]volume.Volume(nil), shape.Volumes...)
+	slices.SortFunc(volumes, func(a, b volume.Volume) int {
+		if n := cmp.Compare(a.Source, b.Source); n != 0 {
+			return n
+		}
+		if n := cmp.Compare(a.Path, b.Path); n != 0 {
+			return n
+		}
+		if n := cmp.Compare(a.SubPath, b.SubPath); n != 0 {
+			return n
+		}
+		if a.ReadOnly == b.ReadOnly {
+			return 0
+		}
+		if !a.ReadOnly {
+			return -1
+		}
+		return 1
+	})
+	canonical := struct {
+		Image        string          `json:"image"`
+		Port         int             `json:"port"`
+		CPU          float64         `json:"cpu"`
+		Memory       int             `json:"memory"`
+		RuntimeClass string          `json:"runtimeClass"`
+		Volumes      []volume.Volume `json:"volumes,omitempty"`
+		Mounts       bool            `json:"mounts,omitempty"`
+		Grace        int             `json:"terminationGracePeriodSeconds"`
+	}{shape.Image, shape.Port, shape.CPU, shape.Memory, runtimeClass, volumes, shape.Mounts, grace}
+	encoded, _ := json.Marshal(canonical)
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+// Match returns the configured pool whose fixed pod shape exactly equals the
+// requested shape. Pool validation ensures at most one can match.
+func Match(pools []Pool, shape *Spec) *Pool {
+	key := ShapeKey(shape)
+	for i := range pools {
+		if ShapeKey(&pools[i].Spec) == key {
+			return &pools[i]
+		}
+	}
+	return nil
+}
+
+// ValidateTransparent checks the invariants required for implicit exact-shape
+// selection shared by Revision and sandbox pools.
+func ValidateTransparent(pools []Pool, kind string) error {
+	for i := range pools {
+		p := &pools[i]
+		if p.CPU <= 0 || p.Memory <= 0 {
+			return fmt.Errorf("%s pool %q: cpu and memory are required for exact shape matching", kind, p.ID)
+		}
+		if p.Command != "" || len(p.Environment) != 0 {
+			return fmt.Errorf("%s pool %q: command and environment are request-time fields and must not be configured on the pool", kind, p.ID)
+		}
+		if p.MaxIdleSeconds != 0 {
+			return fmt.Errorf("%s pool %q: maxIdleSeconds is a request-time policy and must not be configured on the pool", kind, p.ID)
+		}
+		for j := range i {
+			if ShapeKey(&pools[j].Spec) == ShapeKey(&p.Spec) {
+				return fmt.Errorf("%s pools %q and %q declare the same fixed shape", kind, pools[j].ID, p.ID)
+			}
+		}
+	}
+	return nil
+}
+
 // Status is the API view of a configured pool.
 type Status struct {
 	ID      string `json:"id"`
@@ -155,29 +235,4 @@ type Status struct {
 	Size    int    `json:"size"`
 	Warm    int    `json:"warm"`    // unclaimed, warm-ready pods
 	Claimed int    `json:"claimed"` // pods bound to a workload claim
-}
-
-// Lister is the part of a warm-pool backend that reports its pools.
-type Lister interface {
-	Pools(ctx context.Context) ([]Status, error)
-}
-
-// StatusFor returns one declared pool's live status. A pool the operator did not
-// declare is NotFound, and so is one that is declared but that the backend does
-// not report: a caller cannot use either, and telling them apart would leak how
-// the backend is configured.
-func StatusFor(ctx context.Context, backend Lister, declared map[string]*Pool, id string) (*Status, error) {
-	if _, ok := declared[id]; !ok {
-		return nil, apperrors.NotFound("pool", id)
-	}
-	statuses, err := backend.Pools(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range statuses {
-		if statuses[i].ID == id {
-			return &statuses[i], nil
-		}
-	}
-	return nil, apperrors.NotFound("pool", id)
 }

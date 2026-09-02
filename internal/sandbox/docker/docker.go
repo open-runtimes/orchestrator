@@ -50,7 +50,6 @@ type Orchestrator struct {
 	client *client.Client
 	cfg    Config
 	addr   sandbox.Addressing
-	pools  map[string]*pool.Pool
 	stop   context.CancelFunc
 
 	// now and tick are shrunk (and frozen) by tests.
@@ -69,7 +68,6 @@ func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 		client: dockerClient,
 		cfg:    cfg,
 		addr:   cfg.addressing(),
-		pools:  pool.ByID(cfg.Pools),
 		now:    time.Now,
 		tick:   reapTick,
 	}, nil
@@ -90,40 +88,13 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	return nil
 }
 
-// Pools reports the configured sandbox pools. Warm is always zero: Docker
-// pre-warms nothing, so every create is a cold start.
-func (o *Orchestrator) Pools(ctx context.Context) ([]pool.Status, error) {
-	claimed := make(map[string]int, len(o.cfg.Pools))
-	volumes, err := o.volumes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, vol := range volumes {
-		claimed[vol.Labels[labelPool]]++
-	}
-	statuses := make([]pool.Status, 0, len(o.cfg.Pools))
-	for i := range o.cfg.Pools {
-		p := &o.cfg.Pools[i]
-		statuses = append(statuses, pool.Status{ID: p.ID, Image: p.Image, Size: p.Size, Claimed: claimed[p.ID]})
-	}
-	return statuses, nil
-}
-
 // Create provisions the sandbox: the labeled workspace volume that IS the
 // sandbox, its artifacts, the worker, and the proxy — then waits for the
 // proxy's health check to report the contract serving.
 func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandbox.Status, error) {
-	// A declared pool's shape, or the one the request describes. Docker creates
-	// the container either way — it has no warm capacity — so poolless costs it
-	// nothing extra.
+	// Docker always creates the request's complete shape directly. A matched
+	// operator pool is only diagnostic here because Docker has no warm capacity.
 	shape := req.Shape()
-	if req.Pool != "" {
-		p := o.pools[req.Pool]
-		if p == nil {
-			return nil, apperrors.NotFound("pool", req.Pool)
-		}
-		shape = p.Spec
-	}
 	// Mounts are a Kubernetes capability: a pod's containers can share a mount
 	// through propagation on a shared volume, which sibling Docker containers
 	// cannot. Say so rather than accepting the request and failing the claim.
@@ -507,15 +478,9 @@ func (o *Orchestrator) statusFrom(ctx context.Context, labels map[string]string)
 	if err != nil {
 		return status, err
 	}
-	// The primary port comes off the pool it was claimed from, or — for a
-	// poolless sandbox, whose pool existed only in its own request — off the
-	// stored spec. Reading it back must return the same addresses the create did.
+	// The complete stored request is authoritative regardless of whether an
+	// operator pool happened to match when it was created.
 	primary := spec.Port
-	if p := o.pools[status.PoolID]; p != nil {
-		primary = p.Port
-	} else {
-		status.PoolID = ""
-	}
 	if primary > 0 {
 		status.URL = o.addr.URL(token)
 		status.URLs = o.addr.URLs(token, primary, spec.Ports)

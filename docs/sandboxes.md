@@ -2,12 +2,11 @@
 
 A **sandbox** is a live, isolated workspace you drive from the outside: create one, run commands in it, read and write its files, tear it down. Where a [job](jobs.md) runs to completion and a [deployment](deployments.md) serves traffic under a stable name, a sandbox does neither — it sits there and waits for you. It is the shape an agent, a notebook kernel, or an interactive build wants.
 
-There are two ways to get one. Name a **sandbox pool** and you claim a pod that is already running — standing warm capacity, the same claim-and-late-bind machinery [pools](pools.md) use, so a create is sub-second. Name an **image** instead and the pod is created for you: no standing capacity to configure, at the cost of a cold start, and the sandbox takes its shape from your request rather than from an operator's config. Deployments work the same way, and this is the same trade.
+Every create declares the complete sandbox pod shape. If an operator has configured an exactly matching warm [pool](pools.md), the service claims one of its bare pods; otherwise it creates the same pod directly. Pool IDs and availability are invisible to callers: capacity can improve startup latency, but cannot change a request or make a valid create fail.
 
 One thing to know before anything else: **exec and files are not part of this API.** They are an HTTP contract served *inside* the sandbox, reached at the sandbox's own URL. This API creates, inspects, and tears down sandboxes; it never sits between you and your commands. See [the sandbox contract](#the-sandbox-contract).
 
 - [Endpoints](#endpoints)
-  - [A sandbox with no pool](#a-sandbox-with-no-pool)
 - [The sandbox contract](#the-sandbox-contract)
 - [Artifacts](#artifacts)
   - [Mounting a filesystem image](#mounting-a-filesystem-image)
@@ -29,8 +28,6 @@ One thing to know before anything else: **exec and files are not part of this AP
 | `GET` | `/v1/sandbox` | List live sandboxes → `200` |
 | `GET` | `/v1/sandbox/{id}` | One sandbox's status → `200` |
 | `DELETE` | `/v1/sandbox/{id}` | Tear it down → `204` |
-| `GET` | `/v1/sandbox-pool` | List sandbox pools with live counts → `200` |
-| `GET` | `/v1/sandbox-pool/{id}` | One pool → `200` |
 
 All of them require `Authorization: Bearer <API key>` when one is configured, and take `Content-Type: application/json` on writes. Unknown fields in a body are rejected rather than ignored, so a typo fails loudly instead of silently creating a sandbox with defaults.
 
@@ -41,13 +38,12 @@ There is no exec or files endpoint here, and there never will be — see [the sa
 ```bash
 curl -X POST http://localhost:8080/v1/sandbox \
   -H "Content-Type: application/json" \
-  -d '{"pool": "py", "idleTimeoutSeconds": 900}'
+  -d '{"image":"python:3.12-slim","port":3000,"cpu":1,"memory":512,"idleTimeoutSeconds":900}'
 ```
 
 ```json
 {
-  "id": "py-3f9c1a02",
-  "poolId": "py",
+  "id": "sbx-3f9c1a02",
   "status": "ready",
   "url": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com"
 }
@@ -57,39 +53,33 @@ curl -X POST http://localhost:8080/v1/sandbox \
 
 **Treat the URL as a secret.** Anyone who can reach it can run commands in the sandbox, so its hostname is an unguessable 128-bit token rather than your `id` — don't log it, and don't hand it to anyone you wouldn't hand a shell. `DELETE` invalidates it immediately: the proxy stops routing to a pod the moment it is marked for deletion, so the URL fails while the pod is still terminating, and dies with the token when it goes.
 
-Exactly one of `pool` or `image` — both is ambiguous (which image wins?) and neither leaves nothing to run.
-
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `pool` | string | — | The sandbox pool to claim from: a warm pod, so the create is sub-second. Unknown pool → `404`. |
-| `image` | string | — | A runtime image to create a pod from instead, for a sandbox with no pool behind it. The agent is installed into it exactly as into a pool's image, so any image works. |
-| `port` | int | — | **Required with `image`.** Where the contract is served — what a pool would otherwise declare. |
-| `cpu`, `memory` | number, int | platform default | Size the workload container of a poolless sandbox. |
-| `runtimeClass` | string | platform default | Isolation tier (`runc` \| `gvisor` \| `kata`) for a poolless sandbox. Per-sandbox here, unlike a pool's, because the pod is built for this request. |
-| `volumes` | array | — | Attach existing storage to a poolless sandbox — per-sandbox for the same reason. Same [schema](#persistence) as a pool's. |
-
-Every field above from `image` down to `volumes` describes a pod, so it belongs to a poolless create. Passing one alongside `pool` is a `400`: a warm pod is already running when you claim it, so none of them could be honoured.
-| `id` | string | generated | Caller-chosen for a stable API path and idempotency. RFC-1123 label: lowercase alphanumeric with interior hyphens, ≤63 characters. Re-POSTing a live id → `409`. Generated as `{pool}-{8 hex}` when omitted. **Not** the address — see [the URL is a capability](#the-url-is-a-capability). |
-| `command` | string | the pool's | What the claim execs. With none declared anywhere, the sandbox runs the [agent](#the-sandbox-contract) installed in its workspace — the usual case. |
+| `image` | string | — | **Required.** Any runtime image; the sandbox agent is installed into it. |
+| `port` | int | — | **Required.** Where the sandbox contract is served. |
+| `cpu`, `memory` | number, int | platform default | Size the workload container. These fields participate in exact pool matching. |
+| `runtimeClass` | string | platform default | Isolation tier (`runc` \| `gvisor` \| `kata`). |
+| `volumes` | array | — | Attach existing storage. Same [schema](#persistence) as an operator pool. |
+| `id` | string | generated | Caller-chosen stable API path. Generated as `sbx-{8 hex}` when omitted. **Not** the address. |
+| `command` | string | sandbox agent | What the claim execs. With none, the installed [agent](#the-sandbox-contract) serves the contract. |
 | `environment` | object | — | Environment variables for the workload. |
 | `ports` | int[] | — | Extra ports this sandbox serves, each addressable at its own hostname. See [ports](#ports). |
 | `artifacts` | array | — | Materialized into the workspace before the sandbox reports ready. Same schema as [job artifacts](jobs.md#artifacts), except [`mount`](jobs.md#mount-artifact). See [artifacts](#artifacts). |
 | `timeoutSeconds` | int | `300` | Bounds each request to the sandbox's URL. `0` means **no bound**, for sessions meant to outlive one. Max `3600`. |
-| `idleTimeoutSeconds` | int | the pool's `maxIdleSeconds` | Tear the sandbox down after this long with no traffic. `0` = live until `DELETE`, where the pool allows it. Capped by the pool's ceiling. |
+| `idleTimeoutSeconds` | int | `0` | Tear the sandbox down after this long with no traffic. `0` = live until `DELETE`. |
 
 The response is a **sandbox status**, the same shape every read returns:
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `id` | string | The one you passed, or the generated one. |
-| `poolId` | string | The pool it was claimed from. |
 | `status` | string | `creating` \| `ready` \| `failed` \| `deleting` — see [lifecycle](#lifecycle). |
-| `url` | string | The sandbox's address on its pool's port. Absent when nothing is serving (a `failed` sandbox has no URL). |
-| `urls` | object | Every port it serves, keyed by port number as a string, including the pool's own. Read addresses from here rather than building them. |
-| `image`, `cpu`, `memory` | string, number, int | The shape it is running in — off its pool, or off the request that built its pod. |
+| `url` | string | The sandbox's address on its primary port. Absent when nothing is serving. |
+| `urls` | object | Every requested port it serves, keyed by port number as a string. |
+| `image`, `cpu`, `memory` | string, number, int | The requested shape it is running in. |
 | `error` | string | Why it failed, when it did. |
 
-### A sandbox with no pool
+### Direct creation and warm matching
 
 ```bash
 curl -X POST http://localhost:8080/v1/sandbox \
@@ -105,16 +95,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
 }
 ```
 
-No `poolId` in the response: there was no pool. Everything else is identical — the contract, artifacts, extra ports, idle teardown, `status`/`list` reconstruction, `DELETE`.
-
-What you trade:
-
-- **A cold start.** The pod is created, scheduled, pulled if need be, and its agent started before the sandbox is `ready` — seconds, against well under one for a claim. If you create sandboxes at any rate, a pool is what you want.
-- **No pool ceiling.** `maxIdleSeconds` belongs to a pool, so a poolless sandbox is bounded only by the `idleTimeoutSeconds` you pass. Omit it and nothing collects the sandbox but a `DELETE`.
-
-What you gain: nothing to configure ahead of time, and per-sandbox control over `runtimeClass`, `volumes`, `cpu`/`memory` and [mounting](#mounting-a-filesystem-image) — all of which a pool fixes for every sandbox in it, because its pods are already running when you claim one.
-
-Under the hood it is not a pool at all: the request describes a pod, the pod is created and claimed directly, and it is labeled with the sandbox's own id so no other claim can ever be offered it. There is no warm scan and no burst policy on this path — nothing was standing in a shape this request invented. Every other rule in this guide applies unchanged.
+This request is the API in every case. An exact operator pool match may make it sub-second. With no match—or when a matching `reject` pool is exhausted—the pod is created, scheduled, pulled if needed, and then claimed directly. The response deliberately does not reveal which path won.
 
 A create that fails or is abandoned takes its pod with it, including one abandoned by a client that hung up: the removal runs on a context of its own, precisely because the caller's is the one that just died. A create that dies with its replica instead is caught by a sweep, which discards pods that never reached a claim once they are older than any live create could be.
 
@@ -140,7 +121,7 @@ sandbox:
       port: 3000
 ```
 
-A pool or a create call may still set `command` — to run an image that serves the contract itself, or to wrap the agent — and it wins over the installed agent. These are the three routes it answers on the pool's port:
+A create call may set `command` to run an image that serves the contract itself or wrap the agent; it wins over the installed agent. These are the three routes it answers on the primary port:
 
 | | |
 | --- | --- |
@@ -183,7 +164,7 @@ For anything bulkier than a `PUT`, declare [artifacts](jobs.md#artifacts) at cre
 curl -X POST http://localhost:8080/v1/sandbox \
   -H "Content-Type: application/json" \
   -d '{
-    "pool": "py",
+    "image": "python:3.12-slim", "port": 3000, "cpu": 1, "memory": 512,
     "artifacts": [
       {"id": "code", "type": "download", "in": "https://acme.test/repo.tar.gz", "out": "repo.tar.gz"},
       {"id": "unpack", "type": "unarchive", "in": "repo.tar.gz", "out": ".", "depends": "code"}
@@ -197,7 +178,7 @@ Artifacts run in the **pre phase only**: a post-phase artifact (one depending on
 
 A [`mount`](jobs.md#mount-artifact) puts a tar archive, squashfs image, or erofs image into the workspace — read-only, or `writable` with an overlay whose size you cap. Squashfs and erofs mount without extraction; tar is accepted as a compatibility path and is extracted into a private lower directory first. For a large read-mostly tree, the image formats retain the `O(1)` startup advantage.
 
-From a pool, it needs one that declares the capability:
+Mount capability is part of the fixed shape. An operator can warm that shape:
 
 ```yaml
 sandbox:
@@ -205,12 +186,14 @@ sandbox:
     - id: restore
       image: python:3.12-slim
       port: 3000
+      cpu: 1
+      memory: 512
       mounts: true
 ```
 
 ```jsonc
 {
-  "pool": "restore",
+  "image": "python:3.12-slim", "port": 3000, "cpu": 1, "memory": 512,
   "artifacts": [
     {"id": "img",  "type": "download", "in": "s3://acme/base.erofs", "out": "base.erofs"},
     {"id": "tree", "type": "mount", "in": "base.erofs", "out": "work",
@@ -221,13 +204,13 @@ sandbox:
 
 The mount is established after the image is materialized and **before** the workload is signalled, so it is in place when your command first runs. A mount that fails poisons the pod: the sandbox is `failed` with the reason and nothing starts.
 
-[A poolless sandbox](#a-sandbox-with-no-pool) needs no such declaration: its pod is built for the request, so the capability is inferred from the artifacts exactly as it is for a [job](jobs.md#mount-artifact) or a [revision](deployments.md#the-request-spec).
+If no mount-capable pool matches, the pod is built directly and the capability is inferred from the artifacts exactly as it is for a [job](jobs.md#mount-artifact) or a [revision](deployments.md#the-request-spec).
 
-**Why it is a pool dimension.** Mounting needs `CAP_SYS_ADMIN` and a loop device, and the mount has to cross from the sidecar that makes it into the container that reads it — so the sidecar runs **privileged as root** and the workspace carries mount propagation. Those are properties of a pod, and a warm pod is built long before your claim arrives. A `mount` against a pool without `mounts: true` is a `400` naming the setting.
+**Why it is a pool dimension.** Mounting needs `CAP_SYS_ADMIN` and a loop device, and the mount has to cross from the sidecar that makes it into the container that reads it — so the sidecar runs **privileged as root** and the workspace carries mount propagation. Those are properties of a pod, and a warm pod is built long before a claim arrives. A mount request only matches a pool with `mounts: true`; otherwise it creates the capable pod directly.
 
 [Pooled deployment revisions](pools.md) follow the same rules over the same machinery, and directly created [deployment revisions](deployments.md#the-request-spec) and [jobs](jobs.md#mount-artifact) mount too.
 
-**What that costs.** A privileged container sits in every pod of that pool, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work on pools without `mounts`, and treat a mounting pool as trusted infrastructure. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
+**What that costs.** A privileged container sits in every mounting pod, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work away from mounts and treat mounting capacity as trusted infrastructure. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
 
 If materialization fails, the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
 
@@ -237,7 +220,7 @@ A `writable` mount is scratch by default: the overlay's upper layer is RAM, and 
 
 ```jsonc
 {
-  "pool": "restore",
+  "image": "python:3.12-slim", "port": 3000, "cpu": 1, "memory": 512,
   "artifacts": [
     {"id": "img",  "type": "download", "in": "s3://acme/base.erofs", "out": "base.erofs"},
     {"id": "tree", "type": "mount", "in": "base.erofs", "out": "work", "depends": "img",
@@ -265,18 +248,17 @@ A restored tree is made writable to whoever the workload runs as, since the side
 
 ## Ports
 
-A sandbox serves its pool's port — the contract — and any extra ports you declare at create time. Each gets its own hostname, so a dev server, a language server, or a terminal socket is reachable alongside `/execute`:
+A sandbox serves its requested primary port—the contract—and any extra ports you declare at create time. Each gets its own hostname, so a dev server, a language server, or a terminal socket is reachable alongside `/execute`:
 
 ```bash
 curl -X POST http://localhost:8080/v1/sandbox \
   -H "Content-Type: application/json" \
-  -d '{"pool": "py", "ports": [5173, 9229]}'
+  -d '{"image":"python:3.12-slim","port":3000,"cpu":1,"memory":512,"ports":[5173,9229]}'
 ```
 
 ```json
 {
-  "id": "py-3f9c1a02",
-  "poolId": "py",
+  "id": "sbx-3f9c1a02",
   "status": "ready",
   "url": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
   "urls": {
@@ -312,7 +294,7 @@ The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-in
   | `subPath` | string | Mount only this subdirectory of the volume. |
   | `readonly` | bool | Mount read-only. |
 
-**On a pool, `volumes` is a pool dimension, not a per-sandbox field** — the same constraint as [`runtimeClass`](#isolation), and for the same reason. ([A poolless sandbox](#a-sandbox-with-no-pool) takes both per request, because its pod is built for it.) A warm pod is already running when you claim it, and its mounts were fixed when it was created; the claim protocol late-binds a command, environment, and artifacts, but it cannot attach storage to a live pod. So the volume is declared on the pool and mounted into every warm pod in that fleet:
+`volumes` is always a request field and also participates in exact pool matching. A warm pod cannot have storage attached after creation, so an operator only gets a warm hit by declaring that identical volume shape:
 
 ```yaml
 # values.yaml — operator config, not an API call
@@ -320,21 +302,22 @@ sandbox:
   pools:
     - id: py
       image: python:3.12-slim
+      port: 3000
+      cpu: 1
+      memory: 512
       volumes:
         - source: agent-scratch
           path: /data
           subPath: tenant-a   # optional: mount a subdirectory of the volume
 ```
 
-Naming `volumes` on a create that claims from a pool is a `400`, not a silent drop: a sandbox that asked for storage and quietly ran without it is the worst of the available outcomes. The same goes for the other fields a pool fixes — `image`, `port`, `cpu`, `memory`, `runtimeClass`, `terminationGracePeriodSeconds`.
-
-Want per-sandbox storage? Declare a pool per storage shape, or [create without a pool](#a-sandbox-with-no-pool) and pass `volumes` on the request — that pod is built for the request, so it can mount anything, at the cost of a cold start. What is not on offer is `volumes` *and* a sub-second claim.
+If that operator shape is absent, the requested pod is created directly. Storage is never silently dropped.
 
 Nothing is checkpointed and there is no suspend/resume — a sandbox is either running or gone. Anything worth keeping goes in a pool volume, or gets read out through `/files` before teardown.
 
 ## Isolation
 
-A sandbox from a pool runs at that pool's isolation tier, set by its `runtimeClass` (`runc` | `gvisor` | `kata`). Warm pods are runtime-fixed at creation, so on a pool this is a **pool dimension, not a per-sandbox field** — warm pools are keyed by `(image, runtimeClass)`. Want gVisor-isolated sandboxes from a pool? Configure a gVisor pool and create from it. [A poolless sandbox](#a-sandbox-with-no-pool) names its own tier, since its pod does not exist until you ask.
+Every sandbox request names its isolation tier (`runc` | `gvisor` | `kata`). Runtime class is fixed at pod creation and therefore part of the exact warm-pool shape; a different or absent operator shape simply takes the direct path.
 
 Untrusted, model-generated code is the expected workload here, so `gvisor` or `kata` is the right default for a sandbox pool even though `runc` is the platform default. See [operations](operations.md#isolation-tiers) for mapping tiers to your cluster's RuntimeClasses.
 
@@ -349,7 +332,7 @@ Untrusted, model-generated code is the expected workload here, so `gvisor` or `k
 
 A create returns once the sandbox is `ready` or `failed`; `creating` is what a concurrent read sees in between. There is no path back from `failed` — create another.
 
-`idleTimeoutSeconds` tears the sandbox down after that long with no traffic (`0` = live until `DELETE`, where the pool allows it). Traffic on any port counts. A pool's `maxIdleSeconds` caps it and fills it in when omitted: an abandoned sandbox holds a warm pod hostage, so requesting more than the ceiling is a `400`.
+`idleTimeoutSeconds` tears the sandbox down after that long with no traffic (`0` = live until `DELETE`). Traffic on any port counts. It is request-time policy and is never changed by pool selection.
 
 As with Revision claims, a used pod is **never reused** — teardown discards it and the pool replenishes with a fresh one.
 
@@ -361,12 +344,12 @@ As with Revision claims, a used pod is **never reused** — teardown discards it
 | `ports` per sandbox | 16 |
 | `artifacts` per sandbox | 64 |
 | `timeoutSeconds` | `0` (unbounded) to `3600`; default `300` |
-| `idleTimeoutSeconds` | `0` (until `DELETE`) up to the pool's `maxIdleSeconds` |
-| Reserved ports | `8000`, `8001` (the sidecar), and the pool's own port |
-| `mount` artifacts | On a pool: only with `mounts: true`. Poolless: inferred from the artifacts. Never on the Docker backend |
+| `idleTimeoutSeconds` | `0` (until `DELETE`) or any positive expiry |
+| Reserved ports | `8000`, `8001` (the sidecar), and the requested primary port |
+| `mount` artifacts | Inferred from the request and included in pool matching. Never on the Docker backend |
 | `/execute` output | 1 MiB per stream, then `truncated` (reference agent) |
 
-Concurrent sandboxes are bounded by your pools' `size` and [burst policy](pools.md#burst-policy), not by a limit here: a create against an exhausted pool either cold-starts a pod or is rejected with `429`, depending on the pool's `burst`.
+Concurrent sandboxes are bounded by cluster capacity, not pool size. Exhausted warm capacity falls back to direct creation.
 
 ## Error responses
 
@@ -382,10 +365,9 @@ All errors return JSON:
 | --- | --- |
 | 400 | Invalid request — malformed JSON, unknown field, or failed validation; the message names the offending field |
 | 401 | Missing or invalid API key |
-| 404 | Sandbox not found, or the `pool` named does not exist |
+| 404 | Sandbox not found |
 | 409 | A sandbox with this `id` is already live |
 | 415 | `Content-Type` is not `application/json` |
-| 429 | The pool had no warm pod and its burst policy is `reject` |
 | 500 | Internal error |
 
 A `failed` sandbox is **not** an error response: the create returns `201` with `"status": "failed"` and an `error` field, because the sandbox exists as a record you can read and delete. Errors above mean nothing was created.
@@ -402,7 +384,10 @@ curl -sX POST http://localhost:8080/v1/sandbox \
   -H "Content-Type: application/json" \
   -d '{
     "id": "agent-run-42",
-    "pool": "py",
+    "image": "python:3.12-slim",
+    "port": 3000,
+    "cpu": 1,
+    "memory": 512,
     "ports": [5173],
     "timeoutSeconds": 0,
     "idleTimeoutSeconds": 900,
@@ -416,7 +401,6 @@ curl -sX POST http://localhost:8080/v1/sandbox \
 ```json
 {
   "id": "agent-run-42",
-  "poolId": "py",
   "status": "ready",
   "url": "http://s-9f3c1a04b7e28d65f1024c8ba3e7d95f.sandboxes.example.com",
   "urls": {
@@ -450,17 +434,9 @@ Had step 5 never come, `idleTimeoutSeconds: 900` would have collected it fifteen
 
 ## Sandbox pools
 
-Sandbox pools are **operator configuration**, not an API resource: adding, resizing, or removing one is a config change and a rollout. The API over them is read-only.
+Sandbox pools are **operator configuration**, not API resources. There is no `/v1/sandbox-pool` endpoint and no pool field in sandbox requests or responses. Adding, resizing, or removing a pool is a config change and rollout.
 
-```bash
-curl http://localhost:8080/v1/sandbox-pool
-```
-
-```json
-{"pools": [{"id": "py", "image": "python:3.12-slim", "size": 4, "warm": 4, "claimed": 1}]}
-```
-
-`GET /v1/sandbox-pool/{id}` returns one pool. On Docker, `warm` is always `0` — see [the Docker backend](#the-docker-backend). Pools are optional: the domain alone enables sandboxes, and [a poolless create](#a-sandbox-with-no-pool) needs none. They share the base operator shape with [deployment pools](operations.md#pools) — `size`, `cpu`, `memory`, `runtimeClass`, `burst`, `volumes`, `port` — but retain explicit sandbox selection, optional `command` and `maxIdleSeconds`, and `reject` still maps to `429`. Deployment pools are instead matched transparently and fall back to direct creation. The fleets are separate because sandbox images serve the sandbox contract and their pods are routed by wildcard rather than a per-workload route:
+Pools use the same exact fixed-shape key and claim/direct fallback semantics as Revision pools: image, port, CPU, memory, runtime class, volumes, mount capability, and termination grace must match. Command, environment, artifacts, extra ports, and timeouts are late-bound request fields. Shapes must be unique and command/environment defaults are rejected. A `reject` pool declines an exhausted warm acquisition; it does not return `429` to the caller. The sandbox fleet remains separate because its pods carry a different routing and lifecycle contract:
 
 ```yaml
 sandbox:
@@ -470,9 +446,10 @@ sandbox:
     - id: py
       image: python:3.12-slim         # any runtime image; the agent is installed
       port: 3000                      # where the agent listens
+      cpu: 1
+      memory: 512
       size: 4
       runtimeClass: gvisor
-      maxIdleSeconds: 900
   proxy:
     enabled: true
 ```
@@ -493,13 +470,13 @@ Sandboxes also run on the Docker development backend, so you can build against t
 # docker-compose / env for the sandboxes service
 ORCHESTRATOR_BACKEND: docker
 SANDBOX_DOMAIN: sandboxes.test   # the domain sandbox URLs are minted under
-SANDBOX_POOLS_JSON: '[{"id":"py","image":"node:22-slim","port":3000,"maxIdleSeconds":900}]'   # optional warm capacity
+SANDBOX_POOLS_JSON: '[{"id":"py","image":"node:22-slim","port":3000,"cpu":1,"memory":512}]' # optional; Kubernetes only
 DOCKER_NETWORK: orchestrator   # recommended: keeps sandboxes off the default bridge
 ```
 
 Everything in this guide works there — the contract, artifacts, extra ports, idle teardown, `status`/`list` reconstruction after a restart — with two honest exceptions:
 
-- **No warm pool.** `size` is ignored and `warm` is always `0`: a create pays a full container start (seconds), where Kubernetes claims an already-running pod in well under one.
+- **No warm pool.** Docker always creates the complete requested shape directly; `sandbox.pools` has no latency effect there.
 - **No mounts.** The `mount` artifact needs a mount shared from the sidecar into the workload, which pod containers get through propagation on a shared volume and sibling Docker containers do not. A mount is a `400` here even on a pool with `mounts: true`.
 - **No isolation tiers.** `gvisor` and `kata` are RuntimeClasses, which Docker has no equivalent of. A sandbox here has ordinary container isolation, so **do not run untrusted code on it** — that is what the Kubernetes backend and a gVisor pool are for.
 

@@ -27,9 +27,8 @@ func NewSandboxesRouter(cfg SandboxesRouterConfig) http.Handler {
 	})
 }
 
-// sandboxesHandler serves /v1/sandbox and /v1/sandbox-pool. Pools are
-// config-defined, so the surface over them is read-only; sandboxes themselves
-// are created and torn down by callers.
+// sandboxesHandler serves /v1/sandbox. Warm pools are operator-only capacity
+// and are selected transparently from the complete requested pod shape.
 //
 // Exec and files are deliberately absent: they are served by the sandbox image
 // at the sandbox's own URL, which keeps this control plane off the data path.
@@ -38,6 +37,7 @@ type sandboxesHandler struct {
 }
 
 // registerSandboxRoutes mounts the sandbox routes.
+//
 //nolint:dupl // a route table, not logic: the shape it shares with the other planes is the point
 func registerSandboxRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *sandbox.Service) {
 	h := &sandboxesHandler{svc: svc}
@@ -45,8 +45,6 @@ func registerSandboxRoutes(mux *http.ServeMux, auth func(http.Handler) http.Hand
 	mux.Handle("GET /v1/sandbox", auth(http.HandlerFunc(h.list)))
 	mux.Handle("GET /v1/sandbox/{id}", auth(http.HandlerFunc(h.get)))
 	mux.Handle("DELETE /v1/sandbox/{id}", auth(http.HandlerFunc(h.remove)))
-	mux.Handle("GET /v1/sandbox-pool", auth(http.HandlerFunc(h.pools)))
-	mux.Handle("GET /v1/sandbox-pool/{id}", auth(http.HandlerFunc(h.pool)))
 }
 
 // create handles POST /v1/sandbox. Synchronous by design: a claim is
@@ -99,22 +97,4 @@ func (h *sandboxesHandler) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *sandboxesHandler) pools(w http.ResponseWriter, r *http.Request) {
-	pools, err := h.svc.Pools(r.Context())
-	if err != nil {
-		handleServiceError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"pools": pools})
-}
-
-func (h *sandboxesHandler) pool(w http.ResponseWriter, r *http.Request) {
-	status, err := h.svc.Pool(r.Context(), r.PathValue("id"))
-	if err != nil {
-		handleServiceError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, status)
 }
