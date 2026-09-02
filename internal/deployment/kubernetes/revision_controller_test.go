@@ -25,9 +25,9 @@ import (
 
 type revisionPoolSidecar struct{ claim *workload.ClaimRequest }
 
-func (f *revisionPoolSidecar) Claim(_ context.Context, _ string, _ string, req *workload.ClaimRequest) error {
-	copy := *req
-	f.claim = &copy
+func (f *revisionPoolSidecar) Claim(_ context.Context, _, _ string, req *workload.ClaimRequest) error {
+	claim := *req
+	f.claim = &claim
 	return nil
 }
 func (*revisionPoolSidecar) State(context.Context, string) (*workload.ClaimState, error) {

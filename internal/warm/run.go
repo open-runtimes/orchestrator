@@ -35,7 +35,7 @@ func (m *Manager) Run(ctx context.Context, teardown Teardown) error {
 	m.stop = cancel
 	hooks := NewIdleReaper(m, teardown).Hooks()
 	go kube.RunLeaderElected(runCtx, m.client, m.cfg.Namespace, m.cfg.LeaderElection,
-		func(loopCtx context.Context) { m.runControl(loopCtx, hooks) }, m.onLeadership)
+		func(loopCtx context.Context) { m.runControlLoop(loopCtx, hooks) }, m.onLeadership)
 	return nil
 }
 

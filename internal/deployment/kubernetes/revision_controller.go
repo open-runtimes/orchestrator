@@ -356,127 +356,18 @@ func (o *Orchestrator) reconcileRevision(ctx context.Context, name string) error
 }
 
 func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revisionapi.Revision, pods []*corev1.Pod, direct bool, triggeredAt time.Time) error {
-	desired := revision.Spec.Replicas
-	deleting := revision.DeletionTimestamp != nil
-	if deleting {
-		// Foreground deletion waits for owned Pods. Pod delete events still
-		// reach this controller, so treating the old spec as authoritative
-		// would recreate dependents forever and deadlock garbage collection.
-		desired = 0
+	desired, deleting := desiredRevisionReplicas(revision)
+	state, stale := classifyRevisionPods(revision, pods)
+	if stale {
+		return nil
 	}
-	if desired < 0 {
-		desired = 0
+	if err := o.deleteRevisionPods(ctx, append(state.terminal, state.invalid...), "terminal_or_invalid"); err != nil {
+		return err
 	}
-	active := make(map[int]*corev1.Pod)
-	terminating := make(map[int][]string)
-	var terminal []*corev1.Pod
-	var invalid []*corev1.Pod
-	for _, pod := range pods {
-		if podGeneration(pod) > revision.Generation {
-			// The Pod was built from a newer spec than this (cached) view of
-			// the Revision: acting on it would undo a concurrent Apply/Scale.
-			// The Revision's own update event reconciles once the cache
-			// catches up.
-			return nil
-		}
-		slot, slotErr := strconv.Atoi(pod.Labels[LabelReplicaSlot])
-		if slotErr != nil || slot < 0 {
-			invalid = append(invalid, pod)
-			continue
-		}
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			terminal = append(terminal, pod)
-			continue
-		}
-		if pod.DeletionTimestamp != nil {
-			terminating[slot] = append(terminating[slot], pod.Name)
-			continue
-		}
-		if existing := active[slot]; existing != nil {
-			// Deterministically retain one slot owner if an old race or manual
-			// mutation produced a duplicate.
-			if pod.Name < existing.Name {
-				invalid = append(invalid, existing)
-				active[slot] = pod
-			} else {
-				invalid = append(invalid, pod)
-			}
-			continue
-		}
-		active[slot] = pod
+	if err := o.scaleDownRevisionPods(ctx, state.active, desired, deleting); err != nil {
+		return err
 	}
-
-	for _, pod := range append(terminal, invalid...) {
-		if err := o.client.CoreV1().Pods(o.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		if o.cfg.Metrics != nil {
-			o.cfg.Metrics.RecordRevisionPodDelete(ctx, "terminal_or_invalid")
-		}
-	}
-	for slot, pod := range active {
-		if int32(slot) < desired {
-			continue
-		}
-		if err := o.client.CoreV1().Pods(o.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		if o.cfg.Metrics != nil {
-			reason := "scale_down"
-			if deleting {
-				reason = "revision_deleting"
-			}
-			o.cfg.Metrics.RecordRevisionPodDelete(ctx, reason)
-		}
-		delete(active, slot)
-	}
-	var createErr error
-	for _, pod := range active {
-		if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
-			if err := o.finishRevisionClaim(ctx, pod); err != nil {
-				createErr = err
-				break
-			}
-		}
-	}
-	for slot := range desired {
-		if createErr != nil {
-			break
-		}
-		if active[int(slot)] != nil {
-			continue
-		}
-		var err error
-		claimed := false
-		matchedPool := o.poolForRevision(revision)
-		if matchedPool != nil && revision.Spec.Claim != nil && o.pools != nil {
-			_, err = o.claimRevisionPod(ctx, revision, matchedPool, int(slot))
-			switch {
-			case err == nil:
-				claimed = true
-			case errors.Is(err, apperrors.ErrExhausted):
-				// A transparent optimization cannot turn a valid image-backed
-				// deployment into a capacity error. Fall through to the complete
-				// direct template retained on every new Revision.
-				err = nil
-			}
-		}
-		if !claimed && err == nil {
-			if revision.Spec.Template == nil {
-				err = fmt.Errorf("revision %s has no direct template and its legacy pool %q is unavailable", revision.Name, revision.Spec.Pool)
-			} else {
-				pod := buildRevisionPod(revision, int(slot), terminating[int(slot)])
-				_, err = o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
-			}
-		}
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			createErr = err
-			break
-		}
-		if err == nil && o.cfg.Metrics != nil {
-			o.cfg.Metrics.RecordRevisionPodCreate(ctx, time.Since(triggeredAt).Seconds())
-		}
-	}
+	createErr := o.ensureRevisionPods(ctx, revision, state, desired, triggeredAt)
 	if deleting {
 		return nil
 	}
@@ -511,6 +402,133 @@ func (o *Orchestrator) reconcileRevisionPods(ctx context.Context, revision *revi
 		return nil
 	}
 	return createErr
+}
+
+type revisionPodState struct {
+	active      map[int]*corev1.Pod
+	terminating map[int][]string
+	terminal    []*corev1.Pod
+	invalid     []*corev1.Pod
+}
+
+func desiredRevisionReplicas(revision *revisionapi.Revision) (int32, bool) {
+	deleting := revision.DeletionTimestamp != nil
+	desired := revision.Spec.Replicas
+	if deleting || desired < 0 {
+		// Foreground deletion waits for owned Pods. Pod delete events still
+		// reach this controller, so recreating dependents would deadlock GC.
+		desired = 0
+	}
+	return desired, deleting
+}
+
+func classifyRevisionPods(revision *revisionapi.Revision, pods []*corev1.Pod) (revisionPodState, bool) {
+	state := revisionPodState{active: make(map[int]*corev1.Pod), terminating: make(map[int][]string)}
+	for _, pod := range pods {
+		if podGeneration(pod) > revision.Generation {
+			// Acting on a Pod from a newer spec would undo a concurrent update.
+			return state, true
+		}
+		slot, err := strconv.Atoi(pod.Labels[LabelReplicaSlot])
+		if err != nil || slot < 0 {
+			state.invalid = append(state.invalid, pod)
+			continue
+		}
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			state.terminal = append(state.terminal, pod)
+			continue
+		}
+		if pod.DeletionTimestamp != nil {
+			state.terminating[slot] = append(state.terminating[slot], pod.Name)
+			continue
+		}
+		if existing := state.active[slot]; existing != nil {
+			// Deterministically retain one slot owner after a race or mutation.
+			if pod.Name < existing.Name {
+				state.invalid = append(state.invalid, existing)
+				state.active[slot] = pod
+			} else {
+				state.invalid = append(state.invalid, pod)
+			}
+			continue
+		}
+		state.active[slot] = pod
+	}
+	return state, false
+}
+
+func (o *Orchestrator) deleteRevisionPods(ctx context.Context, pods []*corev1.Pod, reason string) error {
+	for _, pod := range pods {
+		if err := o.client.CoreV1().Pods(o.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if o.cfg.Metrics != nil {
+			o.cfg.Metrics.RecordRevisionPodDelete(ctx, reason)
+		}
+	}
+	return nil
+}
+
+func (o *Orchestrator) scaleDownRevisionPods(ctx context.Context, active map[int]*corev1.Pod, desired int32, deleting bool) error {
+	for slot, pod := range active {
+		if int32(slot) < desired {
+			continue
+		}
+		reason := "scale_down"
+		if deleting {
+			reason = "revision_deleting"
+		}
+		if err := o.deleteRevisionPods(ctx, []*corev1.Pod{pod}, reason); err != nil {
+			return err
+		}
+		delete(active, slot)
+	}
+	return nil
+}
+
+func (o *Orchestrator) ensureRevisionPods(ctx context.Context, revision *revisionapi.Revision, state revisionPodState, desired int32, triggeredAt time.Time) error {
+	for _, pod := range state.active {
+		if pod.Labels[LabelPoolClaim] != "" && pod.Labels[LabelServing] != "true" {
+			if err := o.finishRevisionClaim(ctx, pod); err != nil {
+				return err
+			}
+		}
+	}
+	for slot := range desired {
+		if state.active[int(slot)] != nil {
+			continue
+		}
+		created, err := o.ensureRevisionPod(ctx, revision, int(slot), state.terminating[int(slot)])
+		if err != nil {
+			return err
+		}
+		if created && o.cfg.Metrics != nil {
+			o.cfg.Metrics.RecordRevisionPodCreate(ctx, time.Since(triggeredAt).Seconds())
+		}
+	}
+	return nil
+}
+
+func (o *Orchestrator) ensureRevisionPod(ctx context.Context, revision *revisionapi.Revision, slot int, terminating []string) (bool, error) {
+	matchedPool := o.poolForRevision(revision)
+	if matchedPool != nil && revision.Spec.Claim != nil && o.pools != nil {
+		if _, err := o.claimRevisionPod(ctx, revision, matchedPool, slot); err == nil {
+			return true, nil
+		} else if !errors.Is(err, apperrors.ErrExhausted) {
+			return false, err
+		}
+		// Exhaustion of a transparent optimization falls back to the full
+		// direct template retained on every new Revision.
+	}
+	if revision.Spec.Template == nil {
+		return false, fmt.Errorf("revision %s has no direct template and its legacy pool %q is unavailable", revision.Name, revision.Spec.Pool)
+	}
+	pod := buildRevisionPod(revision, slot, terminating)
+	_, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // updateRevisionStatus tolerates the intentional race between the synchronous
@@ -574,13 +592,13 @@ func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisiona
 	if err != nil {
 		return nil, err
 	}
-	labels := revisionLabels(revision.Labels[LabelDeploymentID], revision.Labels[LabelRevision])
-	labels[LabelReplicaSlot] = strconv.Itoa(slot)
+	podLabels := revisionLabels(revision.Labels[LabelDeploymentID], revision.Labels[LabelRevision])
+	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
 	owners := []metav1.OwnerReference{{
 		APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind, Name: revision.Name, UID: revision.UID,
 		Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
 	}}
-	if err := o.pools.BindOwned(ctx, pod.Name, claim.ClaimID, &claim, labels, owners); err != nil {
+	if err := o.pools.BindOwned(ctx, pod.Name, claim.ClaimID, &claim, podLabels, owners); err != nil {
 		o.pools.Discard(ctx, pod.Name)
 		return nil, err
 	}

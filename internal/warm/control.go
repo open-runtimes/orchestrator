@@ -41,9 +41,9 @@ func (m *Manager) Controller(hooks Hooks) *Controller {
 	return &Controller{m: m, hooks: hooks, Now: time.Now, orphanSince: make(map[string]time.Time)}
 }
 
-// runControl is the leader-elected control loop entrypoint: one Controller per
+// runControlLoop is the leader-elected control loop entrypoint: one Controller per
 // leadership term, ticking until the term (or process) ends.
-func (m *Manager) runControl(ctx context.Context, hooks Hooks) {
+func (m *Manager) runControlLoop(ctx context.Context, hooks Hooks) {
 	c := m.Controller(hooks)
 	ticker := time.NewTicker(controlTick)
 	defer ticker.Stop()
@@ -60,7 +60,7 @@ func (m *Manager) runControl(ctx context.Context, hooks Hooks) {
 // RunControl runs inventory reconciliation for an already leader-gated
 // caller. It avoids starting a second Lease elector inside a control plane
 // that already owns a leadership term.
-func (m *Manager) RunControl(ctx context.Context, hooks Hooks) { m.runControl(ctx, hooks) }
+func (m *Manager) RunControl(ctx context.Context, hooks Hooks) { m.runControlLoop(ctx, hooks) }
 
 // Tick reconciles every pool once, then prunes loop memory for pods and claims
 // that no longer exist.
