@@ -110,32 +110,16 @@ func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID
 	if err != nil {
 		return nil, err
 	}
-	err = inv.Reserve(ctx, *created)
-	if errors.Is(err, ErrConflict) {
+	err = claimUnit(ctx, inv, post, *created, req)
+	switch {
+	case err == nil:
+		return created, nil
+	case errors.Is(err, ErrConflict):
 		if rec != nil {
 			rec.RecordPoolConflict(ctx, poolID)
 		}
 		if unit, ok, retryErr := tryWarm(ctx, inv, post, rec, poolID, req); retryErr != nil || ok {
 			return unit, recordPoison(ctx, rec, poolID, retryErr)
-		}
-		return nil, exhausted(poolID)
-	}
-	if err != nil {
-		return nil, reservationFailure(ctx, inv, *created, err)
-	}
-	err = postReserved(ctx, inv, post, *created, req)
-	switch {
-	case err == nil:
-		return created, nil
-	case errors.Is(err, ErrConflict):
-		// A sidecar conflict after our metadata reservation means a claimant
-		// reached an older pod before this protocol. The unit is already
-		// discarded; make one more warm pass.
-		if rec != nil {
-			rec.RecordPoolConflict(ctx, poolID)
-		}
-		if unit, ok, err := tryWarm(ctx, inv, post, rec, poolID, req); err != nil || ok {
-			return unit, recordPoison(ctx, rec, poolID, err)
 		}
 		return nil, exhausted(poolID)
 	default:
@@ -154,26 +138,18 @@ func recordPoison(ctx context.Context, rec Recorder, poolID string, err error) e
 }
 
 // tryWarm reserves and activates the first free unit that accepts; ok=false
-// with nil error means none was free. Reservation conflicts move to the next
-// unit. Activation failures discard the reserved unit before the flow retries;
-// poison stops the pass because the requested workload itself failed.
+// with nil error means none was free. Conflicts and transient reservation or
+// activation failures move to the next unit. Only a non-conflict activation
+// failure discards: a reservation error has an ambiguous patch outcome, while
+// a sidecar conflict may be a live claim won by an older rolling-upgrade peer.
+// Poison stops the pass because the requested workload itself failed.
 func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID string, req *workload.ClaimRequest) (*Unit, bool, error) {
 	units, err := inv.Free(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	for _, u := range units {
-		err := inv.Reserve(ctx, u)
-		if errors.Is(err, ErrConflict) {
-			if rec != nil {
-				rec.RecordPoolConflict(ctx, poolID)
-			}
-			continue
-		}
-		if err != nil {
-			return nil, false, reservationFailure(ctx, inv, u, err)
-		}
-		err = postReserved(ctx, inv, post, u, req)
+		err := claimUnit(ctx, inv, post, u, req)
 		switch {
 		case err == nil:
 			return &u, true, nil
@@ -181,7 +157,7 @@ func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, pool
 			if rec != nil {
 				rec.RecordPoolConflict(ctx, poolID)
 			}
-			continue // racing loser — try the next warm unit
+			continue
 		default:
 			var poison *Poison
 			if errors.As(err, &poison) {
@@ -194,13 +170,22 @@ func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, pool
 	return nil, false, nil
 }
 
-// postReserved activates a unit whose final metadata is already durable. Any
-// non-success has an ambiguous start outcome, so the unit is discarded before
-// the flow tries elsewhere or reports failure.
-func postReserved(ctx context.Context, inv Inventory, post Poster, unit Unit, req *workload.ClaimRequest) error {
+// claimUnit is the one-unit reservation/activation protocol. Reservation
+// failures are left for reconciliation because the API write may or may not
+// have landed. Sidecar conflicts are also left alone: during a rolling upgrade
+// an older peer may already have activated this pod and still be binding its
+// labels. Other activation failures are safe to discard because this caller
+// successfully reserved the unit first.
+func claimUnit(ctx context.Context, inv Inventory, post Poster, unit Unit, req *workload.ClaimRequest) error {
+	if err := inv.Reserve(ctx, unit); err != nil {
+		return fmt.Errorf("reserve unit %s: %w", unit.ID, err)
+	}
 	err := post.Post(ctx, unit, req)
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, ErrConflict) {
+		return err
 	}
 	if discardErr := inv.Discard(ctx, unit); discardErr != nil {
 		return errors.Join(
@@ -209,16 +194,6 @@ func postReserved(ctx context.Context, inv Inventory, post Poster, unit Unit, re
 		)
 	}
 	return err
-}
-
-func reservationFailure(ctx context.Context, inv Inventory, unit Unit, reserveErr error) error {
-	if discardErr := inv.Discard(ctx, unit); discardErr != nil {
-		return errors.Join(
-			fmt.Errorf("reserve unit %s failed: %w", unit.ID, reserveErr),
-			fmt.Errorf("discard after ambiguous reservation: %w", discardErr),
-		)
-	}
-	return reserveErr
 }
 
 func exhausted(poolID string) error {

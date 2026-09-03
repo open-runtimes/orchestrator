@@ -90,9 +90,11 @@ func (c *Controller) TickClaims(ctx context.Context) {
 		return
 	}
 	live := make(map[string]bool, len(pods))
+	seenPods := make(map[string]bool, len(pods))
 	now := c.Now()
 	for i := range pods {
 		pod := &pods[i]
+		seenPods[pod.Name] = true
 		if pod.DeletionTimestamp != nil {
 			continue
 		}
@@ -113,6 +115,7 @@ func (c *Controller) TickClaims(ctx context.Context) {
 		}
 		c.hooks.Reap(ctx, p, pod, claimID, now)
 	}
+	c.forgetOrphans(seenPods)
 	if c.hooks.Forget != nil {
 		c.hooks.Forget(live)
 	}
@@ -132,11 +135,7 @@ func (c *Controller) Tick(ctx context.Context) {
 	// Unclaimed pods whose pool disappeared are never live workloads. Sweep
 	// them for every consumer; ReapUnpooled gates only claimed workloads.
 	c.sweepUnclaimed(ctx)
-	for name := range c.orphanSince {
-		if !seenPods[name] {
-			delete(c.orphanSince, name)
-		}
-	}
+	c.forgetOrphans(seenPods)
 	if c.hooks.Forget != nil {
 		c.hooks.Forget(seenClaims)
 	}
@@ -174,6 +173,9 @@ func (c *Controller) reapUnpooled(ctx context.Context, seenPods, seenClaims map[
 		}
 		seenPods[pod.Name] = true
 		seenClaims[claimID] = true
+		if c.reservationPending(ctx, pod, claimID, now) {
+			continue
+		}
 		c.hooks.Reap(ctx, &pool.Pool{ID: poolID}, pod, claimID, now)
 	}
 }
@@ -267,29 +269,41 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 
 // reservationPending protects the gap between the atomic metadata reservation
 // and the sidecar claim request. A process crash in that gap leaves a fully
-// identified pod whose workload never started; after OrphanTTL it is discarded
-// instead of being mistaken for live capacity forever.
+// identified pod whose workload never started. The orphan clock begins only
+// after a successful probe observes a mismatch. Probe errors leave the pod
+// alone and do not advance that clock, so a transient timeout can never delete
+// a live workload after a leader failover.
 func (c *Controller) reservationPending(ctx context.Context, pod *corev1.Pod, claimID string, now time.Time) bool {
-	reservedAt := pod.Annotations[AnnotationReservedAt]
-	if reservedAt == "" {
+	if pod.Annotations[AnnotationReservedAt] == "" {
 		return false // claim created before reservation-first claiming
 	}
-	if c.m.reservationAccepted(ctx, pod) {
+	state, err := c.m.sc.State(ctx, pod.Status.PodIP)
+	if err != nil {
+		delete(c.orphanSince, pod.Name)
+		return true // sidecar not answering — reservation may be live
+	}
+	if state.Claimed && state.ClaimID == claimID {
+		delete(c.orphanSince, pod.Name)
 		return false
 	}
-	started, err := time.Parse(time.RFC3339Nano, reservedAt)
-	if err != nil {
-		started = c.orphanSince[pod.Name]
-		if started.IsZero() {
-			c.orphanSince[pod.Name] = now
-			return true
-		}
+	started := c.orphanSince[pod.Name]
+	if started.IsZero() {
+		c.orphanSince[pod.Name] = now
+		return true
 	}
 	if now.Sub(started) > c.m.cfg.OrphanTTL {
 		slog.Warn("Deleting abandoned workload reservation", "pod", pod.Name, "claimId", claimID)
 		_ = c.m.Delete(ctx, pod.Name)
 	}
 	return true
+}
+
+func (c *Controller) forgetOrphans(seenPods map[string]bool) {
+	for name := range c.orphanSince {
+		if !seenPods[name] {
+			delete(c.orphanSince, name)
+		}
+	}
 }
 
 // countsWarm decides whether an unlabeled pod counts toward the pool's warm

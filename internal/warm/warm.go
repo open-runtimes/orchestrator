@@ -6,7 +6,7 @@
 // reconstruct by listing pods.
 //
 // Everything here is consumer-neutral, and that includes the sequence, not
-// just the primitives: claiming, binding, waiting for the workload to answer,
+// just the primitives: reserving, activating, waiting for the workload to answer,
 // deriving a claimed pod's phase, reaping it when it goes idle, and running the
 // inventory control loop. Deployment Revisions and sandboxes both sit on it;
 // the owning controller supplies routing and lifecycle once a pod is claimed.
@@ -38,9 +38,9 @@ import (
 const (
 	// LabelManagedBy marks every object a warm pool owns.
 	LabelManagedBy = "managed-by"
-	// AnnotationReservedAt marks claims whose final identity was bound before
-	// the sidecar activation request. It lets a restarted controller distinguish
-	// an abandoned reservation from a live legacy claim.
+	// AnnotationReservedAt marks claims whose final identity was reserved before
+	// the sidecar activation request. Its presence distinguishes reservation-first
+	// claims from legacy claims; orphan age is measured from first observed mismatch.
 	AnnotationReservedAt = "warm.orchestrator.open-runtimes.io/reserved-at"
 
 	ContainerShimInstall  = "shim-install"
@@ -146,7 +146,6 @@ type Manager struct {
 	// get-or-created as the claim-key Secret and cached here.
 	keyMu      sync.Mutex
 	installKey []byte
-	confirmed  sync.Map // pod name → sidecar accepted the metadata reservation
 }
 
 // Binding is the final workload identity atomically stamped while reserving a
@@ -303,7 +302,6 @@ func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *workload.ClaimRe
 		return nil, err
 	}
 	pod := inv.byName[unit.ID]
-	m.confirmed.Store(pod.Name, true)
 	return pod, nil
 }
 
@@ -334,7 +332,6 @@ func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string
 	if err = m.sc.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req); err != nil {
 		return nil, claim.Outcome(err, pod.Name)
 	}
-	m.confirmed.Store(bound.Name, true)
 	return bound, nil
 }
 
@@ -479,26 +476,7 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 	if err != nil && !apierrors.IsNotFound(err) {
 		return apperrors.Internal("kubernetes.deletePod", err)
 	}
-	m.confirmed.Delete(name)
 	return nil
-}
-
-// reservationAccepted answers from the request path's memory in the common
-// case. After a controller restart it asks the sidecar once, then caches the
-// confirmation for the pod's lifetime.
-func (m *Manager) reservationAccepted(ctx context.Context, pod *corev1.Pod) bool {
-	if pod.Annotations[AnnotationReservedAt] == "" {
-		return true
-	}
-	if _, ok := m.confirmed.Load(pod.Name); ok {
-		return true
-	}
-	state, err := m.sc.State(ctx, pod.Status.PodIP)
-	if err != nil || !state.Claimed || state.ClaimID != m.ClaimID(pod) {
-		return false
-	}
-	m.confirmed.Store(pod.Name, true)
-	return true
 }
 
 // Ready checks that the K8s API server is reachable.

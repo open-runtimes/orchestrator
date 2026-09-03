@@ -40,6 +40,7 @@ type fakeSidecar struct {
 	conflict map[string]bool                // Claim → 409
 	poison   map[string]bool                // Claim → 422 (artifacts failed)
 	state    map[string]workload.ClaimState // State responses
+	stateErr map[string]error               // State failures
 	notReady map[string]bool                // Ready → false (default ready)
 	requests map[string]int64               // Requests responses
 	claimed  []string                       // successful claim IPs, in order
@@ -53,6 +54,7 @@ func newFakeSidecar() *fakeSidecar {
 		conflict: map[string]bool{},
 		poison:   map[string]bool{},
 		state:    map[string]workload.ClaimState{},
+		stateErr: map[string]error{},
 		notReady: map[string]bool{},
 		requests: map[string]int64{},
 	}
@@ -79,6 +81,9 @@ func (f *fakeSidecar) Claim(_ context.Context, podIP, token string, req *workloa
 func (f *fakeSidecar) State(_ context.Context, podIP string) (*workload.ClaimState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.stateErr[podIP]; err != nil {
+		return nil, err
+	}
 	state := f.state[podIP]
 	return &state, nil
 }

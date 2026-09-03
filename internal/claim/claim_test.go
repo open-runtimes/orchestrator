@@ -103,18 +103,32 @@ func TestClaimRetriesNextUnitWhenReservationLosesRace(t *testing.T) {
 	}
 }
 
-func TestClaimStopsAndDiscardsOnAmbiguousReservationFailure(t *testing.T) {
+func TestClaimSkipsAmbiguousReservationFailureWithoutDiscarding(t *testing.T) {
 	inv := &fakeInventory{
 		free:            []Unit{unit("a"), unit("b")},
 		reserveOutcomes: map[string]error{"a": errors.New("request timed out")},
 	}
 	post := &fakePoster{}
 
-	if _, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req()); err == nil {
-		t.Fatal("ambiguous reservation failure must fail the claim")
+	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
+	if err != nil || won.ID != "b" {
+		t.Fatalf("won %v (%v), want b after transient reservation failure", won, err)
 	}
-	if len(inv.discarded) != 1 || inv.discarded[0] != "a" || len(post.posted) != 0 {
-		t.Fatalf("discarded=%v posted=%v, want [a] and no activation", inv.discarded, post.posted)
+	if len(inv.discarded) != 0 || len(post.posted) != 1 || post.posted[0] != "b" {
+		t.Fatalf("discarded=%v posted=%v, want no discard and activation of b", inv.discarded, post.posted)
+	}
+}
+
+func TestClaimDoesNotDiscardSidecarConflict(t *testing.T) {
+	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
+	post := &fakePoster{outcomes: map[string]error{"a": ErrConflict}}
+
+	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
+	if err != nil || won.ID != "b" {
+		t.Fatalf("won %v (%v), want b after sidecar conflict", won, err)
+	}
+	if len(inv.discarded) != 0 {
+		t.Fatalf("discarded=%v, want conflict winner left untouched", inv.discarded)
 	}
 }
 
@@ -145,6 +159,24 @@ func TestClaimPoisonStopsAndStampsUnit(t *testing.T) {
 	}
 	if len(post.posted) != 1 {
 		t.Errorf("posted to %v after poison, want no further units", post.posted)
+	}
+}
+
+func TestClaimPoisonSurvivesDiscardFailure(t *testing.T) {
+	inv := &fakeInventory{
+		free:       []Unit{unit("a"), unit("b")},
+		discardErr: errors.New("delete refused"),
+	}
+	post := &fakePoster{outcomes: map[string]error{"a": &Poison{Msg: "artifacts failed"}}}
+	rec := &countRecorder{}
+
+	_, err := Claim(t.Context(), inv, post, rec, "p", BurstReject, req())
+	var poison *Poison
+	if !errors.As(err, &poison) || poison.Unit != "a" {
+		t.Fatalf("got %v, want Poison for a through discard failure", err)
+	}
+	if rec.poisons != 1 || len(post.posted) != 1 {
+		t.Fatalf("poisons=%d posted=%v, want 1 and [a]", rec.poisons, post.posted)
 	}
 }
 

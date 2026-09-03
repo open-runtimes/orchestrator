@@ -78,8 +78,5 @@ func (m *Manager) Serving(ctx context.Context, pod *corev1.Pod) bool {
 	if pod.Status.PodIP == "" {
 		return false
 	}
-	if !m.reservationAccepted(ctx, pod) {
-		return false
-	}
 	return m.sc.Ready(ctx, pod.Status.PodIP)
 }
