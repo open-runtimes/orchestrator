@@ -203,14 +203,20 @@ func postReserved(ctx context.Context, inv Inventory, post Poster, unit Unit, re
 		return nil
 	}
 	if discardErr := inv.Discard(ctx, unit); discardErr != nil {
-		return fmt.Errorf("claim failed: %v; discard reserved unit %s: %w", err, unit.ID, discardErr)
+		return errors.Join(
+			fmt.Errorf("claim failed: %w", err),
+			fmt.Errorf("discard reserved unit %s: %w", unit.ID, discardErr),
+		)
 	}
 	return err
 }
 
 func reservationFailure(ctx context.Context, inv Inventory, unit Unit, reserveErr error) error {
 	if discardErr := inv.Discard(ctx, unit); discardErr != nil {
-		return fmt.Errorf("reserve unit %s failed: %v; discard after ambiguous reservation: %w", unit.ID, reserveErr, discardErr)
+		return errors.Join(
+			fmt.Errorf("reserve unit %s failed: %w", unit.ID, reserveErr),
+			fmt.Errorf("discard after ambiguous reservation: %w", discardErr),
+		)
 	}
 	return reserveErr
 }
