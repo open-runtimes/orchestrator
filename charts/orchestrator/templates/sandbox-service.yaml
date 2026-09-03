@@ -26,6 +26,7 @@ spec:
       {{- . | nindent 6 }}
       {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.service.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "orchestrator.sandboxName" . }}
       {{- with include "orchestrator.imagePullSecrets" . }}
       {{- . | nindent 6 }}
@@ -66,15 +67,11 @@ spec:
           ports:
             - name: api
               containerPort: {{ .Values.service.apiPort }}
-            - name: metrics
-              containerPort: {{ .Values.service.metricsPort }}
           env:
             - name: ORCHESTRATOR_BACKEND
               value: kubernetes
             - name: PORT
               value: {{ .Values.service.apiPort | quote }}
-            - name: METRICS_PORT
-              value: {{ .Values.service.metricsPort | quote }}
             - name: SANDBOX_DOMAIN
               value: {{ required "sandbox.domain is required when sandbox.enabled (the wildcard domain sandboxes are addressed at)" .Values.sandbox.domain | quote }}
             - name: SANDBOX_SCHEME
@@ -167,9 +164,6 @@ spec:
     - name: api
       port: {{ .Values.service.apiPort }}
       targetPort: api
-    - name: metrics
-      port: {{ .Values.service.metricsPort }}
-      targetPort: metrics
 ---
 apiVersion: v1
 kind: ServiceAccount

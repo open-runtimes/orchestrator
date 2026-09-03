@@ -39,10 +39,17 @@ func main() {
 
 func run(ctx context.Context) error {
 	kind := config.GetEnv("POOL_KIND", "")
-	metrics, metricsHandler, err := observability.NewMetrics(ctx)
+	metrics, err := observability.NewMetrics(ctx)
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
 	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := metrics.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("Metrics shutdown failed", "error", err)
+		}
+	}()
 	restCfg, err := kube.NewConfig(
 		config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics,
 		float32(config.GetIntEnv("KUBE_CLIENT_QPS", 200)), config.GetIntEnv("KUBE_CLIENT_BURST", 400),
@@ -86,7 +93,7 @@ func run(ctx context.Context) error {
 			metrics.RecordLeadership(eventCtx, identity, leading)
 		})
 	slog.Info("Pool controller ready", "kind", kind, "namespace", namespace, "pools", poolCount)
-	return serve(ctx, metricsHandler)
+	return serveHealth(ctx)
 }
 
 func buildManager(client kubernetes.Interface, metrics *observability.Metrics, kind string) (*warm.Manager, int, string, error) {
@@ -123,12 +130,11 @@ func buildManager(client kubernetes.Interface, metrics *observability.Metrics, k
 	}
 }
 
-func serve(ctx context.Context, metricsHandler http.Handler) error {
+func serveHealth(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", metricsHandler)
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	srv := &http.Server{Addr: ":" + config.GetEnv("METRICS_PORT", "9090"), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + config.GetEnv("HEALTH_PORT", "8080"), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	serverErr := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -138,7 +144,7 @@ func serve(ctx context.Context, metricsHandler http.Handler) error {
 	select {
 	case <-ctx.Done():
 	case err := <-serverErr:
-		return fmt.Errorf("metrics server: %w", err)
+		return fmt.Errorf("health server: %w", err)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

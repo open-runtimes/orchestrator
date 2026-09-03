@@ -3,28 +3,48 @@
 ## Quick Start
 
 ```bash
-docker compose up -d   # Start Prometheus + Grafana
-task dev               # Start service with hot reload
+docker compose -f docker-compose.telemetry.yml up -d
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 task dev
+```
+
+To run the all-in-one image and telemetry stack together instead:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
+  docker compose -f docker-compose.yaml -f docker-compose.telemetry.yml up -d
 ```
 
 - **Grafana**: http://localhost:3000 (no login required)
 - **Prometheus**: http://localhost:9091
-- **Metrics endpoint**: http://localhost:9090/metrics
+- **OTLP receiver**: http://localhost:4318 (HTTP) or localhost:4317 (gRPC)
 
 ## Endpoints
 
 - `localhost:8080` - API server
-- `localhost:9090/metrics` - Prometheus metrics
 - `localhost:8080/livez` - Liveness (process running)
 - `localhost:8080/readyz` - Readiness (backend reachable — Docker daemon or K8s API server)
+- `localhost:4318` - local collector's OTLP/HTTP receiver (not served by the orchestrator)
 
 ## Design Decisions
 
-### Separate Metrics Port
+### OTLP push export
 
-Metrics are served on port 9090, separate from the API on 8080.
+The services periodically push metrics to an OTLP receiver; they do not expose
+a `/metrics` route or a separate metrics listener. Export is enabled when
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or
+`OTEL_METRICS_EXPORTER=otlp` is configured. With none of those set, instruments
+remain safe to call but export is disabled.
 
-**Why?** Allows different access controls. Metrics endpoints can be internal-only while API is exposed. Also prevents metrics scraping from affecting API latency measurements.
+OTLP/HTTP with protobuf is the default transport. Set
+`OTEL_EXPORTER_OTLP_PROTOCOL=grpc` (or the metrics-specific variant) for gRPC.
+Headers, TLS, compression, timeout, and signal-specific endpoints use the
+standard `OTEL_EXPORTER_OTLP_*` variables. `OTEL_METRIC_EXPORT_INTERVAL` and
+`OTEL_METRIC_EXPORT_TIMEOUT` are milliseconds and default to 60000 and 30000.
+Pending metrics are flushed during graceful shutdown.
+
+The local telemetry stack runs an OpenTelemetry Collector that receives OTLP
+and exposes a collector-owned Prometheus endpoint, preserving the included
+PromQL dashboard without exposing application scrape ports.
 
 See: `cmd/jobs-service/main.go`
 
@@ -71,8 +91,9 @@ The K8s API metrics cover every call the orchestrator makes to the apiserver —
 
 `jobs_active`, `orchestrator_trackers` and `dispatcher_queue_size` are OTel
 *observable* gauges: nothing increments them, and a callback reads the live
-value (non-terminal jobs, tracker map size, queue length) when Prometheus
-scrapes. This is deliberate. Tallying them with an `UpDownCounter` requires one
+value (non-terminal jobs, tracker map size, queue length) when the periodic
+reader collects the next OTLP export. This is deliberate. Tallying them with
+an `UpDownCounter` requires one
 process to see both the `+1` and the `-1`, and this service never does — a
 restart zeroes the counter while the jobs it counted keep running and later
 report their exits, and a K8s leadership handover moves the `-1` to a replica
@@ -85,7 +106,7 @@ See: `internal/observability/metrics.go`, `internal/job/kubernetes/transport.go`
 
 **Deployments Metrics:**
 
-Both the deployments service and the standalone activator (K8s) expose the same registry; each records the slice it owns.
+Both the deployments service and the standalone activator (K8s) create the same instrument set; each records the slice it owns.
 
 | Signal | Metrics |
 |--------|---------|
@@ -190,7 +211,7 @@ revision_replica_drift
 
 ## Grafana Dashboard
 
-A pre-configured dashboard is included at `grafana/dashboards/orchestrator.json`. It's automatically provisioned when running `docker compose up`.
+A pre-configured dashboard is included at `grafana/dashboards/orchestrator.json`. It's automatically provisioned by `docker-compose.telemetry.yml`.
 
 **Panels:**
 
@@ -208,7 +229,7 @@ A pre-configured dashboard is included at `grafana/dashboards/orchestrator.json`
 | High error rate | >5% 5xx for 5m | Critical |
 | High latency | P99 >1s for 5m | Warning |
 | Job backlog | >100 active for 10m | Warning |
-| Service down | `up == 0` for 1m | Critical |
+| Telemetry pipeline down | `up{job="otel-collector"} == 0` for 1m | Critical |
 | Dispatcher buffer full | dropped events >0 for 1m | Warning |
 | Circuit breakers open | >0 open breakers for 5m | Warning |
 | Revision queue stalled | `revision_queue_oldest_age_seconds > 5` for 2m | Critical |

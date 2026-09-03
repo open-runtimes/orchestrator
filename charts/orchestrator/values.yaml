@@ -28,6 +28,7 @@ imagePullSecrets: []
 poolController:
   enabled: true
   replicaCount: 1
+  healthPort: 8080
   image:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/pool-controller
@@ -528,7 +529,9 @@ rbac:
 service:
   type: ClusterIP
   apiPort: 8080
-  metricsPort: 9090
+  # Covers HTTP shutdown (25s), component cleanup (10s), and the final OTLP
+  # flush (10s), with margin for process and kubelet scheduling overhead.
+  terminationGracePeriodSeconds: 60
 
 # Orchestrator runtime config.
 orchestrator:
@@ -563,6 +566,6 @@ resources:
 
 podAnnotations: {}
 
-# Arbitrary extra env vars on the jobs-service container.
+# Arbitrary extra env vars on all service and data-plane containers.
 # Each entry is a raw corev1.EnvVar (supports .value, .valueFrom, etc.).
 extraEnv: []

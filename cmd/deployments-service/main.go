@@ -35,7 +35,7 @@ func main() {
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "deployments", "backend", backend))
 
-	metrics, metricsHandler, err := observability.NewMetrics(ctx)
+	metrics, err := observability.NewMetrics(ctx)
 	if err != nil {
 		slog.Error("Failed to init metrics", "error", err)
 		os.Exit(1)
@@ -132,13 +132,12 @@ func main() {
 	}
 
 	if err := server.Serve(ctx, server.Options{
-		Handler:        router,
-		MetricsHandler: metricsHandler,
-		Port:           svcCfg.Port,
-		MetricsPort:    svcCfg.MetricsPort,
-		Extra:          extra,
-		DrainWait:      svcCfg.ShutdownDrainWait,
-		SetDraining:    healthChecker.SetShuttingDown,
+		Handler:           router,
+		Port:              svcCfg.Port,
+		Extra:             extra,
+		DrainWait:         svcCfg.ShutdownDrainWait,
+		SetDraining:       healthChecker.SetShuttingDown,
+		TelemetryShutdown: metrics.Shutdown,
 		Cleanup: func(cleanupCtx context.Context) {
 			slog.Info("Draining callback dispatcher")
 			if err := eventDispatcher.Close(cleanupCtx); err != nil {

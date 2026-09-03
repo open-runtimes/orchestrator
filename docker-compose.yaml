@@ -24,6 +24,9 @@
 services:
   orchestrator:
     image: ${ORCHESTRATOR_IMAGE:-ghcr.io/open-runtimes/orchestrator/orchestrator:latest}
+    # Serve (25s), component cleanup (10s), and final OTLP flush (10s) run in
+    # sequence, so Compose must not apply its shorter default stop timeout.
+    stop_grace_period: 60s
     # The images run as uid 65532; root is needed to open the host's Docker
     # socket. Fine for this dev profile — production is the Helm chart, where
     # nothing mounts a container runtime socket.
@@ -31,9 +34,13 @@ services:
     ports:
       - "8080:8080" # jobs + deployments + sandbox API
       - "8081:8081" # data plane: HTTP to your deployments and sandboxes, routed by Host
-      - "9090:9090" # Prometheus metrics
     environment:
       ORCHESTRATOR_BACKEND: docker
+      # Set either endpoint to enable periodic OTLP metric pushes. The optional
+      # telemetry compose stack listens at http://otel-collector:4318.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
       # Workload + sidecar containers join this network. Jobs and the serving
       # planes read different names for it; both point at the same network.
       ORCHESTRATOR_NETWORK: orchestrator

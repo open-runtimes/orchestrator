@@ -21,10 +21,9 @@ func main() {
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("backend", backend))
 
-	// Metrics live at the top of main so the same instance is shared by both
-	// the backend factory (for backend-specific recorders) and server.Run
-	// (for HTTP / dispatcher recorders and the /metrics handler).
-	metrics, metricsHandler, err := observability.NewMetrics(ctx)
+	// Metrics live at the top of main so the same instance is shared by the
+	// backend factory and server.Run's HTTP and dispatcher recorders.
+	metrics, err := observability.NewMetrics(ctx)
 	if err != nil {
 		slog.Error("Failed to init metrics", "error", err)
 		os.Exit(1)
@@ -36,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := server.Run(ctx, factory, metrics, metricsHandler); err != nil {
+	if err := server.Run(ctx, factory, metrics); err != nil {
 		slog.Error("Service failed", "error", err)
 		os.Exit(1)
 	}

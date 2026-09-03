@@ -387,7 +387,7 @@ func createBenchServer(tb testing.TB) (string, func()) {
 
 	ctx := tb.Context()
 
-	metrics, _, err := observability.NewMetrics(ctx)
+	metrics, err := observability.NewMetrics(ctx)
 	if err != nil {
 		tb.Fatalf("Failed to create metrics: %v", err)
 	}

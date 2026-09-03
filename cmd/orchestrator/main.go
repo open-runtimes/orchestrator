@@ -1,6 +1,6 @@
 // orchestrator is every control plane in one process: jobs, deployments (with
-// their activator) and sandboxes (with their proxy), on one API port, one
-// metrics port and one data port. It exists for `docker compose up` and local
+// their activator) and sandboxes (with their proxy), on one API port and one
+// data port. It exists for `docker compose up` and local
 // development — production runs the per-service images from the Helm chart,
 // where each plane scales, fails and gets RBAC on its own.
 //
@@ -75,7 +75,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	metrics, metricsHandler, err := observability.NewMetrics(ctx)
+	metrics, err := observability.NewMetrics(ctx)
 	if err != nil {
 		slog.Error("Failed to init metrics", "error", err)
 		os.Exit(1)
@@ -155,13 +155,12 @@ func main() {
 	}
 
 	if err := server.Serve(ctx, server.Options{
-		Handler:        router,
-		MetricsHandler: metricsHandler,
-		Port:           svcCfg.Port,
-		MetricsPort:    svcCfg.MetricsPort,
-		Extra:          []*http.Server{dataServer},
-		DrainWait:      svcCfg.ShutdownDrainWait,
-		SetDraining:    healthChecker.SetShuttingDown,
+		Handler:           router,
+		Port:              svcCfg.Port,
+		Extra:             []*http.Server{dataServer},
+		DrainWait:         svcCfg.ShutdownDrainWait,
+		SetDraining:       healthChecker.SetShuttingDown,
+		TelemetryShutdown: metrics.Shutdown,
 		Cleanup: func(cleanupCtx context.Context) {
 			slog.Info("Draining callback dispatcher")
 			if err := eventDispatcher.Close(cleanupCtx); err != nil {
