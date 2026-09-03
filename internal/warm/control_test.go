@@ -26,6 +26,41 @@ func unlabeledPods(t *testing.T, cs *fake.Clientset, poolID string) int {
 	return len(list.Items)
 }
 
+func TestReconcile_DiscardsAbandonedReservation(t *testing.T) {
+	t.Parallel()
+	p := testPool("std")
+	m, cs, _ := newTestManager(t, p)
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	pod := claimedPodFixture(m, "std", "pod-a", "10.0.0.1", "act1", "{}")
+	pod.Annotations[AnnotationReservedAt] = now.Add(-2 * m.cfg.OrphanTTL).Format(time.RFC3339Nano)
+	addPod(t, cs, pod)
+
+	c := m.Controller(Hooks{})
+	c.Now = func() time.Time { return now }
+	c.Tick(t.Context())
+
+	if !podGone(t, cs, pod.Name) {
+		t.Fatal("abandoned pre-activation reservation was not discarded")
+	}
+}
+
+func TestClaimControl_AcceptsReservationConfirmedBySidecar(t *testing.T) {
+	t.Parallel()
+	m, cs, sidecar := newTestManager(t, testPool("std"))
+	pod := claimedPodFixture(m, "std", "pod-a", "10.0.0.1", "act1", "{}")
+	pod.Annotations[AnnotationReservedAt] = time.Now().Add(-2 * m.cfg.OrphanTTL).Format(time.RFC3339Nano)
+	addPod(t, cs, pod)
+	sidecar.state[pod.Status.PodIP] = workload.ClaimState{Claimed: true, ClaimID: "act1"}
+
+	called := 0
+	c := m.Controller(Hooks{Reap: func(context.Context, *pool.Pool, *corev1.Pod, string, time.Time) { called++ }})
+	c.TickClaims(t.Context())
+
+	if called != 1 || podGone(t, cs, pod.Name) {
+		t.Fatalf("confirmed reservation: reap calls=%d gone=%v, want 1/false", called, podGone(t, cs, pod.Name))
+	}
+}
+
 func TestReplenish_CreatesUpToSize(t *testing.T) {
 	t.Parallel()
 	p := testPool("std")

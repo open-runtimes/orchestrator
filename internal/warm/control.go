@@ -33,12 +33,15 @@ type Controller struct {
 	// Now is the loop's clock, replaced by tests.
 	Now func() time.Time
 
-	orphanSince map[string]time.Time // pod name → first seen claimed-but-unlabeled
+	orphanSince map[string]time.Time // pod name → first seen claim-state mismatch
 }
 
 // Controller builds one control loop over these hooks.
 func (m *Manager) Controller(hooks Hooks) *Controller {
-	return &Controller{m: m, hooks: hooks, Now: time.Now, orphanSince: make(map[string]time.Time)}
+	return &Controller{
+		m: m, hooks: hooks, Now: time.Now,
+		orphanSince: make(map[string]time.Time),
+	}
 }
 
 // runControlLoop is the leader-elected control loop entrypoint: one Controller per
@@ -95,6 +98,9 @@ func (c *Controller) TickClaims(ctx context.Context) {
 		}
 		claimID := c.m.ClaimID(pod)
 		if claimID == "" {
+			continue
+		}
+		if c.reservationPending(ctx, pod, claimID, now) {
 			continue
 		}
 		live[claimID] = true
@@ -228,6 +234,9 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 		if claimID := c.m.ClaimID(pod); claimID != "" {
 			seenClaims[claimID] = true
 			claimed++
+			if c.reservationPending(ctx, pod, claimID, c.Now()) {
+				continue
+			}
 			if c.hooks.Reap != nil {
 				c.hooks.Reap(ctx, p, pod, claimID, c.Now())
 			}
@@ -254,6 +263,33 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 		}
 		slog.Info("Replenished warm pod", "poolId", p.ID)
 	}
+}
+
+// reservationPending protects the gap between the atomic metadata reservation
+// and the sidecar claim request. A process crash in that gap leaves a fully
+// identified pod whose workload never started; after OrphanTTL it is discarded
+// instead of being mistaken for live capacity forever.
+func (c *Controller) reservationPending(ctx context.Context, pod *corev1.Pod, claimID string, now time.Time) bool {
+	reservedAt := pod.Annotations[AnnotationReservedAt]
+	if reservedAt == "" {
+		return false // claim created before reservation-first claiming
+	}
+	if c.m.reservationAccepted(ctx, pod) {
+		return false
+	}
+	started, err := time.Parse(time.RFC3339Nano, reservedAt)
+	if err != nil {
+		started = c.orphanSince[pod.Name]
+		if started.IsZero() {
+			c.orphanSince[pod.Name] = now
+			return true
+		}
+	}
+	if now.Sub(started) > c.m.cfg.OrphanTTL {
+		slog.Warn("Deleting abandoned workload reservation", "pod", pod.Name, "claimId", claimID)
+		_ = c.m.Delete(ctx, pod.Name)
+	}
+	return true
 }
 
 // countsWarm decides whether an unlabeled pod counts toward the pool's warm

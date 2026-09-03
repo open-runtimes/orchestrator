@@ -12,6 +12,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
+	"orchestrator/internal/warm"
 	"reflect"
 	"slices"
 	"strconv"
@@ -609,18 +610,16 @@ func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisiona
 			o.cfg.Metrics.RecordPoolClaimFinished(ctx, "revision", p.ID, outcomeErr == nil, time.Since(started).Seconds())
 		}()
 	}
-	pod, err := o.pools.Claim(ctx, p, &claim)
-	if err != nil {
-		return nil, err
-	}
 	podLabels := revisionLabels(revision.Labels[LabelDeploymentID], revision.Labels[LabelRevision])
 	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
 	owners := []metav1.OwnerReference{{
 		APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind, Name: revision.Name, UID: revision.UID,
 		Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
 	}}
-	if err := o.pools.BindOwned(ctx, pod.Name, claim.ClaimID, &claim, podLabels, owners); err != nil {
-		o.pools.Discard(ctx, pod.Name)
+	pod, err := o.pools.Claim(ctx, p, &claim, warm.Binding{
+		Spec: &claim, Labels: podLabels, Owners: owners,
+	})
+	if err != nil {
 		return nil, err
 	}
 	return pod, o.markServing(ctx, pod)

@@ -26,9 +26,9 @@ import (
 const shimOpenTimeout = 10 * time.Second
 
 // pool is the claim surface armed by Config.ClaimToken: the proxy starts with
-// no target and accepts exactly one claim. The pod is the serialization
-// point — racing pool backends get 409 and retry another warm pod, so the
-// service stays stateless. See claim.go for the wire protocol.
+// no target and accepts exactly one activation. Kubernetes normally resolves
+// races before this request with an atomic metadata reservation; the sidecar's
+// gate remains the final defense against duplicate activation. See claim.go.
 type pool struct {
 	token     string // bearer token required on workload.ClaimPath
 	workspace string // shared volume: artifacts materialize here, the shim FIFO lives here

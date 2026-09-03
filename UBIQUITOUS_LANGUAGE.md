@@ -122,7 +122,7 @@
 | **Pool** | A config-declared set of warm pods kept ready for instant activation | Warm pool, pre-warm fleet |
 | **Warm pod** | A pool member running the Shim, waiting to be claimed | Standby pod, spare |
 | **Shim** | The PID-1 entrypoint in a warm pod that blocks on a FIFO and execs the activation payload | Launcher, init |
-| **Claim** | The atomic, token-authenticated take of one warm pod; the sidecar's accepted POST *is* the claim | Reservation, checkout |
+| **Claim** | The atomic take of one warm pod: a resource-version-guarded metadata reservation stamps its final identity before the token-authenticated sidecar activation starts the workload | Reservation, checkout |
 | **Claim token** | The per-pod credential (HMAC of the pod name under the install key) that authorizes a claim | Secret, password |
 | **Inventory** | What a Pool backend supplies to the shared claim module: how to list, create, and address warm units | Backend, provider |
 | **Phase** | The claim-neutral lifecycle of a claimed pod (starting, serving, failed, terminating) that each warm consumer names in its own vocabulary — an Activation is "activating" where a Sandbox is "creating" | Status, state (unqualified) |

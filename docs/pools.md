@@ -20,7 +20,7 @@ The match key is everything that already exists on a warm pod: image, port, CPU,
 
 Deployment pools must declare positive CPU and memory, must not declare command or environment defaults, and must have unique fixed shapes. Both components fail fast on ambiguous or non-matchable configuration.
 
-Each desired Revision slot atomically claims one warm pod through its sidecar. The pod then carries the normal `deployment.revision` and `deployment.replica-slot` labels and a controller owner reference to the Revision. From that point routing and lifecycle are identical to a directly created revision pod. A scaled-down, failed, or deleted claimed pod is discarded, never returned to the warm set; inventory reconciliation replenishes the pool off the request path.
+Each desired Revision slot atomically reserves one warm pod with a resource-version-guarded metadata patch. That patch stamps the normal `deployment.revision` and `deployment.replica-slot` labels and transfers the controller owner reference before the sidecar is asked to activate the workload, so user output is attributable from its first byte. From that point routing and lifecycle are identical to a directly created revision pod. A scaled-down, failed, or deleted claimed pod is discarded, never returned to the warm set; inventory reconciliation replenishes the pool off the request path.
 
 When a matching pool has no warm pod, its `burst` policy chooses the acquisition path, never API availability:
 

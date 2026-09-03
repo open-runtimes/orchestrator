@@ -18,8 +18,12 @@ type fakeInventory struct {
 	free    []Unit
 	freeErr error
 
-	coldErr   error
-	coldCalls int
+	coldErr         error
+	coldCalls       int
+	reserveOutcomes map[string]error
+	reserved        []string
+	discarded       []string
+	discardErr      error
 }
 
 func (f *fakeInventory) Free(context.Context) ([]Unit, error) {
@@ -32,6 +36,16 @@ func (f *fakeInventory) Create(context.Context) (*Unit, error) {
 		return nil, f.coldErr
 	}
 	return &Unit{ID: "cold-" + strconv.Itoa(f.coldCalls), Addr: "10.0.0.99", Token: "t"}, nil
+}
+
+func (f *fakeInventory) Reserve(_ context.Context, u Unit) error {
+	f.reserved = append(f.reserved, u.ID)
+	return f.reserveOutcomes[u.ID]
+}
+
+func (f *fakeInventory) Discard(_ context.Context, u Unit) error {
+	f.discarded = append(f.discarded, u.ID)
+	return f.discardErr
 }
 
 // fakePoster scripts each unit's claim outcome by unit ID; unscripted units
@@ -73,6 +87,37 @@ func TestClaimRetriesNextUnitOnConflict(t *testing.T) {
 	}
 }
 
+func TestClaimRetriesNextUnitWhenReservationLosesRace(t *testing.T) {
+	inv := &fakeInventory{
+		free:            []Unit{unit("a"), unit("b")},
+		reserveOutcomes: map[string]error{"a": ErrConflict},
+	}
+	post := &fakePoster{}
+
+	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
+	if err != nil || won.ID != "b" {
+		t.Fatalf("won %v (%v), want b after reservation conflict", won, err)
+	}
+	if len(post.posted) != 1 || post.posted[0] != "b" {
+		t.Fatalf("sidecar posts = %v, want only reserved unit b", post.posted)
+	}
+}
+
+func TestClaimStopsAndDiscardsOnAmbiguousReservationFailure(t *testing.T) {
+	inv := &fakeInventory{
+		free:            []Unit{unit("a"), unit("b")},
+		reserveOutcomes: map[string]error{"a": errors.New("request timed out")},
+	}
+	post := &fakePoster{}
+
+	if _, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req()); err == nil {
+		t.Fatal("ambiguous reservation failure must fail the claim")
+	}
+	if len(inv.discarded) != 1 || inv.discarded[0] != "a" || len(post.posted) != 0 {
+		t.Fatalf("discarded=%v posted=%v, want [a] and no activation", inv.discarded, post.posted)
+	}
+}
+
 func TestClaimSkipsTransientFailures(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("broken"), unit("b")}}
 	post := &fakePoster{outcomes: map[string]error{"broken": errors.New("connection refused")}}
@@ -80,6 +125,9 @@ func TestClaimSkipsTransientFailures(t *testing.T) {
 	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
 	if err != nil || won.ID != "b" {
 		t.Fatalf("won %v (%v), want b — one broken unit must not fail the claim", won, err)
+	}
+	if len(inv.discarded) != 1 || inv.discarded[0] != "broken" {
+		t.Fatalf("discarded = %v, want the ambiguously-started broken unit", inv.discarded)
 	}
 }
 

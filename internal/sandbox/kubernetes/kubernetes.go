@@ -128,16 +128,18 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	// labeled with the sandbox's own id so it is never offered to another claim.
 	var pod *corev1.Pod
 	var err error
-	direct := p == nil
+	binding := warm.Binding{
+		Spec:   req.Recorded(shape),
+		Labels: map[string]string{LabelToken: req.Token},
+	}
 	if p == nil {
-		pod, err = o.warm.CreateClaimed(ctx, &shape, req.ID, claimRequest(&shape, req))
+		pod, err = o.warm.CreateClaimed(ctx, &shape, req.ID, claimRequest(&shape, req), binding)
 	} else {
-		pod, err = o.warm.Claim(ctx, p, claimRequest(&p.Spec, req))
+		pod, err = o.warm.Claim(ctx, p, claimRequest(&p.Spec, req), binding)
 		if errors.Is(err, apperrors.ErrExhausted) {
 			// A transparent pool only improves latency. In particular, a reject
 			// burst policy must not turn an otherwise valid request into a 429.
-			direct = true
-			pod, err = o.warm.CreateClaimed(ctx, &shape, req.ID, claimRequest(&shape, req))
+			pod, err = o.warm.CreateClaimed(ctx, &shape, req.ID, claimRequest(&shape, req), binding)
 		}
 	}
 	if err != nil {
@@ -151,16 +153,6 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 				ID: req.ID, PoolID: req.Pool,
 				State: sandbox.StateFailed, Error: poison.Msg,
 			}, nil
-		}
-		return nil, err
-	}
-	if err := o.warm.Bind(ctx, pod.Name, req.ID, req.Recorded(shape), map[string]string{LabelToken: req.Token}); err != nil {
-		// The claim label is what makes a pod discoverable. A poolless pod that
-		// never got one belongs to no pool the control loop reconciles, so if the
-		// bind is what failed — a cancelled request, a lost API server — this is
-		// the last place that can reclaim it.
-		if direct {
-			o.warm.Discard(ctx, pod.Name)
 		}
 		return nil, err
 	}

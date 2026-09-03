@@ -2,6 +2,7 @@ package warm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/pool"
@@ -14,6 +15,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -43,6 +45,7 @@ type fakeSidecar struct {
 	claimed  []string                       // successful claim IPs, in order
 	tokens   []string                       // bearer tokens presented with them
 	last     *workload.ClaimRequest
+	onClaim  func() error
 }
 
 func newFakeSidecar() *fakeSidecar {
@@ -67,6 +70,9 @@ func (f *fakeSidecar) Claim(_ context.Context, podIP, token string, req *workloa
 	f.claimed = append(f.claimed, podIP)
 	f.tokens = append(f.tokens, token)
 	f.last = req
+	if f.onClaim != nil {
+		return f.onClaim()
+	}
 	return nil
 }
 
@@ -170,7 +176,7 @@ func TestClaim_ConflictRetriesNextPod(t *testing.T) {
 	addPod(t, cs, warmPodFixture(m, "std", "pod-b", "10.0.0.2"))
 	sidecar.conflict["10.0.0.1"] = true // a racing replica won pod-a
 
-	pod, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1", Command: "serve"})
+	pod, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1", Command: "serve"}, Binding{})
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -184,7 +190,7 @@ func TestClaim_TokenIsDerivedFromPodName(t *testing.T) {
 	m, cs, sidecar := newTestManager(t, testPool("std"))
 	addPod(t, cs, warmPodFixture(m, "std", "pod-a", "10.0.0.1"))
 
-	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1"}); err != nil {
+	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1"}, Binding{}); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if len(sidecar.tokens) != 1 || sidecar.tokens[0] != deriveClaimToken(m.installKey, "pod-a") {
@@ -192,34 +198,110 @@ func TestClaim_TokenIsDerivedFromPodName(t *testing.T) {
 	}
 }
 
+func TestClaim_ReservesIdentityBeforeSidecarClaim(t *testing.T) {
+	t.Parallel()
+	m, cs, sidecar := newTestManager(t, testPool("std"))
+	addPod(t, cs, warmPodFixture(m, "std", "pod-a", "10.0.0.1"))
+	sidecar.onClaim = func() error {
+		pod, err := cs.CoreV1().Pods(testNS).Get(t.Context(), "pod-a", metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if pod.Labels["workload.id"] != "final-id" || m.ClaimID(pod) != "act1" {
+			return errors.New("final workload identity was not bound before activation")
+		}
+		return nil
+	}
+
+	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1"}, Binding{
+		Spec: map[string]string{"id": "final-id"}, Labels: map[string]string{"workload.id": "final-id"},
+	}); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+}
+
+func TestReserve_UsesResourceVersionAsTheAtomicPrecondition(t *testing.T) {
+	t.Parallel()
+	m, cs, _ := newTestManager(t, testPool("std"))
+	pod := warmPodFixture(m, "std", "pod-a", "10.0.0.1")
+	pod.ResourceVersion = "17"
+	addPod(t, cs, pod)
+
+	cs.PrependReactor("patch", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		patchAction := action.(k8stesting.PatchAction)
+		var body struct {
+			Metadata struct {
+				ResourceVersion string            `json:"resourceVersion"`
+				Labels          map[string]string `json:"labels"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(patchAction.GetPatch(), &body); err != nil {
+			t.Fatalf("decode reservation patch: %v", err)
+		}
+		if body.Metadata.ResourceVersion != "17" || body.Metadata.Labels[testNaming.Claim] != "act1" {
+			t.Fatalf("reservation metadata = %+v, want resourceVersion 17 and claim act1", body.Metadata)
+		}
+		stolen := pod.DeepCopy()
+		stolen.ResourceVersion = "18"
+		stolen.Labels[testNaming.Claim] = "other"
+		if err := cs.Tracker().Update(corev1.SchemeGroupVersion.WithResource("pods"), stolen, testNS); err != nil {
+			t.Fatalf("record racing reservation: %v", err)
+		}
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "pods"}, pod.Name, errors.New("raced"))
+	})
+
+	if _, err := m.reserve(t.Context(), pod, "act1", Binding{}); !errors.Is(err, claim.ErrConflict) {
+		t.Fatalf("reserve conflict = %v, want claim.ErrConflict", err)
+	}
+}
+
+func TestReserve_RetriesUnrelatedResourceVersionConflict(t *testing.T) {
+	t.Parallel()
+	m, cs, _ := newTestManager(t, testPool("std"))
+	pod := warmPodFixture(m, "std", "pod-a", "10.0.0.1")
+	pod.ResourceVersion = "17"
+	addPod(t, cs, pod)
+
+	calls := 0
+	cs.PrependReactor("patch", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		calls++
+		if calls == 1 {
+			updated := pod.DeepCopy()
+			updated.ResourceVersion = "18"
+			if err := cs.Tracker().Update(corev1.SchemeGroupVersion.WithResource("pods"), updated, testNS); err != nil {
+				t.Fatalf("record unrelated pod update: %v", err)
+			}
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "pods"}, pod.Name, errors.New("status changed"))
+		}
+		var body struct {
+			Metadata struct {
+				ResourceVersion string `json:"resourceVersion"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(action.(k8stesting.PatchAction).GetPatch(), &body); err != nil {
+			t.Fatalf("decode retry patch: %v", err)
+		}
+		if body.Metadata.ResourceVersion != "18" {
+			t.Fatalf("retry resourceVersion = %q, want refreshed 18", body.Metadata.ResourceVersion)
+		}
+		return false, nil, nil
+	})
+
+	bound, err := m.reserve(t.Context(), pod, "act1", Binding{})
+	if err != nil {
+		t.Fatalf("reserve after unrelated conflict: %v", err)
+	}
+	if calls != 2 || m.ClaimID(bound) != "act1" {
+		t.Fatalf("calls=%d labels=%v, want two attempts and claim act1", calls, bound.Labels)
+	}
+}
+
 func TestClaim_ExhaustedRejects(t *testing.T) {
 	t.Parallel()
 	m, _, _ := newTestManager(t, testPool("std")) // burst: reject, and no warm pods
 
-	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1"}); err == nil {
+	if _, err := m.Claim(t.Context(), m.Pool("std"), &workload.ClaimRequest{ClaimID: "act1"}, Binding{}); err == nil {
 		t.Fatal("want an exhausted-pool error")
-	}
-}
-
-func TestBind_StampsClaimAndSpec(t *testing.T) {
-	t.Parallel()
-	m, cs, _ := newTestManager(t, testPool("std"))
-	addPod(t, cs, warmPodFixture(m, "std", "pod-a", "10.0.0.1"))
-
-	if err := m.Bind(t.Context(), "pod-a", "act1", map[string]string{"command": "serve"}, map[string]string{"sandbox.token": "abc"}); err != nil {
-		t.Fatalf("Bind: %v", err)
-	}
-	pod, err := cs.CoreV1().Pods(testNS).Get(t.Context(), "pod-a", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get pod: %v", err)
-	}
-	if m.ClaimID(pod) != "act1" {
-		t.Errorf("claim label: got %v", pod.Labels)
-	}
-	var spec map[string]string
-	m.Spec(pod, &spec)
-	if spec["command"] != "serve" {
-		t.Errorf("spec annotation: got %v", pod.Annotations)
 	}
 }
 
@@ -252,7 +334,7 @@ func TestCreateClaimed_DiscardsItsPodWhenTheCallerGoesAway(t *testing.T) {
 	cancelOnPodCreate(cs, cancel)
 
 	if _, err := m.CreateClaimed(ctx, &pool.Spec{Image: "img", Port: 3000}, "solo",
-		&workload.ClaimRequest{ClaimID: "solo", Command: "run"}); err == nil {
+		&workload.ClaimRequest{ClaimID: "solo", Command: "run"}, Binding{}); err == nil {
 		t.Fatal("a cancelled create must fail")
 	}
 
