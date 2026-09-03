@@ -8,6 +8,7 @@ How to deploy and configure the orchestrator. Consumers of the API want the [job
 - [Exposing the jobs API](#exposing-the-jobs-api)
 - [Enabling deployments](#enabling-deployments)
 - [Pools](#pools)
+- [Workload log shipping](#workload-log-shipping)
 - [Configuration reference](#configuration-reference)
 - [Hardening](#hardening)
 - [Resource model](#resource-model)
@@ -16,7 +17,8 @@ How to deploy and configure the orchestrator. Consumers of the API want the [job
 
 ## What gets deployed
 
-The Helm chart (`charts/orchestrator/`) installs up to two stateless services:
+The Helm chart (`charts/orchestrator/`) installs independently enabled control
+and data-plane components:
 
 Every component is opt-in — a default install renders nothing.
 
@@ -28,6 +30,7 @@ Every component is opt-in — a default install renders nothing.
 | **activator** | `deployments.activator.enabled` | Holds cold and async requests in front of deployments — required for scale-to-zero and `Prefer: respond-async` |
 | **sandbox** | `sandbox.enabled` | `/v1/sandbox` — live workspaces at their own hostnames |
 | **sandbox proxy** | `sandbox.proxy.enabled` | The data plane every sandbox request passes through, behind one wildcard route |
+| **log collector** | `logCollector.enabled` | Node-local CRI log collection and OTLP/HTTP export for every workload kind |
 
 All derive their state from the cluster: restarts and replica failovers lose nothing, and there is no database.
 
@@ -139,6 +142,14 @@ deployments:
 
 Each pool keeps `size` pods warm at all times. Deployment users always submit image, port, CPU, memory, and the rest of their desired spec; the deployments service claims from an exact-shape match, while the generic `pool-controller` replenishes bare capacity off the request path. The same binary maintains sandbox pools under their separate pod contract. With no match or no accepted warm capacity the deployments service creates directly from the same Revision template. There is no deployment-pool API. See the [pools guide](pools.md).
 
+## Workload log shipping
+
+Set `logCollector.enabled=true` and provide `logCollector.otlp.endpoint` to run
+one Alloy collector per selected Linux node. It tails Job, Deployment, and
+Sandbox user-container logs directly from kubelet's CRI files and ships them
+over OTLP/HTTP. See the [workload logging guide](logging.md) for authentication,
+record attributes, delivery semantics, and the host mounts involved.
+
 ## Sandboxes
 
 [Sandboxes](sandboxes.md) are live workspaces reached at their own hostnames. Callers always submit a complete pod shape; `sandbox.pools` is optional operator-only capacity that is matched transparently. An exact match buys a sub-second claim, while no match or exhausted capacity creates the same pod directly. Operator config:
@@ -205,6 +216,9 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
 | `deployments.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss can delay Pod creation by roughly the lease duration |
 | `poolController.leaderElection.enabled` | `false` | Required above one replica; each pool kind uses a distinct Lease |
+| `logCollector.enabled` | `false` | Run the node-local workload log collector DaemonSet |
+| `logCollector.otlp.endpoint` | empty | OTLP/HTTP base endpoint; required when the collector is enabled |
+| `logCollector.storageHostPath` | release-derived | Host-local positions and persistent retry queue directory |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
 | `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
 | `service.apiPort` | `8080` | API port |
@@ -272,7 +286,7 @@ On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.
 
 Each component can also autoscale on CPU (`autoscaling.enabled`, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 
-The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
+The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped). The optional log collector is the deliberate exception to non-root: it needs portable access to kubelet-owned log files and its host-created queue directory, but still drops every capability, uses a read-only root filesystem, and has neither host networking nor host PID access.
 
 ## Local development backend
 
