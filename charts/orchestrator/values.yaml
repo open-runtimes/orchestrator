@@ -28,6 +28,7 @@ imagePullSecrets: []
 poolController:
   enabled: true
   replicaCount: 1
+  healthPort: 8080
   image:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/pool-controller

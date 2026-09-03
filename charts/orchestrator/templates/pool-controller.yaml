@@ -24,6 +24,7 @@ spec:
         {{- include "orchestrator.poolControllerSelectorLabels" $root | nindent 8 }}
         orchestrator.open-runtimes.io/pool-kind: {{ $kind }}
     spec:
+      terminationGracePeriodSeconds: {{ $root.Values.service.terminationGracePeriodSeconds }}
       serviceAccountName: {{ include "orchestrator.poolControllerName" $root }}
       {{- with include "orchestrator.imagePullSecrets" $root }}
       {{- . | nindent 6 }}
@@ -37,13 +38,13 @@ spec:
           securityContext:
             {{- include "orchestrator.containerSecurityContext" $root | nindent 12 }}
           ports:
-            - name: metrics
-              containerPort: {{ $root.Values.service.metricsPort }}
+            - name: health
+              containerPort: {{ $root.Values.poolController.healthPort }}
           env:
             - name: POOL_KIND
               value: {{ $kind | quote }}
-            - name: METRICS_PORT
-              value: {{ $root.Values.service.metricsPort | quote }}
+            - name: HEALTH_PORT
+              value: {{ $root.Values.poolController.healthPort | quote }}
             - name: KUBE_NAMESPACE
               value: {{ include "orchestrator.workloadNamespace" $root | quote }}
             - name: WORKLOAD_SIDECAR_IMAGE
@@ -117,12 +118,12 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: metrics
+              port: health
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /livez
-              port: metrics
+              port: health
             initialDelaySeconds: 10
             periodSeconds: 10
 {{- if gt (int $root.Values.poolController.replicaCount) 1 }}
