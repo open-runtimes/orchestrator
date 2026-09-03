@@ -2,6 +2,7 @@ package warm
 
 import (
 	"context"
+	"errors"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
 	"slices"
@@ -24,6 +25,83 @@ func unlabeledPods(t *testing.T, cs *fake.Clientset, poolID string) int {
 		t.Fatalf("list pods: %v", err)
 	}
 	return len(list.Items)
+}
+
+func TestReconcile_DiscardsAbandonedReservation(t *testing.T) {
+	t.Parallel()
+	p := testPool("std")
+	m, cs, _ := newTestManager(t, p)
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	pod := claimedPodFixture(m, "std", "pod-a", "10.0.0.1", "act1", "{}")
+	pod.Annotations[AnnotationReservedAt] = now.Add(-2 * m.cfg.OrphanTTL).Format(time.RFC3339Nano)
+	addPod(t, cs, pod)
+
+	c := m.Controller(Hooks{})
+	c.Now = func() time.Time { return now }
+	c.Tick(t.Context())
+	if podGone(t, cs, pod.Name) {
+		t.Fatal("reservation must survive its first observed mismatch")
+	}
+	c.Now = func() time.Time { return now.Add(m.cfg.OrphanTTL + time.Second) }
+	c.Tick(t.Context())
+
+	if !podGone(t, cs, pod.Name) {
+		t.Fatal("abandoned pre-activation reservation was not discarded")
+	}
+}
+
+func TestClaimControl_StateErrorNeverDeletesLiveReservation(t *testing.T) {
+	t.Parallel()
+	m, cs, sidecar := newTestManager(t, testPool("std"))
+	pod := claimedPodFixture(m, "std", "pod-a", "10.0.0.1", "act1", "{}")
+	pod.Annotations[AnnotationReservedAt] = time.Now().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	addPod(t, cs, pod)
+	sidecar.stateErr[pod.Status.PodIP] = errors.New("probe timed out")
+
+	c := m.Controller(Hooks{})
+	t0 := time.Now()
+	c.orphanSince[pod.Name] = t0.Add(-2 * m.cfg.OrphanTTL)
+	c.Now = func() time.Time { return t0 }
+	c.TickClaims(t.Context())
+	c.Now = func() time.Time { return t0.Add(10 * m.cfg.OrphanTTL) }
+	c.TickClaims(t.Context())
+
+	if podGone(t, cs, pod.Name) {
+		t.Fatal("a failed state probe must not start or advance reservation GC")
+	}
+	if _, tracked := c.orphanSince[pod.Name]; tracked {
+		t.Fatal("failed probe must not record a claim-state mismatch")
+	}
+}
+
+func TestClaimControl_PrunesOrphanTrackingForDeletedPods(t *testing.T) {
+	t.Parallel()
+	m, _, _ := newTestManager(t, testPool("std"))
+	c := m.Controller(Hooks{})
+	c.orphanSince["gone"] = time.Now()
+
+	c.TickClaims(t.Context())
+
+	if len(c.orphanSince) != 0 {
+		t.Fatalf("orphan tracking = %v, want empty after pod disappeared", c.orphanSince)
+	}
+}
+
+func TestClaimControl_AcceptsReservationConfirmedBySidecar(t *testing.T) {
+	t.Parallel()
+	m, cs, sidecar := newTestManager(t, testPool("std"))
+	pod := claimedPodFixture(m, "std", "pod-a", "10.0.0.1", "act1", "{}")
+	pod.Annotations[AnnotationReservedAt] = time.Now().Add(-2 * m.cfg.OrphanTTL).Format(time.RFC3339Nano)
+	addPod(t, cs, pod)
+	sidecar.state[pod.Status.PodIP] = workload.ClaimState{Claimed: true, ClaimID: "act1"}
+
+	called := 0
+	c := m.Controller(Hooks{Reap: func(context.Context, *pool.Pool, *corev1.Pod, string, time.Time) { called++ }})
+	c.TickClaims(t.Context())
+
+	if called != 1 || podGone(t, cs, pod.Name) {
+		t.Fatalf("confirmed reservation: reap calls=%d gone=%v, want 1/false", called, podGone(t, cs, pod.Name))
+	}
 }
 
 func TestReplenish_CreatesUpToSize(t *testing.T) {

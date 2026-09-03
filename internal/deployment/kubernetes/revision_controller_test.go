@@ -34,8 +34,13 @@ func (f *revisionPoolSidecar) Claim(_ context.Context, _, _ string, req *workloa
 	f.claim = &claim
 	return nil
 }
-func (*revisionPoolSidecar) State(context.Context, string) (*workload.ClaimState, error) {
-	return &workload.ClaimState{}, nil
+func (f *revisionPoolSidecar) State(context.Context, string) (*workload.ClaimState, error) {
+	state := &workload.ClaimState{}
+	if f.claim != nil {
+		state.Claimed = true
+		state.ClaimID = f.claim.ClaimID
+	}
+	return state, nil
 }
 func (f *revisionPoolSidecar) Ready(context.Context, string) bool            { return !f.notReady }
 func (*revisionPoolSidecar) Requests(context.Context, string) (int64, error) { return 0, nil }

@@ -6,7 +6,7 @@
 // reconstruct by listing pods.
 //
 // Everything here is consumer-neutral, and that includes the sequence, not
-// just the primitives: claiming, binding, waiting for the workload to answer,
+// just the primitives: reserving, activating, waiting for the workload to answer,
 // deriving a claimed pod's phase, reaping it when it goes idle, and running the
 // inventory control loop. Deployment Revisions and sandboxes both sit on it;
 // the owning controller supplies routing and lifecycle once a pod is claimed.
@@ -32,11 +32,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 )
 
 const (
 	// LabelManagedBy marks every object a warm pool owns.
 	LabelManagedBy = "managed-by"
+	// AnnotationReservedAt marks claims whose final identity was reserved before
+	// the sidecar activation request. Its presence distinguishes reservation-first
+	// claims from legacy claims; orphan age is measured from first observed mismatch.
+	AnnotationReservedAt = "warm.orchestrator.open-runtimes.io/reserved-at"
 
 	ContainerShimInstall  = "shim-install"
 	ContainerAgentInstall = "agent-install"
@@ -141,6 +146,14 @@ type Manager struct {
 	// get-or-created as the claim-key Secret and cached here.
 	keyMu      sync.Mutex
 	installKey []byte
+}
+
+// Binding is the final workload identity atomically stamped while reserving a
+// warm pod. Spec must already have secret material removed.
+type Binding struct {
+	Spec   any
+	Labels map[string]string
+	Owners []metav1.OwnerReference
 }
 
 // New creates a Manager over the configured pools.
@@ -275,17 +288,21 @@ func (m *Manager) counts(pods []corev1.Pod) (warm, claimed int) {
 // *claim.Poison error means the winning pod accepted the claim but its
 // artifacts failed — the claim has failed, and the pod is discarded, never
 // resold.
-func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *workload.ClaimRequest) (*corev1.Pod, error) {
+func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *workload.ClaimRequest, binding Binding) (*corev1.Pod, error) {
 	key, err := m.claimKey(ctx)
 	if err != nil {
 		return nil, err
 	}
-	inv := &inventory{m: m, f: f, key: key, byName: make(map[string]*corev1.Pod)}
+	inv := &inventory{
+		m: m, f: f, key: key, req: req, binding: binding,
+		byName: make(map[string]*corev1.Pod),
+	}
 	unit, err := claim.Claim(ctx, inv, poster{m.sc}, m.recorder(), f.ID, f.Burst, req)
 	if err != nil {
 		return nil, err
 	}
-	return inv.byName[unit.ID], nil
+	pod := inv.byName[unit.ID]
+	return pod, nil
 }
 
 // CreateClaimed creates a pod for one request and claims it: the poolless path,
@@ -294,7 +311,7 @@ func (m *Manager) Claim(ctx context.Context, f *pool.Pool, req *workload.ClaimRe
 // with a poolID unique to the request, so it can never be offered to another
 // claim. A pod that fails the claim is deleted here: this path created it, so
 // nobody else is watching it.
-func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string, req *workload.ClaimRequest) (_ *corev1.Pod, err error) {
+func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string, req *workload.ClaimRequest, binding Binding) (_ *corev1.Pod, err error) {
 	key, err := m.claimKey(ctx)
 	if err != nil {
 		return nil, err
@@ -308,10 +325,14 @@ func (m *Manager) CreateClaimed(ctx context.Context, s *pool.Spec, poolID string
 			m.Discard(ctx, pod.Name)
 		}
 	}()
+	bound, err := m.reserve(ctx, pod, req.ClaimID, binding)
+	if err != nil {
+		return nil, err
+	}
 	if err = m.sc.Claim(ctx, pod.Status.PodIP, deriveClaimToken(key, pod.Name), req); err != nil {
 		return nil, claim.Outcome(err, pod.Name)
 	}
-	return pod, nil
+	return bound, nil
 }
 
 // Discard removes a pod that was created for one request and never handed over.
@@ -376,41 +397,57 @@ func (m *Manager) createClaimable(ctx context.Context, s *pool.Spec, poolID stri
 	}
 }
 
-// Bind stamps the accepted claim onto the pod: the claim label (the status,
-// list, and GC key), the spec annotation (status reconstruction), and any
-// consumer labels the claim routes by. Callers must strip secret material from
-// spec first — the pod object is not a safe place to rest it.
-func (m *Manager) Bind(ctx context.Context, podName, claimID string, spec any, labels map[string]string) error {
-	return m.BindOwned(ctx, podName, claimID, spec, labels, nil)
-}
-
-// BindOwned binds a claim and transfers controller ownership in the same
-// metadata patch. Revision-backed claims use this so a successful claim is
-// immediately reconstructable and garbage-collected with its Revision.
-func (m *Manager) BindOwned(ctx context.Context, podName, claimID string, spec any, labels map[string]string, owners []metav1.OwnerReference) error {
-	encoded, err := json.Marshal(spec)
+// reserve atomically stamps the claim's final identity before the sidecar may
+// start the workload. resourceVersion turns the metadata patch into the claim
+// serialization point: only one contender can reserve the pod it listed.
+func (m *Manager) reserve(ctx context.Context, pod *corev1.Pod, claimID string, binding Binding) (*corev1.Pod, error) {
+	encoded, err := json.Marshal(binding.Spec)
 	if err != nil {
-		return apperrors.Internal("kubernetes.marshalSpec", err)
+		return nil, apperrors.Internal("kubernetes.marshalSpec", err)
 	}
-	bound := map[string]string{m.cfg.Naming.Claim: claimID}
-	maps.Copy(bound, labels)
-	metadata := map[string]any{
-		"labels":      bound,
-		"annotations": map[string]string{m.cfg.Naming.Spec: string(encoded)},
+	candidate := pod
+	var bound *corev1.Pod
+	lost := false
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		boundLabels := map[string]string{m.cfg.Naming.Claim: claimID}
+		maps.Copy(boundLabels, binding.Labels)
+		metadata := map[string]any{
+			"resourceVersion": candidate.ResourceVersion,
+			"labels":          boundLabels,
+			"annotations": map[string]string{
+				m.cfg.Naming.Spec:    string(encoded),
+				AnnotationReservedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			},
+		}
+		if binding.Owners != nil {
+			metadata["ownerReferences"] = binding.Owners
+		}
+		patch, marshalErr := json.Marshal(map[string]any{"metadata": metadata})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		bound, err = m.client.CoreV1().Pods(m.cfg.Namespace).Patch(ctx, pod.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		if !apierrors.IsConflict(err) {
+			return err
+		}
+		latest, getErr := m.client.CoreV1().Pods(m.cfg.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+		if !m.Claimable(latest) {
+			lost = true
+			return nil
+		}
+		candidate = latest
+		return err
+	})
+	if lost {
+		return nil, claim.ErrConflict
 	}
-	if owners != nil {
-		metadata["ownerReferences"] = owners
-	}
-	patch, err := json.Marshal(map[string]any{"metadata": metadata})
 	if err != nil {
-		return apperrors.Internal("kubernetes.marshalPatch", err)
+		return nil, apperrors.Internal("kubernetes.reservePod", err)
 	}
-	// A crash before this patch leaves a claimed-but-unlabeled pod; orphan GC
-	// discards it after OrphanTTL — orphans are garbage, never resold.
-	if _, err := m.client.CoreV1().Pods(m.cfg.Namespace).Patch(ctx, podName, types.StrategicMergePatchType, patch, metav1.PatchOptions{}); err != nil {
-		return apperrors.Internal("kubernetes.bindPod", err)
-	}
-	return nil
+	return bound, nil
 }
 
 // Create creates one warm pod in the given shape, labeled for poolID. The name
@@ -484,10 +521,12 @@ func WorkloadTerminated(pod *corev1.Pod) *corev1.ContainerStateTerminated {
 // start. Pods are cached by name so the winner's object is at hand without
 // re-fetching.
 type inventory struct {
-	m      *Manager
-	f      *pool.Pool
-	key    []byte
-	byName map[string]*corev1.Pod
+	m       *Manager
+	f       *pool.Pool
+	key     []byte
+	req     *workload.ClaimRequest
+	binding Binding
+	byName  map[string]*corev1.Pod
 }
 
 func (inv *inventory) Free(ctx context.Context) ([]claim.Unit, error) {
@@ -505,6 +544,27 @@ func (inv *inventory) Free(ctx context.Context) ([]claim.Unit, error) {
 		units = append(units, inv.unitFor(pod))
 	}
 	return units, nil
+}
+
+func (inv *inventory) Reserve(ctx context.Context, unit claim.Unit) error {
+	pod := inv.byName[unit.ID]
+	if pod == nil {
+		return apperrors.Internal("kubernetes.reservePod", fmt.Errorf("pod %s was not listed", unit.ID))
+	}
+	started := time.Now()
+	bound, err := inv.m.reserve(ctx, pod, inv.req.ClaimID, inv.binding)
+	if inv.m.cfg.Metrics != nil {
+		inv.m.cfg.Metrics.RecordPoolReservation(ctx, inv.m.cfg.Naming.Kind, inv.f.ID, err == nil, time.Since(started).Seconds())
+	}
+	if err != nil {
+		return err
+	}
+	inv.byName[unit.ID] = bound
+	return nil
+}
+
+func (inv *inventory) Discard(ctx context.Context, unit claim.Unit) error {
+	return inv.m.DiscardErr(ctx, unit.ID)
 }
 
 // Create pays the burst cold start: a pod in the pool's shape, waited into

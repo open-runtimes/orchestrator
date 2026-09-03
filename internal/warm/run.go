@@ -75,5 +75,8 @@ func (m *Manager) Await(ctx context.Context, pod *corev1.Pod) (string, error) {
 // one probe, no wait, for consumers that poll from a reconcile loop rather
 // than block a request on Await.
 func (m *Manager) Serving(ctx context.Context, pod *corev1.Pod) bool {
-	return pod.Status.PodIP != "" && m.sc.Ready(ctx, pod.Status.PodIP)
+	if pod.Status.PodIP == "" {
+		return false
+	}
+	return m.sc.Ready(ctx, pod.Status.PodIP)
 }

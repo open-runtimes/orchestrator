@@ -105,7 +105,7 @@ Warm pools serve two consumers — deployment `Revision` replicas and [sandboxes
 
 | Signal | Metrics |
 |--------|---------|
-| Latency | `pool_claim_duration_seconds{kind,pool,success}` (claim through serving) |
+| Latency | `pool_claim_duration_seconds{kind,pool,success}` (claim through serving), `pool_claim_reservation_duration_seconds{kind,pool,success}` (the API-server metadata write before activation) |
 | Traffic | `pool_claims_total{kind,pool}`, `pool_burst_total{kind,pool,policy=reject\|cold}` |
 | Errors | `pool_poisoned_total{kind,pool}` (failed artifact materialization), `pool_claim_conflicts_total{kind,pool}` (lost claim races — healthy at low rates, a hot pool at high ones) |
 | Saturation | `pool_claims_active{kind,pool}`, `pool_warm{kind,pool}`, `pool_claimed{kind,pool}` |

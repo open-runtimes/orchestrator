@@ -18,8 +18,12 @@ type fakeInventory struct {
 	free    []Unit
 	freeErr error
 
-	coldErr   error
-	coldCalls int
+	coldErr         error
+	coldCalls       int
+	reserveOutcomes map[string]error
+	reserved        []string
+	discarded       []string
+	discardErr      error
 }
 
 func (f *fakeInventory) Free(context.Context) ([]Unit, error) {
@@ -32,6 +36,16 @@ func (f *fakeInventory) Create(context.Context) (*Unit, error) {
 		return nil, f.coldErr
 	}
 	return &Unit{ID: "cold-" + strconv.Itoa(f.coldCalls), Addr: "10.0.0.99", Token: "t"}, nil
+}
+
+func (f *fakeInventory) Reserve(_ context.Context, u Unit) error {
+	f.reserved = append(f.reserved, u.ID)
+	return f.reserveOutcomes[u.ID]
+}
+
+func (f *fakeInventory) Discard(_ context.Context, u Unit) error {
+	f.discarded = append(f.discarded, u.ID)
+	return f.discardErr
 }
 
 // fakePoster scripts each unit's claim outcome by unit ID; unscripted units
@@ -73,6 +87,51 @@ func TestClaimRetriesNextUnitOnConflict(t *testing.T) {
 	}
 }
 
+func TestClaimRetriesNextUnitWhenReservationLosesRace(t *testing.T) {
+	inv := &fakeInventory{
+		free:            []Unit{unit("a"), unit("b")},
+		reserveOutcomes: map[string]error{"a": ErrConflict},
+	}
+	post := &fakePoster{}
+
+	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
+	if err != nil || won.ID != "b" {
+		t.Fatalf("won %v (%v), want b after reservation conflict", won, err)
+	}
+	if len(post.posted) != 1 || post.posted[0] != "b" {
+		t.Fatalf("sidecar posts = %v, want only reserved unit b", post.posted)
+	}
+}
+
+func TestClaimSkipsAmbiguousReservationFailureWithoutDiscarding(t *testing.T) {
+	inv := &fakeInventory{
+		free:            []Unit{unit("a"), unit("b")},
+		reserveOutcomes: map[string]error{"a": errors.New("request timed out")},
+	}
+	post := &fakePoster{}
+
+	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
+	if err != nil || won.ID != "b" {
+		t.Fatalf("won %v (%v), want b after transient reservation failure", won, err)
+	}
+	if len(inv.discarded) != 0 || len(post.posted) != 1 || post.posted[0] != "b" {
+		t.Fatalf("discarded=%v posted=%v, want no discard and activation of b", inv.discarded, post.posted)
+	}
+}
+
+func TestClaimDoesNotDiscardSidecarConflict(t *testing.T) {
+	inv := &fakeInventory{free: []Unit{unit("a"), unit("b")}}
+	post := &fakePoster{outcomes: map[string]error{"a": ErrConflict}}
+
+	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
+	if err != nil || won.ID != "b" {
+		t.Fatalf("won %v (%v), want b after sidecar conflict", won, err)
+	}
+	if len(inv.discarded) != 0 {
+		t.Fatalf("discarded=%v, want conflict winner left untouched", inv.discarded)
+	}
+}
+
 func TestClaimSkipsTransientFailures(t *testing.T) {
 	inv := &fakeInventory{free: []Unit{unit("broken"), unit("b")}}
 	post := &fakePoster{outcomes: map[string]error{"broken": errors.New("connection refused")}}
@@ -80,6 +139,9 @@ func TestClaimSkipsTransientFailures(t *testing.T) {
 	won, err := Claim(t.Context(), inv, post, nil, "p", BurstReject, req())
 	if err != nil || won.ID != "b" {
 		t.Fatalf("won %v (%v), want b — one broken unit must not fail the claim", won, err)
+	}
+	if len(inv.discarded) != 1 || inv.discarded[0] != "broken" {
+		t.Fatalf("discarded = %v, want the ambiguously-started broken unit", inv.discarded)
 	}
 }
 
@@ -97,6 +159,24 @@ func TestClaimPoisonStopsAndStampsUnit(t *testing.T) {
 	}
 	if len(post.posted) != 1 {
 		t.Errorf("posted to %v after poison, want no further units", post.posted)
+	}
+}
+
+func TestClaimPoisonSurvivesDiscardFailure(t *testing.T) {
+	inv := &fakeInventory{
+		free:       []Unit{unit("a"), unit("b")},
+		discardErr: errors.New("delete refused"),
+	}
+	post := &fakePoster{outcomes: map[string]error{"a": &Poison{Msg: "artifacts failed"}}}
+	rec := &countRecorder{}
+
+	_, err := Claim(t.Context(), inv, post, rec, "p", BurstReject, req())
+	var poison *Poison
+	if !errors.As(err, &poison) || poison.Unit != "a" {
+		t.Fatalf("got %v, want Poison for a through discard failure", err)
+	}
+	if rec.poisons != 1 || len(post.posted) != 1 {
+		t.Fatalf("poisons=%d posted=%v, want 1 and [a]", rec.poisons, post.posted)
 	}
 }
 

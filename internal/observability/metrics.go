@@ -87,14 +87,15 @@ type Metrics struct {
 	// Pool metrics (Latency, Traffic, Errors, Saturation). Warm/claimed are
 	// recorded by the leader's control loop; claim conflicts are the racing
 	// losers (healthy at low rates), poisoned pods are failed claims.
-	PoolClaims         metric.Int64Counter
-	PoolClaimsActive   metric.Int64UpDownCounter
-	PoolClaimDuration  metric.Float64Histogram
-	PoolClaimConflicts metric.Int64Counter
-	PoolPoisoned       metric.Int64Counter
-	PoolBurst          metric.Int64Counter
-	PoolWarm           metric.Int64Gauge
-	PoolClaimed        metric.Int64Gauge
+	PoolClaims              metric.Int64Counter
+	PoolClaimsActive        metric.Int64UpDownCounter
+	PoolClaimDuration       metric.Float64Histogram
+	PoolReservationDuration metric.Float64Histogram
+	PoolClaimConflicts      metric.Int64Counter
+	PoolPoisoned            metric.Int64Counter
+	PoolBurst               metric.Int64Counter
+	PoolWarm                metric.Int64Gauge
+	PoolClaimed             metric.Int64Gauge
 }
 
 // instruments builds meters while accumulating the first error, sparing
@@ -233,7 +234,10 @@ func NewMetrics(ctx context.Context) (*Metrics, http.Handler, error) {
 	m.PoolClaimDuration = b.histogram("pool_claim_duration_seconds",
 		"Claim wall time through serving, per pool and success",
 		0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 600, 1800)
-	m.PoolClaimConflicts = b.counter("pool_claim_conflicts_total", "Total 409 claim races lost (the loser retries the next warm pod)")
+	m.PoolReservationDuration = b.histogram("pool_claim_reservation_duration_seconds",
+		"Kubernetes metadata reservation latency, per pool and success",
+		0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1)
+	m.PoolClaimConflicts = b.counter("pool_claim_conflicts_total", "Total atomic reservation or sidecar claim races lost")
 	m.PoolPoisoned = b.counter("pool_poisoned_total", "Total pods poisoned by failed artifact materialization")
 	m.PoolBurst = b.counter("pool_burst_total", "Total claims arriving at an empty pool, labelled policy=reject|cold")
 	m.PoolWarm = b.gauge("pool_warm", "Unclaimed warm-ready pods, per pool")
@@ -439,6 +443,13 @@ func (m *Metrics) RecordPoolClaimStarted(ctx context.Context, kind, id string) {
 func (m *Metrics) RecordPoolClaimFinished(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
 	m.PoolClaimsActive.Add(ctx, -1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
 	m.PoolClaimDuration.Record(ctx, durationSeconds, metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
+}
+
+// RecordPoolReservation records the API-server write that serializes a warm
+// claim and stamps its final workload identity before activation.
+func (m *Metrics) RecordPoolReservation(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
+	m.PoolReservationDuration.Record(ctx, durationSeconds,
+		metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
 }
 
 // RecordPoolConflict records a lost claim race.

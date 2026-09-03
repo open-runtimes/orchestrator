@@ -1,10 +1,10 @@
 // Package claim owns the warm-unit claim protocol shared by every consumer of
 // standing warm capacity — deployment Revisions and sandboxes, including cold
-// starts: iterate the free warm units, win one via the sidecar claim POST (the
-// POST is the claim — the sidecar is the serialization point), fall to the
-// fleet's burst policy on exhaustion, and retry once when a cold-created unit
-// is stolen by a racing claim. Backends stay inventories: how to list, create,
-// and address warm units.
+// starts: iterate the free warm units, atomically reserve one in the backend,
+// then activate it through its sidecar. Reserving before activation is the
+// metadata barrier: final workload identity is durable before user code can
+// emit output. Backends stay inventories: how to list, reserve, create, and
+// discard warm units.
 package claim
 
 import (
@@ -31,8 +31,8 @@ const (
 	BurstCold   = "cold"   // create a unit on demand and pay the cold start
 )
 
-// ErrConflict is the racing loser's result: the unit's sidecar already
-// accepted another claim. The flow retries the next warm unit.
+// ErrConflict is the racing loser's result: the backend reservation changed or
+// the unit's sidecar already accepted another claim. The flow retries another.
 var ErrConflict = errors.New("unit already claimed")
 
 // Poison is the 422 claim outcome: the sidecar accepted the claim but
@@ -63,6 +63,11 @@ type Inventory interface {
 	// cold start. Implementations own the warm-up wait and discard units
 	// that never turn claimable.
 	Create(ctx context.Context) (*Unit, error)
+	// Reserve atomically wins a free unit and stamps its final identity.
+	// ErrConflict means another claimant changed the unit first.
+	Reserve(ctx context.Context, unit Unit) error
+	// Discard removes a reserved unit after activation fails or is uncertain.
+	Discard(ctx context.Context, unit Unit) error
 }
 
 // Recorder receives the claim protocol's metrics. Satisfied by
@@ -105,17 +110,16 @@ func Claim(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID
 	if err != nil {
 		return nil, err
 	}
-	err = post.Post(ctx, *created, req)
+	err = claimUnit(ctx, inv, post, *created, req)
 	switch {
 	case err == nil:
 		return created, nil
 	case errors.Is(err, ErrConflict):
-		// The cold unit was stolen by a racing claim; one more warm pass.
 		if rec != nil {
 			rec.RecordPoolConflict(ctx, poolID)
 		}
-		if unit, ok, err := tryWarm(ctx, inv, post, rec, poolID, req); err != nil || ok {
-			return unit, recordPoison(ctx, rec, poolID, err)
+		if unit, ok, retryErr := tryWarm(ctx, inv, post, rec, poolID, req); retryErr != nil || ok {
+			return unit, recordPoison(ctx, rec, poolID, retryErr)
 		}
 		return nil, exhausted(poolID)
 	default:
@@ -133,18 +137,19 @@ func recordPoison(ctx context.Context, rec Recorder, poolID string, err error) e
 	return err
 }
 
-// tryWarm claims the first free unit that accepts; ok=false with nil error
-// means none was free. Conflicts move to the next unit; transient claim
-// failures are logged and skipped — one broken unit must not fail an
-// claim while others are free. Poison stops the pass: the sidecar accepted,
-// so the claim is spent.
+// tryWarm reserves and activates the first free unit that accepts; ok=false
+// with nil error means none was free. Conflicts and transient reservation or
+// activation failures move to the next unit. Only a non-conflict activation
+// failure discards: a reservation error has an ambiguous patch outcome, while
+// a sidecar conflict may be a live claim won by an older rolling-upgrade peer.
+// Poison stops the pass because the requested workload itself failed.
 func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, poolID string, req *workload.ClaimRequest) (*Unit, bool, error) {
 	units, err := inv.Free(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	for _, u := range units {
-		err := post.Post(ctx, u, req)
+		err := claimUnit(ctx, inv, post, u, req)
 		switch {
 		case err == nil:
 			return &u, true, nil
@@ -152,7 +157,7 @@ func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, pool
 			if rec != nil {
 				rec.RecordPoolConflict(ctx, poolID)
 			}
-			continue // racing loser — try the next warm unit
+			continue
 		default:
 			var poison *Poison
 			if errors.As(err, &poison) {
@@ -163,6 +168,32 @@ func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, pool
 		}
 	}
 	return nil, false, nil
+}
+
+// claimUnit is the one-unit reservation/activation protocol. Reservation
+// failures are left for reconciliation because the API write may or may not
+// have landed. Sidecar conflicts are also left alone: during a rolling upgrade
+// an older peer may already have activated this pod and still be binding its
+// labels. Other activation failures are safe to discard because this caller
+// successfully reserved the unit first.
+func claimUnit(ctx context.Context, inv Inventory, post Poster, unit Unit, req *workload.ClaimRequest) error {
+	if err := inv.Reserve(ctx, unit); err != nil {
+		return fmt.Errorf("reserve unit %s: %w", unit.ID, err)
+	}
+	err := post.Post(ctx, unit, req)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrConflict) {
+		return err
+	}
+	if discardErr := inv.Discard(ctx, unit); discardErr != nil {
+		return errors.Join(
+			fmt.Errorf("claim failed: %w", err),
+			fmt.Errorf("discard reserved unit %s: %w", unit.ID, discardErr),
+		)
+	}
+	return err
 }
 
 func exhausted(poolID string) error {
