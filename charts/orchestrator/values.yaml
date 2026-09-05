@@ -68,7 +68,7 @@ jobs:
     repository: ghcr.io/open-runtimes/orchestrator/jobs-service
     tag: "" # defaults to the chart's appVersion
     pullPolicy: IfNotPresent
-  # Image used by job pods (worker workspace init + native sidecar), and by
+  # Image used by job pods (combined native sidecar), and by
   # deployment pods' artifact-pre init container. Passed via JOB_SIDECAR_IMAGE.
   sidecarImage:
     ref: ""
@@ -545,7 +545,7 @@ orchestrator:
   artifactEndpoint: ""
   jobRetention: 15m
   maintenanceInterval: 1m
-  # How long kubelet waits for the post-sidecar to finish after sending SIGTERM.
+  # How long kubelet waits for the combined sidecar to finish after sending SIGTERM.
   terminationGracePeriodSeconds: 600
   # ImagePullPolicy applied to containers inside job pods. Empty = kubelet default.
   # workerImagePullPolicy applies to the user workload; sidecarImagePullPolicy applies to

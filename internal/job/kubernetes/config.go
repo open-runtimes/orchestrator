@@ -17,12 +17,12 @@ type OrchestratorConfig struct {
 	ServiceAccount                string
 	ImagePullSecrets              []string
 	WorkerImagePullPolicy         string // applied to the worker (user) container; empty = kubelet default
-	SidecarImagePullPolicy        string // applied to artifact-pre + artifact-post; empty = kubelet default
+	SidecarImagePullPolicy        string // applied to the combined sidecar; empty = kubelet default
 	JobRetention                  time.Duration
 	MaintenanceInterval           time.Duration
 	LogFlushInterval              time.Duration // max time buffered job log lines wait before a callback flush
 	ArtifactEndpoint              string
-	TerminationGracePeriodSeconds int64 // grace period for post-sidecar to run post-artifacts
+	TerminationGracePeriodSeconds int64 // grace period for the combined sidecar to run post-artifacts
 	LeaderElection                LeaderElectionConfig
 
 	// Overcommit derives worker requests from declared limits (internal/kube).
