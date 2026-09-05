@@ -23,15 +23,15 @@ func TestBuildJob_MountArtifact(t *testing.T) {
 		},
 	}
 
-	// A mount artifact → privileged sidecar, propagation on sidecar + worker, startup probe.
+	// A mount artifact → privileged sidecar, propagation on sidecar + worker, shell gate.
 	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
 	spec := j.Spec.Template.Spec
 	sidecar := spec.InitContainers[0]
 	if sidecar.SecurityContext == nil || sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
 		t.Error("sidecar should be privileged when mounting")
 	}
-	if sidecar.StartupProbe == nil || sidecar.StartupProbe.Exec == nil {
-		t.Error("sidecar should have a -check-ready startup probe")
+	if sidecar.StartupProbe != nil {
+		t.Error("sidecar must not serialize worker startup")
 	}
 	if got := sidecar.VolumeMounts[0].MountPropagation; got == nil || *got != corev1.MountPropagationBidirectional {
 		t.Errorf("sidecar mount propagation: want Bidirectional, got %v", got)
@@ -243,10 +243,10 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 	if sidecar.RestartPolicy == nil || *sidecar.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Error("combined sidecar must use restartPolicy Always")
 	}
-	if sidecar.StartupProbe == nil || sidecar.StartupProbe.Exec == nil ||
-		!reflect.DeepEqual(sidecar.StartupProbe.Exec.Command, []string{"/ko-app/job-sidecar", "-check-ready"}) {
-		t.Fatal("worker must wait for artifacts and mounts, including jobs without mounts")
+	if sidecar.StartupProbe != nil {
+		t.Fatal("sidecar must not have a startup probe")
 	}
+
 	if j.Spec.ActiveDeadlineSeconds == nil || *j.Spec.ActiveDeadlineSeconds != 60 {
 		t.Fatal("job deadline must bound native sidecar setup retries")
 	}
@@ -261,7 +261,7 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 	if worker.Image != "alpine:3.20" {
 		t.Errorf("worker.Image: got %s", worker.Image)
 	}
-	if !reflect.DeepEqual(worker.Command, []string{"/bin/sh", "-c", "echo hello"}) {
+	if !reflect.DeepEqual(worker.Command, gatedCommand("echo hello", "/workspace", 60)) {
 		t.Errorf("worker.Command: got %v", worker.Command)
 	}
 	if worker.WorkingDir != "/workspace" {
@@ -422,13 +422,13 @@ func envHas(env []corev1.EnvVar, name, value string) bool {
 	return false
 }
 
-func TestBuildJob_DefaultDeadlineAndEntrypoint(t *testing.T) {
-	req := &job.Request{ID: "default", Image: "custom:latest"}
+func TestBuildJob_DefaultDeadlineAndGate(t *testing.T) {
+	req := &job.Request{ID: "default", Image: "custom:latest", Command: "run"}
 	j := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
 	if j.Spec.ActiveDeadlineSeconds == nil || *j.Spec.ActiveDeadlineSeconds != 1800 {
 		t.Fatal("missing default deadline for sidecar retries")
 	}
-	if len(j.Spec.Template.Spec.Containers[0].Command) != 0 {
-		t.Fatal("must preserve the image entrypoint when command is omitted")
+	if !reflect.DeepEqual(j.Spec.Template.Spec.Containers[0].Command, gatedCommand("run", "/workspace", 1800)) {
+		t.Fatal("default job must run behind the shell gate")
 	}
 }

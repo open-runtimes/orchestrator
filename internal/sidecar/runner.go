@@ -156,13 +156,11 @@ func waitForSignal(ctx context.Context) {
 	}
 }
 
-// Run executes the combined sidecar flow:
+// Prepare executes the restart-safe setup portion of the combined flow:
 // 1. Process pre-job artifacts (downloads, file writes, etc.)
 // 2. Establish mounts, then write the ready marker that gates the worker
-// 3. Wait for completion signal (SIGUSR1 from Docker, SIGTERM from Kubernetes)
-// 4. Process post-job artifacts (uploads, events, etc.)
 //
-// If any pre-job artifact fails, the sidecar exits with an error.
+// If any pre-job artifact fails, preparation returns an error.
 //
 // A container restart recovers in place, which is what makes this flow safe as
 // a Kubernetes native sidecar: a completed pre-job phase is not re-run (the
@@ -170,7 +168,7 @@ func waitForSignal(ctx context.Context) {
 // mount table, and the ready marker is cleared up front so the worker is only
 // ever admitted behind established mounts. On a fresh workspace every
 // recovery step is a no-op.
-func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
+func (r *Runner) Prepare(ctx context.Context, artifacts []artifact.Artifact) error {
 	mounts, rest := splitMounts(artifacts)
 	preJob, postJob := artifact.Partition(rest)
 
@@ -225,6 +223,18 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 		logger.Error("Failed to write ready marker", "error", err)
 		return err
 	}
+
+	return nil
+}
+
+// Run prepares the workspace, waits for the worker, then processes outputs.
+func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
+	if err := r.Prepare(ctx, artifacts); err != nil {
+		return err
+	}
+	_, rest := splitMounts(artifacts)
+	_, postJob := artifact.Partition(rest)
+	logger := slog.With("jobId", r.jobID)
 
 	// A bounded job's wait carries the job deadline — if the completion signal
 	// never arrives, this is what unsticks the sidecar. An unbounded workload

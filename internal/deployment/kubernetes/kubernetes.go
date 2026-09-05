@@ -23,6 +23,7 @@ import (
 	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/warm"
 	"orchestrator/internal/workload"
+	"strings"
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -242,6 +243,10 @@ func runWithinLeadershipTerm(ctx, term context.Context, run func(context.Context
 //     rollout reconciler auto-cuts once the new revision reports ready
 //     (unless traffic was pinned manually).
 func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool, error) {
+	if strings.TrimSpace(req.Command) == "" {
+		return false, apperrors.Validation("command", "command is required for Kubernetes revisions; the worker image must provide /bin/sh, fractional sleep, and date")
+	}
+
 	if err := o.checkRuntimeClass(ctx, req.RuntimeClass); err != nil {
 		return false, err
 	}

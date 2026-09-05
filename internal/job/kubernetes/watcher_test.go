@@ -424,3 +424,52 @@ func TestJobTracker_InitFailureShapeDoesNotOvermatch(t *testing.T) {
 		t.Fatalf("want 1 tracker / 1 active, got %d / %d", trackers, active)
 	}
 }
+
+func TestJobTracker_GatedStartup(t *testing.T) {
+	capture, w := newTrackerFixture(t)
+	tr := newJobTracker(w, &watchConfig{jobID: "gated", dest: &job.CallbackDest{URL: "https://cb.example"}})
+	defer tr.close()
+	pod := podWithWorkerRunning()
+	pod.Annotations = map[string]string{annotationStartupGate: startupGateVersion}
+	tr.handleUpdate(t.Context(), pod)
+	if len(capture.types()) != 0 {
+		t.Fatal("waiting shell must not emit start")
+	}
+	started := true
+	pod.Status.ContainerStatuses[0].Started = &started
+	tr.handleUpdate(t.Context(), pod)
+	capture.assertHasType(t, job.CallbackTypeStart)
+	// Node loss may remove the probe observation. Remember an already
+	// observed execution instead of parking the tracker behind the gate.
+	capture.reset()
+	pod.Status.ContainerStatuses[0].Started = nil
+	pod.Status.Phase = corev1.PodFailed
+	tr.handleUpdate(t.Context(), pod)
+	capture.assertHasType(t, job.CallbackTypeExit)
+}
+
+func TestJobTracker_GatedTermination(t *testing.T) {
+	for _, tc := range []struct {
+		name, message string
+		wantStart     bool
+	}{
+		{name: "setup failed"},
+		{name: "fast command", message: "orchestrator-started:1700000000", wantStart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capture, w := newTrackerFixture(t)
+			w.termStart = time.Now()
+			tr := newJobTracker(w, &watchConfig{jobID: "gated", dest: &job.CallbackDest{URL: "https://cb.example"}})
+			defer tr.close()
+			pod := podWithWorkerTerminated(1, corev1.PodFailed)
+			pod.CreationTimestamp = metav1.NewTime(w.termStart.Truncate(time.Second))
+			pod.Annotations = map[string]string{annotationStartupGate: startupGateVersion}
+			pod.Status.ContainerStatuses[0].State.Terminated.Message = tc.message
+			tr.handleUpdate(t.Context(), pod)
+			if slices.Contains(capture.types(), job.CallbackTypeStart) != tc.wantStart {
+				t.Fatalf("incorrect start emission: %v", capture.types())
+			}
+			capture.assertHasType(t, job.CallbackTypeExit)
+		})
+	}
+}

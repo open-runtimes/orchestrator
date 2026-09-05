@@ -22,6 +22,7 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/job"
 	"orchestrator/internal/testutil"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -747,13 +748,16 @@ func wireDispatcher(t *testing.T, emitter *job.CallbackEmitter) *dispatcher.Memo
 // The combined sidecar must finish inputs before admitting the worker and
 // process outputs after SIGTERM, including on an otherwise unprivileged job.
 func TestIntegration_CombinedArtifacts(t *testing.T) {
-	o, _, teardown := setup(t)
+	o, emitter, teardown := setup(t)
 	defer teardown()
+	capture := &eventCapture{}
+	capture.register(emitter)
 	id := fmt.Sprintf("combined-%d", time.Now().UnixNano())
 	req := &job.Request{
 		ID: id, Image: "alpine:3.20", TimeoutSeconds: 60,
 		Command:   "test $(cat input.txt) = prepared && echo output > output.txt",
 		Workspace: "/workspace",
+		Callback:  &job.Callback{URL: "https://cb.example"},
 		Artifacts: []artifact.Artifact{
 			&artifact.Write{ID: "input", In: "prepared", Out: "input.txt"},
 			&artifact.Read{ID: "output", In: "output.txt", Depends: "job"},
@@ -770,6 +774,10 @@ func TestIntegration_CombinedArtifacts(t *testing.T) {
 	if pod.Status.Phase != corev1.PodSucceeded {
 		t.Fatalf("pod failed: %+v", pod.Status)
 	}
+	testutil.MustWaitFor(t, func() bool {
+		types := capture.types()
+		return slices.Contains(types, job.CallbackTypeStart) && slices.Contains(types, job.CallbackTypeExit)
+	}, testutil.WithTimeout(5*time.Second))
 	logs, err := o.client.CoreV1().Pods(testNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: ContainerSidecar}).DoRaw(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -787,7 +795,7 @@ func TestIntegration_CombinedArtifacts(t *testing.T) {
 }
 
 // Native sidecars retry setup failures. The Job deadline must stop those
-// retries and fail the job without ever executing its worker.
+// retries and fail the job without ever releasing the worker shell gate.
 func TestIntegration_CombinedSetupDeadline(t *testing.T) {
 	o, _, teardown := setup(t)
 	defer teardown()
@@ -804,6 +812,7 @@ func TestIntegration_CombinedSetupDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	sawSetupFailure := false
+	sawWaitingWorker := false
 	testutil.MustWaitFor(t, func() bool {
 		// Deadline handling can delete the pod. Observe its history while it
 		// exists instead of requiring retention after the Job fails.
@@ -815,16 +824,22 @@ func TestIntegration_CombinedSetupDeadline(t *testing.T) {
 				}
 			}
 			for _, cs := range pod.Status.ContainerStatuses {
-				if cs.Name == ContainerWorker && (cs.State.Running != nil || (cs.State.Terminated != nil && !cs.State.Terminated.StartedAt.IsZero())) {
-					t.Fatalf("worker ran despite failed setup: %+v", cs)
+				if cs.Name != ContainerWorker {
+					continue
+				}
+				if cs.State.Running != nil {
+					sawWaitingWorker = true
+				}
+				if workloadReleased(pod, &cs) {
+					t.Fatalf("command ran despite failed setup: %+v", cs)
 				}
 			}
 		}
 		s, err := o.Status(t.Context(), id)
 		return err == nil && s.State == job.StateFailed
 	}, testutil.WithTimeout(90*time.Second), testutil.WithInterval(time.Second))
-	if !sawSetupFailure {
-		t.Fatal("expected a sidecar setup failure before the deadline")
+	if !sawSetupFailure || !sawWaitingWorker {
+		t.Fatalf("expected overlapping setup failure and waiting worker: setup=%v worker=%v", sawSetupFailure, sawWaitingWorker)
 	}
 	j, err := o.client.BatchV1().Jobs(testNamespace).Get(t.Context(), jobNameFor(id), metav1.GetOptions{})
 	if err != nil {

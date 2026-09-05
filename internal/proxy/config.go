@@ -11,6 +11,7 @@ package proxy
 
 import (
 	"orchestrator/internal/config"
+	"orchestrator/internal/startup"
 	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
@@ -32,10 +33,10 @@ type Config struct {
 	// pools that declared the capability, and for a direct-mode workload whose
 	// request carries a mount artifact.
 	Mounts bool
-	// ArtifactsJSON is the direct-mode workload's artifacts. Only the mounts in
-	// it concern this sidecar — the rest were materialized by the phase that ran
-	// before it. Empty in pool mode, where the claim carries them instead.
+	// ArtifactsJSON carries direct-mode artifacts. Prepare runs the full setup
+	// phase; legacy pods only establish mounts. Pool claims carry their own.
 	ArtifactsJSON string
+	Prepare       bool // Kubernetes direct pods: prepare all artifacts and publish the shared ready marker.
 
 	Timeout  time.Duration // per-request total → 504
 	MaxDrain time.Duration // cap on drain wait at shutdown
@@ -69,6 +70,7 @@ func LoadConfigFromEnv() Config {
 
 		Mounts:        config.GetEnv(workload.EnvMounts, "") == "true",
 		ArtifactsJSON: config.GetEnv(workload.EnvArtifacts, ""),
+		Prepare:       config.GetEnv(startup.EnvPrepare, "") == "true",
 		Timeout:       time.Duration(config.GetIntEnv(workload.EnvTimeoutSeconds, 300)) * time.Second,
 		MaxDrain:      time.Duration(config.GetIntEnv(workload.EnvMaxDrainSeconds, 90)) * time.Second,
 

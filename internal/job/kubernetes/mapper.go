@@ -96,9 +96,9 @@ func jobNameFor(jobID string) string {
 
 // buildJob maps a job.Request to a batch/v1.Job.
 //
-// Pod template contains one native sidecar that prepares artifacts and mounts,
-// gates the worker with -check-ready, and processes outputs on SIGTERM after
-// the worker exits. Both containers share the workspace emptyDir.
+// One native sidecar prepares artifacts and mounts while the worker waits in
+// its shell gate, then processes outputs on SIGTERM after the worker exits.
+// Both containers share the workspace emptyDir.
 func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *batchv1.Job {
 	workspace := req.Workspace
 	if workspace == "" {
@@ -124,7 +124,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 	// Base workspace mount, shared by all containers. When the job mounts a
 	// squashfs image, the combined sidecar establishes the mount and must propagate
 	// it outward (Bidirectional, which requires a privileged container), and the
-	// worker receives it (HostToContainer). A startup probe gates the worker
+	// worker receives it (HostToContainer). The worker shell gate waits
 	// until artifacts and mounts are ready.
 	sidecarMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
 	workerMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
@@ -141,13 +141,6 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 	if deadline <= 0 {
 		deadline = 1800 // same default as job.Service
 	}
-	startupProbe := &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			Exec: &corev1.ExecAction{Command: []string{"/ko-app/job-sidecar", "-check-ready"}},
-		},
-		PeriodSeconds:    1,
-		FailureThreshold: int32(deadline),
-	}
 	if hasMounts {
 		bidirectional := corev1.MountPropagationBidirectional
 		hostToContainer := corev1.MountPropagationHostToContainer
@@ -161,10 +154,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 		sidecarSecurityContext = &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &runAsRoot}
 	}
 
-	var cmd []string
-	if req.Command != "" {
-		cmd = []string{"/bin/sh", "-c", req.Command}
-	}
+	cmd := gatedCommand(req.Command, workspace, deadline)
 
 	sidecarPull := corev1.PullPolicy(cfg.SidecarImagePullPolicy)
 	workerPull := corev1.PullPolicy(cfg.WorkerImagePullPolicy)
@@ -196,19 +186,25 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 				VolumeMounts:    sidecarMounts,
 				RestartPolicy:   &alwaysRestart,
 				SecurityContext: sidecarSecurityContext,
-				StartupProbe:    startupProbe,
 			},
 		},
 		Containers: []corev1.Container{
 			{
-				Name:            ContainerWorker,
-				Image:           req.Image,
-				ImagePullPolicy: workerPull,
-				Command:         cmd,
-				Env:             workerEnv(req),
-				WorkingDir:      workspace,
-				VolumeMounts:    workerMounts,
-				Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
+				Name:                     ContainerWorker,
+				Image:                    req.Image,
+				ImagePullPolicy:          workerPull,
+				Command:                  cmd,
+				TerminationMessagePath:   executionMarker,
+				TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+				StartupProbe: &corev1.Probe{
+					ProbeHandler:     corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"/bin/sh", "-c", "test -s " + executionMarker}}},
+					PeriodSeconds:    1,
+					FailureThreshold: int32(deadline),
+				},
+				Env:          workerEnv(req),
+				WorkingDir:   workspace,
+				VolumeMounts: workerMounts,
+				Resources:    cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
 			},
 		},
 	}
@@ -241,7 +237,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 }
 
 func jobAnnotations(req *job.Request) map[string]string {
-	annotations := map[string]string{}
+	annotations := map[string]string{annotationStartupGate: startupGateVersion}
 	if req.Callback != nil && req.Callback.URL != "" {
 		annotations[AnnotationCallbackURL] = req.Callback.URL
 		if req.Callback.Key != "" {

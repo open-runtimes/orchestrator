@@ -59,7 +59,7 @@ Each host is owned by exactly one deployment — claiming a host another deploym
   "id": "web",                    // required — RFC-1123 label, ≤63 chars; part of object names
   "image": "ghcr.io/acme/web:v3", // required; warm capacity is matched transparently
   "port": 8080,                   // required — the container port serving HTTP
-  "command": "server --flag",     // optional — overrides the image entrypoint
+  "command": "server --flag",     // required on Kubernetes; overrides the image entrypoint
   "cpu": 1,                       // cores (limit); default 1
   "memory": 512,                  // MB (limit); default 512
   "environment": {"KEY": "value"},
@@ -98,13 +98,28 @@ There is no pool field in this API. On Kubernetes, the operator may keep warm po
 
 Probes: the **readiness** probe is run by the orchestrator's sidecar and honors sub-second periods — it gates whether a replica receives traffic. Liveness and startup probes are kubelet-run at whole-second granularity. Omitting `path` makes a probe a TCP connect check.
 
-Artifacts use the same schema as [jobs](jobs.md#artifacts) and run before the workload starts serving, materialized by an `artifact-pre` init container.
+Kubernetes revision pods use the same default shell startup contract as jobs:
+`command` is required, and images must provide `/bin/sh`, fractional `sleep`, and
+`date +%s`. The worker starts alongside the resident workload sidecar, waits for
+`<workspace>/.sidecar/ready` at 50 ms intervals, then executes the supplied command.
+The sidecar prepares artifacts and mounts before publishing that marker. There is
+no artifact init container or sidecar startup probe on the direct revision path.
+Preparation and the gate are bounded to 1800 seconds; the revision's ready deadline
+still bounds rollout progress. Readiness remains tied to the application serving.
+A default worker startup probe observes gate release without delaying execution;
+custom startup probes must budget for preparation as well as application startup.
+The gate reserves `/dev/orchestrator-started`, as described in [jobs](jobs.md).
 
-A [`mount`](jobs.md#mount-artifact) works too — a tar archive, squashfs image, or erofs image exposed through one mount lifecycle, optionally writable over a tmpfs overlay. Tar is extracted into a private lower directory first; the image formats mount in place. It is handled by the revision's sidecar rather than that init container, because the resulting mount has to be held for as long as the workload reads from it and an init container exits:
+Artifacts use the same schema as [jobs](jobs.md#artifacts). Completed setup is
+recorded so a restarted sidecar does not overwrite files the workload has changed.
+Prewarmed revisions retain their existing FIFO claim gate: the resident sidecar
+prepares artifacts and mounts before releasing the already-running worker.
+
+A [`mount`](jobs.md#mount-artifact) works too — a tar archive, squashfs image, or erofs image exposed through one mount lifecycle, optionally writable over a tmpfs overlay. Tar is extracted into a private lower directory first; the image formats mount in place. The resident sidecar owns both preparation and the mount lifetime:
 
 ```jsonc
 {
-  "id": "api", "image": "app:v1", "port": 8080,
+  "id": "api", "image": "app:v1", "port": 8080, "command": "server",
   "artifacts": [
     {"id": "img",  "type": "download", "in": "s3://acme/assets.erofs", "out": "assets.erofs"},
     {"id": "tree", "type": "mount", "in": "assets.erofs", "out": "assets", "depends": "img"}

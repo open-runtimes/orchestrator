@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/job"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,6 +176,10 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // The job's watcher will be spawned automatically by the leader's informer
 // when K8s creates the owning Pod.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
+	if strings.TrimSpace(req.Command) == "" {
+		return apperrors.Validation("command", "command is required for Kubernetes jobs; the worker image must provide /bin/sh, sleep with fractional seconds, and date")
+	}
+
 	jobSpec := buildJob(req, o.cfg, o.sidecarImage)
 	if _, err := o.client.BatchV1().Jobs(o.namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {

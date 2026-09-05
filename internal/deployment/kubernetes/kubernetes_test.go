@@ -687,3 +687,16 @@ func reconcileAll(t *testing.T, o *Orchestrator) {
 	t.Helper()
 	o.reconcileRollouts(t.Context())
 }
+
+func TestApply_RequiresCommand(t *testing.T) {
+	o, cs := newTestOrchestrator(t)
+	req := testRequest()
+	req.Command = " \t"
+	_, err := o.Apply(t.Context(), req)
+	if !errors.Is(err, apperrors.ErrValidation) || !strings.Contains(err.Error(), "command is required") {
+		t.Fatalf("expected command validation: %v", err)
+	}
+	if len(cs.Actions()) != 0 {
+		t.Fatal("missing command must fail before Kubernetes writes")
+	}
+}

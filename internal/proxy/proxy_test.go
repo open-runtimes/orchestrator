@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/startup"
 	"orchestrator/internal/workload"
 	"os"
 	"path/filepath"
@@ -380,5 +381,103 @@ func TestDirectMode_NothingToMountIsReadyImmediately(t *testing.T) {
 	p := startProxy(t, testConfig(backend.Listener.Addr().String()))
 	if status, _ := get(t, localURL(t, p.AdminAddr(), workload.MountsReadyPath)); status != http.StatusOK {
 		t.Errorf("/mounts-ready with no mounts: got %d, want 200", status)
+	}
+}
+
+func TestDirectPrepare_GatesUntilDownloadAndMount(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-release:
+			_, _ = w.Write([]byte("image"))
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() { cancel(); source.Close() }()
+	cfg := testConfig("127.0.0.1:1")
+	cfg.Prepare, cfg.Mounts, cfg.Workspace = true, true, t.TempDir()
+	arts, err := artifact.MarshalArtifacts([]artifact.Artifact{
+		&artifact.Download{ID: "image", In: source.URL, Out: "x.erofs"},
+		&artifact.Mount{ID: "mount", In: "x.erofs", Out: "tree", Depends: "image"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ArtifactsJSON = string(arts)
+	p := New(cfg)
+	m := &fakeMounter{}
+	p.mounter = m
+	defer p.release()
+	done := make(chan error, 1)
+	go func() { done <- p.mount(ctx) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("download not started")
+	}
+	if p.Ready() {
+		t.Fatal("preparing sidecar must not admit traffic")
+	}
+	if _, err := os.Stat(startup.ReadyMarkerPath(cfg.Workspace)); !os.IsNotExist(err) {
+		t.Fatal("gate released during download")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if count, _ := m.counts(); count != 1 {
+		t.Fatal("mount not established")
+	}
+	if _, err := os.Stat(startup.ReadyMarkerPath(cfg.Workspace)); err != nil {
+		t.Fatal("missing shared ready marker", err)
+	}
+}
+
+func TestDirectPrepare_RestartSkipsCompletedArtifacts(t *testing.T) {
+	cfg := testConfig("127.0.0.1:1")
+	cfg.Prepare, cfg.Workspace = true, t.TempDir()
+	cfg.ArtifactsJSON = `[{"type":"write","id":"input","in":"original","out":"input"}]`
+	if err := New(cfg).mount(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfg.Workspace, "input")
+	if err := os.WriteFile(path, []byte("worker edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(cfg).mount(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "worker edit" {
+		t.Fatalf("restart overwrote workload data: %q %v", contents, err)
+	}
+}
+
+func TestDirectPrepare_EmptyAndFailedArtifacts(t *testing.T) {
+	for _, tc := range []struct {
+		name, artifacts string
+		fail            bool
+	}{
+		{name: "empty"},
+		{name: "failed", artifacts: `[{"type":"write","id":"file","in":"x","out":"file"},{"type":"write","id":"child","in":"x","out":"file/child","depends":"file"}]`, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig("127.0.0.1:1")
+			cfg.Prepare, cfg.Workspace, cfg.ArtifactsJSON = true, t.TempDir(), tc.artifacts
+			err := New(cfg).mount(t.Context())
+			if (err != nil) != tc.fail {
+				t.Fatalf("unexpected preparation result: %v", err)
+			}
+			_, err = os.Stat(startup.ReadyMarkerPath(cfg.Workspace))
+			if tc.fail && !os.IsNotExist(err) {
+				t.Fatal("failed preparation published readiness")
+			}
+			if !tc.fail && err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

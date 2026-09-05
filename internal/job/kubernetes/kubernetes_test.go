@@ -90,7 +90,7 @@ func TestRun_DuplicateIDConflict(t *testing.T) {
 	o, _ := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 
-	req := &job.Request{ID: "dup", Image: "alpine:latest"}
+	req := &job.Request{ID: "dup", Image: "alpine:latest", Command: "true"}
 	if err := o.Run(context.Background(), req); err != nil {
 		t.Fatalf("first Run: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestStop_DeletesJobAndReleases(t *testing.T) {
 	o, cs := newTestOrchestrator(t, noopWatcher{})
 	defer o.Close()
 
-	req := &job.Request{ID: "stop-me", Image: "alpine:latest"}
+	req := &job.Request{ID: "stop-me", Image: "alpine:latest", Command: "true"}
 	if err := o.Run(context.Background(), req); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestList_ReturnsAllEntries(t *testing.T) {
 	defer o.Close()
 
 	for _, id := range []string{"a", "b", "c"} {
-		if err := o.Run(context.Background(), &job.Request{ID: id, Image: "alpine:latest"}); err != nil {
+		if err := o.Run(context.Background(), &job.Request{ID: id, Image: "alpine:latest", Command: "true"}); err != nil {
 			t.Fatalf("Run(%s): %v", id, err)
 		}
 	}
@@ -547,5 +547,53 @@ func TestStatus_DeadlineWithoutPod(t *testing.T) {
 	}
 	if s.State != job.StateFailed || s.Error != "DeadlineExceeded" {
 		t.Fatalf("expected retained deadline reason without a pod, got %+v", s)
+	}
+}
+
+func TestRun_RequiresCommand(t *testing.T) {
+	for _, command := range []string{"", " \t\n"} {
+		o, cs := newTestOrchestrator(t, noopWatcher{})
+		err := o.Run(t.Context(), &job.Request{ID: "missing", Image: "custom:latest", Command: command})
+		o.Close()
+		if err == nil || !strings.Contains(err.Error(), "command is required") {
+			t.Fatalf("expected command validation, got %v", err)
+		}
+		if len(cs.Actions()) != 0 {
+			t.Fatal("invalid command must fail before touching Kubernetes")
+		}
+	}
+}
+
+func TestStatus_GatedWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		released, terminated bool
+		message              string
+		want                 string
+	}{
+		{name: "waiting", want: job.StateAccepted},
+		{name: "executing", released: true, want: job.StateRunning},
+		{name: "fast command", terminated: true, message: "orchestrator-started:1700000000", want: job.StateCompleted},
+		{name: "gate failed", terminated: true, want: job.StateFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := podWithWorkerRunning()
+			pod.Annotations = map[string]string{annotationStartupGate: startupGateVersion}
+			pod.Labels = map[string]string{LabelJobID: "gated"}
+			cs := &pod.Status.ContainerStatuses[0]
+			cs.Started = &tc.released
+			if tc.terminated {
+				cs.State = corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Message: tc.message}}
+			}
+			client := fake.NewClientset(pod)
+			j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{LabelJobID: "gated"}}}
+			s, err := deriveStatus(t.Context(), client, "test", j)
+			if err != nil || s.State != tc.want {
+				t.Fatalf("got %+v %v; want %s", s, err, tc.want)
+			}
+			if strings.Contains(s.Error, executionPrefix) {
+				t.Fatal("execution metadata leaked into error")
+			}
+		})
 	}
 }
