@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -366,12 +367,13 @@ func TestRunner_ReportsArtifact(t *testing.T) {
 
 // fakeMounter records Mount/Unmount calls without touching the kernel.
 type fakeMounter struct {
-	mu        sync.Mutex
-	sources   []string
-	opts      []MountOpts
-	mounted   []string
-	unmounted []string
-	active    map[string]bool
+	mu         sync.Mutex
+	sources    []string
+	opts       []MountOpts
+	mounted    []string
+	unmounted  []string
+	active     map[string]bool
+	unmountErr error
 }
 
 func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
@@ -390,6 +392,9 @@ func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
 func (f *fakeMounter) Unmount(target string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.unmountErr != nil {
+		return f.unmountErr
+	}
 	f.unmounted = append(f.unmounted, target)
 	if f.active != nil {
 		f.active[target] = false
@@ -528,7 +533,11 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			if err := runner.Mount(t.Context(), []artifact.Artifact{mount}); err != nil {
 				t.Fatalf("Mount() error = %v", err)
 			}
-			defer runner.Release()
+			defer func() {
+				if err := runner.Release(); err != nil {
+					t.Error(err)
+				}
+			}()
 
 			lower := filepath.Join(workspace, "runtime", ".lower")
 			if _, err := os.Stat(filepath.Join(lower, "stale")); !os.IsNotExist(err) {
@@ -871,5 +880,48 @@ func TestRunner_RestartSkipsCompletedArtifacts(t *testing.T) {
 	}
 	if content, err := os.ReadFile(filepath.Join(tmpDir, "code.tar.gz")); err != nil || string(content) != "archive" {
 		t.Fatalf("downloaded artifact missing after restart: %q, %v", content, err)
+	}
+}
+
+func TestRunnerCleanupFailureCanBeRetried(t *testing.T) {
+	for _, mode := range []string{"combined", "post"} {
+		t.Run(mode, func(t *testing.T) {
+			workspace := t.TempDir()
+			if err := os.WriteFile(filepath.Join(workspace, "data.sqfs"), []byte("hsqs"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("unmount denied")
+			mounter := &fakeMounter{unmountErr: failure}
+			signal, done := triggerSignal()
+			done()
+			runner := NewRunner("cleanup", workspace, 0, artifact.DefaultRegistry(), WithMounter(mounter), WithSignalFunc(signal))
+			artifacts := []artifact.Artifact{&artifact.Mount{ID: "code", In: "data.sqfs", Out: "code"}}
+			var err error
+			if mode == "combined" {
+				err = runner.Run(t.Context(), artifacts)
+			} else {
+				err = runner.RunPost(t.Context(), artifacts)
+			}
+			if !errors.Is(err, failure) {
+				t.Fatalf("shutdown should fail: %v", err)
+			}
+			target := filepath.Join(workspace, "code")
+			if !mounter.active[target] {
+				t.Fatal("fixture must still have a mounted volume")
+			}
+			mounter.unmountErr = nil
+			if err := runner.Release(); err != nil {
+				t.Fatal(err)
+			}
+			if mounter.active[target] || len(mounter.unmounted) != 1 {
+				t.Fatal("retry did not release the retained mount")
+			}
+			if err := runner.Release(); err != nil {
+				t.Fatal(err)
+			}
+			if len(mounter.unmounted) != 1 {
+				t.Fatal("already released mount was unmounted twice")
+			}
+		})
 	}
 }

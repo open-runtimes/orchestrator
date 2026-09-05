@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -221,9 +222,9 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 		// The worker will never be admitted, so the mounts (and any sync
 		// loops) established above have no consumer — tear them down rather
 		// than leak them past this incarnation.
-		r.Release()
+		cleanupErr := r.Release()
 		logger.Error("Failed to write ready marker", "error", err)
-		return err
+		return errors.Join(err, cleanupErr)
 	}
 
 	// A bounded job's wait carries the job deadline — if the completion signal
@@ -250,7 +251,9 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
 
-	r.Release()
+	if err := r.Release(); err != nil {
+		return err
+	}
 	logger.Info("Sidecar completed")
 	return nil
 }
@@ -310,14 +313,12 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 			continue
 		}
 		if err := r.restoreDelta(ctx, m); err != nil {
-			r.unmountAll()
-			return fmt.Errorf("mount %s: %w", m.ID, err)
+			return errors.Join(fmt.Errorf("mount %s: %w", m.ID, err), r.unmountAll())
 		}
 	}
 
 	if err := r.establishMounts(ctx, mounts); err != nil {
-		r.unmountAll() // roll back whatever was established before the failure
-		return err
+		return errors.Join(err, r.unmountAll()) // roll back partially established mounts
 	}
 
 	// Now that the overlay is up, keep pushing what the workload changes. Stops
@@ -339,11 +340,11 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 // The flush is bounded by the caller's shutdown budget. Missing it costs the
 // last sync interval rather than the session, which is the whole reason the sync
 // runs continuously.
-func (r *Runner) Release() {
+func (r *Runner) Release() error {
 	ctx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
 	defer cancel()
 	r.StopSync(ctx)
-	r.unmountAll()
+	return r.unmountAll()
 }
 
 // RunPost waits for the worker to finish, then processes post-job artifacts.
@@ -368,9 +369,9 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 		}
 		cancel()
 		if err != nil {
-			r.unmountAll() // roll back any mounts established before the failure
+			cleanupErr := r.unmountAll() // roll back partially established mounts
 			logger.Error("Mount setup failed, aborting job", "error", err)
-			return fmt.Errorf("mount setup failed: %w", err)
+			return errors.Join(fmt.Errorf("mount setup failed: %w", err), cleanupErr)
 		}
 		if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
 			logger.Error("Failed to write mounts-ready marker", "error", err)
@@ -391,7 +392,9 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
 
-	r.unmountAll()
+	if err := r.unmountAll(); err != nil {
+		return err
+	}
 	logger.Info("Sidecar post-mode completed")
 	return nil
 }
@@ -532,14 +535,19 @@ func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lo
 	return lower, nil
 }
 
-// unmountAll tears down established mounts in reverse order (best effort).
-func (r *Runner) unmountAll() {
+// unmountAll tears down mounts in reverse order. Retain failed cleanup so a
+// caller can retry, and never report a successful shutdown when mounts remain.
+func (r *Runner) unmountAll() error {
+	var errs []error
 	for i := len(r.mounted) - 1; i >= 0; i-- {
 		if err := r.mounter.Unmount(r.mounted[i]); err != nil {
 			slog.With("target", r.mounted[i], "error", err).Warn("Failed to unmount")
+			errs = append(errs, err)
+			continue
 		}
+		r.mounted = append(r.mounted[:i], r.mounted[i+1:]...)
 	}
-	r.mounted = nil
+	return errors.Join(errs...)
 }
 
 // processArtifacts processes artifacts in dependency order.

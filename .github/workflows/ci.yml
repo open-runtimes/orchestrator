@@ -54,6 +54,11 @@ jobs:
       - name: Run tests
         run: go test -race -coverprofile=coverage.out ./...
 
+      - name: Test kernel mount cleanup
+        run: |
+          go test -c ./internal/sidecar -o /tmp/sidecar.test
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/sidecar.test -test.run TestKernelMounterBusyCleanup -test.v
+
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:

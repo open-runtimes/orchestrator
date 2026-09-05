@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -179,7 +180,9 @@ func (p *Proxy) awaitShutdown(ctx context.Context) {
 // behind survives the pod and leaks on the node — this is not optional.
 func (p *Proxy) release() {
 	if r := p.mounts.Load(); r != nil {
-		r.Release()
+		if err := r.Release(); err != nil {
+			slog.Error("Failed to release workload mounts", "error", err)
+		}
 	}
 }
 
