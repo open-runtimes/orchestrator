@@ -58,21 +58,52 @@ func (kernelMounter) Mount(source, target string, opts MountOpts) error {
 // mount, so unmounting it fails harmlessly and the directory is removed as
 // before. The auto-clear loop device is released once the squashfs mount goes
 // away.
-func (kernelMounter) Unmount(target string) error {
-	if err := unix.Unmount(target, 0); err != nil {
-		return fmt.Errorf("unmount %s: %w", target, err)
+func (m kernelMounter) Unmount(target string) error {
+	// Native sidecars may receive only two seconds after the worker exhausts
+	// the pod's grace period. Share one retry budget across all mount layers.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	mounted, err := m.IsMounted(target)
+	if err != nil {
+		return err
 	}
-	scratch := overlayScratch(target)
-	if _, err := os.Stat(scratch); err == nil {
-		_ = unix.Unmount(scratch, 0)
-		_ = os.RemoveAll(scratch)
+	// A previous attempt may already have removed the artifact overlay. Never
+	// unmount the underlying Kubernetes volume when retrying partial cleanup.
+	if mounted {
+		if err := unmountArtifactPath(target, deadline); err != nil {
+			return err
+		}
 	}
-	lower := overlayLower(target)
-	if _, err := os.Stat(lower); err == nil {
-		_ = unix.Unmount(lower, 0)
-		_ = os.RemoveAll(lower)
+	for _, path := range []string{overlayScratch(target), overlayLower(target)} {
+		if err := unmountArtifactPath(path, deadline); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove mount directory %s: %w", path, err)
+		}
 	}
 	return nil
+}
+
+// Busy references can belong to host processes because artifact mounts propagate
+// out of the sidecar. Detach after a short retry window: existing references
+// remain valid until closed, but cannot pin the mount in kubelet's volume tree.
+func unmountArtifactPath(path string, deadline time.Time) error {
+	for {
+		err := unix.Unmount(path, 0)
+		if err == nil || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("unmount %s: %w", path, err)
+		}
+		if time.Until(deadline) <= 0 {
+			if err := unix.Unmount(path, unix.MNT_DETACH); err != nil {
+				return fmt.Errorf("detach busy mount %s: %w", path, err)
+			}
+			return nil
+		}
+		time.Sleep(min(50*time.Millisecond, time.Until(deadline)))
+	}
 }
 
 // IsMounted reports whether an artifact mount is stacked at target. Unlike a

@@ -150,8 +150,7 @@ func (p *Proxy) claim(ctx context.Context, req workload.ClaimRequest) error {
 	// runs exactly once. If it already ran, undo what we just did rather than
 	// leave a propagated mount on the node.
 	if p.closing.Load() {
-		runner.Release()
-		return errors.New("pod began shutting down while the claim was materializing")
+		return errors.Join(errors.New("pod began shutting down while the claim was materializing"), runner.Release())
 	}
 
 	if err := p.pool.signalShim(ctx, workload.ShimExec{
