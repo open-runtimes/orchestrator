@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/sidecar"
+	"orchestrator/internal/startup"
 	"orchestrator/internal/workload"
 	"strconv"
 	"sync"
@@ -40,8 +41,8 @@ type Proxy struct {
 	// caller a workload about to vanish, and could leave a mount behind that
 	// release had already looked for.
 	closing atomic.Bool
-	// mountsReady gates the workload: the kubelet holds it until this sidecar's
-	// startup probe passes, which it does once the mounts are established.
+	// mountsReady keeps readiness closed until direct preparation finishes.
+	// The mounts-ready endpoint also remains available for legacy pod probes.
 	mountsReady atomic.Bool
 
 	// integral accumulates concurrency-seconds (∫ inFlight dt) as a monotonic
@@ -205,10 +206,8 @@ func (p *Proxy) Start(ctx context.Context) error {
 	go func() { _ = p.data.Serve(dataLn) }()
 	go func() { _ = p.admin.Serve(adminLn) }()
 
-	// Mount before reporting mounts-ready, and only then does the kubelet start
-	// the workload — the admin listener is already answering, so the startup
-	// probe sees 503 until this returns. Pool mode mounts on the claim instead,
-	// which is its own barrier.
+	// Direct pods prepare the workspace while the worker shell waits. Legacy
+	// pods only mount here; pools prepare on claim before releasing the FIFO.
 	return p.mount(ctx)
 }
 
@@ -227,10 +226,32 @@ func (p *Proxy) newRunner(id string) *sidecar.Runner {
 	return sidecar.NewRunner(id, p.cfg.Workspace, timeoutSeconds, artifact.DefaultRegistry(), opts...)
 }
 
-// mount establishes a direct-mode workload's image mounts. Failing here fails
-// Start: the workload must not run without them, and the pod's restart is the
-// retry.
+// mount prepares a direct workload, or establishes mounts for legacy pods.
+// Setup failure fails Start; the worker gate stays closed while the sidecar
+// retries through its native-container restart policy.
 func (p *Proxy) mount(ctx context.Context) error {
+	if p.cfg.Prepare && p.pool == nil {
+		raw := p.cfg.ArtifactsJSON
+		if raw == "" {
+			raw = "[]"
+		}
+		artifacts, err := artifact.DefaultRegistry().Unmarshal([]byte(raw))
+		if err != nil {
+			return fmt.Errorf("decode artifacts: %w", err)
+		}
+		opts := []sidecar.Option{sidecar.WithS3Credentials(p.cfg.S3)}
+		if p.mounter != nil {
+			opts = append(opts, sidecar.WithMounter(p.mounter))
+		}
+		runner := sidecar.NewRunner("direct", p.cfg.Workspace, int(startup.TimeoutSeconds), artifact.DefaultRegistry(), opts...)
+		if err := runner.Prepare(ctx, artifacts); err != nil {
+			return err
+		}
+		p.mounts.Store(runner)
+		p.mountsReady.Store(true)
+		return nil
+	}
+
 	if p.cfg.ArtifactsJSON == "" {
 		p.mountsReady.Store(true)
 		return nil
@@ -257,6 +278,9 @@ func (p *Proxy) mount(ctx context.Context) error {
 // there is nothing to probe) it reports warm-readiness instead: true unless
 // the pod is poisoned. See handleReady for the full inversion story.
 func (p *Proxy) Ready() bool {
+	if p.cfg.Prepare && p.pool == nil && !p.mountsReady.Load() {
+		return false
+	}
 	if b := p.bind.Load(); b != nil {
 		return b.prober.Ready()
 	}

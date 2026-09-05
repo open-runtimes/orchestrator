@@ -3,6 +3,7 @@ package sidecar
 import (
 	"errors"
 	"fmt"
+	"orchestrator/internal/startup"
 	"os"
 	"path/filepath"
 )
@@ -21,12 +22,12 @@ type marker string
 
 const (
 	// markerDir is the runner-owned directory inside the shared workspace.
-	markerDir = ".sidecar"
+	markerDir = startup.ReadyMarkerDir
 
 	// markerReady gates the worker in the combined flow: pre-job artifacts
 	// are processed and mounts are established. Docker health checks and
 	// Kubernetes worker shell gates poll it.
-	markerReady marker = "ready"
+	markerReady marker = startup.ReadyMarkerName
 
 	// markerMountsReady gates the worker in the split flow: the post sidecar
 	// has established every artifact mount. Polled via -check-mounts.

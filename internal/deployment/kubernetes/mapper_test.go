@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/deployment"
+	"orchestrator/internal/startup"
 	"orchestrator/internal/volume"
 	"orchestrator/internal/workload"
 	"reflect"
@@ -195,7 +196,7 @@ func TestBuildRevision_Worker(t *testing.T) {
 	if w.Image != "nginx:1.27" || w.ImagePullPolicy != corev1.PullIfNotPresent {
 		t.Errorf("image/pull: got %s/%s", w.Image, w.ImagePullPolicy)
 	}
-	if !reflect.DeepEqual(w.Command, []string{"/bin/sh", "-c", "nginx -g 'daemon off;'"}) {
+	if !reflect.DeepEqual(w.Command, startup.Command(req.Command, workspaceOf(req), startup.TimeoutSeconds)) {
 		t.Errorf("Command: got %v", w.Command)
 	}
 	if w.WorkingDir != "/workspace" {
@@ -327,15 +328,15 @@ func TestBuildPDB_Shape(t *testing.T) {
 	}
 }
 
-func TestBuildRevision_WorkerNoCommandNoResources(t *testing.T) {
+func TestBuildRevision_WorkerNoResources(t *testing.T) {
 	t.Parallel()
-	req := &deployment.Request{ID: "bare", Image: "nginx", Port: 80}
+	req := &deployment.Request{ID: "bare", Image: "nginx", Port: 80, Command: "nginx"}
 
 	d := buildRevision(req, Config{}, "bare-00001")
 
 	w := d.Spec.Template.Spec.Containers[0]
-	if w.Command != nil {
-		t.Errorf("Command: want nil (image entrypoint), got %v", w.Command)
+	if !reflect.DeepEqual(w.Command, startup.Command(req.Command, workspaceOf(req), startup.TimeoutSeconds)) {
+		t.Errorf("worker must use the default shell gate: %v", w.Command)
 	}
 	if len(w.Resources.Limits) != 0 || len(w.Resources.Requests) != 0 {
 		t.Errorf("Resources: want empty, got %+v", w.Resources)
@@ -379,8 +380,8 @@ func TestBuildRevision_KubeletProbes(t *testing.T) {
 func TestBuildRevision_NoProbes(t *testing.T) {
 	t.Parallel()
 	w := buildRevision(testRequest(), Config{}, "web-00001").Spec.Template.Spec.Containers[0]
-	if w.LivenessProbe != nil || w.StartupProbe != nil {
-		t.Errorf("want no kubelet probes, got liveness=%+v startup=%+v", w.LivenessProbe, w.StartupProbe)
+	if w.LivenessProbe != nil || w.StartupProbe == nil || w.StartupProbe.Exec == nil {
+		t.Errorf("want only the execution-marker startup probe, got liveness=%+v startup=%+v", w.LivenessProbe, w.StartupProbe)
 	}
 }
 
@@ -415,25 +416,17 @@ func TestBuildRevision_Artifacts(t *testing.T) {
 
 	spec := buildRevision(req, Config{SidecarImage: "sidecar:latest", JobSidecarImage: "artifact:latest"}, "web-00001").Spec.Template.Spec
 
-	if len(spec.InitContainers) != 2 {
-		t.Fatalf("InitContainers: want [artifact-pre proxy], got %d", len(spec.InitContainers))
+	if len(spec.InitContainers) != 1 {
+		t.Fatalf("want one combined proxy, got %d", len(spec.InitContainers))
 	}
 	pre := spec.InitContainers[0]
-	if pre.Name != ContainerArtifactPre || spec.InitContainers[1].Name != ContainerProxy {
-		t.Fatalf("init order: got %s, %s", pre.Name, spec.InitContainers[1].Name)
+	if pre.Name != ContainerProxy || pre.Image != "sidecar:latest" || pre.RestartPolicy == nil || pre.StartupProbe != nil {
+		t.Fatalf("expected native proxy without a startup barrier: %+v", pre)
 	}
-	if pre.Image != "artifact:latest" {
-		t.Errorf("artifact-pre image: want the job-sidecar artifact image, got %s", pre.Image)
+	if !envHas(pre.Env, startup.EnvPrepare, "true") || !envHas(pre.Env, "SHARED_VOLUME_PATH", "/workspace") {
+		t.Fatal("combined setup must receive the workspace")
 	}
-	if pre.RestartPolicy != nil {
-		t.Errorf("artifact-pre RestartPolicy: want nil (plain init), got %v", *pre.RestartPolicy)
-	}
-	if !reflect.DeepEqual(pre.Args, []string{"-mode=pre"}) {
-		t.Errorf("Args: got %v", pre.Args)
-	}
-	if !envHas(pre.Env, "JOB_ID", "dep-web") || !envHas(pre.Env, "SHARED_VOLUME_PATH", "/workspace") {
-		t.Errorf("env missing JOB_ID/SHARED_VOLUME_PATH: %v", pre.Env)
-	}
+
 	artifactsJSON := envValue(pre.Env, "ARTIFACTS_JSON")
 	if !strings.Contains(artifactsJSON, `"type"`) || !strings.Contains(artifactsJSON, "index.html") {
 		t.Errorf("ARTIFACTS_JSON: got %s", artifactsJSON)
@@ -448,8 +441,8 @@ func TestBuildRevision_SecurityFloor(t *testing.T) {
 
 	spec := buildRevision(req, cfg, "web-00001").Spec.Template.Spec
 	all := append(spec.InitContainers, spec.Containers...)
-	if len(all) != 3 {
-		t.Fatalf("want 3 containers, got %d", len(all))
+	if len(all) != 2 {
+		t.Fatalf("want 2 containers, got %d", len(all))
 	}
 
 	for _, c := range all {
@@ -564,8 +557,8 @@ func TestBuildRevision_MountCapabilityIsPerRequest(t *testing.T) {
 	if workspaceMountOf(t, sidecar).MountPropagation != nil {
 		t.Error("no propagation without mounts")
 	}
-	if envOf(sidecar, workload.EnvArtifacts) != "" || envOf(sidecar, workload.EnvMounts) != "" {
-		t.Error("the sidecar has no business knowing about artifacts it will not mount")
+	if envOf(sidecar, startup.EnvPrepare) != "true" || envOf(sidecar, workload.EnvMounts) != "" {
+		t.Error("every direct revision prepares its workspace; only mount requests gain mount capability")
 	}
 
 	mounting := buildRevision(base(
@@ -584,12 +577,10 @@ func TestBuildRevision_MountCapabilityIsPerRequest(t *testing.T) {
 	if p := workspaceMountOf(t, worker).MountPropagation; p == nil || *p != corev1.MountPropagationHostToContainer {
 		t.Errorf("worker propagation: got %v", p)
 	}
-	// The kubelet holds the main containers until a native sidecar's startup
-	// probe passes, which is the only barrier available here.
-	if sidecar.StartupProbe == nil || sidecar.StartupProbe.HTTPGet == nil ||
-		sidecar.StartupProbe.HTTPGet.Path != workload.MountsReadyPath {
-		t.Errorf("the workload must be gated on mounts being ready, got %+v", sidecar.StartupProbe)
+	if sidecar.StartupProbe != nil {
+		t.Fatal("sidecar must prepare mounts in parallel with the worker gate")
 	}
+
 	if envOf(sidecar, workload.EnvMounts) != "true" {
 		t.Error("the sidecar must be told it may mount")
 	}

@@ -55,7 +55,7 @@ func TestApply_RuntimeClassChecked(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	o, cs := newTestOrchestrator(t)
-	req := &deployment.Request{ID: "web", Image: "nginx:1.27", Hosts: []string{"web.example.com"}, Port: 8080, RuntimeClass: deployment.RuntimeClassGvisor}
+	req := &deployment.Request{ID: "web", Image: "nginx:1.27", Command: "nginx", Hosts: []string{"web.example.com"}, Port: 8080, RuntimeClass: deployment.RuntimeClassGvisor}
 
 	// Missing RuntimeClass → validation error, nothing minted.
 	if _, err := o.Apply(ctx, req); !errors.Is(err, apperrors.ErrValidation) {

@@ -8,6 +8,7 @@ import (
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/kube"
 	revisionapi "orchestrator/internal/revision"
+	"orchestrator/internal/startup"
 	"orchestrator/internal/workload"
 	"slices"
 	"strconv"
@@ -34,9 +35,8 @@ const (
 	// can tell the Pod is newer than its view and leave it alone.
 	AnnotationRevisionGeneration = "deployment.revision-generation"
 
-	ContainerWorker      = "worker"
-	ContainerArtifactPre = "artifact-pre"
-	ContainerProxy       = "proxy"
+	ContainerWorker = "worker"
+	ContainerProxy  = "proxy"
 
 	VolumeWorkspace = "workspace"
 	VolumeTmp       = "tmp"
@@ -140,11 +140,7 @@ func buildService(id, revision string) *corev1.Service {
 func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.PodSpec {
 	autoMount := false
 
-	var initContainers []corev1.Container
-	if len(req.Artifacts) > 0 {
-		initContainers = append(initContainers, artifactPreContainer(req, cfg))
-	}
-	initContainers = append(initContainers, proxyContainer(req, cfg))
+	initContainers := []corev1.Container{proxyContainer(req, cfg)}
 
 	podVolumes, _ := kube.PersistentVolumes(req.Volumes)
 
@@ -183,34 +179,6 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 	return spec
 }
 
-// artifactPreContainer materializes the request's artifacts into the shared
-// workspace before the proxy and worker start. Plain init container: runs to
-// completion first.
-func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container {
-	workspace := workspaceOf(req)
-	env := []corev1.EnvVar{
-		{Name: "JOB_ID", Value: objectNameFor(req.ID)},
-		{Name: config.EnvSharedVolume, Value: workspace},
-	}
-	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
-	// needs to unmarshal them back into concrete types.
-	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
-		env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
-	}
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
-		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
-	}
-	return corev1.Container{
-		Name:            ContainerArtifactPre,
-		Image:           cfg.JobSidecarImage,
-		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
-		Args:            []string{"-mode=pre"},
-		Env:             env,
-		VolumeMounts:    []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}},
-		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
-	}
-}
-
 // proxyContainer is the workload-sidecar: a native sidecar (init container
 // with restartPolicy Always) reverse-proxying traffic to the worker. Its
 // kubelet readiness probe (GET /ready on the admin port) is what admits the
@@ -237,31 +205,10 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 			PeriodSeconds:    1,
 			FailureThreshold: 3,
 		},
-		StartupProbe:    mountsReadyProbe(req),
 		RestartPolicy:   &alwaysRestart,
 		Resources:       kube.SidecarResources(),
 		VolumeMounts:    []corev1.VolumeMount{workspaceMount(req, workspace, corev1.MountPropagationBidirectional)},
 		SecurityContext: sidecarSecurityContext(req, cfg),
-	}
-}
-
-// mountsReadyProbe holds the workload until the sidecar has established its
-// mounts. A native sidecar's startup probe is what the kubelet waits on before
-// starting the main containers, so this is the barrier — nothing for a request
-// with no mounts, which starts as before.
-func mountsReadyProbe(req *deployment.Request) *corev1.Probe {
-	if !artifact.HasMount(req.Artifacts) {
-		return nil
-	}
-	return &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{
-				Path: workload.MountsReadyPath,
-				Port: intstr.FromInt32(workload.DefaultAdminPort),
-			},
-		},
-		PeriodSeconds:    1,
-		FailureThreshold: 300, // mounting waits for its image; the phase before it produced one
 	}
 }
 
@@ -299,17 +246,16 @@ func proxyEnv(req *deployment.Request) []corev1.EnvVar {
 	}
 	// Before the readiness early-return below: a revision that mounts must be
 	// told so whether or not it configures probes, or its sidecar never mounts,
-	// its startup probe never passes, and the workload never starts.
+	// its worker gate never passes, and the workload never starts.
 	if artifact.HasMount(req.Artifacts) {
 		env = append(env, corev1.EnvVar{Name: workload.EnvMounts, Value: "true"})
 	}
-	// The sidecar needs the artifacts for the phase that is its own: establishing
-	// a mount before the worker starts, and syncing its delta afterwards. The
-	// artifact-pre init container handles the rest.
-	if artifact.HasMount(req.Artifacts) {
-		if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
-			env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
-		}
+
+	env = append(env, corev1.EnvVar{Name: startup.EnvPrepare, Value: "true"}, corev1.EnvVar{Name: config.EnvSharedVolume, Value: workspaceOf(req)})
+	artifactsJSON, _ := artifact.MarshalArtifacts(req.Artifacts)
+	env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
 	}
 
 	if req.Probes == nil || req.Probes.Readiness == nil {
@@ -332,11 +278,6 @@ func proxyEnv(req *deployment.Request) []corev1.EnvVar {
 }
 
 func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
-	var cmd []string
-	if req.Command != "" {
-		cmd = []string{"/bin/sh", "-c", req.Command}
-	}
-
 	workspace := workspaceOf(req)
 	_, workerVolumeMounts := kube.PersistentVolumes(req.Volumes)
 
@@ -350,20 +291,28 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		probes = *req.Probes
 	}
 
+	startProbe := kubeletProbe(probes.Startup, req.Port)
+	if startProbe == nil {
+		startProbe = &corev1.Probe{
+			ProbeHandler:  corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"/bin/sh", "-c", "test -s " + startup.ExecutionMarker}}},
+			PeriodSeconds: 1, FailureThreshold: int32(startup.TimeoutSeconds),
+		}
+	}
 	return corev1.Container{
-		Name:            ContainerWorker,
-		Image:           req.Image,
-		ImagePullPolicy: corev1.PullPolicy(cfg.WorkerImagePullPolicy),
-		Command:         cmd,
-		Env:             env,
-		WorkingDir:      workspace,
+		Name:                   ContainerWorker,
+		Image:                  req.Image,
+		ImagePullPolicy:        corev1.PullPolicy(cfg.WorkerImagePullPolicy),
+		Command:                startup.Command(req.Command, workspace, startup.TimeoutSeconds),
+		TerminationMessagePath: startup.ExecutionMarker,
+		Env:                    env,
+		WorkingDir:             workspace,
 		VolumeMounts: append([]corev1.VolumeMount{
 			workspaceMount(req, workspace, corev1.MountPropagationHostToContainer),
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
 		Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
 		LivenessProbe:   kubeletProbe(probes.Liveness, req.Port),
-		StartupProbe:    kubeletProbe(probes.Startup, req.Port),
+		StartupProbe:    startProbe,
 		SecurityContext: kube.HardenedSecurityContext(cfg.RunAsUser),
 	}
 }

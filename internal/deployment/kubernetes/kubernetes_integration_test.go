@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/testutil"
 	"orchestrator/internal/workload"
@@ -436,5 +437,37 @@ func TestIntegration_ScaleToZeroAndBack(t *testing.T) {
 	endpoints, err := o.Endpoints(t.Context(), id)
 	if err != nil || len(endpoints) != 1 {
 		t.Fatalf("endpoints after wake: want 1, got %d (err=%v)", len(endpoints), err)
+	}
+}
+
+func TestIntegration_RevisionPreparesBeforeCommand(t *testing.T) {
+	for _, mount := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mount=%v", mount), func(t *testing.T) {
+			o, teardown := setup(t)
+			defer teardown()
+			id := fmt.Sprintf("gate-%d", time.Now().UnixNano()%1_000_000_000)
+			req := serverRequest(id)
+			req.Artifacts = []artifact.Artifact{&artifact.Write{ID: "write", In: "prepared", Out: "index.html"}}
+			dir := "/workspace"
+			if mount {
+				req.Artifacts = append(req.Artifacts,
+					&artifact.Archive{ID: "archive", In: "index.html", Out: "site.tar.gz", Format: "tar", Compression: "gzip", Depends: "write"},
+					&artifact.Mount{ID: "mount", In: "site.tar.gz", Out: "site", Depends: "archive"})
+				dir += "/site"
+			}
+			req.Command = "test $(cat " + dir + "/index.html) = prepared && exec /agnhost netexec --http-port=8080"
+			if _, err := o.Apply(t.Context(), req); err != nil {
+				t.Fatal(err)
+			}
+			waitForState(t, o, id, deployment.StateReady, 90*time.Second)
+			pods, err := o.client.CoreV1().Pods(testNamespace).List(t.Context(), metav1.ListOptions{LabelSelector: LabelRevision + "=" + revisionName(id, 1)})
+			if err != nil || len(pods.Items) != 1 {
+				t.Fatalf("expected one revision pod: %v", err)
+			}
+			spec := pods.Items[0].Spec
+			if len(spec.InitContainers) != 1 || spec.InitContainers[0].StartupProbe != nil {
+				t.Fatal("revision must have one non-blocking resident sidecar")
+			}
+		})
 	}
 }
