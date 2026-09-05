@@ -13,6 +13,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/job"
 	"orchestrator/internal/testutil"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -740,4 +742,98 @@ func wireDispatcher(t *testing.T, emitter *job.CallbackEmitter) *dispatcher.Memo
 		})
 	})
 	return d
+}
+
+// The combined sidecar must finish inputs before admitting the worker and
+// process outputs after SIGTERM, including on an otherwise unprivileged job.
+func TestIntegration_CombinedArtifacts(t *testing.T) {
+	o, _, teardown := setup(t)
+	defer teardown()
+	id := fmt.Sprintf("combined-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID: id, Image: "alpine:3.20", TimeoutSeconds: 60,
+		Command:   "test $(cat input.txt) = prepared && echo output > output.txt",
+		Workspace: "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "input", In: "prepared", Out: "input.txt"},
+			&artifact.Read{ID: "output", In: "output.txt", Depends: "job"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	var pod *corev1.Pod
+	testutil.MustWaitFor(t, func() bool {
+		pod = fetchPodForJob(t.Context(), o.client, testNamespace, id)
+		return pod != nil && isPodTerminal(pod)
+	}, testutil.WithTimeout(90*time.Second), testutil.WithInterval(time.Second))
+	if pod.Status.Phase != corev1.PodSucceeded {
+		t.Fatalf("pod failed: %+v", pod.Status)
+	}
+	logs, err := o.client.CoreV1().Pods(testNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: ContainerSidecar}).DoRaw(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(logs), "\n") {
+		var entry struct {
+			ArtifactID string `json:"artifactId"`
+			Status     string `json:"status"`
+		}
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.ArtifactID == "output" && entry.Status == "success" {
+			return
+		}
+	}
+	t.Fatalf("sidecar did not process worker output successfully: %s", logs)
+}
+
+// Native sidecars retry setup failures. The Job deadline must stop those
+// retries and fail the job without ever executing its worker.
+func TestIntegration_CombinedSetupDeadline(t *testing.T) {
+	o, _, teardown := setup(t)
+	defer teardown()
+	id := fmt.Sprintf("setup-fail-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID: id, Image: "alpine:3.20", TimeoutSeconds: 15,
+		Command: "echo worker-must-not-run", Workspace: "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "file", In: "not a directory", Out: "file"},
+			&artifact.Write{ID: "fail", In: "unreachable", Out: "file/child", Depends: "file"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	sawSetupFailure := false
+	testutil.MustWaitFor(t, func() bool {
+		// Deadline handling can delete the pod. Observe its history while it
+		// exists instead of requiring retention after the Job fails.
+		pod := fetchPodForJob(t.Context(), o.client, testNamespace, id)
+		if pod != nil {
+			for _, cs := range pod.Status.InitContainerStatuses {
+				if cs.Name == ContainerSidecar && cs.LastTerminationState.Terminated != nil {
+					sawSetupFailure = true
+				}
+			}
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name == ContainerWorker && (cs.State.Running != nil || (cs.State.Terminated != nil && !cs.State.Terminated.StartedAt.IsZero())) {
+					t.Fatalf("worker ran despite failed setup: %+v", cs)
+				}
+			}
+		}
+		s, err := o.Status(t.Context(), id)
+		return err == nil && s.State == job.StateFailed
+	}, testutil.WithTimeout(90*time.Second), testutil.WithInterval(time.Second))
+	if !sawSetupFailure {
+		t.Fatal("expected a sidecar setup failure before the deadline")
+	}
+	j, err := o.client.BatchV1().Jobs(testNamespace).Get(t.Context(), jobNameFor(id), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range j.Status.Conditions {
+		if c.Reason == "DeadlineExceeded" {
+			return
+		}
+	}
+	t.Fatalf("expected deadline failure: %+v", j.Status)
 }

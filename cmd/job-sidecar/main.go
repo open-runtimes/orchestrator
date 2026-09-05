@@ -25,7 +25,7 @@ func main() {
 	)
 	flag.BoolVar(&checkReady, "check-ready", false, "exit 0 if the pre-job ready marker exists, 1 otherwise")
 	flag.BoolVar(&checkMounts, "check-mounts", false, "exit 0 if the mounts-ready marker exists, 1 otherwise")
-	flag.StringVar(&mode, "mode", "combined", "sidecar mode: combined (Docker), pre (K8s init container), post (K8s native sidecar)")
+	flag.StringVar(&mode, "mode", "combined", "sidecar mode: combined (Docker/K8s jobs), pre (artifact init), post (legacy native sidecar)")
 	flag.Parse()
 
 	// Probe paths — must stay silent (no log setup) to avoid polluting status output.

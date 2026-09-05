@@ -164,7 +164,7 @@ task k8s:logs          # tail jobs-service logs
 
 # Worker or sidecar logs for a specific job
 kubectl --context kind-orchestrator-dev -n orchestrator \
-  logs job/job-<id> -c worker        # or -c artifact-pre / artifact-post
+  logs job/job-<id> -c worker        # or -c sidecar
 ```
 
 All Jobs and Pods carry `managed-by=jobs-service` and `job.id=<id>` labels.

@@ -25,10 +25,9 @@ const (
 	AnnotationCallbackEvents = "job.callback.events"
 	AnnotationMeta           = "job.meta"
 
-	ContainerWorker       = "worker"
-	ContainerArtifactPre  = "artifact-pre"
-	ContainerArtifactPost = "artifact-post"
-	VolumeWorkspace       = "workspace"
+	ContainerWorker  = "worker"
+	ContainerSidecar = "sidecar"
+	VolumeWorkspace  = "workspace"
 )
 
 // watchConfig holds the per-job values a watcher needs to emit callbacks.
@@ -97,13 +96,9 @@ func jobNameFor(jobID string) string {
 
 // buildJob maps a job.Request to a batch/v1.Job.
 //
-// Pod template contains:
-//   - initContainer "artifact-pre": regular init, runs pre-job artifacts and exits
-//   - initContainer "artifact-post": native sidecar (restartPolicy: Always), runs post-job
-//     artifacts on SIGTERM (sent by kubelet when the worker exits)
-//   - container "worker": the user workload
-//
-// All three share an emptyDir volume mounted at req.Workspace.
+// Pod template contains one native sidecar that prepares artifacts and mounts,
+// gates the worker with -check-ready, and processes outputs on SIGTERM after
+// the worker exits. Both containers share the workspace emptyDir.
 func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *batchv1.Job {
 	workspace := req.Workspace
 	if workspace == "" {
@@ -127,12 +122,11 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 
 	// Base workspace mount, shared by all containers. When the job mounts a
-	// squashfs image, the post sidecar establishes the mount and must propagate
+	// squashfs image, the combined sidecar establishes the mount and must propagate
 	// it outward (Bidirectional, which requires a privileged container), and the
 	// worker receives it (HostToContainer). A startup probe gates the worker
-	// until the mounts-ready marker appears.
-	preMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
-	postMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
+	// until artifacts and mounts are ready.
+	sidecarMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
 	workerMounts := []corev1.VolumeMount{{Name: VolumeWorkspace, MountPath: workspace}}
 
 	// Persistent volumes attach to the worker only — the sidecars operate on the
@@ -140,31 +134,31 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 	pvVolumes, pvMounts := kube.PersistentVolumes(req.Volumes)
 	workerMounts = append(workerMounts, pvMounts...)
 
-	var postSecurityContext *corev1.SecurityContext
-	var postStartupProbe *corev1.Probe
+	var sidecarSecurityContext *corev1.SecurityContext
+	// A native sidecar restarts even with backoffLimit=0. Bound the Job so
+	// permanent setup failures cannot leave a worker waiting indefinitely.
+	deadline := int64(req.TimeoutSeconds)
+	if deadline <= 0 {
+		deadline = 1800 // same default as job.Service
+	}
+	startupProbe := &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{Command: []string{"/ko-app/job-sidecar", "-check-ready"}},
+		},
+		PeriodSeconds:    1,
+		FailureThreshold: int32(deadline),
+	}
 	if hasMounts {
 		bidirectional := corev1.MountPropagationBidirectional
 		hostToContainer := corev1.MountPropagationHostToContainer
-		postMounts[0].MountPropagation = &bidirectional
+		sidecarMounts[0].MountPropagation = &bidirectional
 		workerMounts[0].MountPropagation = &hostToContainer
 
 		privileged := true
 		runAsRoot := int64(0)
 		// Root + privileged: the sidecar image is distroless nonroot, but mounting
 		// needs to open /dev/loop-control (root:disk 0660) and call mount(2).
-		postSecurityContext = &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &runAsRoot}
-
-		failureThreshold := int32(req.TimeoutSeconds)
-		if failureThreshold < 1 {
-			failureThreshold = 60
-		}
-		postStartupProbe = &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{Command: []string{"/ko-app/job-sidecar", "-check-mounts"}},
-			},
-			PeriodSeconds:    1,
-			FailureThreshold: failureThreshold,
-		}
+		sidecarSecurityContext = &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &runAsRoot}
 	}
 
 	var cmd []string
@@ -194,23 +188,15 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 		}, pvVolumes...),
 		InitContainers: []corev1.Container{
 			{
-				Name:            ContainerArtifactPre,
+				Name:            ContainerSidecar,
 				Image:           sidecarImage,
 				ImagePullPolicy: sidecarPull,
-				Args:            []string{"-mode=pre"},
+				Args:            []string{"-mode=combined"},
 				Env:             sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
-				VolumeMounts:    preMounts,
-			},
-			{
-				Name:            ContainerArtifactPost,
-				Image:           sidecarImage,
-				ImagePullPolicy: sidecarPull,
-				Args:            []string{"-mode=post"},
-				Env:             sidecarEnv(req, cfg.ArtifactEndpoint, workspace),
-				VolumeMounts:    postMounts,
+				VolumeMounts:    sidecarMounts,
 				RestartPolicy:   &alwaysRestart,
-				SecurityContext: postSecurityContext,
-				StartupProbe:    postStartupProbe,
+				SecurityContext: sidecarSecurityContext,
+				StartupProbe:    startupProbe,
 			},
 		},
 		Containers: []corev1.Container{
@@ -238,6 +224,7 @@ func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *ba
 			Annotations: annotations,
 		},
 		Spec: batchv1.JobSpec{
+			ActiveDeadlineSeconds:   &deadline,
 			Parallelism:             &parallelism,
 			Completions:             &completions,
 			BackoffLimit:            &backoffLimit,

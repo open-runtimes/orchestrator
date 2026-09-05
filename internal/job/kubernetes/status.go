@@ -87,6 +87,16 @@ func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace st
 		return resp, nil
 	}
 
+	// A deadline can remove the pod; retain the controller's failure reason
+	// so setup retries do not end in an unexplained failure response.
+	for _, condition := range j.Status.Conditions {
+		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
+			resp.State = job.StateFailed
+			resp.Error = condition.Reason
+			annotateFailure(ctx, client, namespace, jobID, &resp)
+			return resp, nil
+		}
+	}
 	if j.Status.Failed > 0 {
 		resp.State = job.StateFailed
 		annotateFailure(ctx, client, namespace, jobID, &resp)

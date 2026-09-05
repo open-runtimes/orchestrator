@@ -531,3 +531,21 @@ func orchestratorWithClient(cs *fake.Clientset) *Orchestrator {
 		statusCache: newStatusCache(),
 	}
 }
+
+func TestStatus_DeadlineWithoutPod(t *testing.T) {
+	t.Parallel()
+	cs := fake.NewClientset()
+	j := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{LabelJobID: "deadline"}},
+		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "DeadlineExceeded",
+		}}},
+	}
+	s, err := deriveStatus(t.Context(), cs, "orchestrator", j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.State != job.StateFailed || s.Error != "DeadlineExceeded" {
+		t.Fatalf("expected retained deadline reason without a pod, got %+v", s)
+	}
+}
