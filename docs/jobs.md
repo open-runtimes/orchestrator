@@ -44,10 +44,28 @@ POST /v1/jobs
 }
 ```
 
-On Kubernetes, one combined native sidecar prepares artifacts and mounts before
-its `-check-ready` startup probe admits the worker, then processes output artifacts
-when Kubernetes signals that the worker has exited. Mount jobs give this sidecar
-root and privileged access; jobs without mounts do not.
+On Kubernetes, **`command` is required**. Worker images must provide `/bin/sh`,
+`sleep` supporting fractional seconds, and `date +%s`. The image's default
+entrypoint is not used. This is the default startup contract, without an opt-in
+flag; Docker keeps its existing startup behavior.
+
+One combined native sidecar prepares artifacts and mounts while the worker
+container starts and waits in a shell gate. The gate checks
+`<workspace>/.sidecar/ready` every 50 ms, then replaces itself with
+`/bin/sh -c <command>`. The command is passed literally as an argument, preserving
+shell expressions, pipelines, redirects, and environment variables. The wait is
+bounded and handles SIGTERM/SIGINT. No install init container or sidecar startup
+probe delays worker creation. Mount jobs give the sidecar root and privileged
+access; jobs without mounts do not.
+
+A worker startup probe observes the execution marker after the gate releases;
+it affects status reporting, not when the command runs. A waiting container is
+still `accepted`. The gate reserves `/dev/orchestrator-started` as its Kubernetes
+termination-message file, recording the execution start with one-second timestamp
+resolution. This lets fast commands report start/exit even if they finish before
+the probe succeeds, and keeps the artifact wait out of their execution duration.
+Do not modify this file from user commands. Gate failures do not emit a start
+event. The sidecar processes output artifacts after the worker exits.
 
 `timeoutSeconds` (default 1800) also sets the Kubernetes Job's active deadline,
 covering scheduling, setup, and execution. This bounds setup failures because a

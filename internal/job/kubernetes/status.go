@@ -117,8 +117,12 @@ func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace st
 				// already emitted for this exit and the Docker backend.
 				resp.State = job.StateForExit(int(worker.State.Terminated.ExitCode))
 				annotateTermination(worker, &resp)
+				if gatedPod(pod) && !workloadReleased(pod, worker) {
+					resp.State = job.StateFailed
+					resp.Error = "workload startup gate failed before command execution"
+				}
 				return resp, nil
-			case worker.State.Running != nil:
+			case worker.State.Running != nil && workloadReleased(pod, worker):
 				resp.State = job.StateRunning
 				return resp, nil
 			}
@@ -157,7 +161,7 @@ func annotateTermination(worker *corev1.ContainerStatus, resp *job.StatusRespons
 		return
 	}
 	switch {
-	case term.Message != "":
+	case term.Message != "" && executionStart(worker).IsZero():
 		resp.Error = term.Message
 	case term.Reason != "":
 		resp.Error = term.Reason

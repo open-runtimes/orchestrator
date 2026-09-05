@@ -289,15 +289,10 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		}
 	}
 
-	// Pod-level failure before the worker ever ran (e.g. artifact-pre init
-	// failure, ImagePullBackOff, scheduler rejection). "Never ran" is a state
-	// check, not a presence check: kubelet lists the worker in
-	// containerStatuses as waiting/PodInitializing even when an init container
-	// failure guarantees it will never start. Guarding on worker == nil alone
-	// left init-failed pods matching no branch at all — their jobs sat
-	// untracked, with no callback and no log, until pod retention deleted the
-	// pod ~15 minutes later and emitted a misleading "pod deleted" failure.
-	workerRan := worker != nil && (worker.State.Running != nil || worker.State.Terminated != nil)
+	// Pod failure before command execution includes both legacy init failures
+	// and a running shell that never passed its gate. Container existence or
+	// Running alone does not mean the user's command has started.
+	workerRan := workloadReleased(pod, worker)
 	if !t.state.isStarted && pod.Status.Phase == corev1.PodFailed && !workerRan {
 		reason := pod.Status.Reason
 		if reason == "" {
@@ -315,9 +310,20 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		return false
 	}
 
+	if gatedPod(pod) && !workerRan && !t.state.isStarted {
+		if worker.State.Terminated != nil {
+			t.emit(job.Failed{Reason: "workload startup gate failed before command execution"})
+			return true
+		}
+		return false
+	}
+
 	if !t.state.isStarted && worker.State.Running != nil {
 		t.state.isStarted = true
 		t.state.startTime = worker.State.Running.StartedAt.Time
+		if gatedPod(pod) {
+			t.state.startTime = time.Now()
+		}
 		if t.state.startTime.IsZero() {
 			t.state.startTime = time.Now()
 		}
@@ -334,13 +340,19 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 	// Started here and fall through so the normal exit/complete path fires,
 	// with a faithful start time from the terminal container status).
 	if !t.state.isStarted && worker.State.Terminated != nil {
-		if !pod.CreationTimestamp.After(t.watcher.termStart) {
+		// Pod creation timestamps are serialized to whole seconds. Comparing
+		// against a fractional term start would drop fast jobs created in
+		// the same second as watcher startup.
+		if pod.CreationTimestamp.Time.Before(t.watcher.termStart.Truncate(time.Second)) {
 			t.state.isStarted = true
 			t.state.isExited = true
 			return isPodTerminal(pod)
 		}
 		t.state.isStarted = true
 		t.state.startTime = worker.State.Terminated.StartedAt.Time
+		if started := executionStart(worker); gatedPod(pod) && !started.IsZero() {
+			t.state.startTime = started
+		}
 		t.logger.Info("Worker started (first observed already terminated)")
 		t.emit(job.Started{})
 		t.startLogsLocked(ctx, pod.Name)
@@ -352,6 +364,9 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 		reason := ""
 		if exitCode != 0 && worker.State.Terminated.Reason == "OOMKilled" {
 			reason = job.ExitReasonOOM
+		}
+		if started := executionStart(worker); gatedPod(pod) && !started.IsZero() {
+			t.state.startTime = started
 		}
 		duration := time.Duration(0)
 		if !worker.State.Terminated.FinishedAt.IsZero() && !t.state.startTime.IsZero() {

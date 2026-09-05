@@ -15,8 +15,8 @@ import (
 //
 // Every marker lives under markerDir, a runner-owned corner of the workspace,
 // so an artifact's out path can never collide with runner state. Nothing
-// outside this binary reads the paths — probes exec the -check-* flags — so
-// the layout ships atomically with the sidecar.
+// except the ready marker is consumed externally. ReadyMarkerPath is the
+// startup contract shared with the Kubernetes worker shell gate.
 type marker string
 
 const (
@@ -25,7 +25,7 @@ const (
 
 	// markerReady gates the worker in the combined flow: pre-job artifacts
 	// are processed and mounts are established. Docker health checks and
-	// Kubernetes startup probes poll it via -check-ready.
+	// Kubernetes worker shell gates poll it.
 	markerReady marker = "ready"
 
 	// markerMountsReady gates the worker in the split flow: the post sidecar
@@ -70,8 +70,7 @@ func (m marker) clear(workspace string) error {
 }
 
 // ReadyMarkerPath is where the ready marker lives inside workspace. The
-// marker layout is private to this binary; this accessor exists for tests
-// that observe the marker from outside it.
+// worker shell gate consumes this path as part of the startup contract.
 func ReadyMarkerPath(workspace string) string {
 	return markerReady.path(workspace)
 }
