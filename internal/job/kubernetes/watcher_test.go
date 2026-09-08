@@ -1,15 +1,22 @@
 package kubernetes
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"orchestrator/internal/job"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 // jobTracker unit tests — drive applyPodState directly with crafted Pod
@@ -422,5 +429,129 @@ func TestJobTracker_InitFailureShapeDoesNotOvermatch(t *testing.T) {
 	capture.assertHasType(t, job.CallbackTypeStart)
 	if trackers, active := w.Counts(); trackers != 1 || active != 1 {
 		t.Fatalf("want 1 tracker / 1 active, got %d / %d", trackers, active)
+	}
+}
+
+// Use a real client-go log request: the API can take longer to open the
+// stream than the worker takes to fail, even though its output is retained.
+func TestJobTracker_FastFailureDrainsDelayedLogs(t *testing.T) {
+	for _, scenario := range []struct {
+		name              string
+		alreadyTerminated bool
+		failFirst         bool
+		delayedBody       bool
+	}{
+		{name: "delayed connection"},
+		{name: "already terminated", alreadyTerminated: true},
+		{name: "retry connection", failFirst: true},
+		{name: "delayed final output", delayedBody: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) == 1 && scenario.failFirst {
+					http.Error(w, "kubelet temporarily unavailable", http.StatusBadGateway)
+					return
+				}
+				if scenario.delayedBody {
+					w.WriteHeader(http.StatusOK)
+					w.(http.Flusher).Flush()
+				}
+				if r.URL.Path != "/api/v1/namespaces/test/pods/pod-1/log" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+				select {
+				case <-time.After(800 * time.Millisecond):
+					fmt.Fprintln(w, "npm error ENOENT /usr/local/build/package.json")
+				case <-r.Context().Done():
+				}
+			}))
+			defer server.Close()
+			client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			emitter := job.NewCallbackEmitter()
+			var mu sync.Mutex
+			var events []string
+			var lines []string
+			emitter.Register(func(e *job.CallbackEnvelope) {
+				mu.Lock()
+				defer mu.Unlock()
+				events = append(events, e.Payload.Type)
+				if e.Payload.Type == job.CallbackTypeLog {
+					lines = append(lines, e.Payload.Data["lines"].([]string)...)
+				}
+			})
+			watcher := newK8sLifecycleWatcher(client, "test", emitter, time.Second)
+			tracker := newJobTracker(watcher, &watchConfig{jobID: "fast-failure", dest: &job.CallbackDest{URL: "https://cb.example"}})
+			if !scenario.alreadyTerminated {
+				tracker.handleUpdate(t.Context(), podWithWorkerRunning())
+			}
+			terminal := podWithWorkerTerminated(254, corev1.PodFailed)
+			terminal.CreationTimestamp = metav1.Now()
+			tracker.handleUpdate(t.Context(), terminal)
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(lines, []string{"npm error ENOENT /usr/local/build/package.json"}) {
+				t.Errorf("missing or duplicated build output: %v", lines)
+			}
+			if !slices.Equal(events, []string{job.CallbackTypeStart, job.CallbackTypeLog, job.CallbackTypeExit, job.CallbackTypeComplete}) {
+				t.Errorf("callbacks must deliver logs before exit: %v", events)
+			}
+		})
+	}
+}
+
+func TestJobTracker_LogDrainStopsOnTimeoutOrCancellation(t *testing.T) {
+	for _, cancelParent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancelParent=%t", cancelParent), func(t *testing.T) {
+			t.Parallel()
+			connected := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				close(connected)
+				<-r.Context().Done()
+			}))
+			defer server.Close()
+			client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			capture, watcher := newTrackerFixture(t)
+			watcher.client = client
+			tracker := newJobTracker(watcher, &watchConfig{jobID: "stalled-logs", dest: &job.CallbackDest{URL: "https://cb.example"}})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			tracker.handleUpdate(ctx, podWithWorkerRunning())
+			select {
+			case <-connected:
+			case <-time.After(5 * time.Second):
+				t.Fatal("log stream did not connect")
+			}
+			if cancelParent {
+				cancel()
+			}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				tracker.handleUpdate(ctx, podWithWorkerTerminated(254, corev1.PodFailed))
+			}()
+			limit := 12 * time.Second
+			if cancelParent {
+				limit = time.Second
+			}
+			select {
+			case <-done:
+			case <-time.After(limit):
+				cancel()
+				<-done
+				t.Fatal("stalled log stream prevented job completion")
+			}
+			capture.assertHasType(t, job.CallbackTypeExit)
+			capture.assertHasType(t, job.CallbackTypeComplete)
+		})
 	}
 }

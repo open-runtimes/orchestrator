@@ -358,7 +358,19 @@ func (t *jobTracker) applyPodStateLocked(ctx context.Context, pod *corev1.Pod) b
 			duration = worker.State.Terminated.FinishedAt.Sub(t.state.startTime)
 		}
 		t.logger.Info("Worker exited", "exitCode", exitCode, "reason", reason)
-		time.Sleep(500 * time.Millisecond) // allow log flush
+		// A fast worker may exit before the kubelet log connection opens.
+		// Let the stream reach EOF and flush callbacks before emitting exit.
+		// Bound the wait so an unavailable kubelet cannot stall the watcher.
+		if t.state.logDone != nil {
+			timer := time.NewTimer(10 * time.Second)
+			select {
+			case <-t.state.logDone:
+			case <-ctx.Done():
+			case <-timer.C:
+				t.logger.Warn("Timed out draining worker logs")
+			}
+			timer.Stop()
+		}
 		t.stopLogsLocked()
 		t.emit(job.Exited{ExitCode: exitCode, Reason: reason, Duration: duration})
 		// Not terminal yet: the native sidecar is still processing post-job
@@ -443,10 +455,24 @@ func (t *jobTracker) streamLogs(ctx context.Context, podName string) {
 		Container: ContainerWorker,
 		Follow:    true,
 	})
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		t.logger.Warn("Failed to stream logs", "error", err)
-		return
+	var stream io.ReadCloser
+	for attempt := 0; ; attempt++ {
+		var err error
+		stream, err = req.Stream(ctx)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil || attempt == 2 {
+			t.logger.Warn("Failed to stream logs", "error", err)
+			return
+		}
+		// Retry only before opening the stream: replaying an already-read
+		// stream would duplicate lines in the deployment's append-only log.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 	defer stream.Close()
 
