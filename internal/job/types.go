@@ -75,7 +75,7 @@ type ArtifactReport struct {
 	Type    string `json:"type"`
 	Status  string `json:"status"`
 	Content any    `json:"content,omitempty"`
-	// FailureReason carries an artifact.ErrorCode from new sidecars. Older
+	// FailureReason carries an artifact.CodeError from new sidecars. Older
 	// sidecars send diagnostic prose; the callback builder normalizes it.
 	FailureReason string `json:"failureReason,omitempty"`
 

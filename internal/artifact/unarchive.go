@@ -212,7 +212,7 @@ func writeRegularFile(header *tar.Header, tarReader io.Reader, targetPath, destD
 func mkdirAllInRoot(root, dir string) error {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(dir))
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("%w: archive entry escapes the destination: %s", ArchivePathInvalid, dir)
+		return fmt.Errorf("%w: archive entry escapes the destination: %s", ErrArchivePathInvalid, dir)
 	}
 	if err := os.MkdirAll(filepath.Clean(root), extractDirMode); err != nil {
 		return fmt.Errorf("failed to create destination: %w", err)
@@ -233,9 +233,9 @@ func mkdirAllInRoot(root, dir string) error {
 		case err != nil:
 			return fmt.Errorf("failed to inspect path: %w", err)
 		case info.Mode()&os.ModeSymlink != 0:
-			return fmt.Errorf("%w: archive path traverses a symlink: %s", ArchivePathInvalid, current)
+			return fmt.Errorf("%w: archive path traverses a symlink: %s", ErrArchivePathInvalid, current)
 		case !info.IsDir():
-			return fmt.Errorf("%w: archive path traverses a file: %s", ArchivePathInvalid, current)
+			return fmt.Errorf("%w: archive path traverses a file: %s", ErrArchivePathInvalid, current)
 		}
 	}
 	return nil
@@ -295,26 +295,26 @@ func extractLink(header *tar.Header, targetPath, destDir, hardLinkSource string,
 // would otherwise delete the destination and only then fail.
 func validateHardLinkSource(header *tar.Header, targetPath, destDir, hardLinkSource, root string) error {
 	if !underRoot(resolveWalking(destDir, relativeTo(destDir, hardLinkSource)), root) {
-		return fmt.Errorf("%w: invalid hard link target in archive: %s -> %s", ArchivePathInvalid, header.Name, header.Linkname)
+		return fmt.Errorf("%w: invalid hard link target in archive: %s -> %s", ErrArchivePathInvalid, header.Name, header.Linkname)
 	}
 	// A self-referential link would have its source removed as the destination
 	// and then fail, taking the file with it.
 	if resolveIfPossible(hardLinkSource) == resolveIfPossible(targetPath) {
-		return fmt.Errorf("%w: hard link points at itself: %s -> %s", ArchivePathInvalid, header.Name, header.Linkname)
+		return fmt.Errorf("%w: hard link points at itself: %s -> %s", ErrArchivePathInvalid, header.Name, header.Linkname)
 	}
 	info, err := os.Lstat(hardLinkSource)
 	if err != nil {
-		return fmt.Errorf("%w: hard link source not found in archive: %s -> %s", ArchivePathInvalid, header.Name, header.Linkname)
+		return fmt.Errorf("%w: hard link source not found in archive: %s -> %s", ErrArchivePathInvalid, header.Name, header.Linkname)
 	}
 	if info.IsDir() {
-		return fmt.Errorf("%w: hard link source is a directory: %s -> %s", ArchivePathInvalid, header.Name, header.Linkname)
+		return fmt.Errorf("%w: hard link source is a directory: %s -> %s", ErrArchivePathInvalid, header.Name, header.Linkname)
 	}
 	// link(2) does not follow symlinks: it would duplicate the link inode, not
 	// the file. That is how an alias of the destination — or a dangling one,
 	// which cannot be compared against it at all — turns an extraction into a
 	// self-referential tree. No build tool emits this, so refuse it.
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: hard link source is a symlink: %s -> %s", ArchivePathInvalid, header.Name, header.Linkname)
+		return fmt.Errorf("%w: hard link source is a symlink: %s -> %s", ErrArchivePathInvalid, header.Name, header.Linkname)
 	}
 	return nil
 }
@@ -427,7 +427,7 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 	header = header[:n]
 
 	if n == 0 {
-		return &Result{Status: "failed", Error: fmt.Errorf("%w: archive %s is empty", ArchiveEmpty, a.In)}
+		return &Result{Status: "failed", Error: fmt.Errorf("%w: archive %s is empty", ErrArchiveEmpty, a.In)}
 	}
 
 	format, compression := Classify(header)
@@ -448,7 +448,7 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 	case "tar":
 		return a.extractTar(srcPath, destDir, compression)
 	default:
-		return &Result{Status: "failed", Error: fmt.Errorf("%w: unrecognized archive format for %s", ArchiveUnknownFormat, a.In)}
+		return &Result{Status: "failed", Error: fmt.Errorf("%w: unrecognized archive format for %s", ErrArchiveUnknownFormat, a.In)}
 	}
 }
 
@@ -522,7 +522,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 
 		cleanName := filepath.Clean(header.Name)
 		if strings.HasPrefix(cleanName, "..") {
-			return &Result{Status: "failed", Error: fmt.Errorf("%w: invalid path in archive: %s", ArchivePathInvalid, header.Name)}
+			return &Result{Status: "failed", Error: fmt.Errorf("%w: invalid path in archive: %s", ErrArchivePathInvalid, header.Name)}
 		}
 
 		// Applied to entry names and to hard-link targets alike: a link names
@@ -579,7 +579,7 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 	// source code" failure at whatever consumes the output. Fail here, where
 	// the cause is still visible.
 	if extracted == 0 && (a.Strip || subdir != "") {
-		return &Result{Status: "failed", Error: fmt.Errorf("%w: no entries extracted from %s (strip=%t, subdir=%q): archive layout does not match", ArchiveLayoutMismatch, a.In, a.Strip, subdir)}
+		return &Result{Status: "failed", Error: fmt.Errorf("%w: no entries extracted from %s (strip=%t, subdir=%q): archive layout does not match", ErrArchiveLayoutMismatch, a.In, a.Strip, subdir)}
 	}
 
 	slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "compression", compression)
@@ -614,7 +614,7 @@ func assertNoEscapingSymlinks(destDir string) error {
 
 	switch {
 	case len(problems) > 0 && len(escaped) > 0:
-		return fmt.Errorf("%w: symlinks escape the destination after extraction (removed: %s; unresolved: %s)", ArchivePathInvalid, strings.Join(escaped, ", "), strings.Join(problems, "; "))
+		return fmt.Errorf("%w: symlinks escape the destination after extraction (removed: %s; unresolved: %s)", ErrArchivePathInvalid, strings.Join(escaped, ", "), strings.Join(problems, "; "))
 	case len(problems) > 0:
 		return fmt.Errorf("could not verify the extracted tree for escaping symlinks: %s", strings.Join(problems, "; "))
 	case len(escaped) > 0:
@@ -735,7 +735,7 @@ func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 	// See extractTar: an empty result from strip/subdir filtering is a
 	// misconfiguration, not a success.
 	if extracted == 0 && (strip || subdir != "") {
-		return fmt.Errorf("%w: no entries extracted (strip=%t, subdir=%q): archive layout does not match", ArchiveLayoutMismatch, strip, subdir)
+		return fmt.Errorf("%w: no entries extracted (strip=%t, subdir=%q): archive layout does not match", ErrArchiveLayoutMismatch, strip, subdir)
 	}
 	return nil
 }

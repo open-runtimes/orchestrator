@@ -12,48 +12,48 @@ import (
 	"github.com/klauspost/pgzip"
 )
 
-// ErrorCode is the stable value of a failed artifact callback's error field.
+// CodeError is the stable value of a failed artifact callback's error field.
 // Detailed errors remain in sidecar logs; they are not part of the wire enum.
-type ErrorCode string
+type CodeError string
 
 const (
-	ArtifactWriteFailed           ErrorCode = "artifact_write_failed"
-	ArchiveEmpty                  ErrorCode = "archive_empty"
-	ArchiveUnknownFormat          ErrorCode = "archive_unknown_format"
-	ArchiveCorrupt                ErrorCode = "archive_corrupt"
-	ArchivePathInvalid            ErrorCode = "archive_path_invalid"
-	ArchiveLayoutMismatch         ErrorCode = "archive_layout_mismatch"
-	ArchiveExtractionFailed       ErrorCode = "archive_extraction_failed"
-	ArchiveCreationFailed         ErrorCode = "archive_creation_failed"
-	ArchiveCompressionUnsupported ErrorCode = "archive_compression_unsupported"
-	ArtifactNotFound              ErrorCode = "artifact_not_found"
-	ArtifactPermissionDenied      ErrorCode = "artifact_permission_denied"
-	ArtifactTimeout               ErrorCode = "artifact_timeout"
-	ArtifactCanceled              ErrorCode = "artifact_canceled"
-	ArtifactReadFailed            ErrorCode = "artifact_read_failed"
-	ArtifactStatFailed            ErrorCode = "artifact_stat_failed"
-	ArtifactListFailed            ErrorCode = "artifact_list_failed"
-	ArtifactJSONInvalid           ErrorCode = "artifact_json_invalid"
-	DownloadFailed                ErrorCode = "download_failed"
-	DownloadHTTPError             ErrorCode = "download_http_error"
-	UploadFailed                  ErrorCode = "upload_failed"
-	CloneFailed                   ErrorCode = "clone_failed"
-	MountFailed                   ErrorCode = "mount_failed"
-	ArtifactFailed                ErrorCode = "artifact_failed"
+	ErrArtifactWriteFailed           CodeError = "artifact_write_failed"
+	ErrArchiveEmpty                  CodeError = "archive_empty"
+	ErrArchiveUnknownFormat          CodeError = "archive_unknown_format"
+	ErrArchiveCorrupt                CodeError = "archive_corrupt"
+	ErrArchivePathInvalid            CodeError = "archive_path_invalid"
+	ErrArchiveLayoutMismatch         CodeError = "archive_layout_mismatch"
+	ErrArchiveExtractionFailed       CodeError = "archive_extraction_failed"
+	ErrArchiveCreationFailed         CodeError = "archive_creation_failed"
+	ErrArchiveCompressionUnsupported CodeError = "archive_compression_unsupported"
+	ErrArtifactNotFound              CodeError = "artifact_not_found"
+	ErrArtifactPermissionDenied      CodeError = "artifact_permission_denied"
+	ErrArtifactTimeout               CodeError = "artifact_timeout"
+	ErrArtifactCanceled              CodeError = "artifact_canceled"
+	ErrArtifactReadFailed            CodeError = "artifact_read_failed"
+	ErrArtifactStatFailed            CodeError = "artifact_stat_failed"
+	ErrArtifactListFailed            CodeError = "artifact_list_failed"
+	ErrArtifactJSONInvalid           CodeError = "artifact_json_invalid"
+	ErrDownloadFailed                CodeError = "download_failed"
+	ErrDownloadHTTPError             CodeError = "download_http_error"
+	ErrUploadFailed                  CodeError = "upload_failed"
+	ErrCloneFailed                   CodeError = "clone_failed"
+	ErrMountFailed                   CodeError = "mount_failed"
+	ErrArtifactFailed                CodeError = "artifact_failed"
 )
 
 // Error lets a producer wrap a specific failure while retaining its cause with
 // fmt.Errorf("%w: ...", code). Classification does not parse diagnostic text.
-func (c ErrorCode) Error() string { return string(c) }
+func (c CodeError) Error() string { return string(c) }
 
-func (c ErrorCode) Valid() bool {
+func (c CodeError) Valid() bool {
 	switch c {
-	case ArchiveEmpty, ArchiveUnknownFormat, ArchiveCorrupt, ArchivePathInvalid,
-		ArchiveLayoutMismatch, ArchiveExtractionFailed, ArchiveCreationFailed,
-		ArchiveCompressionUnsupported, ArtifactNotFound, ArtifactPermissionDenied,
-		ArtifactTimeout, ArtifactCanceled, ArtifactReadFailed, ArtifactWriteFailed, ArtifactStatFailed,
-		ArtifactListFailed, ArtifactJSONInvalid, DownloadFailed, DownloadHTTPError,
-		UploadFailed, CloneFailed, MountFailed, ArtifactFailed:
+	case ErrArchiveEmpty, ErrArchiveUnknownFormat, ErrArchiveCorrupt, ErrArchivePathInvalid,
+		ErrArchiveLayoutMismatch, ErrArchiveExtractionFailed, ErrArchiveCreationFailed,
+		ErrArchiveCompressionUnsupported, ErrArtifactNotFound, ErrArtifactPermissionDenied,
+		ErrArtifactTimeout, ErrArtifactCanceled, ErrArtifactReadFailed, ErrArtifactWriteFailed, ErrArtifactStatFailed,
+		ErrArtifactListFailed, ErrArtifactJSONInvalid, ErrDownloadFailed, ErrDownloadHTTPError,
+		ErrUploadFailed, ErrCloneFailed, ErrMountFailed, ErrArtifactFailed:
 		return true
 	}
 	return false
@@ -61,56 +61,56 @@ func (c ErrorCode) Valid() bool {
 
 // FailureCode classifies the operation's actual error. Unclassified codec/tool
 // errors get an operation-level fallback rather than blaming the archive.
-func FailureCode(kind string, err error) ErrorCode {
-	var code ErrorCode
+func FailureCode(kind string, err error) CodeError {
+	var code CodeError
 	if errors.As(err, &code) && code.Valid() {
 		return code
 	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return ArtifactTimeout
+		return ErrArtifactTimeout
 	case errors.Is(err, context.Canceled):
-		return ArtifactCanceled
+		return ErrArtifactCanceled
 	case errors.Is(err, fs.ErrNotExist):
-		return ArtifactNotFound
+		return ErrArtifactNotFound
 	case errors.Is(err, fs.ErrPermission):
-		return ArtifactPermissionDenied
+		return ErrArtifactPermissionDenied
 	}
 	if kind == "unarchive" || kind == "mount" {
 		var corrupt flate.CorruptInputError
 		if errors.As(err, &corrupt) || errors.Is(err, pgzip.ErrHeader) || errors.Is(err, pgzip.ErrChecksum) ||
 			errors.Is(err, tar.ErrHeader) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-			return ArchiveCorrupt
+			return ErrArchiveCorrupt
 		}
 	}
 	if kind == "read" {
 		var syntax *json.SyntaxError
 		if errors.As(err, &syntax) {
-			return ArtifactJSONInvalid
+			return ErrArtifactJSONInvalid
 		}
 	}
 	switch kind {
 	case "unarchive":
-		return ArchiveExtractionFailed
+		return ErrArchiveExtractionFailed
 	case "archive":
-		return ArchiveCreationFailed
+		return ErrArchiveCreationFailed
 	case "download":
-		return DownloadFailed
+		return ErrDownloadFailed
 	case "upload":
-		return UploadFailed
+		return ErrUploadFailed
 	case "clone":
-		return CloneFailed
+		return ErrCloneFailed
 	case "read":
-		return ArtifactReadFailed
+		return ErrArtifactReadFailed
 	case "write":
-		return ArtifactWriteFailed
+		return ErrArtifactWriteFailed
 	case "stat":
-		return ArtifactStatFailed
+		return ErrArtifactStatFailed
 	case "list":
-		return ArtifactListFailed
+		return ErrArtifactListFailed
 	case "mount":
-		return MountFailed
+		return ErrMountFailed
 	default:
-		return ArtifactFailed
+		return ErrArtifactFailed
 	}
 }

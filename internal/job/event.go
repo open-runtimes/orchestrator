@@ -94,7 +94,7 @@ func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
 		data["compression"] = r.Compression
 	}
 	if r.Status == "failed" {
-		code := artifact.ErrorCode(r.FailureReason)
+		code := artifact.CodeError(r.FailureReason)
 		if !code.Valid() {
 			// Old sidecars send prose. Never leak it or guess a specific
 			// cause from its wording during a rolling upgrade.

@@ -63,11 +63,11 @@ func TestArchiveFailureCallback(t *testing.T) {
 				var report job.ArtifactReport
 				if err := json.NewDecoder(req.Body).Decode(&report); err != nil {
 					t.Error(err)
-					w.WriteHeader(400)
+					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
 				events <- job.NewEventBuilder(report.JobID, "orchestrator/sidecar", report.Meta).BuildArtifactEvent(&report).Data
-				w.WriteHeader(200)
+				w.WriteHeader(http.StatusOK)
 			}))
 			defer endpoint.Close()
 			runner := NewRunner("test-build", dir, 10, artifact.DefaultRegistry(),
