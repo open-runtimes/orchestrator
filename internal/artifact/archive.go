@@ -110,7 +110,7 @@ func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 		}
 		return &Result{Status: "success"}
 	default:
-		return &Result{Status: "failed", Error: fmt.Errorf("unsupported archive format: %s (supported: tar, squashfs, erofs)", a.Format)}
+		return &Result{Status: "failed", Error: fmt.Errorf("%w: unsupported archive format: %s (supported: tar, squashfs, erofs)", ErrArchiveUnknownFormat, a.Format)}
 	}
 }
 
@@ -154,7 +154,7 @@ func (a *Archive) applyTar(srcPath, destPath string) *Result {
 		defer lz4Writer.Close()
 		w = lz4Writer
 	default:
-		return &Result{Status: "failed", Error: fmt.Errorf("unsupported tar compression: %q (supported: gzip, zstd, lz4, lz4hc, none)", a.Compression)}
+		return &Result{Status: "failed", Error: fmt.Errorf("%w: unsupported tar compression: %q (supported: gzip, zstd, lz4, lz4hc, none)", ErrArchiveCompressionUnsupported, a.Compression)}
 	}
 
 	tarWriter := tar.NewWriter(w)

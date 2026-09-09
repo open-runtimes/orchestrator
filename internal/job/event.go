@@ -2,6 +2,7 @@ package job
 
 import (
 	"fmt"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/cloudevent"
 	"slices"
 	"time"
@@ -14,6 +15,16 @@ const (
 	CallbackTypeLog      = "orchestrator.job.log"
 	CallbackTypeExit     = "orchestrator.job.exit"
 	CallbackTypeComplete = "orchestrator.job.complete"
+)
+
+// ExitError is the error field of a failed exit callback. The process status
+// remains in exitCode and the backend's existing detail remains in reason.
+type ExitError string
+
+const (
+	ErrorExitNonzero ExitError = "job_exit_nonzero"
+	ErrorFailed      ExitError = "job_failed"
+	ErrorOOM         ExitError = "job_oom"
 )
 
 // MatchesCallbackFilter returns true if the event type should be sent based on the filter.
@@ -82,8 +93,14 @@ func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
 	if r.Compression != "" {
 		data["compression"] = r.Compression
 	}
-	if r.FailureReason != "" {
-		data["error"] = r.FailureReason
+	if r.Status == "failed" {
+		code := artifact.CodeError(r.FailureReason)
+		if !code.Valid() {
+			// Old sidecars send prose. Never leak it or guess a specific
+			// cause from its wording during a rolling upgrade.
+			code = artifact.FailureCode(r.Type, nil)
+		}
+		data["error"] = string(code)
 	}
 	return b.Build(CallbackTypeArtifact, data)
 }
@@ -121,8 +138,15 @@ func (b *EventBuilder) BuildExitEvent(exitCode int, reason, image string, durati
 	if reason != "" {
 		data["reason"] = reason
 	}
-	if err != nil {
-		data["error"] = err.Error()
+	if exitCode != 0 || err != nil {
+		code := ErrorExitNonzero
+		if exitCode == -1 {
+			code = ErrorFailed
+		}
+		if reason == ExitReasonOOM {
+			code = ErrorOOM
+		}
+		data["error"] = string(code)
 	}
 	return b.Build(CallbackTypeExit, data)
 }

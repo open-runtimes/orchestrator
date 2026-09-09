@@ -607,7 +607,7 @@ func (r *Runner) emitArtifact(a artifact.Artifact, res artifact.Result, start ti
 		DurationSeconds: time.Since(start).Seconds(),
 	}
 	if res.Error != nil {
-		report.FailureReason = res.Error.Error()
+		report.FailureReason = string(artifact.FailureCode(a.ArtifactType(), res.Error))
 	}
 	r.emitter.Emit(report)
 }

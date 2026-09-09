@@ -60,7 +60,56 @@ X-Signature-256: sha256=ab12...
 | `orchestrator.job.exit` | Worker exited | `{"jobId", "exitCode", "reason", "image", "durationSeconds", "error", "meta"}` |
 | `orchestrator.job.complete` | Post-job artifacts finished | `{"jobId", "meta"}` |
 
-`content` on artifact events carries the payload of `read` and `list` artifacts: a raw string for `read` (or the decoded JSON value when the artifact sets `format: "json"`), an array of paths for `list`. `exitCode` is `-1` when the job failed before the worker could run (image pull failure, sidecar crash), with the reason in `error`. `reason` names why the worker terminated when the backend can attest to a cause beyond the exit code — currently only `"oom"` (killed by the kernel OOM killer) — and is omitted otherwise, so an exit code alone (e.g. an ambiguous 137) is never over-interpreted. Treat unknown `reason` values as if the field were absent; new causes may be added. `meta` echoes the job's `meta` map for correlation. `exit` fires as soon as the worker's command exits; `complete` fires after every post-job artifact has been processed — including ones that failed. It means "no more events for this job", not that every artifact succeeded: wait for it before fetching artifacts, but join on each `orchestrator.job.artifact` event's `status` to know whether an artifact actually landed. Jobs that fail before the worker runs emit `exit` (with `exitCode: -1`) but no `complete`.
+`content` on artifact events carries the payload of `read` and `list` artifacts: a raw string for `read` (or the decoded JSON value when the artifact sets `format: "json"`), an array of paths for `list`. `exitCode` is `-1` when the job failed before the worker could run (image pull failure, sidecar crash), with `error: "job_failed"` and backend detail in `reason`. `reason` names why the worker terminated when the backend can attest to a cause beyond the exit code — currently only `"oom"` (killed by the kernel OOM killer) — and is omitted otherwise, so an exit code alone (e.g. an ambiguous 137) is never over-interpreted. Treat unknown `reason` values as if the field were absent; new causes may be added. `meta` echoes the job's `meta` map for correlation. `exit` fires as soon as the worker's command exits; `complete` fires after every post-job artifact has been processed — including ones that failed. It means "no more events for this job", not that every artifact succeeded: wait for it before fetching artifacts, but join on each `orchestrator.job.artifact` event's `status` to know whether an artifact actually landed. Jobs that fail before the worker runs emit `exit` (with `exitCode: -1`) but no `complete`.
+
+### Job error values
+
+The existing `error` field is a lower snake-case string enum. It is omitted on
+success. No `errorType` field is added. Artifact details (paths, tool output,
+decoder offsets) remain in sidecar logs, correlated by job ID and artifact ID.
+
+| Artifact `error` | Meaning |
+| --- | --- |
+| `archive_empty` | The archive has no bytes. |
+| `archive_unknown_format` | The input format is not recognized, or an unsupported output format was requested. |
+| `archive_corrupt` | A recognized tar/gzip decoder reports malformed or incomplete data. |
+| `archive_path_invalid` | An archive entry or link violates extraction path rules. |
+| `archive_layout_mismatch` | No entries match the requested root/strip layout. |
+| `archive_extraction_failed` | Another extraction or decoder/tool failure; does not establish corruption. |
+| `archive_creation_failed` | Archive creation failed. |
+| `archive_compression_unsupported` | The requested output compression is unsupported. |
+| `artifact_not_found` | A required filesystem path does not exist. |
+| `artifact_permission_denied` | A filesystem operation was denied. |
+| `artifact_timeout` | The artifact operation's context deadline expired. |
+| `artifact_canceled` | The artifact operation's context was canceled. |
+| `artifact_read_failed` | File reading failed for another reason. |
+| `artifact_write_failed` | File writing failed for another reason. |
+| `artifact_stat_failed` | File metadata lookup failed for another reason. |
+| `artifact_list_failed` | Directory listing failed for another reason. |
+| `artifact_json_invalid` | A JSON read artifact could not parse its input. |
+| `download_http_error` | Download returned an unsuccessful HTTP status. |
+| `download_failed` | Another download failure. |
+| `upload_failed` | Upload failed. |
+| `clone_failed` | Git clone/checkout failed. |
+| `mount_failed` | Mount setup failed. |
+| `artifact_failed` | Unclassified artifact failure. |
+
+Exit callbacks use `job_exit_nonzero` for a nonzero process exit,
+`job_oom` when the backend explicitly reports an OOM kill, and `job_failed` when
+the backend reports failure without a process exit result (`exitCode: -1`).
+The numeric `exitCode` and existing `reason` field retain their meanings.
+
+**Compatibility:** This changes `error` from diagnostic prose to enum values.
+Deploy consumers that accept both before upgrading the service. During a rolling
+upgrade, old sidecar diagnostic strings and unknown future codes are normalized
+to an operation-level fallback by the service; they are never parsed for a more
+specific cause. New sidecar codes pass through older services unchanged. Consumers
+must use a generic message for unknown codes or legacy text.
+
+Subscribe to `orchestrator.job.artifact` even for manual uploads: source extraction
+can fail before any worker logs exist. The artifact callback provides the cause;
+`orchestrator.job.exit` provides the terminal outcome. Handle either delivery order
+and deduplicate by CloudEvent ID.
 
 ### Deployments
 
