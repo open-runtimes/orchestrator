@@ -2,6 +2,7 @@ package job
 
 import (
 	"orchestrator/internal/callback"
+	"strings"
 	"testing"
 	"time"
 )
@@ -212,16 +213,15 @@ func TestApplyThenEmitCallback_FSMUpdatedBeforeCallback(t *testing.T) {
 
 func TestExitErrorCodes(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		signal  Signal
-		code    string
-		message string
-		exit    int
+		name   string
+		signal Signal
+		code   string
+		exit   int
 	}{
-		{"command failed", Exited{ExitCode: 1}, "job_exit_nonzero", "Job exited with code 1", 1},
-		{"oom confirmed", Exited{ExitCode: 137, Reason: ExitReasonOOM}, "job_oom", "Job was killed because it ran out of memory", 137},
-		{"137 without oom evidence", Exited{ExitCode: 137}, "job_exit_nonzero", "Job exited with code 137", 137},
-		{"setup failed", Failed{Reason: "init container failed"}, "job_failed", "Job failed before it could start", -1},
+		{"command failed", Exited{ExitCode: 1}, "job_exit_nonzero", 1},
+		{"oom confirmed", Exited{ExitCode: 137, Reason: ExitReasonOOM}, "job_oom", 137},
+		{"137 without oom evidence", Exited{ExitCode: 137}, "job_exit_nonzero", 137},
+		{"setup failed", Failed{Reason: "init container failed"}, "job_failed", -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			em := NewCallbackEmitter()
@@ -232,8 +232,14 @@ func TestExitErrorCodes(t *testing.T) {
 				t.Fatalf("callbacks = %d", len(events))
 			}
 			data := events[0].Payload.Data
-			if data["error"] != (callback.Failure{Code: tc.code, Message: tc.message}) || data["exitCode"] != tc.exit {
+			failure, _ := data["error"].(callback.Failure)
+			if failure.Code != tc.code || data["exitCode"] != tc.exit {
 				t.Fatalf("callback = %#v", data)
+			}
+			// The message speaks of the job; the backend's reason stays in reason.
+			assertSentence(t, failure.Message, "Job")
+			if strings.Contains(failure.Message, "init container") {
+				t.Errorf("backend vocabulary reached the message: %q", failure.Message)
 			}
 		})
 	}
