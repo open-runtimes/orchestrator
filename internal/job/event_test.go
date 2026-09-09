@@ -1,6 +1,7 @@
 package job
 
 import (
+	"orchestrator/internal/callback"
 	"testing"
 )
 
@@ -46,16 +47,23 @@ func TestBuildArtifactEventOmitsUnknownClassification(t *testing.T) {
 	}
 }
 
+// The code is the branchable half and the message the human half: an
+// unrecognized reason must never be promoted into a specific code, but it is
+// still detail, so it survives as the message.
 func TestBuildArtifactEventReportsFailureCode(t *testing.T) {
-	for _, tc := range []struct{ name, reported, expected string }{
-		{"coded sidecar", "archive_empty", "archive_empty"},
-		{"legacy sidecar", "failed to open /private/source?token=secret", "archive_extraction_failed"},
-		{"future sidecar", "new_archive_code", "archive_extraction_failed"},
-		{"missing reason", "", "archive_extraction_failed"},
+	for _, tc := range []struct{ name, reason, message, code, want string }{
+		{"coded sidecar", "archive_empty", "archive source.tar.gz is empty", "archive_empty", "Archive source.tar.gz is empty"},
+		{"legacy sidecar", "failed to open source", "", "archive_extraction_failed", "Failed to open source"},
+		{"future sidecar", "new_archive_code", "", "archive_extraction_failed", "New_archive_code"},
+		{"missing reason", "", "", "archive_extraction_failed", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			data := artifactEventData(t, &ArtifactReport{ID: "extract", Type: "unarchive", Status: "failed", FailureReason: tc.reported})
-			if data["error"] != tc.expected || data["status"] != "failed" {
+			data := artifactEventData(t, &ArtifactReport{
+				ID: "extract", Type: "unarchive", Status: "failed",
+				FailureReason: tc.reason, FailureMessage: tc.message,
+			})
+			want := callback.Failure{Code: tc.code, Message: tc.want}
+			if data["error"] != want || data["status"] != "failed" {
 				t.Fatalf("unexpected failure callback: %#v", data)
 			}
 		})

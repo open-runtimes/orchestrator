@@ -8,12 +8,13 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"strings"
 
 	"github.com/klauspost/pgzip"
 )
 
-// CodeError is the stable value of a failed artifact callback's error field.
-// Detailed errors remain in sidecar logs; they are not part of the wire enum.
+// CodeError is the stable code of a failed artifact callback's error object.
+// It is the branchable half; the detail travels beside it as the message.
 type CodeError string
 
 const (
@@ -57,6 +58,18 @@ func (c CodeError) Valid() bool {
 		return true
 	}
 	return false
+}
+
+// FailureMessage renders the human-readable half of a callback error. Producers
+// wrap a code as fmt.Errorf("%w: detail", ErrX), so the code prefix is stripped:
+// it travels in its own field, and repeating it reads badly in a message.
+func FailureMessage(err error) string {
+	msg := err.Error()
+	var code CodeError
+	if errors.As(err, &code) {
+		msg = strings.TrimPrefix(msg, string(code)+": ")
+	}
+	return msg
 }
 
 // FailureCode classifies the operation's actual error. Unclassified codec/tool

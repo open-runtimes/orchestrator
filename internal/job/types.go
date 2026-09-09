@@ -78,6 +78,9 @@ type ArtifactReport struct {
 	// FailureReason carries an artifact.CodeError from new sidecars. Older
 	// sidecars send diagnostic prose; the callback builder normalizes it.
 	FailureReason string `json:"failureReason,omitempty"`
+	// FailureMessage is the human-readable detail for this specific failure —
+	// the offending path, status code, or decoder complaint.
+	FailureMessage string `json:"failureMessage,omitempty"`
 
 	// What the artifact turned out to be, sniffed from its header. Two axes:
 	// Format is the container, Compression the codec inside it. Empty when

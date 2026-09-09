@@ -3,6 +3,7 @@ package job
 import (
 	"fmt"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/callback"
 	"orchestrator/internal/cloudevent"
 	"slices"
 	"time"
@@ -17,8 +18,8 @@ const (
 	CallbackTypeComplete = "orchestrator.job.complete"
 )
 
-// ExitError is the error field of a failed exit callback. The process status
-// remains in exitCode and the backend's existing detail remains in reason.
+// ExitError is the code of a failed exit callback's error object. The process
+// status remains in exitCode and the backend's own detail remains in reason.
 type ExitError string
 
 const (
@@ -94,13 +95,13 @@ func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
 		data["compression"] = r.Compression
 	}
 	if r.Status == "failed" {
-		code := artifact.CodeError(r.FailureReason)
+		code, message := artifact.CodeError(r.FailureReason), r.FailureMessage
 		if !code.Valid() {
-			// Old sidecars send prose. Never leak it or guess a specific
-			// cause from its wording during a rolling upgrade.
-			code = artifact.FailureCode(r.Type, nil)
+			// Old sidecars send prose in FailureReason and no message. It is
+			// detail, so it becomes the message — never a guess at the code.
+			code, message = artifact.FailureCode(r.Type, nil), r.FailureReason
 		}
-		data["error"] = string(code)
+		data["error"] = callback.Fail(string(code), message)
 	}
 	return b.Build(CallbackTypeArtifact, data)
 }
@@ -127,7 +128,7 @@ func (b *EventBuilder) BuildCompleteEvent() *cloudevent.Event {
 }
 
 // BuildExitEvent creates an exit event.
-func (b *EventBuilder) BuildExitEvent(exitCode int, reason, image string, durationSeconds float64, err error) *cloudevent.Event {
+func (b *EventBuilder) BuildExitEvent(exitCode int, reason, image string, durationSeconds float64) *cloudevent.Event {
 	data := map[string]any{
 		"jobId":           b.subject,
 		"exitCode":        exitCode,
@@ -138,15 +139,17 @@ func (b *EventBuilder) BuildExitEvent(exitCode int, reason, image string, durati
 	if reason != "" {
 		data["reason"] = reason
 	}
-	if exitCode != 0 || err != nil {
-		code := ErrorExitNonzero
-		if exitCode == -1 {
-			code = ErrorFailed
+	// The message speaks of the job alone; backend vocabulary (pods, init
+	// containers, sidecars) stays in reason, where it is documented as such.
+	if exitCode != 0 {
+		code, message := ErrorExitNonzero, fmt.Sprintf("job exited with code %d", exitCode)
+		switch {
+		case reason == ExitReasonOOM:
+			code, message = ErrorOOM, "job was killed because it ran out of memory"
+		case exitCode == -1:
+			code, message = ErrorFailed, "job failed before it could start"
 		}
-		if reason == ExitReasonOOM {
-			code = ErrorOOM
-		}
-		data["error"] = string(code)
+		data["error"] = callback.Fail(string(code), message)
 	}
 	return b.Build(CallbackTypeExit, data)
 }

@@ -60,15 +60,30 @@ X-Signature-256: sha256=ab12...
 | `orchestrator.job.exit` | Worker exited | `{"jobId", "exitCode", "reason", "image", "durationSeconds", "error", "meta"}` |
 | `orchestrator.job.complete` | Post-job artifacts finished | `{"jobId", "meta"}` |
 
-`content` on artifact events carries the payload of `read` and `list` artifacts: a raw string for `read` (or the decoded JSON value when the artifact sets `format: "json"`), an array of paths for `list`. `exitCode` is `-1` when the job failed before the worker could run (image pull failure, sidecar crash), with `error: "job_failed"` and backend detail in `reason`. `reason` names why the worker terminated when the backend can attest to a cause beyond the exit code — currently only `"oom"` (killed by the kernel OOM killer) — and is omitted otherwise, so an exit code alone (e.g. an ambiguous 137) is never over-interpreted. Treat unknown `reason` values as if the field were absent; new causes may be added. `meta` echoes the job's `meta` map for correlation. `exit` fires as soon as the worker's command exits; `complete` fires after every post-job artifact has been processed — including ones that failed. It means "no more events for this job", not that every artifact succeeded: wait for it before fetching artifacts, but join on each `orchestrator.job.artifact` event's `status` to know whether an artifact actually landed. Jobs that fail before the worker runs emit `exit` (with `exitCode: -1`) but no `complete`.
+`content` on artifact events carries the payload of `read` and `list` artifacts: a raw string for `read` (or the decoded JSON value when the artifact sets `format: "json"`), an array of paths for `list`. `exitCode` is `-1` when the job failed before the worker could run (image pull failure, sidecar crash), with `error.code: "job_failed"` and backend detail in `reason`. `reason` names why the worker terminated when the backend can attest to a cause beyond the exit code — currently only `"oom"` (killed by the kernel OOM killer) — and is omitted otherwise, so an exit code alone (e.g. an ambiguous 137) is never over-interpreted. Treat unknown `reason` values as if the field were absent; new causes may be added. `meta` echoes the job's `meta` map for correlation. `exit` fires as soon as the worker's command exits; `complete` fires after every post-job artifact has been processed — including ones that failed. It means "no more events for this job", not that every artifact succeeded: wait for it before fetching artifacts, but join on each `orchestrator.job.artifact` event's `status` to know whether an artifact actually landed. Jobs that fail before the worker runs emit `exit` (with `exitCode: -1`) but no `complete`.
 
-### Job error values
+### The `error` object
 
-The existing `error` field is a lower snake-case string enum. It is omitted on
-success. No `errorType` field is added. Artifact details (paths, tool output,
-decoder offsets) remain in sidecar logs, correlated by job ID and artifact ID.
+Every callback that reports a failure carries the same `error` object, and omits
+it entirely on success:
 
-| Artifact `error` | Meaning |
+```json
+{
+  "error": {
+    "code": "archive_unknown_format",
+    "message": "Unrecognized archive format for source.tar.gz"
+  }
+}
+```
+
+`code` is a lower snake-case enum — branch on it. `message` is a sentence for a
+person: detail about this one occurrence (the offending path, an HTTP status, a
+decoder's complaint) in terms of jobs and deployments, never of the backend
+running them. Show it, never parse it, and expect its wording to change.
+
+#### Job error codes
+
+| Artifact `error.code` | Meaning |
 | --- | --- |
 | `archive_empty` | The archive has no bytes. |
 | `archive_unknown_format` | The input format is not recognized, or an unsupported output format was requested. |
@@ -99,12 +114,13 @@ Exit callbacks use `job_exit_nonzero` for a nonzero process exit,
 the backend reports failure without a process exit result (`exitCode: -1`).
 The numeric `exitCode` and existing `reason` field retain their meanings.
 
-**Compatibility:** This changes `error` from diagnostic prose to enum values.
-Deploy consumers that accept both before upgrading the service. During a rolling
-upgrade, old sidecar diagnostic strings and unknown future codes are normalized
-to an operation-level fallback by the service; they are never parsed for a more
-specific cause. New sidecar codes pass through older services unchanged. Consumers
-must use a generic message for unknown codes or legacy text.
+**Compatibility:** `error` changed from a string to this object. Deploy consumers
+that accept both before upgrading the service. During a rolling upgrade, an old
+sidecar's diagnostic prose and unknown future codes are normalized by the service
+to an operation-level `code`, with the original text kept as the `message`; the
+text is never parsed for a more specific cause. New sidecar codes pass through
+older services unchanged. Treat an unrecognized `code` as a generic failure and
+fall back to `message`.
 
 Subscribe to `orchestrator.job.artifact` even for manual uploads: source extraction
 can fail before any worker logs exist. The artifact callback provides the cause;
@@ -117,7 +133,7 @@ and deduplicate by CloudEvent ID.
 | --- | --- | --- |
 | `orchestrator.deployment.response` | An [async request](deployments.md#async-requests) completed | `{"deploymentId", "invocationId", "requestMethod", "requestPath", "requestHeaders", "durationSeconds", "statusCode", "body", "bodyEncoding", "bodyTruncated", "error"}` |
 
-`invocationId` matches the `X-Invocation-Id` header from the original `202`. `requestMethod`, `requestPath`, and `requestHeaders` echo the original request so a consumer can reconstruct its record from the callback alone — request headers double as a caller-defined metadata channel that round-trips. `requestHeaders` is a `{name: [values]}` map (repeated values are preserved); the orchestrator's own `Prefer`/`X-Invocation-Id` and credential headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) are never echoed, and if the headers exceed a size cap they're dropped in favor of `"requestHeadersTruncated": true`. `requestPath` is likewise bounded — an over-long path+query is cut with `"requestPathTruncated": true` — so a large request target can't make the callback undeliverable. `durationSeconds` is the workload round-trip time (it excludes any cold-start wait) and is absent when the request never reached a replica. `body` is the workload's response body; when it isn't valid UTF-8 it arrives base64-encoded with `"bodyEncoding": "base64"`, and bodies over 1 MiB are truncated with `"bodyTruncated": true`. If the request never reached a replica (cold-start timeout, forward failure), `statusCode` and `body` are absent and `error` says why.
+`invocationId` matches the `X-Invocation-Id` header from the original `202`. `requestMethod`, `requestPath`, and `requestHeaders` echo the original request so a consumer can reconstruct its record from the callback alone — request headers double as a caller-defined metadata channel that round-trips. `requestHeaders` is a `{name: [values]}` map (repeated values are preserved); the orchestrator's own `Prefer`/`X-Invocation-Id` and credential headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`) are never echoed, and if the headers exceed a size cap they're dropped in favor of `"requestHeadersTruncated": true`. `requestPath` is likewise bounded — an over-long path+query is cut with `"requestPathTruncated": true` — so a large request target can't make the callback undeliverable. `durationSeconds` is the workload round-trip time (it excludes any cold-start wait) and is absent when the request never reached a replica. `body` is the workload's response body; when it isn't valid UTF-8 it arrives base64-encoded with `"bodyEncoding": "base64"`, and bodies over 1 MiB are truncated with `"bodyTruncated": true`. If the request never reached a replica (cold-start timeout, forward failure), `statusCode` and `body` are absent and `error` says why — `deployment_no_capacity` when nothing was ready in time to serve it, `deployment_forward_failed` when the request could not be delivered, and `deployment_response_unreadable` when the deployment answered but its body could not be read (there, `statusCode` is present).
 
 ## Verifying signatures
 
