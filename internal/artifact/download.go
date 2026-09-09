@@ -60,7 +60,7 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return &Result{Status: "failed", Error: fmt.Errorf("download failed with status %d", resp.StatusCode)}
+		return &Result{Status: "failed", Error: fmt.Errorf("%w: download failed with status %d", DownloadHTTPError, resp.StatusCode)}
 	}
 
 	tmpPath := destPath + ".partial"

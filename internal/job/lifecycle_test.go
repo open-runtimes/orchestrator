@@ -208,3 +208,31 @@ func TestApplyThenEmitCallback_FSMUpdatedBeforeCallback(t *testing.T) {
 		t.Errorf("want Running state when start callback fires, got %s", stateAtCallback)
 	}
 }
+
+func TestExitErrorCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		signal Signal
+		code   string
+		exit   int
+	}{
+		{"command failed", Exited{ExitCode: 1}, "job_exit_nonzero", 1},
+		{"oom confirmed", Exited{ExitCode: 137, Reason: ExitReasonOOM}, "job_oom", 137},
+		{"137 without oom evidence", Exited{ExitCode: 137}, "job_exit_nonzero", 137},
+		{"setup failed", Failed{Reason: "init container failed"}, "job_failed", -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			em := NewCallbackEmitter()
+			var events []*CallbackEnvelope
+			em.Register(func(e *CallbackEnvelope) { events = append(events, e) })
+			EmitCallback(em, "job", "alpine", &CallbackDest{URL: "http://callback"}, tc.signal)
+			if len(events) != 1 {
+				t.Fatalf("callbacks = %d", len(events))
+			}
+			data := events[0].Payload.Data
+			if data["error"] != tc.code || data["exitCode"] != tc.exit {
+				t.Fatalf("callback = %#v", data)
+			}
+		})
+	}
+}

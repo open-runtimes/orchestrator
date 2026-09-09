@@ -46,19 +46,19 @@ func TestBuildArtifactEventOmitsUnknownClassification(t *testing.T) {
 	}
 }
 
-func TestBuildArtifactEventReportsFailureReason(t *testing.T) {
-	data := artifactEventData(t, &ArtifactReport{
-		ID:            "code",
-		Type:          "unarchive",
-		Status:        "failed",
-		FailureReason: "archive is empty",
-	})
-
-	if data["error"] != "archive is empty" {
-		t.Errorf("error = %v, want %q", data["error"], "archive is empty")
-	}
-	if data["status"] != "failed" {
-		t.Errorf("status = %v, want failed", data["status"])
+func TestBuildArtifactEventReportsFailureCode(t *testing.T) {
+	for _, tc := range []struct{ name, reported, expected string }{
+		{"coded sidecar", "archive_empty", "archive_empty"},
+		{"legacy sidecar", "failed to open /private/source?token=secret", "archive_extraction_failed"},
+		{"future sidecar", "new_archive_code", "archive_extraction_failed"},
+		{"missing reason", "", "archive_extraction_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := artifactEventData(t, &ArtifactReport{ID: "extract", Type: "unarchive", Status: "failed", FailureReason: tc.reported})
+			if data["error"] != tc.expected || data["status"] != "failed" {
+				t.Fatalf("unexpected failure callback: %#v", data)
+			}
+		})
 	}
 }
 
