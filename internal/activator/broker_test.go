@@ -402,8 +402,8 @@ func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 	}
 	data := waitEvent(t, queue)
 	failure, _ := data["error"].(callback.Failure)
-	if failure.Code != ErrorNoCapacity {
-		t.Errorf("callback error = %v, want a %s failure", data["error"], ErrorNoCapacity)
+	if failure.Code != "deployment_no_capacity" {
+		t.Errorf("callback error = %v, want a deployment_no_capacity failure", data["error"])
 	}
 	if _, ok := data["statusCode"]; ok {
 		t.Error("statusCode present on a request that never forwarded")

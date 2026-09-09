@@ -97,9 +97,12 @@ func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
 	if r.Status == "failed" {
 		code, message := artifact.CodeError(r.FailureReason), r.FailureMessage
 		if !code.Valid() {
-			// Old sidecars send prose in FailureReason and no message. It is
-			// detail, so it becomes the message — never a guess at the code.
-			code, message = artifact.FailureCode(r.Type, nil), r.FailureReason
+			// Old sidecars send prose in FailureReason. It was never meant for
+			// the wire, so it is neither parsed for a code nor forwarded.
+			code = artifact.FailureCode(r.Type, nil)
+		}
+		if message == "" {
+			message = fmt.Sprintf("artifact %s failed", r.ID)
 		}
 		data["error"] = callback.Fail(string(code), message)
 	}

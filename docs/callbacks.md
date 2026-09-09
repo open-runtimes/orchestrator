@@ -117,8 +117,8 @@ The numeric `exitCode` and existing `reason` field retain their meanings.
 **Compatibility:** `error` changed from a string to this object. Deploy consumers
 that accept both before upgrading the service. During a rolling upgrade, an old
 sidecar's diagnostic prose and unknown future codes are normalized by the service
-to an operation-level `code`, with the original text kept as the `message`; the
-text is never parsed for a more specific cause. New sidecar codes pass through
+to an operation-level `code` with a generic `message`; the text is neither parsed
+for a more specific cause nor forwarded. New sidecar codes pass through
 older services unchanged. Treat an unrecognized `code` as a generic failure and
 fall back to `message`.
 
