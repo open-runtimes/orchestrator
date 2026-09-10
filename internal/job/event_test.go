@@ -1,8 +1,20 @@
 package job
 
 import (
+	"orchestrator/internal/callback"
+	"strings"
 	"testing"
+	"unicode"
 )
+
+// assertSentence checks the human half of a failure: something to show, cased
+// as a sentence, and naming what it is about.
+func assertSentence(t *testing.T, message, mentions string) {
+	t.Helper()
+	if message == "" || !unicode.IsUpper([]rune(message)[0]) || !strings.Contains(message, mentions) {
+		t.Errorf("message = %q, want a sentence mentioning %q", message, mentions)
+	}
+}
 
 func artifactEventData(t *testing.T, r *ArtifactReport) map[string]any {
 	t.Helper()
@@ -46,17 +58,31 @@ func TestBuildArtifactEventOmitsUnknownClassification(t *testing.T) {
 	}
 }
 
+// The code is the branchable half and the message the human half. An
+// unrecognized reason is never promoted into a specific code, and never
+// forwarded either: old sidecars wrote diagnostics meant for their own logs.
+//
+// The message's wording is free to change; what is pinned is that it names the
+// thing that failed and never carries the legacy diagnostic.
 func TestBuildArtifactEventReportsFailureCode(t *testing.T) {
-	for _, tc := range []struct{ name, reported, expected string }{
-		{"coded sidecar", "archive_empty", "archive_empty"},
-		{"legacy sidecar", "failed to open /private/source?token=secret", "archive_extraction_failed"},
-		{"future sidecar", "new_archive_code", "archive_extraction_failed"},
-		{"missing reason", "", "archive_extraction_failed"},
+	for _, tc := range []struct{ name, reason, message, code, mentions string }{
+		{"coded sidecar", "archive_empty", "archive source.tar.gz is empty", "archive_empty", "source.tar.gz"},
+		{"legacy sidecar", "failed to open /private/source?token=secret", "", "archive_extraction_failed", "extract"},
+		{"future sidecar", "new_archive_code", "", "archive_extraction_failed", "extract"},
+		{"missing reason", "", "", "archive_extraction_failed", "extract"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			data := artifactEventData(t, &ArtifactReport{ID: "extract", Type: "unarchive", Status: "failed", FailureReason: tc.reported})
-			if data["error"] != tc.expected || data["status"] != "failed" {
+			data := artifactEventData(t, &ArtifactReport{
+				ID: "extract", Type: "unarchive", Status: "failed",
+				FailureReason: tc.reason, FailureMessage: tc.message,
+			})
+			failure, _ := data["error"].(callback.Failure)
+			if failure.Code != tc.code || data["status"] != "failed" {
 				t.Fatalf("unexpected failure callback: %#v", data)
+			}
+			assertSentence(t, failure.Message, tc.mentions)
+			if strings.Contains(failure.Message, "token=secret") {
+				t.Errorf("legacy diagnostic reached the wire: %q", failure.Message)
 			}
 		})
 	}

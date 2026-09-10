@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"orchestrator/internal/callback"
 	"orchestrator/internal/deployment"
 	"strings"
 	"sync"
@@ -400,8 +401,9 @@ func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 		t.Fatalf("got %d, want 202 (failure arrives on the callback)", rec.Code)
 	}
 	data := waitEvent(t, queue)
-	if data["error"] != "no serving capacity became ready" {
-		t.Errorf("callback error = %v, want hold-timeout message", data["error"])
+	failure, _ := data["error"].(callback.Failure)
+	if failure.Code != "deployment_no_capacity" {
+		t.Errorf("callback error = %v, want a deployment_no_capacity failure", data["error"])
 	}
 	if _, ok := data["statusCode"]; ok {
 		t.Error("statusCode present on a request that never forwarded")

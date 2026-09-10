@@ -30,7 +30,7 @@ Job orchestration service for running containerized workloads with async callbac
 - `internal/` — everything. A service exposes binaries, not packages, so nothing here is importable from outside the module (there is no `pkg/`: it is not a Go standard, and `internal/` is the compiler-enforced one). Every domain package parents its own adapters: `internal/job/{docker,kubernetes}`, `internal/deployment/{docker,kubernetes}`, `internal/pool/kubernetes`, `internal/sandbox/{docker,kubernetes}` — the directory says which domain a backend implements.
   - Domain + API types (each with its backends beneath): job, deployment, pool, sandbox; plus artifact, volume, lifecycle (run-to-completion FSM)
   - Machinery: api, server, warm (warm-pool engine: pods, claim, replenish, GC — shared by pools and sandboxes), claim (the claim protocol), workload (the workload-sidecar contract), proxy (that sidecar), sidecar (artifact runner), activator, autoscaler, dispatcher, kube, config, observability, apperrors
-  - Utilities with no dependency on any of the above: backoff, circuitbreaker, cloudevent, emitter
+  - Utilities with no dependency on any of the above: backoff, circuitbreaker, callback (the shared callback payload schema), cloudevent, emitter
 - `charts/orchestrator/` — Helm chart
 - `hack/` — dev-only assets (kind config, dev values, install-tools.sh)
 - `Tiltfile` — live-reload dev loop against kind

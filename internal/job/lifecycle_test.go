@@ -1,6 +1,8 @@
 package job
 
 import (
+	"orchestrator/internal/callback"
+	"strings"
 	"testing"
 	"time"
 )
@@ -230,8 +232,14 @@ func TestExitErrorCodes(t *testing.T) {
 				t.Fatalf("callbacks = %d", len(events))
 			}
 			data := events[0].Payload.Data
-			if data["error"] != tc.code || data["exitCode"] != tc.exit {
+			failure, _ := data["error"].(callback.Failure)
+			if failure.Code != tc.code || data["exitCode"] != tc.exit {
 				t.Fatalf("callback = %#v", data)
+			}
+			// The message speaks of the job; the backend's reason stays in reason.
+			assertSentence(t, failure.Message, "Job")
+			if strings.Contains(failure.Message, "init container") {
+				t.Errorf("backend vocabulary reached the message: %q", failure.Message)
 			}
 		})
 	}

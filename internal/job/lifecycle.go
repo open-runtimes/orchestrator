@@ -1,7 +1,5 @@
 package job
 
-import "fmt"
-
 // CallbackDest holds the callback destination used when emitting lifecycle events.
 // It is backend-agnostic: the Docker orchestrator builds it from container labels
 // or a job.Request; a Kubernetes backend would build it the same way.
@@ -58,11 +56,6 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 }
 
 func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, exitCode int, reason string, durationSeconds float64) {
-	var exitErr error
-	if exitCode != 0 {
-		exitErr = fmt.Errorf("exit code %d", exitCode)
-	}
-
 	var callbackURL, signingKey string
 	var eventFilter []string
 	var meta map[string]string
@@ -74,7 +67,7 @@ func emitExitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDe
 	}
 
 	builder := NewEventBuilder(jobID, "orchestrator/service", meta)
-	event := builder.BuildExitEvent(exitCode, reason, image, durationSeconds, exitErr)
+	event := builder.BuildExitEvent(exitCode, reason, image, durationSeconds)
 	if MatchesCallbackFilter(event.Type, eventFilter) {
 		em.Emit(&CallbackEnvelope{
 			Payload:     event,

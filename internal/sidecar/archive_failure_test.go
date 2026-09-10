@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/callback"
 	"orchestrator/internal/job"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,20 +38,24 @@ func TestArchiveFailureCallback(t *testing.T) {
 		}
 		return buf.Bytes()
 	}
+	// mentions is the file or entry the callback's human-readable half must
+	// name, so a subscriber can tell what failed without the sidecar logs. The
+	// wording around it is the decoder's, and free to change.
 	for _, tc := range []struct {
-		name   string
-		source []byte
-		code   string
-		subdir string
+		name     string
+		source   []byte
+		code     string
+		mentions string
+		subdir   string
 	}{
 		// Gzip header followed by a reserved DEFLATE block type (BTYPE=3).
-		{"corrupt deflate", []byte{0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 7}, "archive_corrupt", ""},
-		{"truncated tar", truncated.Bytes(), "archive_corrupt", ""},
-		{"empty archive", []byte{}, "archive_empty", ""},
-		{"missing archive", nil, "artifact_not_found", ""},
-		{"unknown format", []byte("not an archive"), "archive_unknown_format", ""},
-		{"invalid path", archive("../outside"), "archive_path_invalid", ""},
-		{"missing root directory", archive("package.json"), "archive_layout_mismatch", "nonexistent"},
+		{"corrupt deflate", []byte{0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3, 7}, "archive_corrupt", "", ""},
+		{"truncated tar", truncated.Bytes(), "archive_corrupt", "", ""},
+		{"empty archive", []byte{}, "archive_empty", "source.tar.gz", ""},
+		{"missing archive", nil, "artifact_not_found", "source.tar.gz", ""},
+		{"unknown format", []byte("not an archive"), "archive_unknown_format", "source.tar.gz", ""},
+		{"invalid path", archive("../outside"), "archive_path_invalid", "../outside", ""},
+		{"missing root directory", archive("package.json"), "archive_layout_mismatch", "nonexistent", "nonexistent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -81,8 +87,10 @@ func TestArchiveFailureCallback(t *testing.T) {
 			}
 			select {
 			case data := <-events:
-				if data["status"] != "failed" || data["artifactId"] != "extract" || data["artifactType"] != "unarchive" || data["error"] != tc.code {
-					t.Fatalf("failure code was lost across the sidecar HTTP report and callback: %#v", data)
+				failure, _ := data["error"].(callback.Failure)
+				if data["status"] != "failed" || data["artifactId"] != "extract" || data["artifactType"] != "unarchive" ||
+					failure.Code != tc.code || failure.Message == "" || !strings.Contains(failure.Message, tc.mentions) {
+					t.Fatalf("failure detail was lost across the sidecar HTTP report and callback: %#v", data)
 				}
 			default:
 				t.Fatal("no artifact callback received")

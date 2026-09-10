@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/callback"
 	"orchestrator/internal/cloudevent"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
@@ -22,6 +23,14 @@ const (
 	// maxCallbackResponseBody bounds the response body shipped in the
 	// .response callback; larger bodies are truncated and flagged.
 	maxCallbackResponseBody = 1 << 20 // 1 MiB
+)
+
+// Error codes of a deployment response callback: the request never reached the
+// workload, or its response could not be read back.
+const (
+	ErrorNoCapacity         = "deployment_no_capacity"
+	ErrorForwardFailed      = "deployment_forward_failed"
+	ErrorResponseUnreadable = "deployment_response_unreadable"
 )
 
 // deploymentBroker adds async delivery to the shared hold-and-forward broker.
@@ -95,7 +104,8 @@ func (b *deploymentBroker) forwardAsync(r *http.Request, key string, spec *deplo
 
 	target, err := b.await(ctx, key, hold, c)
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, "no serving capacity became ready")
+		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, callback.Fail(ErrorNoCapacity,
+			"the deployment had no capacity ready in time to serve the request"))
 		return
 	}
 
@@ -111,14 +121,16 @@ func (b *deploymentBroker) forwardAsync(r *http.Request, key string, spec *deplo
 	elapsed := time.Since(start)
 	if err != nil {
 		slog.Warn("Async forward failed", "key", key, "invocationId", invocationID, "error", err)
-		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, "forward failed: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, 0, 0, nil, false, callback.Fail(ErrorForwardFailed,
+			"the request could not be delivered to the deployment: "+err.Error()))
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxCallbackResponseBody+1))
 	if err != nil {
-		b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, nil, false, "failed to read response: "+err.Error())
+		b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, nil, false, callback.Fail(ErrorResponseUnreadable,
+			"the deployment's response could not be read: "+err.Error()))
 		return
 	}
 	truncated := false
@@ -126,14 +138,14 @@ func (b *deploymentBroker) forwardAsync(r *http.Request, key string, spec *deplo
 		respBody = respBody[:maxCallbackResponseBody]
 		truncated = true
 	}
-	b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, respBody, truncated, "")
+	b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, respBody, truncated, callback.Failure{})
 }
 
 // dispatchResponse emits the orchestrator.deployment.response CloudEvent. The
 // original request's method, path, and headers are echoed back so a consumer
 // can reconstruct its record from the callback alone — request headers double
 // as a caller-defined metadata channel that round-trips.
-func (b *deploymentBroker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, duration time.Duration, status int, body []byte, truncated bool, errMsg string) {
+func (b *deploymentBroker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, duration time.Duration, status int, body []byte, truncated bool, failure callback.Failure) {
 	data := map[string]any{
 		"deploymentId":  spec.ID,
 		"invocationId":  invocationID,
@@ -170,13 +182,13 @@ func (b *deploymentBroker) dispatchResponse(spec *deployment.Request, invocation
 		}
 		data["bodyTruncated"] = truncated
 	}
-	if errMsg != "" {
-		data["error"] = errMsg
+	if failure.Code != "" {
+		data["error"] = failure
 	}
 
 	if b.rec != nil {
 		result := "delivered"
-		if errMsg != "" {
+		if failure.Code != "" {
 			result = "failed"
 		}
 		b.rec.RecordActivatorAsync(context.Background(), b.component, result)

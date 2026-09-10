@@ -608,6 +608,7 @@ func (r *Runner) emitArtifact(a artifact.Artifact, res artifact.Result, start ti
 	}
 	if res.Error != nil {
 		report.FailureReason = string(artifact.FailureCode(a.ArtifactType(), res.Error))
+		report.FailureMessage = artifact.FailureMessage(res.Error)
 	}
 	r.emitter.Emit(report)
 }
