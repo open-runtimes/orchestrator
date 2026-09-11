@@ -8,7 +8,7 @@ func TestChecker_Liveness(t *testing.T) {
 	t.Parallel()
 	checker := NewChecker(nil)
 
-	response := checker.Liveness(t.Context())
+	response := checker.Liveness()
 
 	if response.Status != StatusHealthy {
 		t.Errorf("Expected healthy status, got %s", response.Status)

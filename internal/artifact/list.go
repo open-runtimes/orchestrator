@@ -40,7 +40,7 @@ func (a *List) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "success", Content: []string{}}
 	}
 
-	var files []string
+	files := []string{} // an empty listing serializes as [], never null
 
 	if recursive {
 		err = filepath.Walk(srcPath, a.walkCollect(srcPath, &files))

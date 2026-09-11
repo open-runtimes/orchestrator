@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"orchestrator/internal/backoff"
 	"orchestrator/internal/circuitbreaker"
 	"orchestrator/internal/cloudevent"
 	"orchestrator/internal/observability"
@@ -59,7 +60,7 @@ func NewMemory(cfg Config, metrics *observability.Metrics) *Memory {
 		WithRetry(
 			HTTPSender(cloudevent.NewSender(cfg.HTTPTimeout)),
 			defaultMaxRetries,
-			nil,
+			backoff.Config{},
 			func() { d.retriesTotal.Add(1) },
 		),
 		breakers,

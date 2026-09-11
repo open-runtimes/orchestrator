@@ -40,7 +40,9 @@ func (r *IdleReaper) window(pod *corev1.Pod) time.Duration {
 	var spec struct {
 		IdleTimeoutSeconds int `json:"idleTimeoutSeconds"`
 	}
-	r.m.Spec(pod, &spec)
+	if err := r.m.Spec(pod, &spec); err != nil {
+		slog.Warn("Undecodable claim spec; the claim will not be reaped for idleness", "pod", pod.Name, "error", err)
+	}
 	return time.Duration(spec.IdleTimeoutSeconds) * time.Second
 }
 

@@ -77,7 +77,6 @@ type Runner struct {
 	jobID            string
 	sharedVolumePath string
 	timeoutSeconds   int
-	registry         *artifact.Registry
 	waitFn           SignalFunc
 	mounter          Mounter
 	mounted          []string // mount targets to unmount on teardown
@@ -89,12 +88,11 @@ type Runner struct {
 
 // NewRunner creates a new sidecar runner. Production callers pass WithArtifactListener.
 // Tests pass WithSignalFunc and/or WithArtifactListener to replace OS-level seams.
-func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, reg *artifact.Registry, opts ...Option) *Runner {
+func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, opts ...Option) *Runner {
 	r := &Runner{
 		jobID:            jobID,
 		sharedVolumePath: sharedVolumePath,
 		timeoutSeconds:   timeoutSeconds,
-		registry:         reg,
 		waitFn:           waitForSignal,
 		mounter:          defaultMounter(),
 		postFileGrace:    defaultPostJobFileGrace,
@@ -208,8 +206,8 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 		// The overlay (and any restored upper) survived the restart; only the
 		// sync loops died with the process.
 		logger.Info("Adopted mounts from a previous incarnation")
-		for _, a := range mounts {
-			if m, ok := a.(*artifact.Mount); ok && m.Sync != "" {
+		for _, m := range mounts {
+			if m.Sync != "" {
 				r.startSync(m)
 			}
 		}
@@ -264,8 +262,7 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 // Mounts are skipped here, not dropped: on a job the post sidecar in the same
 // pod establishes them before the worker starts, so this phase must leave them
 // alone. A consumer with no post sidecar cannot honour a mount at all, and says
-// so before it ever gets here — the serving registry rejects the type at
-// validation, and the claim endpoint refuses it (internal/proxy/pool.go).
+// so before it ever gets here — the claim endpoint refuses it (internal/proxy/pool.go).
 func (r *Runner) RunPre(ctx context.Context, artifacts []artifact.Artifact) error {
 	_, rest := splitMounts(artifacts)
 	preJob, _ := artifact.Partition(rest)
@@ -307,9 +304,8 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 
 	// A synced mount is restored before its overlay is stacked: the delta has to
 	// be in the upper layer when the workload first looks, not merged in after.
-	for _, a := range mounts {
-		m, ok := a.(*artifact.Mount)
-		if !ok || m.Sync == "" {
+	for _, m := range mounts {
+		if m.Sync == "" {
 			continue
 		}
 		if err := r.restoreDelta(ctx, m); err != nil {
@@ -323,8 +319,8 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 
 	// Now that the overlay is up, keep pushing what the workload changes. Stops
 	// (and flushes) in Release.
-	for _, a := range mounts {
-		if m, ok := a.(*artifact.Mount); ok && m.Sync != "" {
+	for _, m := range mounts {
+		if m.Sync != "" {
 			r.startSync(m)
 		}
 	}
@@ -415,36 +411,26 @@ func (r *Runner) phaseTimeout() time.Duration {
 // the container process that established them. If every requested target is
 // still mounted, track them so normal teardown unmounts them. A partial set is
 // stale state: tear it down before establishing the complete declaration.
-func (r *Runner) adoptExistingMounts(mounts []artifact.Artifact) (bool, error) {
-	targets := make([]string, 0, len(mounts))
-	mounted := make([]bool, 0, len(mounts))
-	count := 0
-	for _, a := range mounts {
-		m, ok := a.(*artifact.Mount)
-		if !ok {
-			continue
-		}
+func (r *Runner) adoptExistingMounts(mounts []*artifact.Mount) (bool, error) {
+	var active []string // targets found mounted, in declaration order
+	for _, m := range mounts {
 		target := filepath.Join(r.sharedVolumePath, m.Out)
-		active, err := r.mounter.IsMounted(target)
+		mounted, err := r.mounter.IsMounted(target)
 		if err != nil {
 			return false, fmt.Errorf("inspect mount %s: %w", m.ID, err)
 		}
-		targets = append(targets, target)
-		mounted = append(mounted, active)
-		if active {
-			count++
+		if mounted {
+			active = append(active, target)
 		}
 	}
 
-	if count == len(targets) && count > 0 {
-		r.mounted = append(r.mounted, targets...)
+	if len(active) == len(mounts) && len(mounts) > 0 {
+		r.mounted = append(r.mounted, active...)
 		return true, nil
 	}
-	for i := len(targets) - 1; i >= 0; i-- {
-		if mounted[i] {
-			if err := r.mounter.Unmount(targets[i]); err != nil {
-				return false, fmt.Errorf("remove partial mount %s: %w", targets[i], err)
-			}
+	for i := len(active) - 1; i >= 0; i-- {
+		if err := r.mounter.Unmount(active[i]); err != nil {
+			return false, fmt.Errorf("remove partial mount %s: %w", active[i], err)
 		}
 	}
 	return false, nil
@@ -452,12 +438,8 @@ func (r *Runner) adoptExistingMounts(mounts []artifact.Artifact) (bool, error) {
 
 // establishMounts mounts each image read-only into the workspace. A failure
 // aborts the job — the worker must not start without its inputs.
-func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact) error {
-	for _, a := range mounts {
-		m, ok := a.(*artifact.Mount)
-		if !ok {
-			continue
-		}
+func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount) error {
+	for _, m := range mounts {
 		image := filepath.Join(r.sharedVolumePath, m.In)
 		target := filepath.Join(r.sharedVolumePath, m.Out)
 
@@ -494,13 +476,13 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []artifact.Artifact
 			}
 		}
 		if err != nil {
-			r.emitArtifact(a, artifact.Result{Status: "failed", Error: err}, start)
+			r.emitArtifact(m, artifact.Result{Status: "failed", Error: err}, start)
 			slog.With("artifactId", m.ID, "error", err).Error("Mount failed")
 			return fmt.Errorf("mount %s: %w", m.ID, err)
 		}
 
 		r.mounted = append(r.mounted, target)
-		r.emitArtifact(a, artifact.Result{Status: "success", Format: format, Compression: compression}, start)
+		r.emitArtifact(m, artifact.Result{Status: "success", Format: format, Compression: compression}, start)
 		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out, "format", format, "compression", compression).Info("Mounted image")
 	}
 	return nil
@@ -550,14 +532,15 @@ func (r *Runner) unmountAll() error {
 	return errors.Join(errs...)
 }
 
-// processArtifacts processes artifacts in dependency order.
-// For post-job artifacts, it waits for files to appear before processing.
 // s3Configurable is implemented by artifacts that transfer over s3:// and need
 // SigV4 credentials. Download and Upload satisfy it; artifacts that never touch
 // S3 do not, so the runner injects credentials only where they are used.
 type s3Configurable interface {
 	SetS3Credentials(config.S3Credentials)
 }
+
+// processArtifacts processes artifacts in dependency order. For post-job
+// artifacts, it waits for files to appear before processing.
 
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
@@ -566,7 +549,7 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 			c.SetS3Credentials(r.s3)
 		}
 		if waitForFiles {
-			if srcPath := r.registry.SourcePath(a); srcPath != "" {
+			if srcPath := artifact.SourceFile(a); srcPath != "" {
 				fullPath := filepath.Join(r.sharedVolumePath, srcPath)
 				// In Run() the parent ctx carries the job timeout, so the
 				// actual window is min(remaining job time, grace) — report the
@@ -634,10 +617,4 @@ func (r *Runner) waitForPath(ctx context.Context, path string) error {
 			}
 		}
 	}
-}
-
-// CheckReady checks if the ready marker file exists.
-// Used by Docker health checks to determine when worker can start.
-func CheckReady(sharedVolumePath string) bool {
-	return markerReady.exists(sharedVolumePath)
 }

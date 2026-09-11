@@ -264,9 +264,10 @@ func (m *Manager) PoolID(pod *corev1.Pod) string { return pod.Labels[m.cfg.Namin
 func (m *Manager) ClaimID(pod *corev1.Pod) string { return pod.Labels[m.cfg.Naming.Claim] }
 
 // Spec decodes the claimed spec stored on a pod into v. A pod written by
-// another release may be missing fields; that is not an error here.
-func (m *Manager) Spec(pod *corev1.Pod, v any) {
-	_ = json.Unmarshal([]byte(pod.Annotations[m.cfg.Naming.Spec]), v)
+// another release may be missing fields; that is not an error, but an
+// annotation that does not decode at all is.
+func (m *Manager) Spec(pod *corev1.Pod, v any) error {
+	return json.Unmarshal([]byte(pod.Annotations[m.cfg.Naming.Spec]), v)
 }
 
 // counts splits a pool's pods into claimed and warm-READY (the claimable
@@ -397,6 +398,18 @@ func (m *Manager) createClaimable(ctx context.Context, s *pool.Spec, poolID stri
 	}
 }
 
+// reservationPatch is the strategic-merge patch that claims a pod. Its
+// resourceVersion is the precondition that makes the patch the claim
+// serialization point, so the shape is typed rather than assembled by hand.
+type reservationPatch struct {
+	Metadata struct {
+		ResourceVersion string                  `json:"resourceVersion"`
+		Labels          map[string]string       `json:"labels"`
+		Annotations     map[string]string       `json:"annotations"`
+		OwnerReferences []metav1.OwnerReference `json:"ownerReferences,omitempty"`
+	} `json:"metadata"`
+}
+
 // reserve atomically stamps the claim's final identity before the sidecar may
 // start the workload. resourceVersion turns the metadata patch into the claim
 // serialization point: only one contender can reserve the pod it listed.
@@ -409,24 +422,20 @@ func (m *Manager) reserve(ctx context.Context, pod *corev1.Pod, claimID string, 
 	var bound *corev1.Pod
 	lost := false
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		boundLabels := map[string]string{m.cfg.Naming.Claim: claimID}
-		maps.Copy(boundLabels, binding.Labels)
-		metadata := map[string]any{
-			"resourceVersion": candidate.ResourceVersion,
-			"labels":          boundLabels,
-			"annotations": map[string]string{
-				m.cfg.Naming.Spec:    string(encoded),
-				AnnotationReservedAt: time.Now().UTC().Format(time.RFC3339Nano),
-			},
+		var patch reservationPatch
+		patch.Metadata.ResourceVersion = candidate.ResourceVersion
+		patch.Metadata.Labels = map[string]string{m.cfg.Naming.Claim: claimID}
+		maps.Copy(patch.Metadata.Labels, binding.Labels)
+		patch.Metadata.Annotations = map[string]string{
+			m.cfg.Naming.Spec:    string(encoded),
+			AnnotationReservedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		}
-		if binding.Owners != nil {
-			metadata["ownerReferences"] = binding.Owners
-		}
-		patch, marshalErr := json.Marshal(map[string]any{"metadata": metadata})
+		patch.Metadata.OwnerReferences = binding.Owners
+		body, marshalErr := json.Marshal(patch)
 		if marshalErr != nil {
 			return marshalErr
 		}
-		bound, err = m.client.CoreV1().Pods(m.cfg.Namespace).Patch(ctx, pod.Name, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		bound, err = m.client.CoreV1().Pods(m.cfg.Namespace).Patch(ctx, pod.Name, types.StrategicMergePatchType, body, metav1.PatchOptions{})
 		if !apierrors.IsConflict(err) {
 			return err
 		}

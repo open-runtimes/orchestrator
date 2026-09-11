@@ -32,7 +32,7 @@ func NewOrchestratorRouter(cfg OrchestratorRouterConfig) http.Handler {
 	mux := http.NewServeMux()
 	registerHealthRoutes(mux, cfg.HealthChecker)
 
-	auth := AuthMiddleware(cfg.APIKey)
+	auth := authMiddleware(cfg.APIKey)
 	if cfg.JobService != nil {
 		registerJobRoutes(mux, auth, cfg)
 	}
@@ -51,11 +51,11 @@ func NewOrchestratorRouter(cfg OrchestratorRouterConfig) http.Handler {
 // series by route pattern rather than by raw path.
 func withMiddleware(mux *http.ServeMux, metrics *observability.Metrics) http.Handler {
 	var h http.Handler = mux
-	h = JSONErrorMiddleware()(h)
-	h = ContentTypeMiddleware()(h)
-	h = CORSMiddleware()(h)
-	h = MetricsMiddleware(metrics, mux)(h)
-	h = LoggingMiddleware()(h)
-	h = RecoveryMiddleware()(h)
+	h = jSONErrorMiddleware(h)
+	h = contentTypeMiddleware(h)
+	h = cORSMiddleware(h)
+	h = metricsMiddleware(metrics, mux)(h)
+	h = loggingMiddleware(h)
+	h = recoveryMiddleware(h)
 	return h
 }

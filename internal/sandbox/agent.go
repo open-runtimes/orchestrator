@@ -20,7 +20,3 @@ const (
 	// copy needs no mkdir, and therefore no shell in the publishing image.
 	AgentName = ".sandbox-agent"
 )
-
-// AgentPath is where the agent lands in a workspace, and therefore the command a
-// sandbox runs unless its pool or its request names another.
-func AgentPath(workspace string) string { return workspace + "/" + AgentName }

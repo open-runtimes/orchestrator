@@ -86,11 +86,6 @@ const (
 	BurstCold   = claim.BurstCold
 )
 
-// LoadPools parses the POOLS_JSON config value.
-func LoadPools(raw string) ([]Pool, error) {
-	return Load(raw, "POOLS_JSON")
-}
-
 // Load parses a pool list from config. source names the environment variable
 // it came from, so a malformed value points at its own knob.
 func Load(raw, source string) ([]Pool, error) {

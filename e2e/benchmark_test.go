@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/api"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/cloudevent"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
@@ -426,7 +425,7 @@ func createBenchServer(tb testing.TB) (string, func()) {
 		tb.Fatalf("Failed to create orchestrator: %v", err)
 	}
 
-	svc := job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), "")
+	svc := job.NewService(orchestrator, metrics, "")
 	healthChecker := health.NewChecker(orchestrator)
 
 	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{

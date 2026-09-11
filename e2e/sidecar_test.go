@@ -96,8 +96,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"result","type":"read","in":"output.txt","depends":"job"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"result","type":"read","in":"output.txt","depends":"job"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
@@ -105,7 +104,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, "", 30*time.Second,
 		"http://example.com/callback", "", []string{"orchestrator.job.artifact"}, nil)
 
-	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
+	runner := sidecar.NewRunner(jobID, sharedDir, 60,
 		sidecar.WithArtifactListener(reporter),
 	)
 
@@ -203,15 +202,14 @@ func TestSidecar_InputDownload(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal(fmt.Appendf(nil, `[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL))
+	artifacts, err := artifact.UnmarshalArtifacts(fmt.Appendf(nil, `[{"id":"input-1","type":"download","out":"input.txt","in":"%s"}]`, inputServer.URL))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
 	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, "", 30*time.Second, "", "", nil, nil)
 
-	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
+	runner := sidecar.NewRunner(jobID, sharedDir, 60,
 		sidecar.WithArtifactListener(reporter),
 	)
 
@@ -321,15 +319,14 @@ func TestSidecar_OutputUpload(t *testing.T) {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal(fmt.Appendf(nil, `[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL))
+	artifacts, err := artifact.UnmarshalArtifacts(fmt.Appendf(nil, `[{"id":"result","type":"upload","in":"result.txt","out":"%s","depends":"job"}]`, uploadServer.URL))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
 	reporter := sidecar.NewHTTPSink(jobID, orchestratorServer.URL, "", 30*time.Second, "", "", nil, nil)
 
-	runner := sidecar.NewRunner(jobID, sharedDir, 60, reg,
+	runner := sidecar.NewRunner(jobID, sharedDir, 60,
 		sidecar.WithArtifactListener(reporter),
 	)
 

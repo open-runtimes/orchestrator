@@ -7,7 +7,6 @@ import (
 	"context"
 	"log/slog"
 	"orchestrator/internal/api"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
@@ -76,7 +75,7 @@ func Run(ctx context.Context, orchestrator job.Orchestrator, emitter *job.Callba
 	slog.Info("Orchestrator ready")
 
 	healthChecker := health.NewChecker(orchestrator)
-	jobService := job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), svcCfg.APIKey)
+	jobService := job.NewService(orchestrator, metrics, svcCfg.APIKey)
 
 	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
 		JobService:    jobService,

@@ -45,7 +45,7 @@ func newHTTPClient() *httpClient {
 }
 
 // AdminURL addresses the sidecar admin port on a pod.
-func AdminURL(podIP, path string) string {
+func adminURL(podIP, path string) string {
 	return "http://" + net.JoinHostPort(podIP, strconv.Itoa(workload.DefaultAdminPort)) + path
 }
 
@@ -55,14 +55,14 @@ func (c *httpClient) Claim(ctx context.Context, podIP, token string, req *worklo
 
 func (c *httpClient) State(ctx context.Context, podIP string) (*workload.ClaimState, error) {
 	var state workload.ClaimState
-	if err := c.getJSON(ctx, AdminURL(podIP, workload.ClaimStatePath), &state); err != nil {
+	if err := c.getJSON(ctx, adminURL(podIP, workload.ClaimStatePath), &state); err != nil {
 		return nil, err
 	}
 	return &state, nil
 }
 
 func (c *httpClient) Ready(ctx context.Context, podIP string) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, AdminURL(podIP, "/ready"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, adminURL(podIP, "/ready"), nil)
 	if err != nil {
 		return false
 	}
@@ -78,7 +78,7 @@ func (c *httpClient) Requests(ctx context.Context, podIP string) (int64, error) 
 	var stats struct {
 		Requests int64 `json:"requests"`
 	}
-	if err := c.getJSON(ctx, AdminURL(podIP, "/stats"), &stats); err != nil {
+	if err := c.getJSON(ctx, adminURL(podIP, "/stats"), &stats); err != nil {
 		return 0, err
 	}
 	return stats.Requests, nil

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/api"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
@@ -181,7 +180,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		t.Fatalf("Failed to create Docker orchestrator: %v", err)
 	}
 
-	svc := job.NewService(orchestrator, nil, artifact.DefaultRegistry(), "")
+	svc := job.NewService(orchestrator, nil, "")
 	healthChecker := health.NewChecker(orchestrator)
 
 	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{

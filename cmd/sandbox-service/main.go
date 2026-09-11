@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"orchestrator/internal/activator"
 	"orchestrator/internal/api"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/health"
 	"orchestrator/internal/observability"
@@ -56,7 +55,7 @@ func main() {
 	}
 	slog.Info("Orchestrator ready", "pools", len(pools))
 
-	svc := sandbox.NewService(orchestrator, metrics, pools, artifact.MountingRegistry())
+	svc := sandbox.NewService(orchestrator, metrics, pools)
 
 	// Data plane: on Kubernetes it is its own Deployment behind the wildcard
 	// route (cmd/sandbox-proxy); on Docker it runs in-process, resolving

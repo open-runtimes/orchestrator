@@ -153,11 +153,6 @@ func (c *Config) addressing() sandbox.Addressing {
 	return sandbox.Addressing{Domain: c.SandboxDomain, Scheme: c.Scheme}
 }
 
-// AgentCommand is the command a sandbox runs unless the pool or the request
-// names another: the agent the shim installs into the workspace, which serves
-// the sandbox contract on behalf of ANY image.
-func AgentCommand() string { return agentPath }
-
 // warmConfig projects the sandbox config onto the warm-pool manager's.
 func (c *Config) warmConfig() warm.Config {
 	return warm.Config{

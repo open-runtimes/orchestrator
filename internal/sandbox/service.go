@@ -43,16 +43,14 @@ type Service struct {
 	orchestrator Orchestrator
 	metrics      *observability.Metrics // may be nil in tests
 	pools        []pool.Pool
-	artifacts    *artifact.Registry
 }
 
 // NewService creates a sandbox service over the configured sandbox pools.
-func NewService(orchestrator Orchestrator, metrics *observability.Metrics, pools []pool.Pool, artifacts *artifact.Registry) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, pools []pool.Pool) *Service {
 	return &Service{
 		orchestrator: orchestrator,
 		metrics:      metrics,
 		pools:        pools,
-		artifacts:    artifacts,
 	}
 }
 
@@ -114,8 +112,6 @@ func (s *Service) List(ctx context.Context) ([]Status, error) {
 	return s.orchestrator.List(ctx)
 }
 
-// Delete tears a sandbox down. Its URL dies with it: the token lives only as a
-// label on the pod being deleted, so a leaked URL is dead on teardown.
 // Delete tears a sandbox down. Its URL dies with it: the token lives only as a
 // label on the pod being deleted, so a leaked URL is dead on teardown.
 //
@@ -193,7 +189,7 @@ func (s *Service) validate(req *Request, shape *pool.Spec) error {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
 	}
 	for i, a := range req.Artifacts {
-		if err := s.artifacts.Validate(i, a); err != nil {
+		if err := artifact.Validate(i, a); err != nil {
 			return err
 		}
 	}

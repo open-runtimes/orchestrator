@@ -23,7 +23,7 @@ func TestExponential_Defaults(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := Exponential(tt.attempt, nil)
+		got := Exponential(tt.attempt, Config{})
 		if got != tt.want {
 			t.Errorf("Exponential(%d, nil) = %v, want %v", tt.attempt, got, tt.want)
 		}
@@ -33,7 +33,7 @@ func TestExponential_Defaults(t *testing.T) {
 func TestExponential_CustomConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{
+	cfg := Config{
 		Initial: 50 * time.Millisecond,
 		Max:     500 * time.Millisecond,
 	}
@@ -62,11 +62,11 @@ func TestExponential_ZeroOrNegativeAttempt(t *testing.T) {
 	t.Parallel()
 
 	// Attempts < 1 should return initial
-	if got := Exponential(0, nil); got != 100*time.Millisecond {
-		t.Errorf("Exponential(0, nil) = %v, want 100ms", got)
+	if got := Exponential(0, Config{}); got != 100*time.Millisecond {
+		t.Errorf("Exponential(0, Config{}) = %v, want 100ms", got)
 	}
-	if got := Exponential(-1, nil); got != 100*time.Millisecond {
-		t.Errorf("Exponential(-1, nil) = %v, want 100ms", got)
+	if got := Exponential(-1, Config{}); got != 100*time.Millisecond {
+		t.Errorf("Exponential(-1, Config{}) = %v, want 100ms", got)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestExponential_PartialConfig(t *testing.T) {
 	t.Parallel()
 
 	// Only Initial set, Max uses default
-	cfg := &Config{Initial: 200 * time.Millisecond}
+	cfg := Config{Initial: 200 * time.Millisecond}
 	if got := Exponential(1, cfg); got != 200*time.Millisecond {
 		t.Errorf("Exponential(1, {Initial: 200ms}) = %v, want 200ms", got)
 	}
@@ -83,7 +83,7 @@ func TestExponential_PartialConfig(t *testing.T) {
 	}
 
 	// Only Max set, Initial uses default
-	cfg = &Config{Max: 300 * time.Millisecond}
+	cfg = Config{Max: 300 * time.Millisecond}
 	if got := Exponential(1, cfg); got != 100*time.Millisecond {
 		t.Errorf("Exponential(1, {Max: 300ms}) = %v, want 100ms (default initial)", got)
 	}

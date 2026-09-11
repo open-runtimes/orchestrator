@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
@@ -244,7 +245,9 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 	// The extra ports come off the stored spec, the primary off the pool — so a
 	// reconstructed sandbox advertises exactly the addresses it was created with.
 	var spec sandbox.Request
-	o.warm.Spec(pod, &spec)
+	if err := o.warm.Spec(pod, &spec); err != nil {
+		slog.Warn("Undecodable sandbox spec on pod; extra ports unknown", "pod", pod.Name, "error", err)
+	}
 	status := sandbox.Status{
 		ID:     obs.ClaimID,
 		PoolID: obs.PoolID,

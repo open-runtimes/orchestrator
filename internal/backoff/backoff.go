@@ -2,6 +2,7 @@
 package backoff
 
 import (
+	"cmp"
 	"math"
 	"time"
 )
@@ -14,17 +15,9 @@ type Config struct {
 
 // Exponential calculates exponential backoff for a given attempt.
 // Attempt 1 returns initial, attempt 2 returns initial*2, etc.
-func Exponential(attempt int, cfg *Config) time.Duration {
-	initial := 100 * time.Millisecond
-	maxBackoff := 5 * time.Second
-	if cfg != nil {
-		if cfg.Initial > 0 {
-			initial = cfg.Initial
-		}
-		if cfg.Max > 0 {
-			maxBackoff = cfg.Max
-		}
-	}
+func Exponential(attempt int, cfg Config) time.Duration {
+	initial := cmp.Or(cfg.Initial, 100*time.Millisecond)
+	maxBackoff := cmp.Or(cfg.Max, 5*time.Second)
 
 	if attempt < 1 {
 		return initial

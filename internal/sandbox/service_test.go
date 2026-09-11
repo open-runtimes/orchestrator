@@ -38,7 +38,7 @@ func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 		pools = []pool.Pool{{ID: "py", Size: 1, Spec: pool.Spec{Image: "img", Port: 3000, CPU: 1, Memory: 512}}}
 	}
 	orch := &fakeOrchestrator{}
-	return NewService(orch, nil, pools, artifact.MountingRegistry()), orch
+	return NewService(orch, nil, pools), orch
 }
 
 func standardRequest() *Request { return &Request{Image: "img", Port: 3000, CPU: 1, Memory: 512} }

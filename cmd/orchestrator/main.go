@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"orchestrator/internal/activator"
 	"orchestrator/internal/api"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/autoscaler"
 	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
@@ -202,7 +201,7 @@ func startJobs(ctx context.Context, svcCfg *config.ServiceConfig, queue dispatch
 
 	return &jobsPlane{
 		orchestrator: orchestrator,
-		service:      job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), svcCfg.APIKey),
+		service:      job.NewService(orchestrator, metrics, svcCfg.APIKey),
 		callbacks:    emitter,
 	}, nil
 }
@@ -227,7 +226,7 @@ func startDeployments(ctx context.Context, domain string, queue dispatcher.Queue
 		return nil, err
 	}
 
-	svc := deployment.NewService(orchestrator, metrics, artifact.MountingRegistry(), domain,
+	svc := deployment.NewService(orchestrator, metrics, domain,
 		func(host string) string {
 			if dataPort == "80" {
 				return "http://" + host
@@ -280,7 +279,7 @@ func startSandboxes(ctx context.Context, domain string, metrics *observability.M
 
 	return &sandboxesPlane{
 		orchestrator: orchestrator,
-		service:      sandbox.NewService(orchestrator, metrics, pools, artifact.MountingRegistry()),
+		service:      sandbox.NewService(orchestrator, metrics, pools),
 		proxy:        proxy,
 	}, nil
 }

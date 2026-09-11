@@ -75,7 +75,7 @@ func TestArchiveFailureCallback(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer endpoint.Close()
-			runner := NewRunner("test-build", dir, 10, artifact.DefaultRegistry(),
+			runner := NewRunner("test-build", dir, 10,
 				WithArtifactListener(NewHTTPSink("test-build", endpoint.URL, "", time.Second, "", "", nil, map[string]string{"deploymentId": "deployment"})))
 			err := runner.RunPre(context.Background(), []artifact.Artifact{
 				&artifact.Unarchive{ID: "extract", In: "source.tar.gz", Out: "source", Subdir: tc.subdir},

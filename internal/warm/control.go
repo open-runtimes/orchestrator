@@ -44,9 +44,9 @@ func (m *Manager) Controller(hooks Hooks) *Controller {
 	}
 }
 
-// runControlLoop is the leader-elected control loop entrypoint: one Controller per
+// RunControl is the leader-elected control loop entrypoint: one Controller per
 // leadership term, ticking until the term (or process) ends.
-func (m *Manager) runControlLoop(ctx context.Context, hooks Hooks) {
+func (m *Manager) RunControl(ctx context.Context, hooks Hooks) {
 	c := m.Controller(hooks)
 	ticker := time.NewTicker(controlTick)
 	defer ticker.Stop()
@@ -59,11 +59,6 @@ func (m *Manager) runControlLoop(ctx context.Context, hooks Hooks) {
 		}
 	}
 }
-
-// RunControl runs inventory reconciliation for an already leader-gated
-// caller. It avoids starting a second Lease elector inside a control plane
-// that already owns a leadership term.
-func (m *Manager) RunControl(ctx context.Context, hooks Hooks) { m.runControlLoop(ctx, hooks) }
 
 // RunClaimControl runs only consumer lifecycle hooks over claimed pods. It
 // deliberately does no warm inventory work: the standalone pool-controller

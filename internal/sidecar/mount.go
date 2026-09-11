@@ -40,18 +40,11 @@ type Mounter interface {
 	IsMounted(target string) (bool, error)
 }
 
-// CheckMountsReady reports whether the mounts-ready marker exists. The
-// Kubernetes native sidecar writes it after mounting; the worker's startup
-// probe waits on it so the worker only starts once its mounts are present.
-func CheckMountsReady(sharedVolumePath string) bool {
-	return markerMountsReady.exists(sharedVolumePath)
-}
-
 // splitMounts separates mount artifacts from the rest, preserving order.
-func splitMounts(arts []artifact.Artifact) (mounts, rest []artifact.Artifact) {
+func splitMounts(arts []artifact.Artifact) (mounts []*artifact.Mount, rest []artifact.Artifact) {
 	for _, a := range arts {
-		if a.ArtifactType() == "mount" {
-			mounts = append(mounts, a)
+		if m, ok := a.(*artifact.Mount); ok {
+			mounts = append(mounts, m)
 		} else {
 			rest = append(rest, a)
 		}

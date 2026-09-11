@@ -62,18 +62,16 @@ type URLBuilder func(host string) string
 type Service struct {
 	orchestrator Orchestrator
 	metrics      *observability.Metrics // may be nil in tests
-	artifacts    *artifact.Registry
-	domain       string // base domain for auto-assigned hosts: {id}.{domain}
+	domain       string                 // base domain for auto-assigned hosts: {id}.{domain}
 	urlFor       URLBuilder
 }
 
 // NewService creates a deployment service. domain is the base for
 // auto-assigned hosts; urlFor renders a host into the public URL.
-func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artifacts *artifact.Registry, domain string, urlFor URLBuilder) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, domain string, urlFor URLBuilder) *Service {
 	return &Service{
 		orchestrator: orchestrator,
 		metrics:      metrics,
-		artifacts:    artifacts,
 		domain:       domain,
 		urlFor:       urlFor,
 	}
@@ -375,7 +373,7 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
 	}
 	for i, a := range req.Artifacts {
-		if err := s.artifacts.Validate(i, a); err != nil {
+		if err := artifact.Validate(i, a); err != nil {
 			return err
 		}
 	}

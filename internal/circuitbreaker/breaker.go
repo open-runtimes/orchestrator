@@ -52,14 +52,6 @@ type Config struct {
 	Cooldown  time.Duration // Time before half-open (default: 30s)
 }
 
-// DefaultConfig returns sensible defaults.
-func DefaultConfig() Config {
-	return Config{
-		Threshold: 5,
-		Cooldown:  30 * time.Second,
-	}
-}
-
 // New creates a new circuit breaker.
 func New(cfg Config) *Breaker {
 	if cfg.Threshold <= 0 {
@@ -127,19 +119,4 @@ func (b *Breaker) State() State {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.state
-}
-
-// Failures returns the current consecutive failure count.
-func (b *Breaker) Failures() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.failures
-}
-
-// Reset resets the breaker to closed state.
-func (b *Breaker) Reset() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.state = Closed
-	b.failures = 0
 }

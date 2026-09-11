@@ -5,18 +5,6 @@ import (
 	"time"
 )
 
-func TestDefaultConfig(t *testing.T) {
-	t.Parallel()
-	cfg := DefaultConfig()
-
-	if cfg.Threshold != 5 {
-		t.Errorf("Expected Threshold 5, got %d", cfg.Threshold)
-	}
-	if cfg.Cooldown != 30*time.Second {
-		t.Errorf("Expected Cooldown 30s, got %v", cfg.Cooldown)
-	}
-}
-
 func TestNew_WithZeroValues(t *testing.T) {
 	t.Parallel()
 	// Zero values should use defaults
@@ -156,27 +144,6 @@ func TestBreaker_ReopensOnFailureInHalfOpen(t *testing.T) {
 	}
 }
 
-func TestBreaker_Reset(t *testing.T) {
-	t.Parallel()
-	b := New(Config{Threshold: 2, Cooldown: time.Second})
-
-	// Open the circuit
-	b.RecordFailure()
-	b.RecordFailure()
-	if b.State() != Open {
-		t.Fatal("expected open state")
-	}
-
-	// Reset should close it
-	b.Reset()
-	if b.State() != Closed {
-		t.Errorf("expected closed state after reset, got %s", b.State())
-	}
-	if b.Failures() != 0 {
-		t.Errorf("expected 0 failures after reset, got %d", b.Failures())
-	}
-}
-
 func TestBreaker_StateString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -245,39 +212,5 @@ func TestRegistry_Stats(t *testing.T) {
 	}
 	if stats.Closed != 2 {
 		t.Errorf("expected 2 closed, got %d", stats.Closed)
-	}
-}
-
-func TestRegistry_Reset(t *testing.T) {
-	t.Parallel()
-	r := NewRegistry(Config{Threshold: 2, Cooldown: time.Second})
-
-	b := r.Get("service-a")
-	b.RecordFailure()
-	b.RecordFailure()
-
-	if b.State() != Open {
-		t.Fatal("expected open state")
-	}
-
-	r.Reset()
-
-	if b.State() != Closed {
-		t.Errorf("expected closed after reset, got %s", b.State())
-	}
-}
-
-func TestRegistry_Remove(t *testing.T) {
-	t.Parallel()
-	r := NewRegistry(Config{Threshold: 5, Cooldown: time.Second})
-
-	_ = r.Get("service-a")
-	_ = r.Get("service-b")
-
-	r.Remove("service-a")
-
-	keys := r.Keys()
-	if len(keys) != 1 {
-		t.Errorf("expected 1 key after remove, got %d", len(keys))
 	}
 }

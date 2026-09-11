@@ -108,8 +108,7 @@ func TestRunner_FullLifecycle(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	captured := &captureReporter{}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[
 		{"id":"pre-write","type":"write","in":"hello","out":"pre.txt"},
 		{"id":"post-write","type":"write","in":"world","out":"post.txt","depends":"job"}
 	]`))
@@ -117,7 +116,7 @@ func TestRunner_FullLifecycle(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 10, reg,
+	runner := NewRunner("test-job", tmpDir, 10,
 		WithSignalFunc(sigFn),
 		WithArtifactListener(captured.fn()),
 	)
@@ -177,8 +176,7 @@ func TestRunner_PostJobMissingFileFailsFast(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	captured := &captureReporter{}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[
 		{"id":"manifest","type":"read","in":"manifest.json","depends":"job"}
 	]`))
 	if err != nil {
@@ -187,7 +185,7 @@ func TestRunner_PostJobMissingFileFailsFast(t *testing.T) {
 
 	// A 900s job timeout: if the file wait were still bound to it, this test
 	// would hang far past its own deadline.
-	runner := NewRunner("test-job", tmpDir, 900, reg,
+	runner := NewRunner("test-job", tmpDir, 900,
 		WithSignalFunc(sigFn),
 		WithArtifactListener(captured.fn()),
 		WithPostJobFileGrace(100*time.Millisecond),
@@ -229,13 +227,12 @@ func TestRunner_PreJobDependencyOrder(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	triggerDone() // fire immediately — we only care about pre-job
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"extract","type":"unarchive","in":"code.tar.gz","out":"code"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"extract","type":"unarchive","in":"code.tar.gz","out":"code"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn))
+	runner := NewRunner("test-job", tmpDir, 10, WithSignalFunc(sigFn))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -260,13 +257,12 @@ func TestRunner_ChainedDependencies(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	triggerDone()
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"file1","type":"write","in":"hello","out":"a.txt"},{"id":"file2","type":"write","in":"world","out":"b.txt","depends":"file1"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"file1","type":"write","in":"hello","out":"a.txt"},{"id":"file2","type":"write","in":"world","out":"b.txt","depends":"file1"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn))
+	runner := NewRunner("test-job", tmpDir, 10, WithSignalFunc(sigFn))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -296,13 +292,12 @@ func TestRunner_CircularDependency(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	triggerDone()
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"a","type":"write","in":"a","out":"a.txt","depends":"b"},{"id":"b","type":"write","in":"b","out":"b.txt","depends":"a"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"a","type":"write","in":"a","out":"a.txt","depends":"b"},{"id":"b","type":"write","in":"b","out":"b.txt","depends":"a"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 5, reg, WithSignalFunc(sigFn))
+	runner := NewRunner("test-job", tmpDir, 5, WithSignalFunc(sigFn))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
@@ -329,13 +324,12 @@ func TestRunner_ReportsArtifact(t *testing.T) {
 
 	captured := &captureReporter{}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"w","type":"write","in":"data","out":"out.txt"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"w","type":"write","in":"data","out":"out.txt"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 5, reg,
+	runner := NewRunner("test-job", tmpDir, 5,
 		WithSignalFunc(sigFn),
 		WithArtifactListener(captured.fn()),
 	)
@@ -420,13 +414,12 @@ func TestRunner_MountLifecycle(t *testing.T) {
 	fake := &fakeMounter{}
 	target := filepath.Join(tmpDir, "mnt", "data")
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 10, reg, WithSignalFunc(sigFn), WithMounter(fake))
+	runner := NewRunner("test-job", tmpDir, 10, WithSignalFunc(sigFn), WithMounter(fake))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -479,7 +472,7 @@ func TestRunner_RunPostAdoptsMountAfterSidecarRestart(t *testing.T) {
 
 	fake := &fakeMounter{active: map[string]bool{target: true}}
 	sigFn, triggerDone := triggerSignal()
-	runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithSignalFunc(sigFn), WithMounter(fake))
+	runner := NewRunner("test-job", workspace, 10, WithSignalFunc(sigFn), WithMounter(fake))
 	artifacts := []artifact.Artifact{&artifact.Mount{ID: "m", In: "data.tar.gz", Out: "runtime", Writable: true}}
 
 	done := make(chan error, 1)
@@ -520,7 +513,7 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 			})
 
 			fake := &fakeMounter{}
-			runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithMounter(fake))
+			runner := NewRunner("test-job", workspace, 10, WithMounter(fake))
 			mount := &artifact.Mount{ID: "m", In: name, Out: "runtime", Writable: true}
 			staleLower := filepath.Join(workspace, "runtime", ".lower")
 			if err := os.MkdirAll(staleLower, 0o755); err != nil {
@@ -584,7 +577,7 @@ func TestRunner_InvalidTarMountRemovesPartialLower(t *testing.T) {
 	}
 
 	fake := &fakeMounter{}
-	runner := NewRunner("test-job", workspace, 10, artifact.DefaultRegistry(), WithMounter(fake))
+	runner := NewRunner("test-job", workspace, 10, WithMounter(fake))
 	err := runner.Mount(t.Context(), []artifact.Artifact{&artifact.Mount{ID: "m", In: "broken.tar.gz", Out: "runtime"}})
 	if err == nil {
 		t.Fatal("Mount() error = nil, want invalid archive error")
@@ -662,7 +655,7 @@ func TestWaitForPath_ExistingFileReturnsBeforeFirstTick(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	r := NewRunner("test-job", tmpDir, 10, artifact.DefaultRegistry())
+	r := NewRunner("test-job", tmpDir, 10)
 
 	start := time.Now()
 	if err := r.waitForPath(t.Context(), path); err != nil {
@@ -688,8 +681,7 @@ func TestRunner_HoldUntilShutdownLifecycle(t *testing.T) {
 	captured := &captureReporter{}
 	target := filepath.Join(tmpDir, "mnt", "data")
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[
 		{"id":"seed","type":"write","in":"hello","out":"pre.txt"},
 		{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}
 	]`))
@@ -698,7 +690,7 @@ func TestRunner_HoldUntilShutdownLifecycle(t *testing.T) {
 	}
 
 	// timeoutSeconds 0: an unbounded workload that holds until pod shutdown.
-	runner := NewRunner("test-job", tmpDir, 0, reg,
+	runner := NewRunner("test-job", tmpDir, 0,
 		WithSignalFunc(sigFn),
 		WithMounter(fake),
 		WithArtifactListener(captured.fn()),
@@ -762,13 +754,12 @@ func TestRunner_HoldDeadline(t *testing.T) {
 				deadlineSet <- ok
 			}
 
-			reg := artifact.DefaultRegistry()
-			artifacts, err := reg.Unmarshal([]byte(`[{"id":"seed","type":"write","in":"hello","out":"pre.txt"}]`))
+			artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"seed","type":"write","in":"hello","out":"pre.txt"}]`))
 			if err != nil {
 				t.Fatalf("Unmarshal: %v", err)
 			}
 
-			runner := NewRunner("test-job", tmpDir, tc.timeoutSeconds, reg, WithSignalFunc(waitFn), WithMounter(&fakeMounter{}))
+			runner := NewRunner("test-job", tmpDir, tc.timeoutSeconds, WithSignalFunc(waitFn), WithMounter(&fakeMounter{}))
 			if err := runner.Run(t.Context(), artifacts); err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
@@ -801,13 +792,12 @@ func TestRunner_RestartAdoptsMounts(t *testing.T) {
 	target := filepath.Join(tmpDir, "mnt", "data")
 	fake := &fakeMounter{active: map[string]bool{target: true}}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 0, reg, WithSignalFunc(sigFn), WithMounter(fake))
+	runner := NewRunner("test-job", tmpDir, 0, WithSignalFunc(sigFn), WithMounter(fake))
 
 	done := make(chan error, 1)
 	go func() { done <- runner.Run(t.Context(), artifacts) }()
@@ -854,8 +844,7 @@ func TestRunner_RestartSkipsCompletedArtifacts(t *testing.T) {
 	defer server.Close()
 
 	tmpDir := t.TempDir()
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(`[{"id":"source","type":"download","in":"` + server.URL + `","out":"code.tar.gz"}]`))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"source","type":"download","in":"` + server.URL + `","out":"code.tar.gz"}]`))
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
@@ -863,7 +852,7 @@ func TestRunner_RestartSkipsCompletedArtifacts(t *testing.T) {
 	run := func() {
 		sigFn, triggerDone := triggerSignal()
 		triggerDone() // no worker to wait for
-		runner := NewRunner("test-job", tmpDir, 0, reg, WithSignalFunc(sigFn), WithMounter(&fakeMounter{}))
+		runner := NewRunner("test-job", tmpDir, 0, WithSignalFunc(sigFn), WithMounter(&fakeMounter{}))
 		if err := runner.Run(t.Context(), artifacts); err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
@@ -894,7 +883,7 @@ func TestRunnerCleanupFailureCanBeRetried(t *testing.T) {
 			mounter := &fakeMounter{unmountErr: failure}
 			signal, done := triggerSignal()
 			done()
-			runner := NewRunner("cleanup", workspace, 0, artifact.DefaultRegistry(), WithMounter(mounter), WithSignalFunc(signal))
+			runner := NewRunner("cleanup", workspace, 0, WithMounter(mounter), WithSignalFunc(signal))
 			artifacts := []artifact.Artifact{&artifact.Mount{ID: "code", In: "data.sqfs", Out: "code"}}
 			var err error
 			if mode == "combined" {

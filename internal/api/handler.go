@@ -59,65 +59,55 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.svc.Create(r.Context(), req)
 	if err != nil {
-		h.handleError(w, r, err)
+		handleServiceError(w, r, err)
 		return
 	}
 
-	h.writeJSON(w, http.StatusAccepted, resp)
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // ListJobs handles GET /v1/jobs
 func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.svc.List(r.Context())
 	if err != nil {
-		h.handleError(w, r, err)
+		handleServiceError(w, r, err)
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // GetJob handles GET /v1/jobs/{jobId}
 func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("jobId")
 	if jobID == "" {
-		h.writeError(w, http.StatusBadRequest, "Job ID is required")
+		writeError(w, http.StatusBadRequest, "Job ID is required")
 		return
 	}
 
 	status, err := h.svc.Get(r.Context(), jobID)
 	if err != nil {
-		h.handleError(w, r, err)
+		handleServiceError(w, r, err)
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, status)
+	writeJSON(w, http.StatusOK, status)
 }
 
 // DeleteJob handles DELETE /v1/jobs/{jobId}
 func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("jobId")
 	if jobID == "" {
-		h.writeError(w, http.StatusBadRequest, "Job ID is required")
+		writeError(w, http.StatusBadRequest, "Job ID is required")
 		return
 	}
 
 	if err := h.svc.Cancel(r.Context(), jobID); err != nil {
-		h.handleError(w, r, err)
+		handleServiceError(w, r, err)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// writeJSON writes a JSON response
-func (h *Handler) writeJSON(w http.ResponseWriter, status int, data any) {
-	writeJSON(w, status, data)
-}
-
-// writeError writes an error response
-func (h *Handler) writeError(w http.ResponseWriter, status int, message string) {
-	writeError(w, status, message)
 }
 
 // writeJSON writes a JSON response. Shared by the jobs and deployments handlers.
@@ -145,18 +135,13 @@ func handleServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	writeError(w, status, err.Error())
 }
 
-// handleError handles errors from service layer with appropriate HTTP status codes.
-func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
-	handleServiceError(w, r, err)
-}
-
 // ReportArtifact handles POST /internal/jobs/{jobId}/artifact.
 // Called by the sidecar to report the result of an artifact operation.
 // The orchestrator constructs the CloudEvent and dispatches it via the delivery pipeline.
 func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("jobId")
 	if jobID == "" {
-		h.writeError(w, http.StatusBadRequest, "job ID is required")
+		writeError(w, http.StatusBadRequest, "job ID is required")
 		return
 	}
 
@@ -165,7 +150,7 @@ func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 	// during a rolling upgrade.
 	var report job.ArtifactReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-		h.writeError(w, http.StatusBadRequest, "invalid artifact report: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid artifact report: "+err.Error())
 		return
 	}
 	report.JobID = jobID

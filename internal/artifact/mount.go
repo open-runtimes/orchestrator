@@ -74,5 +74,5 @@ func HasMount(artifacts []Artifact) bool {
 // type doc). Reaching here means a mount slipped into the ordinary artifact
 // flow, so it fails loudly rather than reporting a success nobody performed.
 func (a *Mount) Apply(context.Context, string) *Result {
-	return &Result{Status: "error", Error: errors.New("mount artifacts are established by the sidecar, not applied")}
+	return &Result{Status: "failed", Error: errors.New("mount artifacts are established by the sidecar, not applied")}
 }

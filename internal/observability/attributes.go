@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 )
 
 // Attribute keys
@@ -103,29 +102,4 @@ func policyAttr(policy string) attribute.KeyValue {
 
 func reasonAttr(reason string) attribute.KeyValue {
 	return attribute.String(attrReason, reason)
-}
-
-// WithMethod returns a metric option with the method attribute.
-func WithMethod(method string) metric.MeasurementOption {
-	return metric.WithAttributes(methodAttr(method))
-}
-
-// WithPath returns a metric option with the path attribute.
-func WithPath(path string) metric.MeasurementOption {
-	return metric.WithAttributes(pathAttr(path))
-}
-
-// WithStatus returns a metric option with the status attribute.
-func WithStatus(code int) metric.MeasurementOption {
-	return metric.WithAttributes(statusAttr(code))
-}
-
-// WithImage returns a metric option with the image attribute.
-func WithImage(image string) metric.MeasurementOption {
-	return metric.WithAttributes(imageAttr(image))
-}
-
-// WithSuccess returns a metric option with the success attribute.
-func WithSuccess(success bool) metric.MeasurementOption {
-	return metric.WithAttributes(successAttr(success))
 }

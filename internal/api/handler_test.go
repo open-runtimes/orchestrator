@@ -106,7 +106,7 @@ func TestMiddleware_Logging(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := LoggingMiddleware()(inner)
+	handler := loggingMiddleware(inner)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
@@ -124,7 +124,7 @@ func TestMiddleware_Recovery(t *testing.T) {
 		panic("test panic")
 	})
 
-	handler := RecoveryMiddleware()(inner)
+	handler := recoveryMiddleware(inner)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
@@ -145,7 +145,7 @@ func TestMiddleware_JSONErrorShapes(t *testing.T) {
 	mux.HandleFunc("GET /v1/things", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
 	})
-	handler := ContentTypeMiddleware()(JSONErrorMiddleware()(mux))
+	handler := contentTypeMiddleware(jSONErrorMiddleware(mux))
 
 	cases := []struct {
 		name, method, path, contentType string
@@ -195,7 +195,7 @@ func TestMiddleware_ContentType(t *testing.T) {
 		called = true
 	})
 
-	handler := ContentTypeMiddleware()(inner)
+	handler := contentTypeMiddleware(inner)
 
 	// Test with wrong content type
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test", bytes.NewBufferString("{}"))
@@ -227,7 +227,7 @@ func TestMiddleware_CORS(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := CORSMiddleware()(inner)
+	handler := cORSMiddleware(inner)
 
 	// Test OPTIONS preflight
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/test", nil)
@@ -355,7 +355,7 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := ContentTypeMiddleware()(inner)
+	handler := contentTypeMiddleware(inner)
 
 	// GET requests don't need content-type
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
@@ -438,12 +438,12 @@ func TestHandler_ReportArtifact_MissingJobID(t *testing.T) {
 	}
 }
 
-func TestArtifactAuthMiddleware(t *testing.T) {
+func TestArtifactauthMiddleware(t *testing.T) {
 	t.Parallel()
 
 	newMux := func(apiKey string) *http.ServeMux {
 		mux := http.NewServeMux()
-		mw := ArtifactAuthMiddleware(apiKey)
+		mw := ArtifactauthMiddleware(apiKey)
 		mux.Handle("POST /internal/jobs/{jobId}/artifact", mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
 		})))

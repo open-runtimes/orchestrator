@@ -46,14 +46,8 @@ func run() error {
 		return errors.New(workload.EnvTarget + " (direct mode) or " + workload.EnvClaimToken + " (pool mode) is required")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		cancel()
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	return proxy.New(cfg).Run(ctx)
 }

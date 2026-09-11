@@ -64,7 +64,7 @@ func NewChecker(orchestrators ...ReadinessChecker) *Checker {
 // Liveness returns true if the service is alive.
 // This should be a lightweight check that doesn't depend on external services.
 // Failing this probe should trigger a container restart.
-func (c *Checker) Liveness(ctx context.Context) *Response {
+func (c *Checker) Liveness() *Response {
 	return &Response{
 		Status: StatusHealthy,
 	}

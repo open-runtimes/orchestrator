@@ -189,7 +189,7 @@ func TestCreate_ClaimsAndStampsTheToken(t *testing.T) {
 	}
 	// With no command named anywhere, the claim execs the installed agent — this
 	// is what lets an ordinary runtime image serve the sandbox contract.
-	if sidecar.last.Command != AgentCommand() || sidecar.last.Port != 3000 {
+	if sidecar.last.Command != agentPath || sidecar.last.Port != 3000 {
 		t.Errorf("claim request: got %+v", sidecar.last)
 	}
 }
@@ -401,8 +401,8 @@ func TestAgentContract_TheCopyDestinationIsWhatTheSandboxRuns(t *testing.T) {
 	if req.Command != agent.Dest {
 		t.Errorf("the sandbox runs %q but the agent is copied to %q", req.Command, agent.Dest)
 	}
-	if AgentCommand() != agent.Dest {
-		t.Errorf("AgentCommand is %q, the copy destination is %q", AgentCommand(), agent.Dest)
+	if agentPath != agent.Dest {
+		t.Errorf("AgentCommand is %q, the copy destination is %q", agentPath, agent.Dest)
 	}
 	if agent.Source != sandbox.AgentSource {
 		t.Errorf("copy source: want %q, got %q", sandbox.AgentSource, agent.Source)

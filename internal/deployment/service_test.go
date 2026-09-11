@@ -3,14 +3,13 @@ package deployment
 import (
 	"errors"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/volume"
 	"testing"
 )
 
 func TestValidate_ImageRequired(t *testing.T) {
 	t.Parallel()
-	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
+	s := &Service{domain: "example.com"}
 	req := &Request{ID: "app", Image: "nginx", Port: 8080}
 	s.applyDefaults(req)
 	if err := s.validate(req); err != nil {
@@ -29,7 +28,7 @@ func TestValidate_ImageRequired(t *testing.T) {
 
 func TestValidate_RuntimeClass(t *testing.T) {
 	t.Parallel()
-	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
+	s := &Service{domain: "example.com"}
 
 	for _, tier := range []string{"", RuntimeClassRunc, RuntimeClassGvisor, RuntimeClassKata} {
 		req := &Request{ID: "app", Image: "nginx", Port: 8080, RuntimeClass: tier}
@@ -53,7 +52,7 @@ func TestValidate_RuntimeClass(t *testing.T) {
 // relative path is rejected.
 func TestValidate_Workspace(t *testing.T) {
 	t.Parallel()
-	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
+	s := &Service{domain: "example.com"}
 
 	req := &Request{ID: "app", Image: "nginx", Port: 8080}
 	s.applyDefaults(req)
@@ -81,7 +80,7 @@ func TestValidate_Workspace(t *testing.T) {
 // distinct mount targets — colliding targets emit duplicate Docker/K8s mounts.
 func TestValidate_WorkspaceCollision(t *testing.T) {
 	t.Parallel()
-	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
+	s := &Service{domain: "example.com"}
 
 	vol := func(p string) volume.Volume { return volume.Volume{Source: "data", Path: p} }
 
@@ -110,7 +109,7 @@ func TestValidate_WorkspaceCollision(t *testing.T) {
 // individually and reject duplicates.
 func TestValidate_Hosts(t *testing.T) {
 	t.Parallel()
-	s := &Service{artifacts: artifact.ServingRegistry(), domain: "example.com"}
+	s := &Service{domain: "example.com"}
 
 	req := &Request{ID: "app", Image: "nginx", Port: 8080}
 	s.applyDefaults(req)

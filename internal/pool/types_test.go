@@ -28,7 +28,7 @@ func TestShapeKeyNormalizesEquivalentPodShapes(t *testing.T) {
 func TestLoadPools_Volumes(t *testing.T) {
 	t.Parallel()
 
-	pools, err := LoadPools(`[{"id":"a","image":"node:20","port":3000,"volumes":[{"source":"cache-pvc","path":"/cache"}]}]`)
+	pools, err := Load(`[{"id":"a","image":"node:20","port":3000,"volumes":[{"source":"cache-pvc","path":"/cache"}]}]`, "POOLS_JSON")
 	if err != nil {
 		t.Fatalf("valid volume rejected: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestLoadPools_Volumes(t *testing.T) {
 		t.Errorf("volumes not parsed: %+v", pools[0].Volumes)
 	}
 
-	if _, err := LoadPools(`[{"id":"a","image":"node:20","port":3000,"volumes":[{"source":"x","path":"relative"}]}]`); err == nil {
+	if _, err := Load(`[{"id":"a","image":"node:20","port":3000,"volumes":[{"source":"x","path":"relative"}]}]`, "POOLS_JSON"); err == nil {
 		t.Error("expected rejection of a relative volume path")
 	}
 }
@@ -44,12 +44,12 @@ func TestLoadPools_Volumes(t *testing.T) {
 func TestLoadPools_RuntimeClass(t *testing.T) {
 	t.Parallel()
 
-	pools, err := LoadPools(`[
+	pools, err := Load(`[
 		{"id":"a","image":"node:20","port":3000},
 		{"id":"b","image":"node:20","port":3000,"runtimeClass":"runc"},
 		{"id":"c","image":"node:20","port":3000,"runtimeClass":"gvisor"},
 		{"id":"d","image":"node:20","port":3000,"runtimeClass":"kata"}
-	]`)
+	]`, "POOLS_JSON")
 	if err != nil {
 		t.Fatalf("valid tiers: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestLoadPools_RuntimeClass(t *testing.T) {
 		t.Fatalf("want 4 pools, got %d", len(pools))
 	}
 
-	_, err = LoadPools(`[{"id":"a","image":"node:20","port":3000,"runtimeClass":"firecracker"}]`)
+	_, err = Load(`[{"id":"a","image":"node:20","port":3000,"runtimeClass":"firecracker"}]`, "POOLS_JSON")
 	if err == nil || !strings.Contains(err.Error(), "runtimeClass") {
 		t.Errorf("invalid tier: want runtimeClass error, got %v", err)
 	}
@@ -68,10 +68,10 @@ func TestLoadPools_RuntimeClass(t *testing.T) {
 func TestLoadPools_BurstDefaultsToCold(t *testing.T) {
 	t.Parallel()
 
-	pools, err := LoadPools(`[
+	pools, err := Load(`[
 		{"id":"a","image":"node:20","port":3000},
 		{"id":"b","image":"node:20","port":3000,"burst":"reject"}
-	]`)
+	]`, "POOLS_JSON")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestLoadPools_BurstDefaultsToCold(t *testing.T) {
 
 func TestLoadPools_PortRequired(t *testing.T) {
 	t.Parallel()
-	_, err := LoadPools(`[{"id":"a","image":"node:20"}]`)
+	_, err := Load(`[{"id":"a","image":"node:20"}]`, "POOLS_JSON")
 	if err == nil || !strings.Contains(err.Error(), "port") {
 		t.Errorf("want port-required error, got %v", err)
 	}
