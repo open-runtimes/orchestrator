@@ -284,16 +284,7 @@ func (o *Orchestrator) Close() error {
 // EmitArtifactEvent receives an artifact result from the sidecar and dispatches
 // the corresponding CloudEvent through the orchestrator's delivery pipeline.
 func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
-	if r.CallbackURL == "" || !job.MatchesCallbackFilter(job.CallbackTypeArtifact, r.CallbackEvents) {
-		return
-	}
-	builder := job.NewEventBuilder(r.JobID, "orchestrator/service", r.Meta)
-	event := builder.BuildArtifactEvent(&r)
-	o.emitter.Emit(&job.CallbackEnvelope{
-		Payload:     event,
-		CallbackURL: r.CallbackURL,
-		SigningKey:  r.CallbackKey,
-	})
+	job.EmitArtifactCallback(o.emitter, r)
 }
 
 // Verify Orchestrator implements job.Orchestrator.

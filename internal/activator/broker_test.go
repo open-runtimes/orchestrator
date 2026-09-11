@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"orchestrator/internal/callback"
 	"orchestrator/internal/deployment"
 	"strings"
 	"sync"
@@ -82,14 +81,14 @@ func brokerSpec() *deployment.Request {
 	}
 }
 
-func waitEvent(t *testing.T, q *captureQueue) map[string]any {
+func waitEvent(t *testing.T, q *captureQueue) ResponseData {
 	t.Helper()
 	select {
 	case <-q.ch:
 	case <-time.After(5 * time.Second):
 		t.Fatal("no callback dispatched")
 	}
-	return q.last().Payload.Data
+	return q.last().Payload.Data.(ResponseData)
 }
 
 func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
@@ -223,17 +222,17 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	}
 
 	data := waitEvent(t, queue)
-	if data["deploymentId"] != "dep" || data["invocationId"] != invocationID {
-		t.Errorf("callback correlation = %v/%v, want dep/%s", data["deploymentId"], data["invocationId"], invocationID)
+	if data.DeploymentID != "dep" || data.InvocationID != invocationID {
+		t.Errorf("callback correlation = %v/%v, want dep/%s", data.DeploymentID, data.InvocationID, invocationID)
 	}
-	if data["statusCode"] != http.StatusCreated || data["body"] != "done" {
-		t.Errorf("callback carried %v %q, want 201 done", data["statusCode"], data["body"])
+	if data.StatusCode != http.StatusCreated || data.Body != "done" {
+		t.Errorf("callback carried %v %q, want 201 done", data.StatusCode, data.Body)
 	}
-	if got, ok := data["bodyTruncated"].(bool); !ok || got {
-		t.Errorf("bodyTruncated = %v, want false", data["bodyTruncated"])
+	if data.BodyTruncated {
+		t.Errorf("bodyTruncated = true, want false")
 	}
-	if d, ok := data["durationSeconds"].(float64); !ok || d <= 0 {
-		t.Errorf("durationSeconds = %v, want a positive number", data["durationSeconds"])
+	if data.DurationSeconds <= 0 {
+		t.Errorf("durationSeconds = %v, want a positive number", data.DurationSeconds)
 	}
 }
 
@@ -256,8 +255,8 @@ func TestBrokerAsyncHonorsClientInvocationID(t *testing.T) {
 	if got := rec.Header().Get("X-Invocation-Id"); got != "exec-123" {
 		t.Fatalf("response X-Invocation-Id = %q, want exec-123", got)
 	}
-	if data := waitEvent(t, queue); data["invocationId"] != "exec-123" {
-		t.Errorf("callback invocationId = %v, want exec-123", data["invocationId"])
+	if data := waitEvent(t, queue); data.InvocationID != "exec-123" {
+		t.Errorf("callback invocationId = %v, want exec-123", data.InvocationID)
 	}
 }
 
@@ -287,16 +286,13 @@ func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
 	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
 
 	data := waitEvent(t, queue)
-	if data["requestMethod"] != http.MethodPut {
-		t.Errorf("requestMethod = %v, want PUT", data["requestMethod"])
+	if data.RequestMethod != http.MethodPut {
+		t.Errorf("requestMethod = %v, want PUT", data.RequestMethod)
 	}
-	if data["requestPath"] != "/run?x=1" {
-		t.Errorf("requestPath = %v, want /run?x=1", data["requestPath"])
+	if data.RequestPath != "/run?x=1" {
+		t.Errorf("requestPath = %v, want /run?x=1", data.RequestPath)
 	}
-	headers, ok := data["requestHeaders"].(map[string][]string)
-	if !ok {
-		t.Fatalf("requestHeaders type = %T, want map[string][]string", data["requestHeaders"])
-	}
+	headers := data.RequestHeaders
 	if got := headers["X-Custom-Meta"]; len(got) != 1 || got[0] != "hello" {
 		t.Errorf("custom metadata header not echoed: %v", headers)
 	}
@@ -329,11 +325,11 @@ func TestBrokerAsyncBoundsRequestPath(t *testing.T) {
 	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
 
 	data := waitEvent(t, queue)
-	if got := data["requestPath"].(string); len(got) != maxEchoedPathBytes {
+	if got := data.RequestPath; len(got) != maxEchoedPathBytes {
 		t.Errorf("requestPath length = %d, want %d", len(got), maxEchoedPathBytes)
 	}
-	if truncated, _ := data["requestPathTruncated"].(bool); !truncated {
-		t.Errorf("requestPathTruncated = %v, want true", data["requestPathTruncated"])
+	if !data.RequestPathTruncated {
+		t.Errorf("requestPathTruncated = false, want true")
 	}
 }
 
@@ -354,10 +350,10 @@ func TestBrokerAsyncCallbackBase64ForBinaryBody(t *testing.T) {
 		&fakeCapacity{target: mustURL(t, backend.URL)})
 
 	data := waitEvent(t, queue)
-	if data["bodyEncoding"] != "base64" {
-		t.Fatalf("bodyEncoding = %v, want base64", data["bodyEncoding"])
+	if data.BodyEncoding != "base64" {
+		t.Fatalf("bodyEncoding = %v, want base64", data.BodyEncoding)
 	}
-	decoded, err := base64.StdEncoding.DecodeString(data["body"].(string))
+	decoded, err := base64.StdEncoding.DecodeString(data.Body)
 	if err != nil || !bytes.Equal(decoded, binary) {
 		t.Errorf("decoded body = %v (%v), want original binary", decoded, err)
 	}
@@ -381,10 +377,10 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 		&fakeCapacity{target: mustURL(t, backend.URL)})
 
 	data := waitEvent(t, queue)
-	if got, ok := data["bodyTruncated"].(bool); !ok || !got {
-		t.Errorf("bodyTruncated = %v, want true", data["bodyTruncated"])
+	if !data.BodyTruncated {
+		t.Errorf("bodyTruncated = false, want true")
 	}
-	if got := len(data["body"].(string)); got != maxCallbackResponseBody {
+	if got := len(data.Body); got != maxCallbackResponseBody {
 		t.Errorf("body length = %d, want %d", got, maxCallbackResponseBody)
 	}
 }
@@ -401,11 +397,10 @@ func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 		t.Fatalf("got %d, want 202 (failure arrives on the callback)", rec.Code)
 	}
 	data := waitEvent(t, queue)
-	failure, _ := data["error"].(callback.Failure)
-	if failure.Code != "deployment_no_capacity" {
-		t.Errorf("callback error = %v, want a deployment_no_capacity failure", data["error"])
+	if data.Error == nil || data.Error.Code != "deployment_no_capacity" {
+		t.Errorf("callback error = %v, want a deployment_no_capacity failure", data.Error)
 	}
-	if _, ok := data["statusCode"]; ok {
+	if data.StatusCode != 0 {
 		t.Error("statusCode present on a request that never forwarded")
 	}
 }

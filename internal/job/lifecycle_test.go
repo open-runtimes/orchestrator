@@ -1,7 +1,6 @@
 package job
 
 import (
-	"orchestrator/internal/callback"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +61,7 @@ func TestEmitCallback_Exited_ReasonInPayload(t *testing.T) {
 
 	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb"}, Exited{ExitCode: 137, Reason: ExitReasonOOM})
 
-	if len(captured) != 1 || captured[0].Payload.Data["reason"] != ExitReasonOOM {
+	if len(captured) != 1 || captured[0].Payload.Data.(ExitData).Reason != ExitReasonOOM {
 		t.Errorf("want exit event with reason %q, got %v", ExitReasonOOM, captured)
 	}
 }
@@ -77,8 +76,8 @@ func TestEmitCallback_Exited_NoReason_OmitsField(t *testing.T) {
 	if len(captured) != 1 {
 		t.Fatalf("want 1 exit event, got %v", captured)
 	}
-	if _, ok := captured[0].Payload.Data["reason"]; ok {
-		t.Errorf("want reason omitted when empty, got %v", captured[0].Payload.Data)
+	if reason := captured[0].Payload.Data.(ExitData).Reason; reason != "" {
+		t.Errorf("want reason omitted when empty, got %q", reason)
 	}
 }
 
@@ -105,11 +104,11 @@ func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
 
 	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Failed{Reason: "sidecar died"})
 
-	if len(captured) != 1 || captured[0].Payload.Data["exitCode"] != -1 {
+	if len(captured) != 1 || captured[0].Payload.Data.(ExitData).ExitCode != -1 {
 		t.Errorf("want exit event with code -1, got %v", captured)
 	}
-	if captured[0].Payload.Data["reason"] != "sidecar died" {
-		t.Errorf("want failure reason on the exit event, got %v", captured[0].Payload.Data["reason"])
+	if reason := captured[0].Payload.Data.(ExitData).Reason; reason != "sidecar died" {
+		t.Errorf("want failure reason on the exit event, got %v", reason)
 	}
 }
 
@@ -231,15 +230,14 @@ func TestExitErrorCodes(t *testing.T) {
 			if len(events) != 1 {
 				t.Fatalf("callbacks = %d", len(events))
 			}
-			data := events[0].Payload.Data
-			failure, _ := data["error"].(callback.Failure)
-			if failure.Code != tc.code || data["exitCode"] != tc.exit {
+			data := events[0].Payload.Data.(ExitData)
+			if data.Error == nil || data.Error.Code != tc.code || data.ExitCode != tc.exit {
 				t.Fatalf("callback = %#v", data)
 			}
 			// The message speaks of the job; the backend's reason stays in reason.
-			assertSentence(t, failure.Message, "Job")
-			if strings.Contains(failure.Message, "init container") {
-				t.Errorf("backend vocabulary reached the message: %q", failure.Message)
+			assertSentence(t, data.Error.Message, "Job")
+			if strings.Contains(data.Error.Message, "init container") {
+				t.Errorf("backend vocabulary reached the message: %q", data.Error.Message)
 			}
 		})
 	}

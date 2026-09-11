@@ -355,17 +355,18 @@ func TestRevisionAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	if event.Payload.Type != "orchestrator.deployment.response" {
 		t.Fatalf("event type = %q", event.Payload.Type)
 	}
-	if event.Payload.Data["deploymentId"] != "app" {
-		t.Fatalf("deploymentId = %v, want app", event.Payload.Data["deploymentId"])
+	data := event.Payload.Data.(ResponseData)
+	if data.DeploymentID != "app" {
+		t.Fatalf("deploymentId = %v, want app", data.DeploymentID)
 	}
-	if event.Payload.Data["invocationId"] != invocationID {
-		t.Fatalf("invocationId mismatch: %v vs %s", event.Payload.Data["invocationId"], invocationID)
+	if data.InvocationID != invocationID {
+		t.Fatalf("invocationId mismatch: %v vs %s", data.InvocationID, invocationID)
 	}
-	if event.Payload.Data["statusCode"] != http.StatusCreated {
-		t.Fatalf("statusCode = %v, want 201", event.Payload.Data["statusCode"])
+	if data.StatusCode != http.StatusCreated {
+		t.Fatalf("statusCode = %v, want 201", data.StatusCode)
 	}
-	if event.Payload.Data["body"] != "done" {
-		t.Fatalf("body = %v, want done", event.Payload.Data["body"])
+	if data.Body != "done" {
+		t.Fatalf("body = %v, want done", data.Body)
 	}
 }
 

@@ -161,10 +161,10 @@ func TestJobTracker_OOMKilledWorker_ExitCarriesReason(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)
 
-	var reasons []any
+	var reasons []string
 	w.emitter.Register(func(e *job.CallbackEnvelope) {
-		if e.Payload != nil && e.Payload.Type == job.CallbackTypeExit {
-			reasons = append(reasons, e.Payload.Data["reason"])
+		if exit, ok := e.Payload.Data.(job.ExitData); ok {
+			reasons = append(reasons, exit.Reason)
 		}
 	})
 
@@ -390,10 +390,10 @@ func TestJobTracker_InitFailureBeforeWorkerRan(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)
 
-	var reasons []any
+	var reasons []string
 	w.emitter.Register(func(e *job.CallbackEnvelope) {
-		if e.Payload != nil && e.Payload.Type == job.CallbackTypeExit {
-			reasons = append(reasons, e.Payload.Data["reason"])
+		if exit, ok := e.Payload.Data.(job.ExitData); ok {
+			reasons = append(reasons, exit.Reason)
 		}
 	})
 
@@ -480,8 +480,8 @@ func TestJobTracker_FastFailureDrainsDelayedLogs(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				events = append(events, e.Payload.Type)
-				if e.Payload.Type == job.CallbackTypeLog {
-					lines = append(lines, e.Payload.Data["lines"].([]string)...)
+				if log, ok := e.Payload.Data.(job.LogData); ok {
+					lines = append(lines, log.Lines...)
 				}
 			})
 			watcher := newK8sLifecycleWatcher(client, "test", emitter, time.Second)

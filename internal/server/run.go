@@ -43,19 +43,9 @@ func NewJobEmitter(queue dispatcher.Queue, metrics *observability.Metrics) *job.
 		}
 	})
 	emitter.Register(func(e *job.CallbackEnvelope) {
-		if metrics == nil || e.Payload == nil || e.Payload.Type != job.CallbackTypeExit {
-			return
+		if exit, ok := e.Payload.Data.(job.ExitData); ok {
+			metrics.RecordJobCompleted(context.Background(), exit.Image, exit.ExitCode == 0, exit.DurationSeconds)
 		}
-		image, _ := e.Payload.Data["image"].(string)
-		exitCode := -1
-		if code, ok := e.Payload.Data["exitCode"].(int); ok {
-			exitCode = code
-		}
-		var duration float64
-		if d, ok := e.Payload.Data["durationSeconds"].(float64); ok {
-			duration = d
-		}
-		metrics.RecordJobCompleted(context.Background(), image, exitCode == 0, duration)
 	})
 	return emitter
 }

@@ -259,14 +259,15 @@ func TestAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	if event.Payload.Type != "orchestrator.deployment.response" {
 		t.Fatalf("event type = %q", event.Payload.Type)
 	}
-	if event.Payload.Data["invocationId"] != invocationID {
-		t.Fatalf("invocationId mismatch: %v vs %s", event.Payload.Data["invocationId"], invocationID)
+	data := event.Payload.Data.(ResponseData)
+	if data.InvocationID != invocationID {
+		t.Fatalf("invocationId mismatch: %v vs %s", data.InvocationID, invocationID)
 	}
-	if event.Payload.Data["statusCode"] != http.StatusCreated {
-		t.Fatalf("statusCode = %v, want 201", event.Payload.Data["statusCode"])
+	if data.StatusCode != http.StatusCreated {
+		t.Fatalf("statusCode = %v, want 201", data.StatusCode)
 	}
-	if event.Payload.Data["body"] != "done" {
-		t.Fatalf("body = %v, want done", event.Payload.Data["body"])
+	if data.Body != "done" {
+		t.Fatalf("body = %v, want done", data.Body)
 	}
 }
 
@@ -290,12 +291,11 @@ func TestAsync_ResponseTruncatedAtCap(t *testing.T) {
 	}
 
 	event := queue.last()
-	body, _ := event.Payload.Data["body"].(string)
-	if len(body) != maxCallbackResponseBody {
-		t.Fatalf("body length = %d, want %d", len(body), maxCallbackResponseBody)
+	data := event.Payload.Data.(ResponseData)
+	if len(data.Body) != maxCallbackResponseBody {
+		t.Fatalf("body length = %d, want %d", len(data.Body), maxCallbackResponseBody)
 	}
-	truncated, _ := event.Payload.Data["bodyTruncated"].(bool)
-	if !truncated {
+	if !data.BodyTruncated {
 		t.Fatal("expected bodyTruncated = true")
 	}
 }
