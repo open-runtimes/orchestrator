@@ -4,6 +4,7 @@ package deployment
 
 import (
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/volume"
 )
 
@@ -34,6 +35,16 @@ type Request struct {
 	// TerminationGracePeriodSeconds is part of the fixed pod shape used for
 	// transparent warm-pool matching. Zero means the Kubernetes default (30s).
 	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
+}
+
+// WorkspacePath is the request's workspace (working directory and shared-volume
+// mount path), falling back to the default for specs stored before the field
+// existed. Every container in a deployment must agree on it.
+func (r *Request) WorkspacePath() string {
+	if r.Workspace != "" {
+		return r.Workspace
+	}
+	return config.DefaultWorkspace
 }
 
 // Probes — only Readiness is sidecar-run (honors ms granularity); Liveness and

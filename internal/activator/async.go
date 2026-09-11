@@ -98,8 +98,7 @@ func (b *deploymentBroker) async(w http.ResponseWriter, r *http.Request, key, ho
 // forwardAsync executes the buffered request against a ready endpoint and
 // dispatches the response callback.
 func (b *deploymentBroker) forwardAsync(r *http.Request, key string, spec *deployment.Request, invocationID string, hold time.Duration, c capacity) {
-	ctx, cancel := context.WithTimeout(context.Background(),
-		hold+time.Duration(spec.TimeoutSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), hold+time.Duration(spec.TimeoutSeconds)*time.Second)
 	defer cancel()
 
 	target, err := b.await(ctx, key, hold, c)
@@ -251,9 +250,10 @@ func echoHeaders(h http.Header) (map[string][]string, bool) {
 	return out, false
 }
 
-// cloneForForward makes a detached copy of the request with a buffered body.
+// cloneForForward makes a copy of the request with a buffered body that
+// outlives the caller's connection but keeps its trace context.
 func cloneForForward(r *http.Request, host string, body []byte) *http.Request {
-	req := r.Clone(context.Background())
+	req := r.Clone(context.WithoutCancel(r.Context()))
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 	req.Host = host

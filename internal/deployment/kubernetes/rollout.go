@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/deployment"
-	revisionapi "orchestrator/internal/revision"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -77,7 +76,7 @@ func (o *Orchestrator) reconcileRollout(ctx context.Context, m marker) error {
 	if err != nil {
 		return apperrors.Internal("kubernetes.getRevision", err)
 	}
-	if !revisionAvailable(revision) {
+	if revision.Status.ReadyReplicas < 1 {
 		return nil // not ready (or failed) — never auto-cut
 	}
 
@@ -117,10 +116,4 @@ func (o *Orchestrator) retire(ctx context.Context, m marker) error {
 		slog.Info("Retired revision", "deploymentId", m.ID, "revision", rev)
 	}
 	return nil
-}
-
-// revisionAvailable reports whether a Revision has at least one
-// available replica — the auto-cut readiness gate.
-func revisionAvailable(revision *revisionapi.Revision) bool {
-	return revision.Status.ReadyReplicas >= 1
 }

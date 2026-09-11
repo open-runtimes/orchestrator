@@ -73,7 +73,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Tolerations:                   tolerations,
 		NodeSelector:                  nodeSelector,
 		LeaderElection: LeaderElectionConfig{
-			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
+			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", ""),
 			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
 			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 0),

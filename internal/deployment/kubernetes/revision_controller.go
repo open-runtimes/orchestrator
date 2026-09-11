@@ -13,7 +13,6 @@ import (
 	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/warm"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -558,7 +558,7 @@ func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revis
 	candidate := revision
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		status := deriveRevisionStatus(candidate, pods, createErr)
-		if reflect.DeepEqual(candidate.Status, status) {
+		if apiequality.Semantic.DeepEqual(candidate.Status, status) {
 			return nil
 		}
 		candidate.Status = status
@@ -575,9 +575,11 @@ func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revis
 }
 
 func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []string) *corev1.Pod {
-	podLabels := mapsClone(revision.Spec.Template.Labels)
+	podLabels := make(map[string]string, len(revision.Spec.Template.Labels)+1)
+	maps.Copy(podLabels, revision.Spec.Template.Labels)
 	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
-	annotations := mapsClone(revision.Spec.Template.Annotations)
+	annotations := make(map[string]string, len(revision.Spec.Template.Annotations)+1)
+	maps.Copy(annotations, revision.Spec.Template.Annotations)
 	annotations[AnnotationRevisionGeneration] = strconv.FormatInt(revision.Generation, 10)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -788,10 +790,4 @@ func podReadyForRevision(pod *corev1.Pod) bool {
 		}
 	}
 	return false
-}
-
-func mapsClone[K comparable, V any](in map[K]V) map[K]V {
-	out := make(map[K]V, len(in)+1)
-	maps.Copy(out, in)
-	return out
 }

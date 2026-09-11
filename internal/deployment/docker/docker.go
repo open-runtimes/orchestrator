@@ -203,7 +203,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 		return apperrors.Internal("docker.marshalArtifacts", err)
 	}
 
-	workspace := workspaceOf(req)
+	workspace := req.WorkspacePath()
 	env := []string{
 		"JOB_ID=dep-" + req.ID,
 		config.EnvSharedVolume + "=" + workspace,
@@ -261,7 +261,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 		cmd = []string{"/bin/sh", "-c", req.Command}
 	}
 
-	workspace := workspaceOf(req)
+	workspace := req.WorkspacePath()
 	resp, err := o.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:      req.Image,

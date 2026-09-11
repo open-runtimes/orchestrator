@@ -45,7 +45,7 @@ func LoadS3Credentials() S3Credentials {
 		AccessKeyID:     GetEnv(EnvS3AccessKeyID, ""),
 		SecretAccessKey: secret,
 		SessionToken:    session,
-		ForcePathStyle:  GetEnv(EnvS3ForcePathStyle, "") == "true",
+		ForcePathStyle:  GetBoolEnv(EnvS3ForcePathStyle, false),
 	}
 }
 

@@ -14,7 +14,15 @@ import (
 // derive from it live, so any replica can serve any request and a restart
 // loses nothing.
 type Orchestrator interface {
-	Lifecycle
+	// Start reconciles pre-existing deployments and begins maintenance.
+	Start(ctx context.Context) error
+
+	// Ready checks that the backend is reachable.
+	Ready(ctx context.Context) error
+
+	// Close releases orchestrator resources. Running deployments are NOT
+	// stopped — they continue serving independently.
+	Close() error
 
 	// Apply creates the deployment or replaces its spec in place. Applying an
 	// identical spec is a no-op. Reports whether the deployment was created —
@@ -32,17 +40,6 @@ type Orchestrator interface {
 	// Spec returns the last-applied request, reconstructed from the backend.
 	Spec(ctx context.Context, id string) (*Request, error)
 
-	Routing
-
-	// Status returns the deployment's current state, derived from the backend.
-	Status(ctx context.Context, id string) (*StatusResponse, error)
-
-	// List returns all deployments' statuses.
-	List(ctx context.Context) ([]StatusResponse, error)
-}
-
-// Routing is the traffic surface of an orchestrator backend.
-type Routing interface {
 	// SetTraffic replaces the deployment's traffic table — canary,
 	// blue-green, or rollback are all weight edits across existing
 	// revisions. Also switches the rollout mode to manual: a new revision
@@ -57,17 +54,10 @@ type Routing interface {
 	// traffic-receiving revisions — the in-process activator forwards
 	// requests to these (Docker data path).
 	Endpoints(ctx context.Context, id string) ([]*url.URL, error)
-}
 
-// Lifecycle is the process-lifecycle surface of an orchestrator backend.
-type Lifecycle interface {
-	// Start reconciles pre-existing deployments and begins maintenance.
-	Start(ctx context.Context) error
+	// Status returns the deployment's current state, derived from the backend.
+	Status(ctx context.Context, id string) (*StatusResponse, error)
 
-	// Ready checks that the backend is reachable.
-	Ready(ctx context.Context) error
-
-	// Close releases orchestrator resources. Running deployments are NOT
-	// stopped — they continue serving independently.
-	Close() error
+	// List returns all deployments' statuses.
+	List(ctx context.Context) ([]StatusResponse, error)
 }

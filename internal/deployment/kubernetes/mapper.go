@@ -88,16 +88,6 @@ func revisionSpec(req *deployment.Request, cfg Config, revision string, labels m
 	return spec
 }
 
-// workspaceOf is the request's workspace (working directory and shared-volume
-// mount path), falling back to the default for specs stored before the field
-// existed. Every container in the pod must agree on it.
-func workspaceOf(req *deployment.Request) string {
-	if req.Workspace != "" {
-		return req.Workspace
-	}
-	return workspacePath
-}
-
 // objectNameFor prefixes a deployment ID or revision name into a managed
 // object name: the marker ConfigMap and HTTPRoute are dep-{id}; a Revision and
 // its Service are dep-{revisionName}.
@@ -187,7 +177,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 // workspace before the proxy and worker start. Plain init container: runs to
 // completion first.
 func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container {
-	workspace := workspaceOf(req)
+	workspace := req.WorkspacePath()
 	env := []corev1.EnvVar{
 		{Name: "JOB_ID", Value: objectNameFor(req.ID)},
 		{Name: config.EnvSharedVolume, Value: workspace},
@@ -217,7 +207,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 // pod into the Service's EndpointSlice.
 func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
-	workspace := workspaceOf(req)
+	workspace := req.WorkspacePath()
 	return corev1.Container{
 		Name:            ContainerProxy,
 		Image:           cfg.SidecarImage,
@@ -299,14 +289,12 @@ func proxyEnv(req *deployment.Request) []corev1.EnvVar {
 	}
 	// Before the readiness early-return below: a revision that mounts must be
 	// told so whether or not it configures probes, or its sidecar never mounts,
-	// its startup probe never passes, and the workload never starts.
+	// its startup probe never passes, and the workload never starts. The
+	// sidecar also needs the artifacts for the phase that is its own:
+	// establishing a mount before the worker starts, and syncing its delta
+	// afterwards. The artifact-pre init container handles the rest.
 	if artifact.HasMount(req.Artifacts) {
 		env = append(env, corev1.EnvVar{Name: workload.EnvMounts, Value: "true"})
-	}
-	// The sidecar needs the artifacts for the phase that is its own: establishing
-	// a mount before the worker starts, and syncing its delta afterwards. The
-	// artifact-pre init container handles the rest.
-	if artifact.HasMount(req.Artifacts) {
 		if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
 			env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
 		}
@@ -337,7 +325,7 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		cmd = []string{"/bin/sh", "-c", req.Command}
 	}
 
-	workspace := workspaceOf(req)
+	workspace := req.WorkspacePath()
 	_, workerVolumeMounts := kube.PersistentVolumes(req.Volumes)
 
 	env := make([]corev1.EnvVar, 0, len(req.Environment))

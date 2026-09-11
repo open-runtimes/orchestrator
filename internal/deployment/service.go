@@ -151,6 +151,7 @@ func (s *Service) Resolve(ctx context.Context, host string) (*Request, error) {
 	for i := range statuses {
 		spec, err := s.orchestrator.Spec(ctx, statuses[i].ID)
 		if err != nil {
+			slog.Warn("Skipping deployment while resolving host: spec unreadable", "deploymentId", statuses[i].ID, "error", err)
 			continue
 		}
 		if slices.Contains(spec.Hosts, host) {
@@ -210,8 +211,12 @@ func (s *Service) SetTraffic(ctx context.Context, id string, targets []Target) (
 }
 
 func (s *Service) fillURL(ctx context.Context, status *StatusResponse) {
+	if s.urlFor == nil {
+		return
+	}
 	spec, err := s.orchestrator.Spec(ctx, status.ID)
-	if err != nil || s.urlFor == nil {
+	if err != nil {
+		slog.Warn("Deployment URL omitted: spec unreadable", "deploymentId", status.ID, "error", err)
 		return
 	}
 	if len(spec.Hosts) > 0 {
@@ -416,7 +421,7 @@ func (s *Service) validate(req *Request) error {
 func validateURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return errors.New("malformed URL")
+		return fmt.Errorf("malformed URL: %w", err)
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {

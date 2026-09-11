@@ -270,12 +270,12 @@ func TestRequestMatchesPoolRequiresExactFixedShape(t *testing.T) {
 	p := pool.Pool{ID: "node", Spec: pool.Spec{
 		Image: base.Image, Port: base.Port, CPU: base.CPU, Memory: base.Memory,
 	}}
-	if !requestMatchesPool(base, &p) {
+	if requestAcquisitionKey(base) != pool.ShapeKey(&p.Spec) {
 		t.Fatal("equal shape did not match")
 	}
 	base.Volumes = []volume.Volume{{Source: "b", Path: "/b"}, {Source: "a", Path: "/a"}}
 	p.Volumes = []volume.Volume{{Source: "a", Path: "/a"}, {Source: "b", Path: "/b"}}
-	if !requestMatchesPool(base, &p) {
+	if requestAcquisitionKey(base) != pool.ShapeKey(&p.Spec) {
 		t.Fatal("semantically equal volumes in a different order did not match")
 	}
 	for name, mutate := range map[string]func(*deployment.Request){
@@ -292,7 +292,7 @@ func TestRequestMatchesPoolRequiresExactFixedShape(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			candidate := *base
 			mutate(&candidate)
-			if requestMatchesPool(&candidate, &p) {
+			if requestAcquisitionKey(&candidate) == pool.ShapeKey(&p.Spec) {
 				t.Fatalf("mismatched %s was accepted", name)
 			}
 		})
@@ -301,7 +301,7 @@ func TestRequestMatchesPoolRequiresExactFixedShape(t *testing.T) {
 
 func TestValidateDeploymentPoolsRejectsNonMatchableAndDuplicateShapes(t *testing.T) {
 	shape := pool.Spec{Image: "node:22", Port: 3000, CPU: 1, Memory: 512}
-	if err := validateDeploymentPools([]pool.Pool{{ID: "node", Spec: shape}}); err != nil {
+	if err := pool.ValidateTransparent([]pool.Pool{{ID: "node", Spec: shape}}, "deployment"); err != nil {
 		t.Fatalf("valid pool: %v", err)
 	}
 	for name, pools := range map[string][]pool.Pool{
@@ -311,7 +311,7 @@ func TestValidateDeploymentPoolsRejectsNonMatchableAndDuplicateShapes(t *testing
 		"duplicate":         {{ID: "a", Spec: shape}, {ID: "b", Spec: shape}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateDeploymentPools(pools); err == nil {
+			if err := pool.ValidateTransparent(pools, "deployment"); err == nil {
 				t.Fatal("expected validation error")
 			}
 		})

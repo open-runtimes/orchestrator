@@ -10,6 +10,8 @@ import (
 	"orchestrator/internal/volume"
 	"strings"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 // fakeOrchestrator records what the service asked for and reports ready.
@@ -200,12 +202,12 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 		t.Errorf("omitted timeoutSeconds must take the default: got %v", orch.last.TimeoutSeconds)
 	}
 	req := standardRequest()
-	req.TimeoutSeconds = ptrTo(maxTimeoutSecs + 1)
+	req.TimeoutSeconds = ptr.To(maxTimeoutSecs + 1)
 	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error over the timeout ceiling")
 	}
 	req = standardRequest()
-	req.TimeoutSeconds = ptrTo(-1)
+	req.TimeoutSeconds = ptr.To(-1)
 	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error for a negative timeout")
 	}
@@ -214,7 +216,7 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 	// (WebSocket terminals, language servers). It must survive validation, or
 	// the connection it was asked for is cut at the default five minutes.
 	req = standardRequest()
-	req.TimeoutSeconds = ptrTo(0)
+	req.TimeoutSeconds = ptr.To(0)
 	if _, err := svc.Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

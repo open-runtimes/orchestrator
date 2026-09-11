@@ -67,7 +67,7 @@ func LoadConfigFromEnv() Config {
 		ProxyPort: config.GetIntEnv(workload.EnvProxyPort, workload.DefaultProxyPort),
 		AdminPort: config.GetIntEnv(workload.EnvAdminPort, workload.DefaultAdminPort),
 
-		Mounts:        config.GetEnv(workload.EnvMounts, "") == "true",
+		Mounts:        config.GetBoolEnv(workload.EnvMounts, false),
 		ArtifactsJSON: config.GetEnv(workload.EnvArtifacts, ""),
 		Timeout:       time.Duration(config.GetIntEnv(workload.EnvTimeoutSeconds, 300)) * time.Second,
 		MaxDrain:      time.Duration(config.GetIntEnv(workload.EnvMaxDrainSeconds, 90)) * time.Second,

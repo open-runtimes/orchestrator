@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/deployment/endpointflip"
 	"orchestrator/internal/kube"
@@ -85,7 +86,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 // pool-controller uses the same contract to maintain inventory.
 func NewRevisionPoolManager(client kubernetes.Interface, cfg Config) (*warm.Manager, error) {
 	cfg.applyDefaults()
-	if err := validateDeploymentPools(cfg.Pools); err != nil {
+	if err := pool.ValidateTransparent(cfg.Pools, "deployment"); err != nil {
 		return nil, err
 	}
 	return warm.New(client, cfg.Pools, warm.Config{
@@ -97,10 +98,6 @@ func NewRevisionPoolManager(client kubernetes.Interface, cfg Config) (*warm.Mana
 		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
 			Claim: LabelPoolClaim, Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
 	}), nil
-}
-
-func validateDeploymentPools(pools []pool.Pool) error {
-	return pool.ValidateTransparent(pools, "deployment")
 }
 
 // Start surveys pre-existing managed deployments (their markers), then
@@ -271,16 +268,11 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool
 	return false, o.mintNextRevision(ctx, req, m, string(specJSON))
 }
 
-func requestMatchesPool(req *deployment.Request, p *pool.Pool) bool {
-	key := requestAcquisitionKey(req)
-	return key != "" && pool.ShapeKey(&p.Spec) == key
-}
-
 func requestAcquisitionKey(req *deployment.Request) string {
 	// The shim replaces the image entrypoint, so a claim must carry the
 	// command explicitly. A custom workspace and kubelet-run probes are also
 	// impossible to late-bind after a warm pod has started.
-	if req.Command == "" || workspaceOf(req) != workspacePath ||
+	if req.Command == "" || req.WorkspacePath() != config.DefaultWorkspace ||
 		(req.Probes != nil && (req.Probes.Liveness != nil || req.Probes.Startup != nil)) {
 		return ""
 	}

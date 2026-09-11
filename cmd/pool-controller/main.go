@@ -77,7 +77,7 @@ func run(ctx context.Context) error {
 	}
 
 	leader := kube.LeaderElectionConfig{
-		Enabled:       config.GetEnv("KUBE_POOL_LEADER_ELECTION", "") == "true",
+		Enabled:       config.GetBoolEnv("KUBE_POOL_LEADER_ELECTION", false),
 		LeaseName:     config.GetEnv("KUBE_POOL_LEADER_LEASE_NAME", defaultLeaseName),
 		Identity:      config.GetEnv("KUBE_POOL_LEADER_IDENTITY", ""),
 		LeaseDuration: config.GetDurationEnv("KUBE_POOL_LEADER_LEASE_DURATION", 15*time.Second),
