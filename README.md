@@ -44,6 +44,7 @@ Production is the other shape: the Helm chart runs each plane as its own image a
 | [Pools](docs/pools.md) | Pre-warmed capacity for deployment revisions and its burst policy |
 | [Sandboxes](docs/sandboxes.md) | Live workspaces: the sandbox API, the in-sandbox exec/files contract, extra ports, sandbox pools, isolation tiers |
 | [Callbacks](docs/callbacks.md) | CloudEvents delivery: every event type, payload schemas, HMAC signature verification |
+| [Workload logs](docs/logging.md) | Node-local collection and OTLP/HTTP shipping for Jobs, Deployments, and Sandboxes |
 | [Operations](docs/operations.md) | Deploying the orchestrator: Helm install, prerequisites, configuration reference, hardening |
 | [Observability](docs/observability.md) | Metrics, logging, and tracing |
 | [Development](docs/development.md) | Building, testing, and the local dev loop |
