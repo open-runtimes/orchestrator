@@ -13,7 +13,6 @@ import (
 	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/warm"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -106,11 +106,9 @@ func (c *revisionController) start(ctx context.Context) error {
 	if !cache.WaitForCacheSync(ctx.Done(), c.revisionInformer.HasSynced, c.podInformer.HasSynced) {
 		return errors.New("informer caches failed to sync")
 	}
-	if c.o.cfg.Metrics != nil {
-		_ = c.o.cfg.Metrics.ObserveInt64("revision_queue_depth", "Revision reconcile items currently queued", c.queueDepth)
-		_ = c.o.cfg.Metrics.ObserveInt64("revision_queue_oldest_age_seconds", "Age in seconds of the oldest queued Revision", c.oldestPendingSeconds)
-		_ = c.o.cfg.Metrics.ObserveInt64("revision_replica_drift", "Total absolute desired-to-active replica drift across live Revisions", c.replicaDrift)
-	}
+	_ = c.o.cfg.Metrics.ObserveInt64("revision_queue_depth", "Revision reconcile items currently queued", c.queueDepth)
+	_ = c.o.cfg.Metrics.ObserveInt64("revision_queue_oldest_age_seconds", "Age in seconds of the oldest queued Revision", c.oldestPendingSeconds)
+	_ = c.o.cfg.Metrics.ObserveInt64("revision_replica_drift", "Total absolute desired-to-active replica drift across live Revisions", c.replicaDrift)
 	return nil
 }
 
@@ -144,7 +142,7 @@ func (c *revisionController) runLeader(ctx context.Context) {
 			}
 		})
 	}
-	if len(objects) == 0 && c.o.cfg.Metrics != nil {
+	if len(objects) == 0 {
 		c.o.cfg.Metrics.RecordRevisionLeaderConvergence(ctx, 0)
 	}
 	<-ctx.Done()
@@ -220,9 +218,7 @@ func (c *revisionController) processRevisionItem(ctx context.Context, queue work
 	}
 	started := time.Now()
 	err := c.reconcileCached(ctx, name, queuedAt)
-	if c.o.cfg.Metrics != nil {
-		c.o.cfg.Metrics.RecordRevisionReconcile(ctx, err == nil || apierrors.IsNotFound(err), time.Since(started).Seconds())
-	}
+	c.o.cfg.Metrics.RecordRevisionReconcile(ctx, err == nil || apierrors.IsNotFound(err), time.Since(started).Seconds())
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			slog.Warn("Revision reconcile failed", "revision", name, "error", err)
@@ -281,7 +277,7 @@ func (c *revisionController) markInitialConverged(ctx context.Context, name stri
 		c.initial = nil
 	}
 	c.mu.Unlock()
-	if done && c.o.cfg.Metrics != nil {
+	if done {
 		c.o.cfg.Metrics.RecordRevisionLeaderConvergence(ctx, duration)
 	}
 }
@@ -491,9 +487,7 @@ func (o *Orchestrator) deleteRevisionPods(ctx context.Context, pods []*corev1.Po
 		if err := o.client.CoreV1().Pods(o.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
-		if o.cfg.Metrics != nil {
-			o.cfg.Metrics.RecordRevisionPodDelete(ctx, reason)
-		}
+		o.cfg.Metrics.RecordRevisionPodDelete(ctx, reason)
 	}
 	return nil
 }
@@ -531,7 +525,7 @@ func (o *Orchestrator) ensureRevisionPods(ctx context.Context, revision *revisio
 		if err != nil {
 			return err
 		}
-		if created && o.cfg.Metrics != nil {
+		if created {
 			o.cfg.Metrics.RecordRevisionPodCreate(ctx, time.Since(triggeredAt).Seconds())
 		}
 	}
@@ -564,7 +558,7 @@ func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revis
 	candidate := revision
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		status := deriveRevisionStatus(candidate, pods, createErr)
-		if reflect.DeepEqual(candidate.Status, status) {
+		if apiequality.Semantic.DeepEqual(candidate.Status, status) {
 			return nil
 		}
 		candidate.Status = status
@@ -581,9 +575,11 @@ func (o *Orchestrator) updateRevisionStatus(ctx context.Context, revision *revis
 }
 
 func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []string) *corev1.Pod {
-	podLabels := mapsClone(revision.Spec.Template.Labels)
+	podLabels := make(map[string]string, len(revision.Spec.Template.Labels)+1)
+	maps.Copy(podLabels, revision.Spec.Template.Labels)
 	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
-	annotations := mapsClone(revision.Spec.Template.Annotations)
+	annotations := make(map[string]string, len(revision.Spec.Template.Annotations)+1)
+	maps.Copy(annotations, revision.Spec.Template.Annotations)
 	annotations[AnnotationRevisionGeneration] = strconv.FormatInt(revision.Generation, 10)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -604,12 +600,10 @@ func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisiona
 	claim := *revision.Spec.Claim
 	claim.ClaimID = revisionClaimID(revision, slot)
 	started := time.Now()
-	if o.cfg.Metrics != nil {
-		o.cfg.Metrics.RecordPoolClaimStarted(ctx, "revision", p.ID)
-		defer func() {
-			o.cfg.Metrics.RecordPoolClaimFinished(ctx, "revision", p.ID, outcomeErr == nil, time.Since(started).Seconds())
-		}()
-	}
+	o.cfg.Metrics.RecordPoolClaimStarted(ctx, "revision", p.ID)
+	defer func() {
+		o.cfg.Metrics.RecordPoolClaimFinished(ctx, "revision", p.ID, outcomeErr == nil, time.Since(started).Seconds())
+	}()
 	podLabels := revisionLabels(revision.Labels[LabelDeploymentID], revision.Labels[LabelRevision])
 	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
 	owners := []metav1.OwnerReference{{
@@ -796,10 +790,4 @@ func podReadyForRevision(pod *corev1.Pod) bool {
 		}
 	}
 	return false
-}
-
-func mapsClone[K comparable, V any](in map[K]V) map[K]V {
-	out := make(map[K]V, len(in)+1)
-	maps.Copy(out, in)
-	return out
 }

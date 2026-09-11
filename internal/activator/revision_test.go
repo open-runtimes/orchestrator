@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"orchestrator/internal/deployment"
 	revisionapi "orchestrator/internal/revision"
+	"orchestrator/internal/testutil"
 	"strconv"
 	"strings"
 	"testing"
@@ -355,17 +356,18 @@ func TestRevisionAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	if event.Payload.Type != "orchestrator.deployment.response" {
 		t.Fatalf("event type = %q", event.Payload.Type)
 	}
-	if event.Payload.Data["deploymentId"] != "app" {
-		t.Fatalf("deploymentId = %v, want app", event.Payload.Data["deploymentId"])
+	data := testutil.WireData(t, event.Payload)
+	if data["deploymentId"] != "app" {
+		t.Fatalf("deploymentId = %v, want app", data["deploymentId"])
 	}
-	if event.Payload.Data["invocationId"] != invocationID {
-		t.Fatalf("invocationId mismatch: %v vs %s", event.Payload.Data["invocationId"], invocationID)
+	if data["invocationId"] != invocationID {
+		t.Fatalf("invocationId mismatch: %v vs %s", data["invocationId"], invocationID)
 	}
-	if event.Payload.Data["statusCode"] != http.StatusCreated {
-		t.Fatalf("statusCode = %v, want 201", event.Payload.Data["statusCode"])
+	if data["statusCode"] != float64(http.StatusCreated) {
+		t.Fatalf("statusCode = %v, want 201", data["statusCode"])
 	}
-	if event.Payload.Data["body"] != "done" {
-		t.Fatalf("body = %v, want done", event.Payload.Data["body"])
+	if data["body"] != "done" {
+		t.Fatalf("body = %v, want done", data["body"])
 	}
 }
 

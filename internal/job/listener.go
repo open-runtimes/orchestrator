@@ -14,8 +14,3 @@ type CallbackEnvelope struct {
 
 // CallbackEmitter fans out outbound callbacks to registered listeners.
 type CallbackEmitter = emitter.Emitter[*CallbackEnvelope]
-
-// NewCallbackEmitter creates a new CallbackEmitter.
-func NewCallbackEmitter() *CallbackEmitter {
-	return &CallbackEmitter{}
-}

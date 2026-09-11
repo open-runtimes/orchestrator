@@ -172,7 +172,7 @@ func (c revisionCapacity) Raise(ctx context.Context) error {
 	name := revisionObjectName(c.rev)
 	revision, err := c.a.revisions.Get(ctx, c.a.cfg.Namespace, name)
 	if err != nil {
-		return fmt.Errorf("raise skipped: %w", err)
+		return err
 	}
 	if revision.Spec.Replicas != 0 {
 		return nil // already raised; pods are on their way

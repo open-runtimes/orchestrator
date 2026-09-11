@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/callback"
 	"orchestrator/internal/job"
+	"orchestrator/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,11 +72,11 @@ func TestArchiveFailureCallback(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				events <- job.NewEventBuilder(report.JobID, "orchestrator/sidecar", report.Meta).BuildArtifactEvent(&report).Data
+				events <- testutil.WireData(t, job.ArtifactEvent(&report))
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer endpoint.Close()
-			runner := NewRunner("test-build", dir, 10, artifact.DefaultRegistry(),
+			runner := NewRunner("test-build", dir, 10,
 				WithArtifactListener(NewHTTPSink("test-build", endpoint.URL, "", time.Second, "", "", nil, map[string]string{"deploymentId": "deployment"})))
 			err := runner.RunPre(context.Background(), []artifact.Artifact{
 				&artifact.Unarchive{ID: "extract", In: "source.tar.gz", Out: "source", Subdir: tc.subdir},
@@ -87,9 +87,10 @@ func TestArchiveFailureCallback(t *testing.T) {
 			}
 			select {
 			case data := <-events:
-				failure, _ := data["error"].(callback.Failure)
+				failure, _ := data["error"].(map[string]any)
+				message, _ := failure["message"].(string)
 				if data["status"] != "failed" || data["artifactId"] != "extract" || data["artifactType"] != "unarchive" ||
-					failure.Code != tc.code || failure.Message == "" || !strings.Contains(failure.Message, tc.mentions) {
+					failure["code"] != tc.code || message == "" || !strings.Contains(message, tc.mentions) {
 					t.Fatalf("failure detail was lost across the sidecar HTTP report and callback: %#v", data)
 				}
 			default:

@@ -9,7 +9,7 @@ import (
 // calls them.
 func registerHealthRoutes(mux *http.ServeMux, checker *health.Checker) {
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, checker.Liveness(r.Context()))
+		writeJSON(w, http.StatusOK, checker.Liveness())
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		response := checker.Readiness(r.Context())

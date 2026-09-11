@@ -48,9 +48,10 @@ type CompHandler struct {
 	Compress   Compressor
 }
 
-//exhaustive:ignore — a runtime registry, not a total mapping: callers add
 // codecs via RegisterCompHandler (the artifact package registers zstd, lz4,
 // and lz4hc), and lookups treat a missing key as "unsupported compression".
+//
+//exhaustive:ignore — a runtime registry, not a total mapping: callers add
 var compHandlers = map[Compression]*CompHandler{
 	GZip: {
 		Decompress: MakeDecompressorErr(zlib.NewReader),

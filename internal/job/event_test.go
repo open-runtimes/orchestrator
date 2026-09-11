@@ -1,7 +1,7 @@
 package job
 
 import (
-	"orchestrator/internal/callback"
+	"orchestrator/internal/testutil"
 	"strings"
 	"testing"
 	"unicode"
@@ -16,10 +16,24 @@ func assertSentence(t *testing.T, message, mentions string) {
 	}
 }
 
+// artifactEventData is the artifact callback as a subscriber sees it.
 func artifactEventData(t *testing.T, r *ArtifactReport) map[string]any {
 	t.Helper()
 
-	return NewEventBuilder("job-1", "orchestrator/service", nil).BuildArtifactEvent(r).Data
+	r.JobID = "job-1"
+	return testutil.WireData(t, ArtifactEvent(r))
+}
+
+// failure reads the error object of a callback.
+func failure(t *testing.T, data map[string]any) (code, message string) {
+	t.Helper()
+	f, ok := data["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("no error object in %v", data)
+	}
+	code, _ = f["code"].(string)
+	message, _ = f["message"].(string)
+	return code, message
 }
 
 // The artifact endpoint and the callback subscriber see the same report, so a
@@ -50,11 +64,10 @@ func TestBuildArtifactEventOmitsUnknownClassification(t *testing.T) {
 		Status: "success",
 	})
 
-	if _, ok := data["format"]; ok {
-		t.Errorf("format present as %v, want omitted", data["format"])
-	}
-	if _, ok := data["compression"]; ok {
-		t.Errorf("compression present as %v, want omitted", data["compression"])
+	for _, key := range []string{"format", "compression"} {
+		if v, ok := data[key]; ok {
+			t.Errorf("%s present as %v, want omitted", key, v)
+		}
 	}
 }
 
@@ -76,13 +89,13 @@ func TestBuildArtifactEventReportsFailureCode(t *testing.T) {
 				ID: "extract", Type: "unarchive", Status: "failed",
 				FailureReason: tc.reason, FailureMessage: tc.message,
 			})
-			failure, _ := data["error"].(callback.Failure)
-			if failure.Code != tc.code || data["status"] != "failed" {
-				t.Fatalf("unexpected failure callback: %#v", data)
+			code, message := failure(t, data)
+			if code != tc.code || data["status"] != "failed" {
+				t.Fatalf("unexpected failure callback: %v", data)
 			}
-			assertSentence(t, failure.Message, tc.mentions)
-			if strings.Contains(failure.Message, "token=secret") {
-				t.Errorf("legacy diagnostic reached the wire: %q", failure.Message)
+			assertSentence(t, message, tc.mentions)
+			if strings.Contains(message, "token=secret") {
+				t.Errorf("legacy diagnostic reached the wire: %q", message)
 			}
 		})
 	}
@@ -92,8 +105,8 @@ func TestBuildArtifactEventOmitsAbsentOptionalFields(t *testing.T) {
 	data := artifactEventData(t, &ArtifactReport{ID: "code", Type: "download", Status: "success"})
 
 	for _, key := range []string{"error", "content"} {
-		if _, ok := data[key]; ok {
-			t.Errorf("%s present as %v, want omitted", key, data[key])
+		if v, ok := data[key]; ok {
+			t.Errorf("%s present as %v, want omitted", key, v)
 		}
 	}
 	if data["artifactId"] != "code" {

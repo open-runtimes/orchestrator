@@ -69,6 +69,20 @@ func (m marker) clear(workspace string) error {
 	return nil
 }
 
+// CheckReady reports whether the ready marker exists: pre-job artifacts are
+// processed and mounts are established. Docker health checks and Kubernetes
+// startup probes poll it to decide when the worker can start.
+func CheckReady(sharedVolumePath string) bool {
+	return markerReady.exists(sharedVolumePath)
+}
+
+// CheckMountsReady reports whether the mounts-ready marker exists. The
+// Kubernetes native sidecar writes it after mounting; the worker's startup
+// probe waits on it so the worker only starts once its mounts are present.
+func CheckMountsReady(sharedVolumePath string) bool {
+	return markerMountsReady.exists(sharedVolumePath)
+}
+
 // ReadyMarkerPath is where the ready marker lives inside workspace. The
 // marker layout is private to this binary; this accessor exists for tests
 // that observe the marker from outside it.

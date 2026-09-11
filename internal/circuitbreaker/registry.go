@@ -72,32 +72,3 @@ type Stats struct {
 	HalfOpen int // Breakers in half-open state
 	Closed   int // Breakers in closed state
 }
-
-// Reset resets all breakers in the registry.
-func (r *Registry) Reset() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for _, b := range r.breakers {
-		b.Reset()
-	}
-}
-
-// Remove removes a breaker from the registry.
-func (r *Registry) Remove(key string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.breakers, key)
-}
-
-// Keys returns all registered keys.
-func (r *Registry) Keys() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	keys := make([]string, 0, len(r.breakers))
-	for k := range r.breakers {
-		keys = append(keys, k)
-	}
-	return keys
-}

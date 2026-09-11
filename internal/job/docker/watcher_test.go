@@ -83,7 +83,7 @@ func TestLifecycle_HappyPath(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -122,7 +122,7 @@ func TestLifecycle_WorkerFailure(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -154,7 +154,7 @@ func TestLifecycle_SidecarCrashBeforeWorker(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -185,7 +185,7 @@ func TestLifecycle_LogDelivered(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -218,7 +218,7 @@ func TestLifecycle_LogSkippedWhenNoCallback(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 
@@ -244,7 +244,7 @@ func TestLifecycle_LogSkippedWhenFilteredOut(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb", Events: []string{job.CallbackTypeStart, job.CallbackTypeExit}}
@@ -289,7 +289,7 @@ func TestLifecycle_ResumeNoStarted(t *testing.T) {
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
 	_ = ctrl.Apply("job-1", job.Started{})
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture := &captureListener{}
 	emitter.Register(capture.record)
 	dest := &job.CallbackDest{URL: "http://example.com/cb"}
@@ -322,7 +322,7 @@ func TestLifecycle_ContextCancelled(t *testing.T) {
 	ctrl := job.NewMemoryStore[dockerHandle]()
 	_ = ctrl.Reserve("job-1")
 	ctrl.Commit("job-1", dockerHandle{}, nil)
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})

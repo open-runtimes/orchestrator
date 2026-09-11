@@ -1,7 +1,6 @@
 package kube
 
 import (
-	"context"
 	"net/http"
 	"orchestrator/internal/observability"
 	"strings"
@@ -26,10 +25,6 @@ func (m *metricsTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	resp, err := m.inner.RoundTrip(req)
 	dur := time.Since(start).Seconds()
 
-	ctx := req.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	verb := req.Method
 	resource := parseResourceFromPath(req.URL.Path)
 
@@ -40,7 +35,7 @@ func (m *metricsTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	case resp != nil:
 		status = resp.StatusCode
 	}
-	m.metrics.RecordK8sAPIRequest(ctx, verb, resource, dur, status)
+	m.metrics.RecordK8sAPIRequest(req.Context(), verb, resource, dur, status)
 	return resp, err
 }
 

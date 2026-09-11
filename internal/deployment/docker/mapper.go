@@ -2,9 +2,9 @@ package docker
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/workload"
 	"strconv"
@@ -32,22 +32,7 @@ const (
 	typeArtifacts = "artifacts"
 )
 
-// workspacePath is the default shared-volume mount path when a request does
-// not set req.Workspace.
-const workspacePath = config.DefaultWorkspace
-
-// workspaceOf is the request's workspace (working directory and shared-volume
-// mount path), falling back to the default for specs stored before the field
-// existed. Every container in a deployment must agree on it.
-func workspaceOf(req *deployment.Request) string {
-	if req.Workspace != "" {
-		return req.Workspace
-	}
-	return workspacePath
-}
-
-// defaultReadyTimeout matches the API default for ReadyTimeoutSeconds.
-const defaultReadyTimeout = 600 * time.Second
+const defaultReadyTimeout = deployment.DefaultReadyTimeoutSeconds * time.Second
 
 func workerName(id string) string    { return "dep-" + id + "-worker" }
 func proxyName(id string) string     { return "dep-" + id + "-proxy" }
@@ -94,9 +79,13 @@ func parseSpec(raw string) (*deployment.Request, error) {
 // specDeadline returns the ready deadline recorded in the spec JSON, falling
 // back to the API default.
 func specDeadline(raw string) time.Duration {
-	var req deployment.Request
-	if raw != "" {
-		_ = json.Unmarshal([]byte(raw), &req)
+	if raw == "" {
+		return defaultReadyTimeout
+	}
+	req, err := parseSpec(raw)
+	if err != nil {
+		slog.Warn("Undecodable stored deployment spec; using the default ready timeout", "error", err)
+		return defaultReadyTimeout
 	}
 	return readyTimeout(req.ReadyTimeoutSeconds)
 }

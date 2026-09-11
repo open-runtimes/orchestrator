@@ -110,7 +110,7 @@ func LoadConfigFromEnv() (Config, error) {
 		OrphanTTL:     config.GetDurationEnv("SANDBOX_ORPHAN_TTL", defaultOrphanTTL),
 
 		LeaderElection: kube.LeaderElectionConfig{
-			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
+			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", defaultLeaderLeaseName),
 			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
 			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),
@@ -152,11 +152,6 @@ func (c *Config) applyDefaults() {
 func (c *Config) addressing() sandbox.Addressing {
 	return sandbox.Addressing{Domain: c.SandboxDomain, Scheme: c.Scheme}
 }
-
-// AgentCommand is the command a sandbox runs unless the pool or the request
-// names another: the agent the shim installs into the workspace, which serves
-// the sandbox contract on behalf of ANY image.
-func AgentCommand() string { return agentPath }
 
 // warmConfig projects the sandbox config onto the warm-pool manager's.
 func (c *Config) warmConfig() warm.Config {

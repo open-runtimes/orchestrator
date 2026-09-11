@@ -98,8 +98,7 @@ func (b *deploymentBroker) async(w http.ResponseWriter, r *http.Request, key, ho
 // forwardAsync executes the buffered request against a ready endpoint and
 // dispatches the response callback.
 func (b *deploymentBroker) forwardAsync(r *http.Request, key string, spec *deployment.Request, invocationID string, hold time.Duration, c capacity) {
-	ctx, cancel := context.WithTimeout(context.Background(),
-		hold+time.Duration(spec.TimeoutSeconds)*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), hold+time.Duration(spec.TimeoutSeconds)*time.Second)
 	defer cancel()
 
 	target, err := b.await(ctx, key, hold, c)
@@ -141,49 +140,54 @@ func (b *deploymentBroker) forwardAsync(r *http.Request, key string, spec *deplo
 	b.dispatchResponse(spec, invocationID, r, elapsed, resp.StatusCode, respBody, truncated, callback.Failure{})
 }
 
-// dispatchResponse emits the orchestrator.deployment.response CloudEvent. The
-// original request's method, path, and headers are echoed back so a consumer
-// can reconstruct its record from the callback alone — request headers double
-// as a caller-defined metadata channel that round-trips.
+// ResponseData is the payload of an orchestrator.deployment.response event.
+// The original request's method, path, and headers are echoed back so a
+// consumer can reconstruct its record from the callback alone — request
+// headers double as a caller-defined metadata channel that round-trips.
+type ResponseData struct {
+	DeploymentID            string              `json:"deploymentId"`
+	InvocationID            string              `json:"invocationId"`
+	RequestMethod           string              `json:"requestMethod"`
+	RequestPath             string              `json:"requestPath"`
+	RequestPathTruncated    bool                `json:"requestPathTruncated,omitempty"`
+	RequestHeaders          map[string][]string `json:"requestHeaders,omitempty"`
+	RequestHeadersTruncated bool                `json:"requestHeadersTruncated,omitempty"`
+	DurationSeconds         float64             `json:"durationSeconds,omitempty"`
+	StatusCode              int                 `json:"statusCode,omitempty"`
+	Body                    string              `json:"body,omitempty"`
+	BodyEncoding            string              `json:"bodyEncoding,omitempty"` // "base64" when Body is not valid UTF-8
+	BodyTruncated           bool                `json:"bodyTruncated,omitempty"`
+	Error                   *callback.Failure   `json:"error,omitempty"`
+}
+
+// dispatchResponse emits the orchestrator.deployment.response CloudEvent.
 func (b *deploymentBroker) dispatchResponse(spec *deployment.Request, invocationID string, r *http.Request, duration time.Duration, status int, body []byte, truncated bool, failure callback.Failure) {
-	data := map[string]any{
-		"deploymentId":  spec.ID,
-		"invocationId":  invocationID,
-		"requestMethod": r.Method,
+	data := ResponseData{
+		DeploymentID:    spec.ID,
+		InvocationID:    invocationID,
+		RequestMethod:   r.Method,
+		RequestPath:     r.URL.RequestURI(),
+		DurationSeconds: duration.Seconds(),
+		StatusCode:      status,
+		BodyTruncated:   truncated,
 	}
 	// Bound the echoed path+query (URIs are ASCII, so a byte cut is safe) so a
 	// long request target can't push the callback past a receiver/proxy limit.
-	path := r.URL.RequestURI()
-	if len(path) > maxEchoedPathBytes {
-		path = path[:maxEchoedPathBytes]
-		data["requestPathTruncated"] = true
+	if len(data.RequestPath) > maxEchoedPathBytes {
+		data.RequestPath = data.RequestPath[:maxEchoedPathBytes]
+		data.RequestPathTruncated = true
 	}
-	data["requestPath"] = path
-	if headers, truncated := echoHeaders(r.Header); headers != nil {
-		data["requestHeaders"] = headers
-	} else if truncated {
-		data["requestHeadersTruncated"] = true
-	}
-	if duration > 0 {
-		data["durationSeconds"] = duration.Seconds()
-	}
-	if status > 0 {
-		data["statusCode"] = status
-	}
-	if body != nil {
-		// JSON strings must be valid UTF-8 — Go silently replaces bad bytes
-		// with U+FFFD, corrupting binary payloads. Base64 those instead and
-		// say so.
-		if utf8.Valid(body) {
-			data["body"] = string(body)
-		} else {
-			data["body"] = base64.StdEncoding.EncodeToString(body)
-			data["bodyEncoding"] = "base64"
-		}
-		data["bodyTruncated"] = truncated
+	data.RequestHeaders, data.RequestHeadersTruncated = echoHeaders(r.Header)
+	// JSON strings must be valid UTF-8 — Go silently replaces bad bytes with
+	// U+FFFD, corrupting binary payloads. Base64 those instead and say so.
+	if utf8.Valid(body) {
+		data.Body = string(body)
+	} else {
+		data.Body = base64.StdEncoding.EncodeToString(body)
+		data.BodyEncoding = "base64"
 	}
 	if failure.Code != "" {
-		data["error"] = failure
+		data.Error = &failure
 	}
 
 	if b.rec != nil {
@@ -246,9 +250,10 @@ func echoHeaders(h http.Header) (map[string][]string, bool) {
 	return out, false
 }
 
-// cloneForForward makes a detached copy of the request with a buffered body.
+// cloneForForward makes a copy of the request with a buffered body that
+// outlives the caller's connection but keeps its trace context.
 func cloneForForward(r *http.Request, host string, body []byte) *http.Request {
-	req := r.Clone(context.Background())
+	req := r.Clone(context.WithoutCancel(r.Context()))
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 	req.Host = host

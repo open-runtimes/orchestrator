@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"encoding/json"
+	"log/slog"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/job"
@@ -39,36 +40,6 @@ type watchConfig struct {
 	dest  *job.CallbackDest
 }
 
-func watchConfigFromRequest(req *job.Request) *watchConfig {
-	cfg := &watchConfig{
-		jobID: req.ID,
-		image: req.Image,
-	}
-	if req.Callback != nil && req.Callback.URL != "" {
-		cfg.dest = &job.CallbackDest{
-			Meta:   req.Meta,
-			URL:    req.Callback.URL,
-			Key:    req.Callback.Key,
-			Events: req.Callback.Events,
-		}
-	}
-	return cfg
-}
-
-func watchConfigFromJob(j *batchv1.Job) *watchConfig {
-	cfg := &watchConfig{
-		jobID: j.Labels[LabelJobID],
-	}
-	for _, c := range j.Spec.Template.Spec.Containers {
-		if c.Name == ContainerWorker {
-			cfg.image = c.Image
-			break
-		}
-	}
-	cfg.dest = callbackDestFromAnnotations(j.Annotations)
-	return cfg
-}
-
 func callbackDestFromAnnotations(ann map[string]string) *job.CallbackDest {
 	url := ann[AnnotationCallbackURL]
 	if url == "" {
@@ -76,7 +47,9 @@ func callbackDestFromAnnotations(ann map[string]string) *job.CallbackDest {
 	}
 	var meta map[string]string
 	if raw := ann[AnnotationMeta]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &meta)
+		if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+			slog.Warn("Ignoring undecodable meta annotation", "error", err)
+		}
 	}
 	var events []string
 	if raw := ann[AnnotationCallbackEvents]; raw != "" {
@@ -99,7 +72,7 @@ func jobNameFor(jobID string) string {
 // Pod template contains one native sidecar that prepares artifacts and mounts,
 // gates the worker with -check-ready, and processes outputs on SIGTERM after
 // the worker exits. Both containers share the workspace emptyDir.
-func buildJob(req *job.Request, cfg OrchestratorConfig, sidecarImage string) *batchv1.Job {
+func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 	workspace := req.Workspace
 	if workspace == "" {
 		workspace = config.DefaultWorkspace

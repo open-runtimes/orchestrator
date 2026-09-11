@@ -19,13 +19,6 @@ func PostPhase(depends string) bool {
 	return depends == WorkloadDependency || depends == JobDependency
 }
 
-// which is what makes a teardown something a caller waits on rather than a
-// deletion.
-func HasPostPhase(artifacts []Artifact) bool {
-	_, post := Partition(artifacts)
-	return len(post) > 0
-}
-
 // Artifact is the interface for all artifact types.
 // Artifacts without "job" in their dependency chain run before the job (inputs).
 // Artifacts that depend on "job" (directly or transitively) run after the job (outputs).

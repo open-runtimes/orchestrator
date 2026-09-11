@@ -49,48 +49,25 @@ type Orchestrator struct {
 	watchWg           sync.WaitGroup
 }
 
-// Config holds configuration for the Docker orchestrator.
-type Config struct {
-	SidecarImage        string
-	RetentionPeriod     time.Duration // How long to keep completed jobs (default 15m)
-	MaintenanceInterval time.Duration // How often to run cleanup (default 1m)
-	ArtifactEndpoint    string        // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
-	ExtraHosts          []string      // Extra /etc/hosts entries for containers (e.g., ["appwrite.test:host-gateway"])
-	Network             string        // Docker network to attach worker and sidecar containers to
-}
-
-// NewOrchestrator returns an OrchestratorFactory that creates a Docker orchestrator.
-// Register listeners on the emitter before calling Start.
-func NewOrchestrator(ctx context.Context, cfg Config) job.OrchestratorFactory {
-	return func(emitter *job.CallbackEmitter) (job.Orchestrator, error) {
-		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err != nil {
-			return nil, fmt.Errorf("failed to create docker client: %w", err)
-		}
-
-		retentionPeriod := cfg.RetentionPeriod
-		if retentionPeriod <= 0 {
-			retentionPeriod = 15 * time.Minute
-		}
-
-		maintenanceInterval := cfg.MaintenanceInterval
-		if maintenanceInterval <= 0 {
-			maintenanceInterval = 1 * time.Minute
-		}
-
-		return &Orchestrator{
-			client:              dockerClient,
-			sidecarImage:        cfg.SidecarImage,
-			retentionPeriod:     retentionPeriod,
-			maintenanceInterval: maintenanceInterval,
-			emitter:             emitter,
-			artifactEndpoint:    cfg.ArtifactEndpoint,
-			extraHosts:          cfg.ExtraHosts,
-			networkName:         cfg.Network,
-			ctrl:                job.NewMemoryStore[dockerHandle](),
-			watcher:             newDockerLifecycleWatcher(dockerClient),
-		}, nil
+// NewOrchestrator creates a Docker orchestrator. Register listeners on the
+// emitter before calling Start.
+func NewOrchestrator(cfg Config, emitter *job.CallbackEmitter) (*Orchestrator, error) {
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return nil, fmt.Errorf("create docker client: %w", err)
 	}
+	return &Orchestrator{
+		client:              dockerClient,
+		sidecarImage:        cfg.SidecarImage,
+		retentionPeriod:     cfg.JobRetention,
+		maintenanceInterval: cfg.MaintenanceInterval,
+		emitter:             emitter,
+		artifactEndpoint:    cfg.ArtifactEndpoint,
+		extraHosts:          cfg.ExtraHosts,
+		networkName:         cfg.Network,
+		ctrl:                job.NewMemoryStore[dockerHandle](),
+		watcher:             newDockerLifecycleWatcher(dockerClient),
+	}, nil
 }
 
 // Start reconciles pre-existing jobs and begins background maintenance.
@@ -164,65 +141,43 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 		sidecarRunning := jc.sidecar.State == "running"
 		workerRunning := jc.worker != nil && jc.worker.State == "running"
 
-		switch {
-		case !sidecarRunning && !workerRunning:
+		cs, err := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
+		if err != nil {
+			logger.Warn("Skipping job: worker inspect failed", "jobId", jobID, "error", err)
+			continue
+		}
+
+		if !sidecarRunning && !workerRunning {
 			// Both exited — replay terminal state, no watcher needed.
 			completed++
-			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
 			_ = o.ctrl.Reserve(jobID)
 			o.ctrl.Commit(jobID, handle, nil)
 			_ = o.ctrl.Apply(jobID, job.Started{})
 			_ = o.ctrl.Apply(jobID, job.Exited{ExitCode: cs.workerExitCode, Reason: exitReason(cs.workerExitCode, cs.workerOOMKilled)})
-
-		case sidecarRunning && jc.worker == nil:
-			// Sidecar running but no worker — shouldn't happen in normal flow.
-			logger.Warn("Job has sidecar but no worker container", "jobId", jobID)
-			resumed++
-			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
-			cfg := watchConfigFromState(cs, handle)
-			_ = o.ctrl.Reserve(jobID)
-			o.ctrl.Commit(jobID, handle, cancelWatch)
-			_ = o.ctrl.Apply(jobID, job.Started{})
-			o.watchWg.Go(func() {
-				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
-					_ = o.ctrl.Apply(cfg.jobID, s)
-					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
-				})
-			})
-
-		case workerRunning:
-			// Worker is running — replay running state and resume watcher.
-			resumed++
-			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
-			cfg := watchConfigFromState(cs, handle)
-			_ = o.ctrl.Reserve(jobID)
-			o.ctrl.Commit(jobID, handle, cancelWatch)
-			_ = o.ctrl.Apply(jobID, job.Started{})
-			o.watchWg.Go(func() {
-				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
-					_ = o.ctrl.Apply(cfg.jobID, s)
-					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
-				})
-			})
-
-		default:
-			// Sidecar running, worker created but not yet started — accepted state.
-			// The watcher will drive the Running transition when the worker starts.
-			resumed++
-			watchCtx, cancelWatch := context.WithCancel(context.Background())
-			cs := inspectContainers(ctx, o.client, jobID, handle.jobContainerID)
-			cfg := watchConfigFromState(cs, handle)
-			_ = o.ctrl.Reserve(jobID)
-			o.ctrl.Commit(jobID, handle, cancelWatch)
-			o.watchWg.Go(func() {
-				o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
-					_ = o.ctrl.Apply(cfg.jobID, s)
-					job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
-				})
-			})
+			continue
 		}
+
+		// The sidecar is still running: resume the watcher. A worker that was
+		// created but has not started yet stays in the accepted state and the
+		// watcher drives the Running transition; a missing worker should not
+		// happen in normal flow.
+		if jc.worker == nil {
+			logger.Warn("Job has sidecar but no worker container", "jobId", jobID)
+		}
+		resumed++
+		watchCtx, cancelWatch := context.WithCancel(context.Background())
+		cfg := watchConfigFromState(cs, handle)
+		_ = o.ctrl.Reserve(jobID)
+		o.ctrl.Commit(jobID, handle, cancelWatch)
+		if jc.worker == nil || workerRunning {
+			_ = o.ctrl.Apply(jobID, job.Started{})
+		}
+		o.watchWg.Go(func() {
+			o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
+				_ = o.ctrl.Apply(cfg.jobID, s)
+				job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
+			})
+		})
 	}
 
 	logger.Info("Reconciliation complete", "reconciled", reconciled, "resumed", resumed, "completed", completed)
@@ -346,7 +301,6 @@ func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
 // ActiveJobs reports the jobs this replica holds that have not reached a
 // terminal state. Read at scrape time by the jobs_active async gauge, so it is
 // always the live truth — including jobs resumed from a previous process.
-// Satisfies job.ActiveCounter.
 func (o *Orchestrator) ActiveJobs() int64 {
 	var active int64
 	for _, e := range o.ctrl.List() {
@@ -607,22 +561,6 @@ func (o *Orchestrator) cleanupExpiredJobs(ctx context.Context) {
 	}
 
 	logger.Info("Maintenance complete", "cleaned", len(expired))
-}
-
-// EmitArtifactEvent receives an artifact result from the sidecar and dispatches
-// the corresponding CloudEvent through the orchestrator's delivery pipeline.
-// It is a no-op if the job has no callback configured or has already been released.
-func (o *Orchestrator) EmitArtifactEvent(r job.ArtifactReport) {
-	if r.CallbackURL == "" || !job.MatchesCallbackFilter(job.CallbackTypeArtifact, r.CallbackEvents) {
-		return
-	}
-	builder := job.NewEventBuilder(r.JobID, "orchestrator/service", r.Meta)
-	event := builder.BuildArtifactEvent(&r)
-	o.emitter.Emit(&job.CallbackEnvelope{
-		Payload:     event,
-		CallbackURL: r.CallbackURL,
-		SigningKey:  r.CallbackKey,
-	})
 }
 
 // Verify Orchestrator implements job.Orchestrator

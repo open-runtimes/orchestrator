@@ -36,11 +36,6 @@ func newDockerLifecycleWatcher(cli *client.Client) *dockerLifecycleWatcher {
 	return &dockerLifecycleWatcher{client: cli}
 }
 
-// Watch blocks until the job completes or ctx is cancelled.
-func (w *dockerLifecycleWatcher) Watch(ctx context.Context, sidecarID, workerID string, emit func(job.Signal)) {
-	w.run(ctx, sidecarID, workerID, emit)
-}
-
 // watcherState tracks mutable state across reconnect iterations.
 type watcherState struct {
 	isWorkerStarted bool
@@ -51,7 +46,7 @@ type watcherState struct {
 	logDone         chan struct{}
 }
 
-func (w *dockerLifecycleWatcher) run(ctx context.Context, sidecarID, workerID string, out func(job.Signal)) {
+func (w *dockerLifecycleWatcher) Watch(ctx context.Context, sidecarID, workerID string, out func(job.Signal)) {
 	logger := slog.With("sidecarID", sidecarID)
 	state := &watcherState{}
 

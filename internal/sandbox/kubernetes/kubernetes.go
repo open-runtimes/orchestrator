@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
 	"orchestrator/internal/kube"
@@ -119,7 +120,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if existing, err := o.warm.Claimed(ctx, "", req.ID); err != nil {
 		return nil, err
 	} else if len(existing) > 0 {
-		return nil, apperrors.Conflict("sandbox", req.ID, "sandbox "+req.ID+" already exists")
+		return nil, apperrors.Conflict("sandbox " + req.ID + " already exists")
 	}
 
 	// Claim a warm pod, or — with no pool behind this sandbox — create the one
@@ -244,7 +245,9 @@ func (o *Orchestrator) statusFromPod(pod *corev1.Pod) sandbox.Status {
 	// The extra ports come off the stored spec, the primary off the pool — so a
 	// reconstructed sandbox advertises exactly the addresses it was created with.
 	var spec sandbox.Request
-	o.warm.Spec(pod, &spec)
+	if err := o.warm.Spec(pod, &spec); err != nil {
+		slog.Warn("Undecodable sandbox spec on pod; extra ports unknown", "pod", pod.Name, "error", err)
+	}
 	status := sandbox.Status{
 		ID:     obs.ClaimID,
 		PoolID: obs.PoolID,

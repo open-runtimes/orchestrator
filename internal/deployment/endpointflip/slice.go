@@ -12,6 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
+
+	"k8s.io/utils/ptr"
 )
 
 // reconcileService converges the {service}-flip EndpointSlice for one managed
@@ -97,7 +99,7 @@ func desiredSlice(svc *corev1.Service, ips []string, port int32) *discoveryv1.En
 	for _, ip := range ips {
 		endpoints = append(endpoints, discoveryv1.Endpoint{
 			Addresses:  []string{ip},
-			Conditions: discoveryv1.EndpointConditions{Ready: ptrTo(true)},
+			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
 		})
 	}
 	return &discoveryv1.EndpointSlice{
@@ -116,15 +118,15 @@ func desiredSlice(svc *corev1.Service, ips []string, port int32) *discoveryv1.En
 				Kind:       "Service",
 				Name:       svc.Name,
 				UID:        svc.UID,
-				Controller: ptrTo(true),
+				Controller: ptr.To(true),
 			}},
 		},
 		AddressType: discoveryv1.AddressTypeIPv4,
 		Endpoints:   endpoints,
 		Ports: []discoveryv1.EndpointPort{{
-			Name:     ptrTo(portName),
-			Port:     ptrTo(port),
-			Protocol: ptrTo(corev1.ProtocolTCP),
+			Name:     ptr.To(portName),
+			Port:     ptr.To(port),
+			Protocol: ptr.To(corev1.ProtocolTCP),
 		}},
 	}
 }
@@ -182,5 +184,3 @@ func portSet(slice *discoveryv1.EndpointSlice) sets.Set[string] {
 	}
 	return keys
 }
-
-func ptrTo[T any](v T) *T { return &v }

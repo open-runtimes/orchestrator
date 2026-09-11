@@ -265,17 +265,37 @@ func TestExistingRevisionUsesMatchingPoolAddedLater(t *testing.T) {
 	}
 }
 
-func TestRequestMatchesPoolRequiresExactFixedShape(t *testing.T) {
+// A revision acquires from a pool only when the request's fixed shape is the
+// pool's, exactly: the controller then claims warm pods for it instead of
+// running direct pods. Driven through Apply, which stamps the key the same way
+// production does, and judged by the controller's own pool lookup.
+func TestRevisionAcquiresFromPoolOnlyForExactFixedShape(t *testing.T) {
 	base := testRequest()
 	p := pool.Pool{ID: "node", Spec: pool.Spec{
 		Image: base.Image, Port: base.Port, CPU: base.CPU, Memory: base.Memory,
 	}}
-	if !requestMatchesPool(base, &p) {
+	acquires := func(t *testing.T, req *deployment.Request, p pool.Pool) bool {
+		t.Helper()
+		o, _ := newTestOrchestrator(t)
+		o.cfg.Pools = []pool.Pool{p}
+		if _, err := o.Apply(t.Context(), req); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		revision, err := o.revisions.Get(t.Context(), o.namespace, objectNameFor(revisionName(req.ID, 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o.poolForRevision(revision) != nil
+	}
+
+	if !acquires(t, base, p) {
 		t.Fatal("equal shape did not match")
 	}
-	base.Volumes = []volume.Volume{{Source: "b", Path: "/b"}, {Source: "a", Path: "/a"}}
-	p.Volumes = []volume.Volume{{Source: "a", Path: "/a"}, {Source: "b", Path: "/b"}}
-	if !requestMatchesPool(base, &p) {
+	reordered := *base
+	reordered.Volumes = []volume.Volume{{Source: "b", Path: "/b"}, {Source: "a", Path: "/a"}}
+	withVolumes := p
+	withVolumes.Volumes = []volume.Volume{{Source: "a", Path: "/a"}, {Source: "b", Path: "/b"}}
+	if !acquires(t, &reordered, withVolumes) {
 		t.Fatal("semantically equal volumes in a different order did not match")
 	}
 	for name, mutate := range map[string]func(*deployment.Request){
@@ -292,7 +312,7 @@ func TestRequestMatchesPoolRequiresExactFixedShape(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			candidate := *base
 			mutate(&candidate)
-			if requestMatchesPool(&candidate, &p) {
+			if acquires(t, &candidate, p) {
 				t.Fatalf("mismatched %s was accepted", name)
 			}
 		})
@@ -301,7 +321,7 @@ func TestRequestMatchesPoolRequiresExactFixedShape(t *testing.T) {
 
 func TestValidateDeploymentPoolsRejectsNonMatchableAndDuplicateShapes(t *testing.T) {
 	shape := pool.Spec{Image: "node:22", Port: 3000, CPU: 1, Memory: 512}
-	if err := validateDeploymentPools([]pool.Pool{{ID: "node", Spec: shape}}); err != nil {
+	if err := pool.ValidateTransparent([]pool.Pool{{ID: "node", Spec: shape}}, "deployment"); err != nil {
 		t.Fatalf("valid pool: %v", err)
 	}
 	for name, pools := range map[string][]pool.Pool{
@@ -311,7 +331,7 @@ func TestValidateDeploymentPoolsRejectsNonMatchableAndDuplicateShapes(t *testing
 		"duplicate":         {{ID: "a", Spec: shape}, {ID: "b", Spec: shape}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateDeploymentPools(pools); err == nil {
+			if err := pool.ValidateTransparent(pools, "deployment"); err == nil {
 				t.Fatal("expected validation error")
 			}
 		})

@@ -103,7 +103,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 			"the Docker backend cannot mount: sibling containers do not share a mount namespace (see docs/sandboxes.md#the-docker-backend)")
 	}
 	if _, err := o.client.VolumeInspect(ctx, volumeName(req.ID)); err == nil {
-		return nil, apperrors.Conflict("sandbox", req.ID, "sandbox "+req.ID+" already exists")
+		return nil, apperrors.Conflict("sandbox " + req.ID + " already exists")
 	} else if !cerrdefs.IsNotFound(err) {
 		return nil, apperrors.Internal("docker.inspectVolume", err)
 	}

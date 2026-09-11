@@ -23,18 +23,14 @@ var ErrCircuitOpen = errors.New("circuit open")
 // It is the leaf of the delivery chain — the only layer that does I/O.
 func HTTPSender(sender *cloudevent.Sender) DeliveryFunc {
 	return func(ctx context.Context, event *Event) error {
-		opts := cloudevent.SendOptions{
-			SigningKey: event.SigningKey,
-			Signature:  event.Signature,
-		}
-		return sender.Send(ctx, event.Destination, event.Payload, opts)
+		return sender.Send(ctx, event.Destination, event.Payload, event.SigningKey)
 	}
 }
 
 // WithRetry wraps next with exponential-backoff retry for transient errors.
 // Non-retryable errors (4xx client errors) are returned immediately.
 // onRetry is called before each retry attempt and may be nil.
-func WithRetry(next DeliveryFunc, maxRetries int, cfg *backoff.Config, onRetry func()) DeliveryFunc {
+func WithRetry(next DeliveryFunc, maxRetries int, cfg backoff.Config, onRetry func()) DeliveryFunc {
 	return func(ctx context.Context, event *Event) error {
 		var lastErr error
 		for attempt := range maxRetries + 1 {

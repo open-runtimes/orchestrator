@@ -13,7 +13,7 @@ import (
 )
 
 // fastBackoff eliminates wall-clock waits in retry tests.
-var fastBackoff = &backoff.Config{Initial: time.Nanosecond, Max: time.Nanosecond}
+var fastBackoff = backoff.Config{Initial: time.Nanosecond, Max: time.Nanosecond}
 
 func testDeliveryEvent() *Event {
 	return &Event{
@@ -100,7 +100,7 @@ func TestWithRetry_StopsOnContextCancellation(t *testing.T) {
 		return &cloudevent.HTTPError{StatusCode: http.StatusServiceUnavailable}
 	})
 	// Use real (tiny) backoff so the select fires between attempts
-	chain := WithRetry(next, 10, &backoff.Config{Initial: 10 * time.Millisecond, Max: 10 * time.Millisecond}, nil)
+	chain := WithRetry(next, 10, backoff.Config{Initial: 10 * time.Millisecond, Max: 10 * time.Millisecond}, nil)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately

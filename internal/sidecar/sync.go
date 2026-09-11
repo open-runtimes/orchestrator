@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"orchestrator/internal/artifact"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -312,14 +312,6 @@ func relativeTo(root, path string) string {
 // isNotFound reports whether an error means the destination has nothing yet — a
 // first session — rather than that we could not read it.
 func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "404") ||
-		strings.Contains(msg, "not found") ||
-		strings.Contains(msg, "nosuchkey")
+	var status *artifact.HTTPStatusError
+	return errors.Is(err, os.ErrNotExist) || (errors.As(err, &status) && status.StatusCode == http.StatusNotFound)
 }

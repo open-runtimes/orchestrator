@@ -15,26 +15,6 @@ type Handle[T any] struct {
 	Runtime     T
 }
 
-// Viewer is the read-only surface used by HTTP handlers.
-type Viewer interface {
-	Get(id string) (Entry, bool)
-	List() []Entry
-}
-
-// Store is the full lifecycle surface for an orchestrator backend.
-// T is the runtime handle type (e.g. dockerHandle in the docker package).
-//
-// Lifecycle: Reserve → Commit → [Apply via watcher] → Release
-// Reconcile: Reserve → Commit → Apply (to replay known state) → [Apply via watcher] → Release
-type Store[T any] interface {
-	Viewer
-	Reserve(id string) error
-	Commit(id string, runtime T, cancelWatch context.CancelFunc)
-	Apply(id string, s Signal) error
-	Release(id string) (Handle[T], bool)
-	Each(f func(string, Entry, Handle[T]))
-}
-
 // storeEntry is the internal record in MemoryStore.
 type storeEntry[T any] struct {
 	entry       Entry
@@ -65,7 +45,7 @@ func (c *MemoryStore[T]) Reserve(id string) error {
 	defer c.mu.Unlock()
 
 	if _, exists := c.entries[id]; exists {
-		return apperrors.Conflict(c.kind, id, c.kind+" already exists")
+		return apperrors.Conflict(c.kind + " already exists")
 	}
 
 	now := time.Now()
@@ -201,6 +181,3 @@ func (c *MemoryStore[T]) Each(f func(string, Entry, Handle[T])) {
 		f(snaps[i].id, snaps[i].e, snaps[i].h)
 	}
 }
-
-// Compile-time interface check.
-var _ Store[struct{}] = (*MemoryStore[struct{}])(nil)

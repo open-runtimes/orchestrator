@@ -218,16 +218,21 @@ func (p *Proxy) Start(ctx context.Context) error {
 // newRunner builds the artifact runner for a phase of this workload's life. The
 // S3 credentials are the sidecar's, never the workload's — which is the reason a
 // snapshot upload belongs here rather than in a command the workload runs.
-func (p *Proxy) newRunner(id string) *sidecar.Runner {
-	timeoutSeconds := int(p.cfg.Timeout / time.Second)
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = int(p.cfg.MaxDrain / time.Second)
-	}
+func (p *Proxy) newRunner(id, workspace string, timeoutSeconds int) *sidecar.Runner {
 	opts := []sidecar.Option{sidecar.WithS3Credentials(p.cfg.S3)}
 	if p.mounter != nil {
 		opts = append(opts, sidecar.WithMounter(p.mounter))
 	}
-	return sidecar.NewRunner(id, p.cfg.Workspace, timeoutSeconds, artifact.DefaultRegistry(), opts...)
+	return sidecar.NewRunner(id, workspace, timeoutSeconds, opts...)
+}
+
+// phaseTimeoutSeconds bounds an artifact phase: the request timeout, or the
+// drain cap when requests are unbounded.
+func (p *Proxy) phaseTimeoutSeconds() int {
+	if p.cfg.Timeout > 0 {
+		return int(p.cfg.Timeout / time.Second)
+	}
+	return int(p.cfg.MaxDrain / time.Second)
 }
 
 // mount establishes a direct-mode workload's image mounts. Failing here fails
@@ -238,7 +243,7 @@ func (p *Proxy) mount(ctx context.Context) error {
 		p.mountsReady.Store(true)
 		return nil
 	}
-	artifacts, err := artifact.DefaultRegistry().Unmarshal([]byte(p.cfg.ArtifactsJSON))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(p.cfg.ArtifactsJSON))
 	if err != nil {
 		return fmt.Errorf("decode artifacts: %w", err)
 	}
@@ -246,7 +251,7 @@ func (p *Proxy) mount(ctx context.Context) error {
 		p.mountsReady.Store(true)
 		return nil
 	}
-	runner := p.newRunner("direct")
+	runner := p.newRunner("direct", p.cfg.Workspace, p.phaseTimeoutSeconds())
 	if err := runner.Mount(ctx, artifacts); err != nil {
 		return err
 	}

@@ -10,6 +10,8 @@ import (
 	"orchestrator/internal/volume"
 	"strings"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 // fakeOrchestrator records what the service asked for and reports ready.
@@ -36,7 +38,7 @@ func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 		pools = []pool.Pool{{ID: "py", Size: 1, Spec: pool.Spec{Image: "img", Port: 3000, CPU: 1, Memory: 512}}}
 	}
 	orch := &fakeOrchestrator{}
-	return NewService(orch, nil, pools, artifact.MountingRegistry()), orch
+	return NewService(orch, nil, pools), orch
 }
 
 func standardRequest() *Request { return &Request{Image: "img", Port: 3000, CPU: 1, Memory: 512} }
@@ -200,12 +202,12 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 		t.Errorf("omitted timeoutSeconds must take the default: got %v", orch.last.TimeoutSeconds)
 	}
 	req := standardRequest()
-	req.TimeoutSeconds = ptrTo(maxTimeoutSecs + 1)
+	req.TimeoutSeconds = ptr.To(maxTimeoutSecs + 1)
 	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error over the timeout ceiling")
 	}
 	req = standardRequest()
-	req.TimeoutSeconds = ptrTo(-1)
+	req.TimeoutSeconds = ptr.To(-1)
 	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error for a negative timeout")
 	}
@@ -214,7 +216,7 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 	// (WebSocket terminals, language servers). It must survive validation, or
 	// the connection it was asked for is cut at the default five minutes.
 	req = standardRequest()
-	req.TimeoutSeconds = ptrTo(0)
+	req.TimeoutSeconds = ptr.To(0)
 	if _, err := svc.Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

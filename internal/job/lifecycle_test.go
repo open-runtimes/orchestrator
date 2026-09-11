@@ -1,14 +1,14 @@
 package job
 
 import (
-	"orchestrator/internal/callback"
+	"orchestrator/internal/testutil"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestEmitCallback_Started_EmitsStartEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -20,7 +20,7 @@ func TestEmitCallback_Started_EmitsStartEvent(t *testing.T) {
 }
 
 func TestEmitCallback_Started_NilDest_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -32,7 +32,7 @@ func TestEmitCallback_Started_NilDest_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_Started_FilteredOut_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -44,7 +44,7 @@ func TestEmitCallback_Started_FilteredOut_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_Exited_EmitsExitEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -56,19 +56,19 @@ func TestEmitCallback_Exited_EmitsExitEvent(t *testing.T) {
 }
 
 func TestEmitCallback_Exited_ReasonInPayload(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
 	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb"}, Exited{ExitCode: 137, Reason: ExitReasonOOM})
 
-	if len(captured) != 1 || captured[0].Payload.Data["reason"] != ExitReasonOOM {
+	if len(captured) != 1 || testutil.WireData(t, captured[0].Payload)["reason"] != ExitReasonOOM {
 		t.Errorf("want exit event with reason %q, got %v", ExitReasonOOM, captured)
 	}
 }
 
 func TestEmitCallback_Exited_NoReason_OmitsField(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -77,14 +77,14 @@ func TestEmitCallback_Exited_NoReason_OmitsField(t *testing.T) {
 	if len(captured) != 1 {
 		t.Fatalf("want 1 exit event, got %v", captured)
 	}
-	if _, ok := captured[0].Payload.Data["reason"]; ok {
-		t.Errorf("want reason omitted when empty, got %v", captured[0].Payload.Data)
+	if reason, ok := testutil.WireData(t, captured[0].Payload)["reason"]; ok {
+		t.Errorf("want reason omitted when empty, got %v", reason)
 	}
 }
 
 func TestEmitCallback_Exited_NilDest_StillEmits(t *testing.T) {
 	// Exit events are always emitted even without a callback dest (no URL though).
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -99,22 +99,26 @@ func TestEmitCallback_Exited_NilDest_StillEmits(t *testing.T) {
 }
 
 func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
 	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Failed{Reason: "sidecar died"})
 
-	if len(captured) != 1 || captured[0].Payload.Data["exitCode"] != -1 {
-		t.Errorf("want exit event with code -1, got %v", captured)
+	if len(captured) != 1 {
+		t.Fatalf("want 1 exit event, got %v", captured)
 	}
-	if captured[0].Payload.Data["reason"] != "sidecar died" {
-		t.Errorf("want failure reason on the exit event, got %v", captured[0].Payload.Data["reason"])
+	data := testutil.WireData(t, captured[0].Payload)
+	if data["exitCode"] != float64(-1) {
+		t.Errorf("want exit event with code -1, got %v", data["exitCode"])
+	}
+	if data["reason"] != "sidecar died" {
+		t.Errorf("want failure reason on the exit event, got %v", data["reason"])
 	}
 }
 
 func TestEmitCallback_Completed_EmitsCompleteEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -126,7 +130,7 @@ func TestEmitCallback_Completed_EmitsCompleteEvent(t *testing.T) {
 }
 
 func TestEmitCallback_Completed_NilDest_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -138,7 +142,7 @@ func TestEmitCallback_Completed_NilDest_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_Completed_FilteredOut_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -150,7 +154,7 @@ func TestEmitCallback_Completed_FilteredOut_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_LogLine_EmitsLogEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -162,7 +166,7 @@ func TestEmitCallback_LogLine_EmitsLogEvent(t *testing.T) {
 }
 
 func TestEmitCallback_LogLine_NilDest_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -174,7 +178,7 @@ func TestEmitCallback_LogLine_NilDest_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_CallbackURLAndKey_Propagated(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -194,7 +198,7 @@ func TestApplyThenEmitCallback_FSMUpdatedBeforeCallback(t *testing.T) {
 	_ = store.Reserve("job-1")
 	store.Commit("job-1", struct{}{}, nil)
 
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var stateAtCallback string
 	em.Register(func(e *CallbackEnvelope) {
 		if e.Payload.Type == CallbackTypeStart {
@@ -224,22 +228,22 @@ func TestExitErrorCodes(t *testing.T) {
 		{"setup failed", Failed{Reason: "init container failed"}, "job_failed", -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			em := NewCallbackEmitter()
+			em := &CallbackEmitter{}
 			var events []*CallbackEnvelope
 			em.Register(func(e *CallbackEnvelope) { events = append(events, e) })
 			EmitCallback(em, "job", "alpine", &CallbackDest{URL: "http://callback"}, tc.signal)
 			if len(events) != 1 {
 				t.Fatalf("callbacks = %d", len(events))
 			}
-			data := events[0].Payload.Data
-			failure, _ := data["error"].(callback.Failure)
-			if failure.Code != tc.code || data["exitCode"] != tc.exit {
-				t.Fatalf("callback = %#v", data)
+			data := testutil.WireData(t, events[0].Payload)
+			code, message := failure(t, data)
+			if code != tc.code || data["exitCode"] != float64(tc.exit) {
+				t.Fatalf("callback = %v", data)
 			}
 			// The message speaks of the job; the backend's reason stays in reason.
-			assertSentence(t, failure.Message, "Job")
-			if strings.Contains(failure.Message, "init container") {
-				t.Errorf("backend vocabulary reached the message: %q", failure.Message)
+			assertSentence(t, message, "Job")
+			if strings.Contains(message, "init container") {
+				t.Errorf("backend vocabulary reached the message: %q", message)
 			}
 		})
 	}

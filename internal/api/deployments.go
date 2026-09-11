@@ -3,28 +3,7 @@ package api
 import (
 	"net/http"
 	"orchestrator/internal/deployment"
-	"orchestrator/internal/health"
-	"orchestrator/internal/observability"
 )
-
-// DeploymentsRouterConfig holds dependencies for the deployments API router.
-type DeploymentsRouterConfig struct {
-	Service       *deployment.Service
-	Metrics       *observability.Metrics
-	HealthChecker *health.Checker
-	APIKey        string
-}
-
-// NewDeploymentsRouter creates the management router for the deployments
-// service (the data plane is the activator's own listener).
-func NewDeploymentsRouter(cfg DeploymentsRouterConfig) http.Handler {
-	return NewOrchestratorRouter(OrchestratorRouterConfig{
-		Metrics:           cfg.Metrics,
-		HealthChecker:     cfg.HealthChecker,
-		APIKey:            cfg.APIKey,
-		DeploymentService: cfg.Service,
-	})
-}
 
 // registerDeploymentRoutes mounts the deployments surface.
 func registerDeploymentRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, svc *deployment.Service) {

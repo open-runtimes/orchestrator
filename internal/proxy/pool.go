@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/sidecar"
 	"orchestrator/internal/workload"
 	"os"
 	"path/filepath"
@@ -129,11 +128,7 @@ func (p *Proxy) claim(ctx context.Context, req workload.ClaimRequest) error {
 	// Same materialization path as the job sidecar's pre phase: pre-job
 	// artifacts in dependency order against the shared workspace. No report
 	// sink — the claim response is the result.
-	opts := []sidecar.Option{sidecar.WithS3Credentials(p.cfg.S3)}
-	if p.mounter != nil {
-		opts = append(opts, sidecar.WithMounter(p.mounter))
-	}
-	runner := sidecar.NewRunner(req.ClaimID, p.pool.workspace, timeoutSeconds, artifact.DefaultRegistry(), opts...)
+	runner := p.newRunner(req.ClaimID, p.pool.workspace, timeoutSeconds)
 	if err := runner.RunPre(ctx, req.Artifacts); err != nil {
 		return err
 	}

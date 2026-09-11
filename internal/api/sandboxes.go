@@ -3,29 +3,8 @@ package api
 import (
 	"net/http"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/health"
-	"orchestrator/internal/observability"
 	"orchestrator/internal/sandbox"
 )
-
-// SandboxesRouterConfig holds dependencies for the sandboxes API router.
-type SandboxesRouterConfig struct {
-	Service       *sandbox.Service
-	Metrics       *observability.Metrics
-	HealthChecker *health.Checker
-	APIKey        string
-}
-
-// NewSandboxesRouter creates the management router for the sandboxes service
-// (the data plane is the sandbox proxy's own listener).
-func NewSandboxesRouter(cfg SandboxesRouterConfig) http.Handler {
-	return NewOrchestratorRouter(OrchestratorRouterConfig{
-		Metrics:        cfg.Metrics,
-		HealthChecker:  cfg.HealthChecker,
-		APIKey:         cfg.APIKey,
-		SandboxService: cfg.Service,
-	})
-}
 
 // sandboxesHandler serves /v1/sandbox. Warm pools are operator-only capacity
 // and are selected transparently from the complete requested pod shape.

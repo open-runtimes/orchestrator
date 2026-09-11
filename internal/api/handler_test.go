@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
-	"sync"
+	"orchestrator/internal/testutil"
 	"testing"
 )
 
@@ -107,7 +107,7 @@ func TestMiddleware_Logging(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := LoggingMiddleware()(inner)
+	handler := loggingMiddleware(inner)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
@@ -125,7 +125,7 @@ func TestMiddleware_Recovery(t *testing.T) {
 		panic("test panic")
 	})
 
-	handler := RecoveryMiddleware()(inner)
+	handler := recoveryMiddleware(inner)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestMiddleware_JSONErrorShapes(t *testing.T) {
 	mux.HandleFunc("GET /v1/things", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
 	})
-	handler := ContentTypeMiddleware()(JSONErrorMiddleware()(mux))
+	handler := contentTypeMiddleware(jSONErrorMiddleware(mux))
 
 	cases := []struct {
 		name, method, path, contentType string
@@ -196,7 +196,7 @@ func TestMiddleware_ContentType(t *testing.T) {
 		called = true
 	})
 
-	handler := ContentTypeMiddleware()(inner)
+	handler := contentTypeMiddleware(inner)
 
 	// Test with wrong content type
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/test", bytes.NewBufferString("{}"))
@@ -228,7 +228,7 @@ func TestMiddleware_CORS(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := CORSMiddleware()(inner)
+	handler := cORSMiddleware(inner)
 
 	// Test OPTIONS preflight
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/test", nil)
@@ -356,7 +356,7 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := ContentTypeMiddleware()(inner)
+	handler := contentTypeMiddleware(inner)
 
 	// GET requests don't need content-type
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
@@ -369,27 +369,18 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 	}
 }
 
-// mockArtifactEmitter records EmitArtifactEvent calls for testing.
-type mockArtifactEmitter struct {
-	mu      sync.Mutex
-	reports []job.ArtifactReport
-}
-
-func (m *mockArtifactEmitter) EmitArtifactEvent(r job.ArtifactReport) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.reports = append(m.reports, r)
-}
-
 func TestHandler_ReportArtifact(t *testing.T) {
 	t.Parallel()
-	mock := &mockArtifactEmitter{}
-	handler := &Handler{artifactEmitter: mock}
+	var reports []map[string]any
+	callbacks := &job.CallbackEmitter{}
+	callbacks.Register(func(e *job.CallbackEnvelope) { reports = append(reports, testutil.WireData(t, e.Payload)) })
+	handler := &Handler{callbacks: callbacks}
 
 	report := job.ArtifactReport{
-		ID:     "a1",
-		Type:   "upload",
-		Status: "success",
+		ID:          "a1",
+		Type:        "upload",
+		Status:      "success",
+		CallbackURL: "http://callbacks.test/hook",
 	}
 	body, _ := json.Marshal(report)
 
@@ -403,26 +394,24 @@ func TestHandler_ReportArtifact(t *testing.T) {
 		t.Errorf("Expected status %d, got %d", http.StatusAccepted, w.Code)
 	}
 
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.reports) != 1 {
-		t.Fatalf("Expected 1 report, got %d", len(mock.reports))
+	if len(reports) != 1 {
+		t.Fatalf("Expected 1 report, got %d", len(reports))
 	}
-	r := mock.reports[0]
-	if r.JobID != "job-123" {
-		t.Errorf("Expected JobID 'job-123', got %q", r.JobID)
+	r := reports[0]
+	if r["jobId"] != "job-123" {
+		t.Errorf("Expected jobId 'job-123', got %v", r["jobId"])
 	}
-	if r.ID != "a1" {
-		t.Errorf("Expected ArtifactID 'a1', got %q", r.ID)
+	if r["artifactId"] != "a1" {
+		t.Errorf("Expected artifactId 'a1', got %v", r["artifactId"])
 	}
-	if r.Status != "success" {
-		t.Errorf("Expected Status 'success', got %q", r.Status)
+	if r["status"] != "success" {
+		t.Errorf("Expected status 'success', got %v", r["status"])
 	}
 }
 
 func TestHandler_ReportArtifact_InvalidJSON(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
+	handler := &Handler{callbacks: &job.CallbackEmitter{}}
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewBufferString("invalid"))
 	req.SetPathValue("jobId", "job-123")
@@ -437,7 +426,7 @@ func TestHandler_ReportArtifact_InvalidJSON(t *testing.T) {
 
 func TestHandler_ReportArtifact_MissingJobID(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
+	handler := &Handler{callbacks: &job.CallbackEmitter{}}
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/jobs//artifact", bytes.NewBufferString("{}"))
 	// No SetPathValue — jobId will be empty string
@@ -450,12 +439,12 @@ func TestHandler_ReportArtifact_MissingJobID(t *testing.T) {
 	}
 }
 
-func TestArtifactAuthMiddleware(t *testing.T) {
+func TestArtifactauthMiddleware(t *testing.T) {
 	t.Parallel()
 
 	newMux := func(apiKey string) *http.ServeMux {
 		mux := http.NewServeMux()
-		mw := ArtifactAuthMiddleware(apiKey)
+		mw := ArtifactauthMiddleware(apiKey)
 		mux.Handle("POST /internal/jobs/{jobId}/artifact", mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
 		})))

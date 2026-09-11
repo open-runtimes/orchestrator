@@ -11,37 +11,35 @@ import (
 	"time"
 )
 
-// LoggingMiddleware logs HTTP requests
-func LoggingMiddleware() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
+// loggingMiddleware logs HTTP requests
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
 
-			// Wrap response writer to capture status code
-			wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		// Wrap response writer to capture status code
+		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
-			next.ServeHTTP(wrapped, r)
+		next.ServeHTTP(wrapped, r)
 
-			if r.URL.Path == "/livez" || r.URL.Path == "/readyz" {
-				return
-			}
+		if r.URL.Path == "/livez" || r.URL.Path == "/readyz" {
+			return
+		}
 
-			// Use context-aware logging to include trace_id and span_id
-			slog.InfoContext(r.Context(), "HTTP request",
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", wrapped.statusCode,
-				"duration", time.Since(start),
-			)
-		})
-	}
+		// Use context-aware logging to include trace_id and span_id
+		slog.InfoContext(r.Context(), "HTTP request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", wrapped.statusCode,
+			"duration", time.Since(start),
+		)
+	})
 }
 
-// MetricsMiddleware records HTTP request metrics (latency, traffic, errors).
+// metricsMiddleware records HTTP request metrics (latency, traffic, errors).
 // Requests are labelled with the mux route they matched, not the raw URL, so
 // label cardinality stays bounded by the route table — resource IDs and
 // unrouted scanner traffic (/.env, /wp-includes/..., ...) all collapse.
-func MetricsMiddleware(metrics *observability.Metrics, mux *http.ServeMux) func(http.Handler) http.Handler {
+func metricsMiddleware(metrics *observability.Metrics, mux *http.ServeMux) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -70,51 +68,45 @@ func routePattern(mux *http.ServeMux, r *http.Request) string {
 	return pattern
 }
 
-// RecoveryMiddleware recovers from panics
-func RecoveryMiddleware() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() {
-				if err := recover(); err != nil {
-					slog.ErrorContext(r.Context(), "Panic recovered", "error", err)
-					http.Error(w, "Internal server error", http.StatusInternalServerError)
-				}
-			}()
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// ContentTypeMiddleware ensures JSON content type for API requests
-func ContentTypeMiddleware() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check content type for POST/PUT requests
-			if r.Method == http.MethodPost || r.Method == http.MethodPut {
-				contentType := r.Header.Get("Content-Type")
-				if contentType != "" && contentType != "application/json" {
-					writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
-					return
-				}
+// recoveryMiddleware recovers from panics
+func recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				slog.ErrorContext(r.Context(), "Panic recovered", "error", err)
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
 			}
+		}()
 
-			next.ServeHTTP(w, r)
-		})
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
-// JSONErrorMiddleware rewrites the mux's plain-text fallbacks (404 for
+// contentTypeMiddleware ensures JSON content type for API requests
+func contentTypeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check content type for POST/PUT requests
+		if r.Method == http.MethodPost || r.Method == http.MethodPut {
+			contentType := r.Header.Get("Content-Type")
+			if contentType != "" && contentType != "application/json" {
+				writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// jSONErrorMiddleware rewrites the mux's plain-text fallbacks (404 for
 // unknown routes, 405 for wrong methods) as {"error": ...} JSON so every
 // error the API emits has one shape. Handler responses pass through
 // untouched: writeError sets application/json before WriteHeader, so only
 // the stdlib's text/plain 404/405 match. The Allow header on 405s survives.
-func JSONErrorMiddleware() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			next.ServeHTTP(&jsonErrorWriter{ResponseWriter: w}, r)
-		})
-	}
+func jSONErrorMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&jsonErrorWriter{ResponseWriter: w}, r)
+	})
 }
 
 type jsonErrorWriter struct {
@@ -147,27 +139,25 @@ func (w *jsonErrorWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-// CORSMiddleware adds CORS headers
-func CORSMiddleware() func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+// cORSMiddleware adds CORS headers
+func cORSMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 
-			next.ServeHTTP(w, r)
-		})
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
-// AuthMiddleware validates Bearer token authentication.
+// authMiddleware validates Bearer token authentication.
 // If apiKey is empty, authentication is disabled.
-func AuthMiddleware(apiKey string) func(http.Handler) http.Handler {
+func authMiddleware(apiKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip auth if no API key is configured
@@ -200,12 +190,12 @@ func AuthMiddleware(apiKey string) func(http.Handler) http.Handler {
 	}
 }
 
-// ArtifactAuthMiddleware validates the per-job bearer token on the internal
+// ArtifactauthMiddleware validates the per-job bearer token on the internal
 // artifact endpoint. The expected token is derived as HMAC-SHA256(apiKey,
 // jobID), so it is bound to the job in the URL path — a token leaked from one
 // job cannot report results for another. If apiKey is empty, authentication
-// is disabled (matching AuthMiddleware).
-func ArtifactAuthMiddleware(apiKey string) func(http.Handler) http.Handler {
+// is disabled (matching authMiddleware).
+func ArtifactauthMiddleware(apiKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if apiKey == "" {

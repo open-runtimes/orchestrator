@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"orchestrator/internal/callback"
 	"orchestrator/internal/deployment"
+	"orchestrator/internal/testutil"
 	"strings"
 	"sync"
 	"testing"
@@ -82,6 +82,7 @@ func brokerSpec() *deployment.Request {
 	}
 }
 
+// waitEvent returns the next callback's data as a subscriber receives it.
 func waitEvent(t *testing.T, q *captureQueue) map[string]any {
 	t.Helper()
 	select {
@@ -89,7 +90,7 @@ func waitEvent(t *testing.T, q *captureQueue) map[string]any {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no callback dispatched")
 	}
-	return q.last().Payload.Data
+	return testutil.WireData(t, q.last().Payload)
 }
 
 func TestBrokerSyncProxiesWhenWarm(t *testing.T) {
@@ -226,13 +227,13 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 	if data["deploymentId"] != "dep" || data["invocationId"] != invocationID {
 		t.Errorf("callback correlation = %v/%v, want dep/%s", data["deploymentId"], data["invocationId"], invocationID)
 	}
-	if data["statusCode"] != http.StatusCreated || data["body"] != "done" {
+	if data["statusCode"] != float64(http.StatusCreated) || data["body"] != "done" {
 		t.Errorf("callback carried %v %q, want 201 done", data["statusCode"], data["body"])
 	}
-	if got, ok := data["bodyTruncated"].(bool); !ok || got {
-		t.Errorf("bodyTruncated = %v, want false", data["bodyTruncated"])
+	if truncated, _ := data["bodyTruncated"].(bool); truncated {
+		t.Error("bodyTruncated = true, want false")
 	}
-	if d, ok := data["durationSeconds"].(float64); !ok || d <= 0 {
+	if d, _ := data["durationSeconds"].(float64); d <= 0 {
 		t.Errorf("durationSeconds = %v, want a positive number", data["durationSeconds"])
 	}
 }
@@ -293,11 +294,11 @@ func TestBrokerAsyncEchoesRequestContext(t *testing.T) {
 	if data["requestPath"] != "/run?x=1" {
 		t.Errorf("requestPath = %v, want /run?x=1", data["requestPath"])
 	}
-	headers, ok := data["requestHeaders"].(map[string][]string)
+	headers, ok := data["requestHeaders"].(map[string]any)
 	if !ok {
-		t.Fatalf("requestHeaders type = %T, want map[string][]string", data["requestHeaders"])
+		t.Fatalf("requestHeaders = %#v, want an object", data["requestHeaders"])
 	}
-	if got := headers["X-Custom-Meta"]; len(got) != 1 || got[0] != "hello" {
+	if got, _ := headers["X-Custom-Meta"].([]any); len(got) != 1 || got[0] != "hello" {
 		t.Errorf("custom metadata header not echoed: %v", headers)
 	}
 	// Orchestrator control headers and credentials must not travel in the echo.
@@ -329,7 +330,7 @@ func TestBrokerAsyncBoundsRequestPath(t *testing.T) {
 	b.async(rec, req, "dep", "h", brokerSpec(), time.Second, &fakeCapacity{target: mustURL(t, backend.URL)})
 
 	data := waitEvent(t, queue)
-	if got := data["requestPath"].(string); len(got) != maxEchoedPathBytes {
+	if got, _ := data["requestPath"].(string); len(got) != maxEchoedPathBytes {
 		t.Errorf("requestPath length = %d, want %d", len(got), maxEchoedPathBytes)
 	}
 	if truncated, _ := data["requestPathTruncated"].(bool); !truncated {
@@ -357,7 +358,8 @@ func TestBrokerAsyncCallbackBase64ForBinaryBody(t *testing.T) {
 	if data["bodyEncoding"] != "base64" {
 		t.Fatalf("bodyEncoding = %v, want base64", data["bodyEncoding"])
 	}
-	decoded, err := base64.StdEncoding.DecodeString(data["body"].(string))
+	body, _ := data["body"].(string)
+	decoded, err := base64.StdEncoding.DecodeString(body)
 	if err != nil || !bytes.Equal(decoded, binary) {
 		t.Errorf("decoded body = %v (%v), want original binary", decoded, err)
 	}
@@ -381,10 +383,11 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 		&fakeCapacity{target: mustURL(t, backend.URL)})
 
 	data := waitEvent(t, queue)
-	if got, ok := data["bodyTruncated"].(bool); !ok || !got {
+	if truncated, _ := data["bodyTruncated"].(bool); !truncated {
 		t.Errorf("bodyTruncated = %v, want true", data["bodyTruncated"])
 	}
-	if got := len(data["body"].(string)); got != maxCallbackResponseBody {
+	body, _ := data["body"].(string)
+	if got := len(body); got != maxCallbackResponseBody {
 		t.Errorf("body length = %d, want %d", got, maxCallbackResponseBody)
 	}
 }
@@ -401,8 +404,8 @@ func TestBrokerAsyncReportsHoldTimeout(t *testing.T) {
 		t.Fatalf("got %d, want 202 (failure arrives on the callback)", rec.Code)
 	}
 	data := waitEvent(t, queue)
-	failure, _ := data["error"].(callback.Failure)
-	if failure.Code != "deployment_no_capacity" {
+	failure, _ := data["error"].(map[string]any)
+	if failure["code"] != "deployment_no_capacity" {
 		t.Errorf("callback error = %v, want a deployment_no_capacity failure", data["error"])
 	}
 	if _, ok := data["statusCode"]; ok {

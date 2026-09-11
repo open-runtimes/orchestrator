@@ -17,14 +17,18 @@ import (
 	"time"
 )
 
+func testConfig() Config {
+	cfg := LoadConfigFromEnv()
+	cfg.SidecarImage = sidecarImage
+	return cfg
+}
+
 const sidecarImage = "ko.local/job-sidecar:latest"
 
 func TestOrchestrator_EventBasedFlow(t *testing.T) {
 	ctx := t.Context()
 
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestrator, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator: %v", err)
 	}
@@ -83,9 +87,7 @@ func TestOrchestrator_EventBasedFlow(t *testing.T) {
 func TestOrchestrator_DownloadFailure(t *testing.T) {
 	ctx := t.Context()
 
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestrator, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator: %v", err)
 	}
@@ -153,7 +155,7 @@ func TestOrchestrator_CallbackEvents(t *testing.T) {
 	d := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2}, nil)
 	defer d.Close(ctx)
 
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	emitter.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
@@ -165,9 +167,7 @@ func TestOrchestrator_CallbackEvents(t *testing.T) {
 		})
 	})
 
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(emitter)
+	orchestrator, err := NewOrchestrator(testConfig(), emitter)
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator: %v", err)
 	}
@@ -224,9 +224,7 @@ func TestOrchestrator_HealthCheckMarker(t *testing.T) {
 	// Verify the sidecar writes the ready marker file
 	ctx := t.Context()
 
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestrator, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator: %v", err)
 	}
@@ -272,9 +270,7 @@ func TestOrchestrator_HealthCheckMarker(t *testing.T) {
 func TestOrchestrator_List(t *testing.T) {
 	ctx := t.Context()
 
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestrator, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator: %v", err)
 	}
@@ -320,9 +316,7 @@ func TestOrchestrator_List(t *testing.T) {
 func TestOrchestrator_Stop(t *testing.T) {
 	ctx := t.Context()
 
-	orchestrator, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestrator, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator: %v", err)
 	}
@@ -377,9 +371,7 @@ func TestOrchestrator_ResumeRunningJob(t *testing.T) {
 	ctx := t.Context()
 
 	// Phase 1: Start a long-running job with orchestrator A
-	orchestratorA, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestratorA, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator A: %v", err)
 	}
@@ -414,9 +406,7 @@ func TestOrchestrator_ResumeRunningJob(t *testing.T) {
 	// Phase 2: Simulate service restart — close A, create B
 	orchestratorA.Close()
 
-	orchestratorB, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestratorB, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator B: %v", err)
 	}
@@ -471,7 +461,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 
 	// Phase 1: Start job with orchestrator A (with callbacks)
 	dA := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
-	emitterA := job.NewCallbackEmitter()
+	emitterA := &job.CallbackEmitter{}
 	emitterA.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
@@ -483,9 +473,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 		})
 	})
 
-	orchestratorA, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(emitterA)
+	orchestratorA, err := NewOrchestrator(testConfig(), emitterA)
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator A: %v", err)
 	}
@@ -532,7 +520,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 	// Create orchestrator B with its own dispatcher + emitter
 	dB := dispatcher.NewMemory(dispatcher.Config{BufferSize: 100, Workers: 2, HTTPTimeout: 5 * time.Second}, nil)
 	defer dB.Close(ctx)
-	emitterB := job.NewCallbackEmitter()
+	emitterB := &job.CallbackEmitter{}
 	emitterB.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
@@ -544,9 +532,7 @@ func TestOrchestrator_ResumeCallbackEvents(t *testing.T) {
 		})
 	})
 
-	orchestratorB, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(emitterB)
+	orchestratorB, err := NewOrchestrator(testConfig(), emitterB)
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator B: %v", err)
 	}
@@ -588,9 +574,7 @@ func TestOrchestrator_ResumeJobAppearsinList(t *testing.T) {
 	ctx := t.Context()
 
 	// Phase 1: Start a job with orchestrator A
-	orchestratorA, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestratorA, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator A: %v", err)
 	}
@@ -624,9 +608,7 @@ func TestOrchestrator_ResumeJobAppearsinList(t *testing.T) {
 	// Phase 2: Restart
 	orchestratorA.Close()
 
-	orchestratorB, err := NewOrchestrator(ctx, Config{
-		SidecarImage: sidecarImage,
-	})(job.NewCallbackEmitter())
+	orchestratorB, err := NewOrchestrator(testConfig(), &job.CallbackEmitter{})
 	if err != nil {
 		t.Fatalf("Failed to create orchestrator B: %v", err)
 	}

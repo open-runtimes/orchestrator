@@ -24,7 +24,7 @@ func TestBuildJob_MountArtifact(t *testing.T) {
 	}
 
 	// A mount artifact → privileged sidecar, propagation on sidecar + worker, startup probe.
-	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
+	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
 	spec := j.Spec.Template.Spec
 	sidecar := spec.InitContainers[0]
 	if sidecar.SecurityContext == nil || sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
@@ -45,7 +45,7 @@ func TestBuildJob_NoMount_Unprivileged(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-1", Image: "alpine:3.20", TimeoutSeconds: 60, Workspace: "/workspace"}
 
-	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
+	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
 	spec := j.Spec.Template.Spec
 	sidecar := spec.InitContainers[0]
 	if sidecar.SecurityContext != nil {
@@ -63,7 +63,7 @@ func TestBuildJob_PersistentVolume(t *testing.T) {
 		Volumes: []volume.Volume{{Source: "data-pvc", Path: "/data", ReadOnly: true}},
 	}
 
-	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
+	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
 	spec := j.Spec.Template.Spec
 
 	// Pod carries the PVC volume alongside the workspace emptyDir.
@@ -91,55 +91,6 @@ func TestBuildJob_PersistentVolume(t *testing.T) {
 	// A persistent volume must NOT trigger the privileged squashfs-mount path.
 	if sidecar := spec.InitContainers[0]; sidecar.SecurityContext != nil {
 		t.Error("persistent volume should not make the sidecar privileged")
-	}
-}
-
-// --- watchConfigFromRequest ---
-
-func TestWatchConfigFromRequest_NoCallback(t *testing.T) {
-	t.Parallel()
-	req := &job.Request{ID: "job-1", Image: "alpine:latest"}
-
-	cfg := watchConfigFromRequest(req)
-
-	if cfg.jobID != "job-1" {
-		t.Errorf("jobID: want job-1, got %s", cfg.jobID)
-	}
-	if cfg.image != "alpine:latest" {
-		t.Errorf("image: want alpine:latest, got %s", cfg.image)
-	}
-	if cfg.dest != nil {
-		t.Error("dest: want nil when no callback configured")
-	}
-}
-
-func TestWatchConfigFromRequest_WithCallback(t *testing.T) {
-	t.Parallel()
-	req := &job.Request{
-		ID:    "job-1",
-		Image: "alpine:latest",
-		Meta:  map[string]string{"tenant": "acme"},
-		Callback: &job.Callback{
-			URL:    "https://hooks.example.com/cb",
-			Key:    "secret",
-			Events: []string{"job.start", "job.exit"},
-		},
-	}
-	cfg := watchConfigFromRequest(req)
-	if cfg.dest == nil {
-		t.Fatal("dest: want non-nil")
-	}
-	if cfg.dest.URL != "https://hooks.example.com/cb" {
-		t.Errorf("dest.URL: got %s", cfg.dest.URL)
-	}
-	if cfg.dest.Key != "secret" {
-		t.Errorf("dest.Key: got %s", cfg.dest.Key)
-	}
-	if !reflect.DeepEqual(cfg.dest.Events, []string{"job.start", "job.exit"}) {
-		t.Errorf("dest.Events: got %v", cfg.dest.Events)
-	}
-	if cfg.dest.Meta["tenant"] != "acme" {
-		t.Errorf("dest.Meta[tenant]: got %s", cfg.dest.Meta["tenant"])
 	}
 }
 
@@ -196,7 +147,7 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 		Environment:    map[string]string{"FOO": "bar"},
 		ArtifactToken:  "tok-1",
 	}
-	cfg := OrchestratorConfig{
+	cfg := Config{
 		Namespace:                     "orchestrator",
 		ServiceAccount:                "job-sidecar",
 		JobRetention:                  15 * time.Minute,
@@ -329,7 +280,7 @@ func TestBuildJob_CallbackAnnotations(t *testing.T) {
 			Events: []string{"job.start", "job.exit"},
 		},
 	}
-	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
+	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
 
 	if j.Annotations[AnnotationCallbackURL] != "https://hooks.example.com/cb" {
 		t.Errorf("url annotation: got %s", j.Annotations[AnnotationCallbackURL])
@@ -345,39 +296,10 @@ func TestBuildJob_CallbackAnnotations(t *testing.T) {
 	}
 }
 
-func TestBuildJob_WatchConfigRoundTrip(t *testing.T) {
-	t.Parallel()
-	req := &job.Request{
-		ID:    "job-3",
-		Image: "alpine:3.20",
-		Meta:  map[string]string{"x": "y"},
-		Callback: &job.Callback{
-			URL:    "https://cb",
-			Key:    "k",
-			Events: []string{"job.exit"},
-		},
-	}
-	j := buildJob(req, OrchestratorConfig{Namespace: "orchestrator"}, "sidecar:latest")
-
-	cfg := watchConfigFromJob(j)
-	if cfg.jobID != "job-3" {
-		t.Errorf("jobID: got %s", cfg.jobID)
-	}
-	if cfg.image != "alpine:3.20" {
-		t.Errorf("image: got %s", cfg.image)
-	}
-	if cfg.dest == nil || cfg.dest.URL != "https://cb" || cfg.dest.Key != "k" {
-		t.Errorf("dest round-trip failed: %+v", cfg.dest)
-	}
-	if cfg.dest.Meta["x"] != "y" {
-		t.Errorf("meta round-trip: got %v", cfg.dest.Meta)
-	}
-}
-
 func TestBuildJob_EmptyWorkspaceDefaults(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-4", Image: "alpine:latest"}
-	j := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
+	j := buildJob(req, Config{}, "sidecar:latest")
 
 	worker := j.Spec.Template.Spec.Containers[0]
 	if worker.WorkingDir != "/workspace" {
@@ -393,7 +315,7 @@ func TestBuildJob_EmptyWorkspaceDefaults(t *testing.T) {
 func TestBuildJob_Tolerations(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-6", Image: "alpine:latest"}
-	cfg := OrchestratorConfig{Tolerations: []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}}
+	cfg := Config{Tolerations: []corev1.Toleration{{Key: "workload", Value: "edge-builds", Effect: corev1.TaintEffectNoSchedule}}}
 	got := buildJob(req, cfg, "sidecar:latest").Spec.Template.Spec.Tolerations
 	if len(got) != 1 || got[0].Key != "workload" {
 		t.Errorf("tolerations: want workload=edge-builds:NoSchedule, got %+v", got)
@@ -404,7 +326,7 @@ func TestBuildJob_Tolerations(t *testing.T) {
 func TestBuildJob_NoResources(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-5", Image: "alpine:latest"}
-	j := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
+	j := buildJob(req, Config{}, "sidecar:latest")
 	res := j.Spec.Template.Spec.Containers[0].Resources
 	if len(res.Limits) != 0 || len(res.Requests) != 0 {
 		t.Errorf("expected empty resources, got %+v", res)
@@ -424,7 +346,7 @@ func envHas(env []corev1.EnvVar, name, value string) bool {
 
 func TestBuildJob_DefaultDeadlineAndEntrypoint(t *testing.T) {
 	req := &job.Request{ID: "default", Image: "custom:latest"}
-	j := buildJob(req, OrchestratorConfig{}, "sidecar:latest")
+	j := buildJob(req, Config{}, "sidecar:latest")
 	if j.Spec.ActiveDeadlineSeconds == nil || *j.Spec.ActiveDeadlineSeconds != 1800 {
 		t.Fatal("missing default deadline for sidecar retries")
 	}

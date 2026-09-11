@@ -28,21 +28,19 @@ func (noopWatcher) Counts() (int64, int64) { return 0, 0 }
 func newTestOrchestrator(t *testing.T, watcher LifecycleWatcher) (*Orchestrator, *fake.Clientset) {
 	t.Helper()
 	cs := fake.NewClientset()
-	cfg := OrchestratorConfig{
-		Namespace:                     "orchestrator",
-		ServiceAccount:                "job-sidecar",
-		JobRetention:                  15 * time.Minute,
-		ArtifactEndpoint:              "http://jobs-service.orchestrator.svc:8080",
-		TerminationGracePeriodSeconds: 600,
-	}
 	o := &Orchestrator{
-		client:       cs,
-		namespace:    cfg.Namespace,
-		sidecarImage: "sidecar:latest",
-		cfg:          cfg,
-		emitter:      job.NewCallbackEmitter(),
-		watcher:      watcher,
-		statusCache:  newStatusCache(),
+		client: cs,
+		cfg: Config{
+			SidecarImage:                  "sidecar:latest",
+			Namespace:                     "orchestrator",
+			ServiceAccount:                "job-sidecar",
+			JobRetention:                  15 * time.Minute,
+			ArtifactEndpoint:              "http://jobs-service.orchestrator.svc:8080",
+			TerminationGracePeriodSeconds: 600,
+		},
+		emitter:     &job.CallbackEmitter{},
+		watcher:     watcher,
+		statusCache: newStatusCache(),
 	}
 	return o, cs
 }
@@ -397,7 +395,7 @@ func TestWatcher_ResumesExistingPodOnStart(t *testing.T) {
 	}
 	cs := fake.NewClientset(pod)
 
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	var mu sync.Mutex
 	var seenStarted bool
 	emitter.Register(func(e *job.CallbackEnvelope) {
@@ -430,9 +428,8 @@ func TestLeaderElection_Failover(t *testing.T) {
 
 	mkOrch := func(id string) *Orchestrator {
 		return &Orchestrator{
-			client:    cs,
-			namespace: "orchestrator",
-			cfg: OrchestratorConfig{
+			client: cs,
+			cfg: Config{
 				Namespace: "orchestrator",
 				LeaderElection: LeaderElectionConfig{
 					Enabled:       true,
@@ -443,7 +440,7 @@ func TestLeaderElection_Failover(t *testing.T) {
 					RetryPeriod:   100 * time.Millisecond,
 				},
 			},
-			emitter:     job.NewCallbackEmitter(),
+			emitter:     &job.CallbackEmitter{},
 			watcher:     &signalingWatcher{id: id, events: events},
 			statusCache: newStatusCache(),
 		}
@@ -524,9 +521,8 @@ func waitForPrefixedEvent(t *testing.T, ch <-chan string, prefix string, timeout
 func orchestratorWithClient(cs *fake.Clientset) *Orchestrator {
 	return &Orchestrator{
 		client:      cs,
-		namespace:   "orchestrator",
-		cfg:         OrchestratorConfig{Namespace: "orchestrator"},
-		emitter:     job.NewCallbackEmitter(),
+		cfg:         Config{Namespace: "orchestrator"},
+		emitter:     &job.CallbackEmitter{},
 		watcher:     noopWatcher{},
 		statusCache: newStatusCache(),
 	}

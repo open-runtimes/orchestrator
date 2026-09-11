@@ -3,6 +3,7 @@ package kube
 import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 )
 
 // The shape we give the containers we own, and how we read a pod back. Every
@@ -23,18 +24,14 @@ import (
 // It is deliberately NOT applied to a user's own workload container, which may
 // legitimately need to be root or to write to its image's filesystem.
 func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
-	nonRoot := true
-	noEscalation := false
-	readOnlyRootFS := true
-	user := uid
 	return &corev1.SecurityContext{
-		RunAsNonRoot:             &nonRoot,
-		RunAsUser:                &user,
-		RunAsGroup:               &user,
-		AllowPrivilegeEscalation: &noEscalation,
+		RunAsNonRoot:             ptr.To(true),
+		RunAsUser:                ptr.To(uid),
+		RunAsGroup:               ptr.To(uid),
+		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		ReadOnlyRootFilesystem:   &readOnlyRootFS,
+		ReadOnlyRootFilesystem:   ptr.To(true),
 	}
 }
 
@@ -44,9 +41,7 @@ func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
 // container — the sidecar performing the mount — and only in pods whose
 // workload asked for one.
 func MountingSecurityContext() *corev1.SecurityContext {
-	privileged := true
-	root := int64(0)
-	return &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &root}
+	return &corev1.SecurityContext{Privileged: ptr.To(true), RunAsUser: ptr.To(int64(0))}
 }
 
 // SidecarResources is what a workload sidecar asks for: a small CPU request and

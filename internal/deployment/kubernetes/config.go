@@ -5,8 +5,6 @@ import (
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
 	"orchestrator/internal/pool"
-	"strconv"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -89,52 +87,48 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{
+	cfg := Config{
 		JobSidecarImage:        config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
 		Context:                config.GetEnv("KUBE_CONTEXT", ""),
-		Namespace:              config.GetEnv("KUBE_NAMESPACE", defaultNamespace),
+		Namespace:              config.GetEnv("KUBE_NAMESPACE", ""),
 		ServiceAccount:         config.GetEnv("KUBE_DEPLOYMENT_SERVICE_ACCOUNT", ""),
 		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
-		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
+		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", 0)),
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
 
-		GatewayEnabled:       boolEnv("KUBE_GATEWAY_ENABLED", true),
-		GatewayName:          config.GetEnv("KUBE_GATEWAY_NAME", defaultGatewayName),
+		GatewayEnabled:       config.GetBoolEnv("KUBE_GATEWAY_ENABLED", true),
+		GatewayName:          config.GetEnv("KUBE_GATEWAY_NAME", ""),
 		GatewayNamespace:     config.GetEnv("KUBE_GATEWAY_NAMESPACE", ""),
-		ActivatorService:     config.GetEnv("ACTIVATOR_SERVICE", defaultActivatorService),
+		ActivatorService:     config.GetEnv("ACTIVATOR_SERVICE", ""),
 		ActivatorNamespace:   config.GetEnv("KUBE_ACTIVATOR_NAMESPACE", ""),
-		ActivatorPort:        config.GetIntEnv("ACTIVATOR_PORT", defaultActivatorPort),
-		ActivatorSelector:    config.GetEnv("ACTIVATOR_SELECTOR", defaultActivatorSelector),
-		RevisionHistoryLimit: config.GetIntEnv("REVISION_HISTORY_LIMIT", defaultRevisionHistoryLimit),
-		RevisionWorkers:      config.GetIntEnv("KUBE_REVISION_WORKERS", defaultRevisionWorkers),
-		ClientQPS:            config.GetIntEnv("KUBE_CLIENT_QPS", defaultClientQPS),
-		ClientBurst:          config.GetIntEnv("KUBE_CLIENT_BURST", defaultClientBurst),
+		ActivatorPort:        config.GetIntEnv("ACTIVATOR_PORT", 0),
+		ActivatorSelector:    config.GetEnv("ACTIVATOR_SELECTOR", ""),
+		RevisionHistoryLimit: config.GetIntEnv("REVISION_HISTORY_LIMIT", 0),
+		RevisionWorkers:      config.GetIntEnv("KUBE_REVISION_WORKERS", 0),
+		ClientQPS:            config.GetIntEnv("KUBE_CLIENT_QPS", 0),
+		ClientBurst:          config.GetIntEnv("KUBE_CLIENT_BURST", 0),
 
 		LeaderElection: kube.LeaderElectionConfig{
-			Enabled:       config.GetEnv("KUBE_LEADER_ELECTION", "") == "true",
-			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", defaultLeaderLeaseName),
+			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
+			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", ""),
 			Identity:      config.GetEnv("KUBE_LEADER_IDENTITY", ""),
-			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 15*time.Second),
-			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 10*time.Second),
-			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 2*time.Second),
+			LeaseDuration: config.GetDurationEnv("KUBE_LEADER_LEASE_DURATION", 0),
+			RenewDeadline: config.GetDurationEnv("KUBE_LEADER_RENEW_DEADLINE", 0),
+			RetryPeriod:   config.GetDurationEnv("KUBE_LEADER_RETRY_PERIOD", 0),
 		},
-	}, nil
-}
-
-// boolEnv parses a boolean environment variable, falling back to the default
-// on absence or a malformed value.
-func boolEnv(key string, defaultValue bool) bool {
-	if v, err := strconv.ParseBool(config.GetEnv(key, strconv.FormatBool(defaultValue))); err == nil {
-		return v
 	}
-	return defaultValue
+	cfg.applyDefaults()
+	return cfg, nil
 }
 
+// applyDefaults is the single home of every default: LoadConfigFromEnv reads
+// raw values and calls it, and the constructors call it again for configs
+// built in code.
 func (c *Config) applyDefaults() {
 	if c.Namespace == "" {
 		c.Namespace = defaultNamespace

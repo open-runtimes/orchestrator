@@ -37,6 +37,21 @@ const (
 	sidecarImage  = "ko.local/job-sidecar:latest"
 )
 
+// testConfig is the env-loaded config pinned to the project's kind cluster:
+// this test must only ever run against it, never the user's current-context.
+func testConfig(t *testing.T) Config {
+	t.Helper()
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("LoadConfigFromEnv: %v", err)
+	}
+	cfg.SidecarImage = sidecarImage
+	cfg.Context = "kind-orchestrator-dev"
+	cfg.Namespace = testNamespace
+	cfg.SidecarImagePullPolicy = "Never" // ko-loaded image lives locally in kind
+	return cfg
+}
+
 // setup brings up an Orchestrator wired to the host's default kubeconfig
 // (which points at kind-orchestrator-dev), creates a dedicated test namespace
 // if needed, and returns teardown.
@@ -44,24 +59,15 @@ func setup(t *testing.T, opts ...func(*Config)) (*Orchestrator, *job.CallbackEmi
 	t.Helper()
 	ctx := t.Context()
 
-	emitter := job.NewCallbackEmitter()
-	cfg := Config{
-		SidecarImage: sidecarImage,
-		// Pin the kubeconfig context explicitly: this test must only ever run
-		// against the project's kind cluster, never the user's current-context.
-		Context:                "kind-orchestrator-dev",
-		Namespace:              testNamespace,
-		SidecarImagePullPolicy: "Never", // ko-loaded image lives locally in kind
-	}
+	emitter := &job.CallbackEmitter{}
+	cfg := testConfig(t)
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	factory := NewOrchestrator(ctx, cfg)
-	orch, err := factory(emitter)
+	o, err := NewOrchestrator(cfg, emitter)
 	if err != nil {
 		t.Fatalf("NewOrchestrator: %v", err)
 	}
-	o := orch.(*Orchestrator)
 
 	// Create the namespace if not present. Cluster-scoped Create; idempotent-ish.
 	_, err = o.client.CoreV1().Namespaces().Get(ctx, testNamespace, metav1.GetOptions{})
@@ -93,7 +99,7 @@ func setup(t *testing.T, opts ...func(*Config)) (*Orchestrator, *job.CallbackEmi
 	// closeOnly tears down the Orchestrator without touching K8s Jobs. Use
 	// when another Orchestrator takes over on the same cluster state (e.g.
 	// rolling deployment test).
-	closeOnly := func() { orch.Close() }
+	closeOnly := func() { o.Close() }
 	// teardown additionally deletes all managed Jobs (and their child Pods
 	// via background propagation) so successive test runs don't pollute
 	// each other.
@@ -104,7 +110,7 @@ func setup(t *testing.T, opts ...func(*Config)) (*Orchestrator, *job.CallbackEmi
 			metav1.DeleteOptions{PropagationPolicy: &prop},
 			metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + ManagedByValue},
 		)
-		orch.Close()
+		o.Close()
 	}
 	_ = closeOnly // exposed via setupNoCleanup below
 	return o, emitter, teardown
@@ -545,30 +551,25 @@ func TestIntegration_LeaderFailoverMidJob(t *testing.T) {
 	events, callbackURL, closeCallback := startCallbackServer(t)
 	defer closeCallback()
 
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	d := wireDispatcher(t, emitter)
 	defer d.Close(context.Background())
 
 	mkOrch := func(id string) *Orchestrator {
-		factory := NewOrchestrator(t.Context(), Config{
-			SidecarImage:           sidecarImage,
-			Context:                "kind-orchestrator-dev",
-			Namespace:              testNamespace,
-			SidecarImagePullPolicy: "Never",
-			LeaderElection: LeaderElectionConfig{
-				Enabled:       true,
-				LeaseName:     "test-handoff-lease",
-				Identity:      id,
-				LeaseDuration: 2 * time.Second,
-				RenewDeadline: 1 * time.Second,
-				RetryPeriod:   200 * time.Millisecond,
-			},
-		})
-		orch, err := factory(emitter)
+		cfg := testConfig(t)
+		cfg.LeaderElection = LeaderElectionConfig{
+			Enabled:       true,
+			LeaseName:     "test-handoff-lease",
+			Identity:      id,
+			LeaseDuration: 2 * time.Second,
+			RenewDeadline: 1 * time.Second,
+			RetryPeriod:   200 * time.Millisecond,
+		}
+		o, err := NewOrchestrator(cfg, emitter)
 		if err != nil {
 			t.Fatalf("NewOrchestrator(%s): %v", id, err)
 		}
-		return orch.(*Orchestrator)
+		return o
 	}
 
 	o1 := mkOrch("replica-1")

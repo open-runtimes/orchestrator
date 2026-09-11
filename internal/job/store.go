@@ -10,7 +10,7 @@ import "orchestrator/internal/lifecycle"
 // one keeps a MemoryStore. Kubernetes derives state from the cluster instead,
 // so a status read is correct on any replica whether or not it holds
 // leadership — which is why StateForExit is a rule both can apply rather than
-// state one of them owns.
+// state one of them owns — see lifecycle.StateForExit.
 type (
 	Entry              = lifecycle.Entry
 	Signal             = lifecycle.Signal
@@ -20,18 +20,11 @@ type (
 	Completed          = lifecycle.Completed
 	LogLine            = lifecycle.LogLine
 	Handle[T any]      = lifecycle.Handle[T]
-	Viewer             = lifecycle.Viewer
-	Store[T any]       = lifecycle.Store[T]
 	MemoryStore[T any] = lifecycle.MemoryStore[T]
 )
 
 // ExitReasonOOM marks a workload killed by the kernel OOM killer.
 const ExitReasonOOM = lifecycle.ExitReasonOOM
-
-// StateForExit names the state a job is in once its worker has exited. Every
-// path that reports state answers with it, so an API read cannot contradict the
-// callback for the same exit — see lifecycle.StateForExit.
-func StateForExit(code int) string { return lifecycle.StateForExit(code) }
 
 // NewMemoryStore creates a MemoryStore whose errors name the "job" resource.
 func NewMemoryStore[T any]() *MemoryStore[T] {
@@ -51,6 +44,3 @@ func StatusFromEntry(e Entry) *StatusResponse {
 	}
 	return s
 }
-
-// Compile-time check that the alias wiring stays intact.
-var _ Store[struct{}] = (*MemoryStore[struct{}])(nil)

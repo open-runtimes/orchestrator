@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"orchestrator/internal/activator"
 	"orchestrator/internal/api"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/autoscaler"
 	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
@@ -41,7 +40,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	pools, err := pool.LoadPools(config.GetEnv("POOLS_JSON", ""))
+	pools, err := pool.Load(config.GetEnv("POOLS_JSON", ""), "POOLS_JSON")
 	if err != nil {
 		slog.Error("Invalid pool configuration", "error", err)
 		os.Exit(1)
@@ -72,7 +71,7 @@ func main() {
 		}
 		return "http://" + host + ":" + dataPort
 	}
-	svc := deployment.NewService(orchestrator, metrics, artifact.MountingRegistry(), domain, urlFor)
+	svc := deployment.NewService(orchestrator, metrics, domain, urlFor)
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 
@@ -120,11 +119,11 @@ func main() {
 	}
 
 	healthChecker := health.NewChecker(orchestrator)
-	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{
-		Service:       svc,
-		Metrics:       metrics,
-		HealthChecker: healthChecker,
-		APIKey:        svcCfg.APIKey,
+	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
+		DeploymentService: svc,
+		Metrics:           metrics,
+		HealthChecker:     healthChecker,
+		APIKey:            svcCfg.APIKey,
 	})
 
 	if svcCfg.APIKey == "" {

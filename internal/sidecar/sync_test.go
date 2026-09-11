@@ -96,7 +96,7 @@ func TestPushDelta_ArchivesTheUpperLayerOnly(t *testing.T) {
 	write(t, filepath.Join(upper, "changed.txt"), "the delta")
 	write(t, filepath.Join(ws, "work", ".lower", "from-image.txt"), "not the delta")
 
-	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
+	r := NewRunner("t", ws, 30)
 	m := &artifact.Mount{ID: "tree", In: "base.erofs", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
 	if err := r.pushDelta(t.Context(), m); err != nil {
 		t.Fatalf("push: %v", err)
@@ -115,7 +115,7 @@ func TestPushDelta_ArchivesTheUpperLayerOnly(t *testing.T) {
 func TestRestoreDelta_MissingDestinationIsAFirstSession(t *testing.T) {
 	t.Parallel()
 	ws := t.TempDir()
-	r := NewRunner("t", ws, 5, artifact.DefaultRegistry())
+	r := NewRunner("t", ws, 5)
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true,
 		Sync: newObjectStore(t).url + "/never-written.tgz"}
 
@@ -136,7 +136,7 @@ func TestRestoreDelta_UnreadableDestinationFailsTheMount(t *testing.T) {
 	store := newObjectStore(t)
 	store.put("/corrupt.tgz", []byte("this is not an archive"))
 
-	r := NewRunner("t", ws, 5, artifact.DefaultRegistry())
+	r := NewRunner("t", ws, 5)
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/corrupt.tgz"}
 
 	err := r.restoreDelta(t.Context(), m)
@@ -160,12 +160,12 @@ func TestDelta_RoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(upper, "nested", "notes.txt"), "session one")
-	if err := NewRunner("a", first, 30, artifact.DefaultRegistry()).pushDelta(t.Context(), m); err != nil {
+	if err := NewRunner("a", first, 30).pushDelta(t.Context(), m); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 
 	second := t.TempDir()
-	if err := NewRunner("b", second, 30, artifact.DefaultRegistry()).restoreDelta(t.Context(), m); err != nil {
+	if err := NewRunner("b", second, 30).restoreDelta(t.Context(), m); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(UpperDir(filepath.Join(second, "work")), "nested/notes.txt"))
@@ -196,12 +196,12 @@ func TestRestoreDelta_RestoredTreeIsWritableByTheWorkload(t *testing.T) {
 	if err := os.Chmod(filepath.Join(upper, "run.sh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewRunner("a", first, 30, artifact.DefaultRegistry()).pushDelta(t.Context(), m); err != nil {
+	if err := NewRunner("a", first, 30).pushDelta(t.Context(), m); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 
 	second := t.TempDir()
-	if err := NewRunner("b", second, 30, artifact.DefaultRegistry()).restoreDelta(t.Context(), m); err != nil {
+	if err := NewRunner("b", second, 30).restoreDelta(t.Context(), m); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -259,7 +259,7 @@ func TestPushDelta_NoticesChangesThatMoveNoBytes(t *testing.T) {
 	}
 	write(t, filepath.Join(upper, "a.txt"), "one")
 
-	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
+	r := NewRunner("t", ws, 30)
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
 	if err := r.pushDelta(t.Context(), m); err != nil {
 		t.Fatalf("first push: %v", err)
@@ -302,7 +302,7 @@ func TestStopSync_FlushesOnTheWayOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
+	r := NewRunner("t", ws, 30)
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/delta.tgz",
 		SyncIntervalSeconds: 3600} // long enough that only the flush can have run
 	r.startSync(m)
@@ -338,7 +338,7 @@ func TestPushDelta_SkipsWhenNothingChanged(t *testing.T) {
 	}
 	write(t, filepath.Join(upper, "a.txt"), "one")
 
-	r := NewRunner("t", ws, 30, artifact.DefaultRegistry())
+	r := NewRunner("t", ws, 30)
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
 
 	if err := r.pushDelta(t.Context(), m); err != nil {
@@ -393,7 +393,7 @@ func TestPushDelta_FailedPushIsRetried(t *testing.T) {
 	}
 	write(t, filepath.Join(upper, "a.txt"), "one")
 
-	r := NewRunner("t", ws, 5, artifact.DefaultRegistry())
+	r := NewRunner("t", ws, 5)
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/delta.tgz"}
 
 	if err := r.pushDelta(t.Context(), m); err == nil {
@@ -421,13 +421,13 @@ func TestRestoreDelta_MakesTheRestoredTreeTheBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(upper, "notes.txt"), "session one")
-	if err := NewRunner("a", first, 30, artifact.DefaultRegistry()).pushDelta(t.Context(), m); err != nil {
+	if err := NewRunner("a", first, 30).pushDelta(t.Context(), m); err != nil {
 		t.Fatal(err)
 	}
 	uploads := store.writes("/session.tgz")
 
 	second := t.TempDir()
-	r := NewRunner("b", second, 30, artifact.DefaultRegistry())
+	r := NewRunner("b", second, 30)
 	if err := r.restoreDelta(t.Context(), m); err != nil {
 		t.Fatal(err)
 	}

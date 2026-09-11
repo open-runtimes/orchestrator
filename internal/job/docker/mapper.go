@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"orchestrator/internal/job"
 	"runtime"
 	"strings"
@@ -42,19 +43,20 @@ type containerState struct {
 }
 
 // inspectContainers reads the Docker state needed for resume mapping.
-func inspectContainers(ctx context.Context, cli *client.Client, jobID, workerID string) containerState {
+func inspectContainers(ctx context.Context, cli *client.Client, jobID, workerID string) (containerState, error) {
 	cs := containerState{jobID: jobID}
-
-	if workerID != "" {
-		if info, err := cli.ContainerInspect(ctx, workerID); err == nil {
-			cs.workerExitCode = info.State.ExitCode
-			cs.workerOOMKilled = info.State.OOMKilled
-			cs.workerImage = info.Config.Image
-			cs.workerLabels = info.Config.Labels
-		}
+	if workerID == "" {
+		return cs, nil
 	}
-
-	return cs
+	info, err := cli.ContainerInspect(ctx, workerID)
+	if err != nil {
+		return cs, err
+	}
+	cs.workerExitCode = info.State.ExitCode
+	cs.workerOOMKilled = info.State.OOMKilled
+	cs.workerImage = info.Config.Image
+	cs.workerLabels = info.Config.Labels
+	return cs, nil
 }
 
 // watchConfigFromRequest maps a job.Request and dockerHandle to a watchConfig.
@@ -98,7 +100,9 @@ func callbackDestFromLabels(labels map[string]string) *job.CallbackDest {
 
 	var meta map[string]string
 	if raw := labels["job.meta"]; raw != "" {
-		_ = json.Unmarshal([]byte(raw), &meta)
+		if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+			slog.Warn("Ignoring undecodable job.meta label", "error", err)
+		}
 	}
 
 	var events []string

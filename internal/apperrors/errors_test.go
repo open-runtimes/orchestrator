@@ -37,19 +37,11 @@ func TestNotFound(t *testing.T) {
 	if err.Error() != "job abc123 not found" {
 		t.Errorf("expected message 'job abc123 not found', got %q", err.Error())
 	}
-
-	var appErr *Error
-	if !errors.As(err, &appErr) {
-		t.Fatal("expected error to be *Error")
-	}
-	if appErr.Resource != "job" {
-		t.Errorf("expected resource 'job', got %q", appErr.Resource)
-	}
 }
 
 func TestConflict(t *testing.T) {
 	t.Parallel()
-	err := Conflict("job", "abc123", "job already exists")
+	err := Conflict("job already exists")
 
 	if !errors.Is(err, ErrConflict) {
 		t.Error("expected error to match ErrConflict")
@@ -57,33 +49,17 @@ func TestConflict(t *testing.T) {
 	if err.Error() != "job already exists" {
 		t.Errorf("expected message 'job already exists', got %q", err.Error())
 	}
-
-	var appErr *Error
-	if !errors.As(err, &appErr) {
-		t.Fatal("expected error to be *Error")
-	}
-	if appErr.Resource != "job" {
-		t.Errorf("expected resource 'job', got %q", appErr.Resource)
-	}
 }
 
 func TestExhausted(t *testing.T) {
 	t.Parallel()
-	err := Exhausted("pool", "pool std has no free warm pod")
+	err := Exhausted("pool std has no free warm pod")
 
 	if !errors.Is(err, ErrExhausted) {
 		t.Error("expected error to match ErrExhausted")
 	}
 	if err.Error() != "pool std has no free warm pod" {
 		t.Errorf("expected message 'pool std has no free warm pod', got %q", err.Error())
-	}
-
-	var appErr *Error
-	if !errors.As(err, &appErr) {
-		t.Fatal("expected error to be *Error")
-	}
-	if appErr.Resource != "pool" {
-		t.Errorf("expected resource 'pool', got %q", appErr.Resource)
 	}
 }
 
@@ -99,14 +75,7 @@ func TestInternal(t *testing.T) {
 		t.Errorf("unexpected message: %q", err.Error())
 	}
 
-	var appErr *Error
-	if !errors.As(err, &appErr) {
-		t.Fatal("expected error to be *Error")
-	}
-	if appErr.Op != "docker.createVolume" {
-		t.Errorf("expected op 'docker.createVolume', got %q", appErr.Op)
-	}
-	if !errors.Is(appErr.Cause, cause) {
+	if !errors.Is(err, cause) {
 		t.Error("expected cause to be preserved")
 	}
 }
@@ -120,8 +89,8 @@ func TestHTTPStatus(t *testing.T) {
 	}{
 		{"validation", Validation("id", "required"), http.StatusBadRequest},
 		{"not found", NotFound("job", "123"), http.StatusNotFound},
-		{"conflict", Conflict("job", "123", "exists"), http.StatusConflict},
-		{"exhausted", Exhausted("pool", "no free warm pod"), http.StatusTooManyRequests},
+		{"conflict", Conflict("exists"), http.StatusConflict},
+		{"exhausted", Exhausted("no free warm pod"), http.StatusTooManyRequests},
 		{"internal", Internal("op", errors.New("fail")), http.StatusInternalServerError},
 		{"sentinel validation", ErrValidation, http.StatusBadRequest},
 		{"sentinel not found", ErrNotFound, http.StatusNotFound},

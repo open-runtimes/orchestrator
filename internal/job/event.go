@@ -18,6 +18,8 @@ const (
 	CallbackTypeComplete = "orchestrator.job.complete"
 )
 
+const eventSource = "orchestrator/service"
+
 // ExitError is the code of a failed exit callback's error object. The process
 // status remains in exitCode and the backend's own detail remains in reason.
 type ExitError string
@@ -37,62 +39,82 @@ func MatchesCallbackFilter(eventType string, filter []string) bool {
 	return slices.Contains(filter, eventType)
 }
 
-// EventBuilder builds CloudEvents for job lifecycle events.
-type EventBuilder struct {
-	source  string
-	subject string
-	meta    map[string]string
+// Payloads of the job callbacks, one per CloudEvent type. Meta is always
+// present (null when the job set none) so a subscriber can read it unguarded.
+
+type StartData struct {
+	JobID string            `json:"jobId"`
+	Meta  map[string]string `json:"meta"`
 }
 
-// NewEventBuilder creates a new EventBuilder.
-func NewEventBuilder(jobID, source string, meta map[string]string) *EventBuilder {
-	return &EventBuilder{
-		source:  source,
-		subject: jobID,
-		meta:    meta,
-	}
+type CompleteData struct {
+	JobID string            `json:"jobId"`
+	Meta  map[string]string `json:"meta"`
 }
 
-// Build creates a new CloudEvent with the given type and data.
-func (b *EventBuilder) Build(eventType string, data map[string]any) *cloudevent.Event {
-	eventID := fmt.Sprintf("%s-%d", b.subject, time.Now().UnixNano())
-	return cloudevent.New(eventType, b.source, b.subject, eventID, data)
+type LogData struct {
+	JobID  string            `json:"jobId"`
+	Lines  []string          `json:"lines"`
+	Stream string            `json:"stream"`
+	Meta   map[string]string `json:"meta"`
 }
 
-// BuildStartEvent creates a job start event.
-func (b *EventBuilder) BuildStartEvent() *cloudevent.Event {
-	data := map[string]any{
-		"jobId": b.subject,
-		"meta":  b.meta,
-	}
-	return b.Build(CallbackTypeStart, data)
+type ExitData struct {
+	JobID           string            `json:"jobId"`
+	ExitCode        int               `json:"exitCode"`
+	Image           string            `json:"image"`
+	DurationSeconds float64           `json:"durationSeconds"`
+	Meta            map[string]string `json:"meta"`
+	Reason          string            `json:"reason,omitempty"`
+	Error           *callback.Failure `json:"error,omitempty"`
 }
 
-// BuildArtifactEvent creates an artifact event.
-//
-// Takes the report whole so that a field added to ArtifactReport reaches
-// callback subscribers as well as the artifact endpoint. The two are the same
-// report seen by different consumers, and a positional signature let them
-// drift: format and compression reached one and not the other.
-func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
-	data := map[string]any{
-		"jobId":           b.subject,
-		"artifactId":      r.ID,
-		"artifactType":    r.Type,
-		"status":          r.Status,
-		"durationSeconds": r.DurationSeconds,
-		"meta":            b.meta,
-	}
-	if r.Content != nil {
-		data["content"] = r.Content
-	}
-	// Omitted rather than sent empty: absent means "could not be determined",
-	// which a subscriber can act on differently from a real value.
-	if r.Format != "" {
-		data["format"] = r.Format
-	}
-	if r.Compression != "" {
-		data["compression"] = r.Compression
+// ArtifactData carries the whole ArtifactReport so that a field added there
+// reaches callback subscribers as well as the artifact endpoint. Format and
+// Compression are omitted rather than sent empty: absent means "could not be
+// determined", which a subscriber can act on differently from a real value.
+type ArtifactData struct {
+	JobID           string            `json:"jobId"`
+	ArtifactID      string            `json:"artifactId"`
+	ArtifactType    string            `json:"artifactType"`
+	Status          string            `json:"status"`
+	DurationSeconds float64           `json:"durationSeconds"`
+	Meta            map[string]string `json:"meta"`
+	Content         any               `json:"content,omitempty"`
+	Format          string            `json:"format,omitempty"`
+	Compression     string            `json:"compression,omitempty"`
+	Error           *callback.Failure `json:"error,omitempty"`
+}
+
+func newEvent(jobID, eventType string, data any) *cloudevent.Event {
+	id := fmt.Sprintf("%s-%d", jobID, time.Now().UnixNano())
+	return cloudevent.New(eventType, eventSource, jobID, id, data)
+}
+
+func StartEvent(jobID string, meta map[string]string) *cloudevent.Event {
+	return newEvent(jobID, CallbackTypeStart, StartData{JobID: jobID, Meta: meta})
+}
+
+// CompleteEvent is emitted after post-job artifacts have been processed.
+func CompleteEvent(jobID string, meta map[string]string) *cloudevent.Event {
+	return newEvent(jobID, CallbackTypeComplete, CompleteData{JobID: jobID, Meta: meta})
+}
+
+func LogEvent(jobID string, meta map[string]string, lines []string, stream string) *cloudevent.Event {
+	return newEvent(jobID, CallbackTypeLog, LogData{JobID: jobID, Lines: lines, Stream: stream, Meta: meta})
+}
+
+func ArtifactEvent(r *ArtifactReport) *cloudevent.Event {
+	data := ArtifactData{
+		JobID:           r.JobID,
+		ArtifactID:      r.ID,
+		ArtifactType:    r.Type,
+		Status:          r.Status,
+		DurationSeconds: r.DurationSeconds,
+		Meta:            r.Meta,
+		Content:         r.Content,
+		Format:          r.Format,
+		Compression:     r.Compression,
 	}
 	if r.Status == "failed" {
 		code, message := artifact.CodeError(r.FailureReason), r.FailureMessage
@@ -104,43 +126,20 @@ func (b *EventBuilder) BuildArtifactEvent(r *ArtifactReport) *cloudevent.Event {
 		if message == "" {
 			message = fmt.Sprintf("artifact %s failed", r.ID)
 		}
-		data["error"] = callback.Fail(string(code), message)
+		f := callback.Fail(string(code), message)
+		data.Error = &f
 	}
-	return b.Build(CallbackTypeArtifact, data)
+	return newEvent(r.JobID, CallbackTypeArtifact, data)
 }
 
-// BuildLogEvent creates a log event.
-func (b *EventBuilder) BuildLogEvent(lines []string, stream string) *cloudevent.Event {
-	data := map[string]any{
-		"jobId":  b.subject,
-		"lines":  lines,
-		"stream": stream,
-		"meta":   b.meta,
-	}
-	return b.Build(CallbackTypeLog, data)
-}
-
-// BuildCompleteEvent creates a job complete event, emitted after post-job
-// artifacts have been processed.
-func (b *EventBuilder) BuildCompleteEvent() *cloudevent.Event {
-	data := map[string]any{
-		"jobId": b.subject,
-		"meta":  b.meta,
-	}
-	return b.Build(CallbackTypeComplete, data)
-}
-
-// BuildExitEvent creates an exit event.
-func (b *EventBuilder) BuildExitEvent(exitCode int, reason, image string, durationSeconds float64) *cloudevent.Event {
-	data := map[string]any{
-		"jobId":           b.subject,
-		"exitCode":        exitCode,
-		"image":           image,
-		"durationSeconds": durationSeconds,
-		"meta":            b.meta,
-	}
-	if reason != "" {
-		data["reason"] = reason
+func ExitEvent(jobID string, meta map[string]string, exitCode int, reason, image string, durationSeconds float64) *cloudevent.Event {
+	data := ExitData{
+		JobID:           jobID,
+		ExitCode:        exitCode,
+		Image:           image,
+		DurationSeconds: durationSeconds,
+		Meta:            meta,
+		Reason:          reason,
 	}
 	// The message speaks of the job alone; backend vocabulary (pods, init
 	// containers, sidecars) stays in reason, where it is documented as such.
@@ -152,7 +151,8 @@ func (b *EventBuilder) BuildExitEvent(exitCode int, reason, image string, durati
 		case exitCode == -1:
 			code, message = ErrorFailed, "job failed before it could start"
 		}
-		data["error"] = callback.Fail(string(code), message)
+		f := callback.Fail(string(code), message)
+		data.Error = &f
 	}
-	return b.Build(CallbackTypeExit, data)
+	return newEvent(jobID, CallbackTypeExit, data)
 }

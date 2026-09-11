@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/job"
+	"orchestrator/internal/testutil"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -161,10 +162,11 @@ func TestJobTracker_OOMKilledWorker_ExitCarriesReason(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)
 
-	var reasons []any
+	var reasons []string
 	w.emitter.Register(func(e *job.CallbackEnvelope) {
-		if e.Payload != nil && e.Payload.Type == job.CallbackTypeExit {
-			reasons = append(reasons, e.Payload.Data["reason"])
+		if e.Payload.Type == job.CallbackTypeExit {
+			reason, _ := testutil.WireData(t, e.Payload)["reason"].(string)
+			reasons = append(reasons, reason)
 		}
 	})
 
@@ -231,7 +233,7 @@ func (c *eventCapture) assertHasType(t *testing.T, want string) {
 func newTrackerFixture(t *testing.T) (*eventCapture, *k8sLifecycleWatcher) {
 	t.Helper()
 	capture := &eventCapture{}
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture.register(emitter)
 	w := newK8sLifecycleWatcher(fake.NewClientset(), "test", emitter, 0)
 	return capture, w
@@ -390,10 +392,11 @@ func TestJobTracker_InitFailureBeforeWorkerRan(t *testing.T) {
 	t.Parallel()
 	capture, w := newTrackerFixture(t)
 
-	var reasons []any
+	var reasons []string
 	w.emitter.Register(func(e *job.CallbackEnvelope) {
-		if e.Payload != nil && e.Payload.Type == job.CallbackTypeExit {
-			reasons = append(reasons, e.Payload.Data["reason"])
+		if e.Payload.Type == job.CallbackTypeExit {
+			reason, _ := testutil.WireData(t, e.Payload)["reason"].(string)
+			reasons = append(reasons, reason)
 		}
 	})
 
@@ -472,7 +475,7 @@ func TestJobTracker_FastFailureDrainsDelayedLogs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			emitter := job.NewCallbackEmitter()
+			emitter := &job.CallbackEmitter{}
 			var mu sync.Mutex
 			var events []string
 			var lines []string
@@ -481,7 +484,9 @@ func TestJobTracker_FastFailureDrainsDelayedLogs(t *testing.T) {
 				defer mu.Unlock()
 				events = append(events, e.Payload.Type)
 				if e.Payload.Type == job.CallbackTypeLog {
-					lines = append(lines, e.Payload.Data["lines"].([]string)...)
+					for _, l := range testutil.WireData(t, e.Payload)["lines"].([]any) {
+						lines = append(lines, l.(string))
+					}
 				}
 			})
 			watcher := newK8sLifecycleWatcher(client, "test", emitter, time.Second)

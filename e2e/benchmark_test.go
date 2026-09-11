@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/api"
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/cloudevent"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/health"
@@ -403,7 +402,7 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	port := tempServer.Listener.Addr().(*net.TCPAddr).Port
 	callbackProxyURL := fmt.Sprintf("http://host.docker.internal:%d", port)
 
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	emitter.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
@@ -415,29 +414,26 @@ func createBenchServer(tb testing.TB) (string, func()) {
 		})
 	})
 
-	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(ctx, docker.Config{
+	orchestrator, err := docker.NewOrchestrator(docker.Config{
 		SidecarImage:        "ko.local/job-sidecar:latest",
-		RetentionPeriod:     5 * time.Minute,
+		JobRetention:        5 * time.Minute,
 		MaintenanceInterval: 1 * time.Minute,
 		ArtifactEndpoint:    callbackProxyURL,
-	}))
+	}, emitter)
 	if err != nil {
 		tempServer.Close()
 		tb.Fatalf("Failed to create orchestrator: %v", err)
 	}
 
-	svc := job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), "")
+	svc := job.NewService(orchestrator, metrics, "")
 	healthChecker := health.NewChecker(orchestrator)
 
-	routerCfg := api.RouterConfig{
+	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
 		JobService:    svc,
+		JobCallbacks:  emitter,
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
-	}
-	if ae, ok := orchestrator.(api.ArtifactEmitter); ok {
-		routerCfg.ArtifactEmitter = ae
-	}
-	router := api.NewRouter(routerCfg)
+	})
 
 	// Assign the router and start the server
 	tempServer.Config.Handler = router

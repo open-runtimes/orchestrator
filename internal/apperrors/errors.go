@@ -15,14 +15,13 @@ var (
 	ErrInternal   = errors.New("internal error")
 )
 
-// Error provides structured error with context.
+// Error is a classified error: the sentinel says which HTTP status it maps to,
+// the message is what the client sees.
 type Error struct {
 	Sentinel error  // Wrapped sentinel for errors.Is() classification
 	Message  string // Human-readable message
 	Field    string // For validation errors (e.g., "id", "image")
-	Resource string // For not found/conflict (e.g., "job")
-	Op       string // Operation that failed (e.g., "docker.createVolume")
-	Cause    error  // Underlying error
+	Cause    error  // Underlying error, for Internal
 }
 
 // Error returns the human-readable error message.
@@ -30,55 +29,37 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
-// Unwrap returns the sentinel error for errors.Is() classification.
-func (e *Error) Unwrap() error {
-	return e.Sentinel
+// Unwrap exposes both the sentinel and the cause, so errors.Is sees the
+// classification and the underlying error (context.Canceled, a K8s status)
+// alike.
+func (e *Error) Unwrap() []error {
+	return []error{e.Sentinel, e.Cause}
 }
 
 // Validation creates a validation error for a specific field.
 func Validation(field, message string) error {
-	return &Error{
-		Sentinel: ErrValidation,
-		Message:  message,
-		Field:    field,
-	}
+	return &Error{Sentinel: ErrValidation, Message: message, Field: field}
 }
 
 // NotFound creates a not found error for a resource.
 func NotFound(resource, id string) error {
-	return &Error{
-		Sentinel: ErrNotFound,
-		Message:  fmt.Sprintf("%s %s not found", resource, id),
-		Resource: resource,
-	}
+	return &Error{Sentinel: ErrNotFound, Message: fmt.Sprintf("%s %s not found", resource, id)}
 }
 
-// Conflict creates a conflict error for a resource.
-func Conflict(resource, id, reason string) error {
-	return &Error{
-		Sentinel: ErrConflict,
-		Message:  reason,
-		Resource: resource,
-	}
+// Conflict creates a conflict error.
+func Conflict(reason string) error {
+	return &Error{Sentinel: ErrConflict, Message: reason}
 }
 
-// Exhausted creates a capacity-exhausted error for a resource: the request
-// was valid but no capacity is free to serve it right now (e.g. a warm pool
-// with every pod claimed). Maps to HTTP 429.
-func Exhausted(resource, reason string) error {
-	return &Error{
-		Sentinel: ErrExhausted,
-		Message:  reason,
-		Resource: resource,
-	}
+// Exhausted creates a capacity-exhausted error: the request was valid but no
+// capacity is free to serve it right now (e.g. a warm pool with every pod
+// claimed). Maps to HTTP 429.
+func Exhausted(reason string) error {
+	return &Error{Sentinel: ErrExhausted, Message: reason}
 }
 
-// Internal creates an internal error wrapping an underlying cause.
+// Internal creates an internal error wrapping an underlying cause; op names
+// the operation that failed (e.g. "docker.createVolume").
 func Internal(op string, cause error) error {
-	return &Error{
-		Sentinel: ErrInternal,
-		Message:  fmt.Sprintf("%s: %v", op, cause),
-		Op:       op,
-		Cause:    cause,
-	}
+	return &Error{Sentinel: ErrInternal, Message: fmt.Sprintf("%s: %v", op, cause), Cause: cause}
 }

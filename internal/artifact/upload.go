@@ -67,7 +67,7 @@ func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
 		}
 
 		if attempt > 0 {
-			wait := backoff.Exponential(attempt, nil)
+			wait := backoff.Exponential(attempt, backoff.Config{})
 			slog.Debug("Retrying upload", "attempt", attempt, "backoff", wait, "path", srcPath)
 			select {
 			case <-ctx.Done():
@@ -106,7 +106,9 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	applyHeaders(req, a.Headers)
+	for key, value := range a.Headers {
+		req.Header.Set(key, value)
+	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
 	resp, err := client.Do(req)

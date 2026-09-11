@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"k8s.io/utils/ptr"
 )
 
 // Validation limits, shared scale with the deployments service.
@@ -41,16 +43,14 @@ type Service struct {
 	orchestrator Orchestrator
 	metrics      *observability.Metrics // may be nil in tests
 	pools        []pool.Pool
-	artifacts    *artifact.Registry
 }
 
 // NewService creates a sandbox service over the configured sandbox pools.
-func NewService(orchestrator Orchestrator, metrics *observability.Metrics, pools []pool.Pool, artifacts *artifact.Registry) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, pools []pool.Pool) *Service {
 	return &Service{
 		orchestrator: orchestrator,
 		metrics:      metrics,
 		pools:        pools,
-		artifacts:    artifacts,
 	}
 }
 
@@ -90,14 +90,10 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
 	// The sandbox's URL is a secret, so it is never logged — the id is.
 	logger := slog.With("poolId", req.Pool, "sandboxId", req.ID)
 	start := time.Now()
-	if s.metrics != nil {
-		s.metrics.RecordPoolClaimStarted(ctx, MetricKind, req.Pool)
-	}
+	s.metrics.RecordPoolClaimStarted(ctx, MetricKind, req.Pool)
 	status, err := s.orchestrator.Create(ctx, req)
-	if s.metrics != nil {
-		success := err == nil && status != nil && status.State != StateFailed
-		s.metrics.RecordPoolClaimFinished(ctx, MetricKind, req.Pool, success, time.Since(start).Seconds())
-	}
+	success := err == nil && status != nil && status.State != StateFailed
+	s.metrics.RecordPoolClaimFinished(ctx, MetricKind, req.Pool, success, time.Since(start).Seconds())
 	if err != nil {
 		logger.Error("Sandbox creation failed", "error", err)
 		return nil, err
@@ -116,8 +112,6 @@ func (s *Service) List(ctx context.Context) ([]Status, error) {
 	return s.orchestrator.List(ctx)
 }
 
-// Delete tears a sandbox down. Its URL dies with it: the token lives only as a
-// label on the pod being deleted, so a leaked URL is dead on teardown.
 // Delete tears a sandbox down. Its URL dies with it: the token lives only as a
 // label on the pod being deleted, so a leaked URL is dead on teardown.
 //
@@ -180,7 +174,7 @@ func (s *Service) validate(req *Request, shape *pool.Spec) error {
 	// (terminals, language servers) that ask for it.
 	switch {
 	case req.TimeoutSeconds == nil:
-		req.TimeoutSeconds = ptrTo(defaultTimeout)
+		req.TimeoutSeconds = ptr.To(defaultTimeout)
 	case *req.TimeoutSeconds < 0 || *req.TimeoutSeconds > maxTimeoutSecs:
 		return apperrors.Validation("timeoutSeconds",
 			fmt.Sprintf("timeout must be between 0 (no bound) and %d seconds", maxTimeoutSecs))
@@ -195,14 +189,12 @@ func (s *Service) validate(req *Request, shape *pool.Spec) error {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
 	}
 	for i, a := range req.Artifacts {
-		if err := s.artifacts.Validate(i, a); err != nil {
+		if err := artifact.Validate(i, a); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-
-func ptrTo[T any](v T) *T { return &v }
 
 // validatePorts checks the extra ports a sandbox asks for. The sidecar's own
 // data and admin ports are refused: they are the machinery's, and exposing the

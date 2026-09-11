@@ -62,18 +62,16 @@ type URLBuilder func(host string) string
 type Service struct {
 	orchestrator Orchestrator
 	metrics      *observability.Metrics // may be nil in tests
-	artifacts    *artifact.Registry
-	domain       string // base domain for auto-assigned hosts: {id}.{domain}
+	domain       string                 // base domain for auto-assigned hosts: {id}.{domain}
 	urlFor       URLBuilder
 }
 
 // NewService creates a deployment service. domain is the base for
 // auto-assigned hosts; urlFor renders a host into the public URL.
-func NewService(orchestrator Orchestrator, metrics *observability.Metrics, artifacts *artifact.Registry, domain string, urlFor URLBuilder) *Service {
+func NewService(orchestrator Orchestrator, metrics *observability.Metrics, domain string, urlFor URLBuilder) *Service {
 	return &Service{
 		orchestrator: orchestrator,
 		metrics:      metrics,
-		artifacts:    artifacts,
 		domain:       domain,
 		urlFor:       urlFor,
 	}
@@ -102,9 +100,7 @@ func (s *Service) Apply(ctx context.Context, req *Request) (*StatusResponse, boo
 		return nil, false, err
 	}
 	logger.Info("Deployment applied", "hosts", req.Hosts, "created", created)
-	if s.metrics != nil {
-		s.metrics.RecordDeploymentApplied(ctx, created)
-	}
+	s.metrics.RecordDeploymentApplied(ctx, created)
 
 	status, err := s.Get(ctx, req.ID)
 	return status, created, err
@@ -153,6 +149,7 @@ func (s *Service) Resolve(ctx context.Context, host string) (*Request, error) {
 	for i := range statuses {
 		spec, err := s.orchestrator.Spec(ctx, statuses[i].ID)
 		if err != nil {
+			slog.Warn("Skipping deployment while resolving host: spec unreadable", "deploymentId", statuses[i].ID, "error", err)
 			continue
 		}
 		if slices.Contains(spec.Hosts, host) {
@@ -212,8 +209,12 @@ func (s *Service) SetTraffic(ctx context.Context, id string, targets []Target) (
 }
 
 func (s *Service) fillURL(ctx context.Context, status *StatusResponse) {
+	if s.urlFor == nil {
+		return
+	}
 	spec, err := s.orchestrator.Spec(ctx, status.ID)
-	if err != nil || s.urlFor == nil {
+	if err != nil {
+		slog.Warn("Deployment URL omitted: spec unreadable", "deploymentId", status.ID, "error", err)
 		return
 	}
 	if len(spec.Hosts) > 0 {
@@ -233,7 +234,7 @@ func (s *Service) checkHostOwnership(ctx context.Context, req *Request) error {
 			return err
 		}
 		if owner.ID != req.ID {
-			return apperrors.Conflict("host", h, fmt.Sprintf("host %q already owned by deployment %q", h, owner.ID))
+			return apperrors.Conflict(fmt.Sprintf("host %q already owned by deployment %q", h, owner.ID))
 		}
 	}
 	return nil
@@ -372,7 +373,7 @@ func (s *Service) validate(req *Request) error {
 		return apperrors.Validation("artifacts", fmt.Sprintf("artifacts exceed maximum of %d", maxArtifacts))
 	}
 	for i, a := range req.Artifacts {
-		if err := s.artifacts.Validate(i, a); err != nil {
+		if err := artifact.Validate(i, a); err != nil {
 			return err
 		}
 	}
@@ -418,7 +419,7 @@ func (s *Service) validate(req *Request) error {
 func validateURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return errors.New("malformed URL")
+		return fmt.Errorf("malformed URL: %w", err)
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {

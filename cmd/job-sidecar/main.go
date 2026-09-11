@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -53,19 +54,19 @@ func run(mode string) error {
 	cfg := sidecar.LoadConfigFromEnv()
 
 	if cfg.JobID == "" {
-		slog.Error("JOB_ID environment variable is required")
-		return nil
+		return errors.New("JOB_ID environment variable is required")
 	}
 
-	reg := artifact.DefaultRegistry()
-	artifacts, err := reg.Unmarshal([]byte(os.Getenv(workload.EnvArtifacts)))
+	artifacts, err := artifact.UnmarshalArtifacts([]byte(os.Getenv(workload.EnvArtifacts)))
 	if err != nil {
 		return err
 	}
 
 	var meta map[string]string
-	if cfg.Meta != "" && cfg.Meta != "{}" {
-		_ = json.Unmarshal([]byte(cfg.Meta), &meta)
+	if cfg.Meta != "" {
+		if err := json.Unmarshal([]byte(cfg.Meta), &meta); err != nil {
+			return fmt.Errorf("decode JOB_META: %w", err)
+		}
 	}
 
 	var callbackEvents []string
@@ -84,24 +85,17 @@ func run(mode string) error {
 		meta,
 	)
 
-	runner := sidecar.NewRunner(cfg.JobID, cfg.SharedVolumePath, cfg.TimeoutSeconds, reg,
+	runner := sidecar.NewRunner(cfg.JobID, cfg.SharedVolumePath, cfg.TimeoutSeconds,
 		sidecar.WithArtifactListener(reporter),
 		sidecar.WithS3Credentials(cfg.S3),
 	)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Cancel the outer context on SIGINT/SIGTERM so pre-artifact processing
 	// can abort cleanly. The Runner's waitFn registers its own SIGUSR1/SIGTERM
 	// handlers during waits; in post mode, post-artifact processing runs on a
 	// detached context so this cancellation does not short-circuit it.
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		cancel()
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	switch mode {
 	case "pre":

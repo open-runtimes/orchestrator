@@ -26,6 +26,16 @@ type Download struct {
 	creds config.S3Credentials // injected by the runner for s3:// URLs
 }
 
+// HTTPStatusError is a download response outside 2xx. Callers that treat a
+// missing object as "nothing there yet" branch on StatusCode.
+type HTTPStatusError struct {
+	StatusCode int
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("download failed with status %d", e.StatusCode)
+}
+
 func (a *Download) ArtifactID() string   { return a.ID }
 func (a *Download) ArtifactType() string { return "download" }
 func (a *Download) DependsOn() string    { return a.Depends }
@@ -45,7 +55,9 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create request: %w", err)}
 	}
-	applyHeaders(req, a.Headers)
+	for key, value := range a.Headers {
+		req.Header.Set(key, value)
+	}
 
 	timeoutSecs := a.TimeoutSeconds
 	if timeoutSecs <= 0 {
@@ -60,7 +72,7 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return &Result{Status: "failed", Error: fmt.Errorf("%w: download failed with status %d", ErrDownloadHTTPError, resp.StatusCode)}
+		return &Result{Status: "failed", Error: fmt.Errorf("%w: %w", ErrDownloadHTTPError, &HTTPStatusError{StatusCode: resp.StatusCode})}
 	}
 
 	tmpPath := destPath + ".partial"
