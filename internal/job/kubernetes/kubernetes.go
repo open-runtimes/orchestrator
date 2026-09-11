@@ -98,7 +98,7 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	jobSpec := buildJob(req, o.cfg, o.cfg.SidecarImage)
 	if _, err := o.client.BatchV1().Jobs(o.cfg.Namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return apperrors.Conflict("job", req.ID, "job already exists")
+			return apperrors.Conflict("job already exists")
 		}
 		return apperrors.Internal("kubernetes.createJob", err)
 	}

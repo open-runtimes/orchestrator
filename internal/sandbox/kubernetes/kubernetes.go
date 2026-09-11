@@ -120,7 +120,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if existing, err := o.warm.Claimed(ctx, "", req.ID); err != nil {
 		return nil, err
 	} else if len(existing) > 0 {
-		return nil, apperrors.Conflict("sandbox", req.ID, "sandbox "+req.ID+" already exists")
+		return nil, apperrors.Conflict("sandbox " + req.ID + " already exists")
 	}
 
 	// Claim a warm pod, or — with no pool behind this sandbox — create the one

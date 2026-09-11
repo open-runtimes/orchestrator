@@ -197,7 +197,7 @@ func claimUnit(ctx context.Context, inv Inventory, post Poster, unit Unit, req *
 }
 
 func exhausted(poolID string) error {
-	return apperrors.Exhausted("pool", "pool "+poolID+" has no free warm capacity")
+	return apperrors.Exhausted("pool " + poolID + " has no free warm capacity")
 }
 
 // Outcome maps a failed claim POST onto the protocol's vocabulary, stamping

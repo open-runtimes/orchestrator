@@ -234,7 +234,7 @@ func (s *Service) checkHostOwnership(ctx context.Context, req *Request) error {
 			return err
 		}
 		if owner.ID != req.ID {
-			return apperrors.Conflict("host", h, fmt.Sprintf("host %q already owned by deployment %q", h, owner.ID))
+			return apperrors.Conflict(fmt.Sprintf("host %q already owned by deployment %q", h, owner.ID))
 		}
 	}
 	return nil

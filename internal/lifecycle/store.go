@@ -45,7 +45,7 @@ func (c *MemoryStore[T]) Reserve(id string) error {
 	defer c.mu.Unlock()
 
 	if _, exists := c.entries[id]; exists {
-		return apperrors.Conflict(c.kind, id, c.kind+" already exists")
+		return apperrors.Conflict(c.kind + " already exists")
 	}
 
 	now := time.Now()
