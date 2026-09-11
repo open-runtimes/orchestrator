@@ -83,9 +83,7 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Response, error) {
 	}
 
 	// Record metrics after successful creation
-	if s.metrics != nil {
-		s.metrics.RecordJobCreated(ctx, req.Image)
-	}
+	s.metrics.RecordJobCreated(ctx, req.Image)
 
 	logger.Info("Job created")
 

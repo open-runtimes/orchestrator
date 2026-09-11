@@ -553,9 +553,7 @@ func (inv *inventory) Reserve(ctx context.Context, unit claim.Unit) error {
 	}
 	started := time.Now()
 	bound, err := inv.m.reserve(ctx, pod, inv.req.ClaimID, inv.binding)
-	if inv.m.cfg.Metrics != nil {
-		inv.m.cfg.Metrics.RecordPoolReservation(ctx, inv.m.cfg.Naming.Kind, inv.f.ID, err == nil, time.Since(started).Seconds())
-	}
+	inv.m.cfg.Metrics.RecordPoolReservation(ctx, inv.m.cfg.Naming.Kind, inv.f.ID, err == nil, time.Since(started).Seconds())
 	if err != nil {
 		return err
 	}

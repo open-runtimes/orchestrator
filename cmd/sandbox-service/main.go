@@ -75,11 +75,11 @@ func main() {
 	}
 
 	healthChecker := health.NewChecker(orchestrator)
-	router := api.NewSandboxesRouter(api.SandboxesRouterConfig{
-		Service:       svc,
-		Metrics:       metrics,
-		HealthChecker: healthChecker,
-		APIKey:        svcCfg.APIKey,
+	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
+		SandboxService: svc,
+		Metrics:        metrics,
+		HealthChecker:  healthChecker,
+		APIKey:         svcCfg.APIKey,
 	})
 
 	if svcCfg.APIKey == "" {

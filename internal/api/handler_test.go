@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
-	"sync"
 	"testing"
 )
 
@@ -369,27 +368,18 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 	}
 }
 
-// mockArtifactEmitter records EmitArtifactEvent calls for testing.
-type mockArtifactEmitter struct {
-	mu      sync.Mutex
-	reports []job.ArtifactReport
-}
-
-func (m *mockArtifactEmitter) EmitArtifactEvent(r job.ArtifactReport) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.reports = append(m.reports, r)
-}
-
 func TestHandler_ReportArtifact(t *testing.T) {
 	t.Parallel()
-	mock := &mockArtifactEmitter{}
-	handler := &Handler{artifactEmitter: mock}
+	var reports []job.ArtifactData
+	callbacks := &job.CallbackEmitter{}
+	callbacks.Register(func(e *job.CallbackEnvelope) { reports = append(reports, e.Payload.Data.(job.ArtifactData)) })
+	handler := &Handler{callbacks: callbacks}
 
 	report := job.ArtifactReport{
-		ID:     "a1",
-		Type:   "upload",
-		Status: "success",
+		ID:          "a1",
+		Type:        "upload",
+		Status:      "success",
+		CallbackURL: "http://callbacks.test/hook",
 	}
 	body, _ := json.Marshal(report)
 
@@ -403,17 +393,15 @@ func TestHandler_ReportArtifact(t *testing.T) {
 		t.Errorf("Expected status %d, got %d", http.StatusAccepted, w.Code)
 	}
 
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.reports) != 1 {
-		t.Fatalf("Expected 1 report, got %d", len(mock.reports))
+	if len(reports) != 1 {
+		t.Fatalf("Expected 1 report, got %d", len(reports))
 	}
-	r := mock.reports[0]
+	r := reports[0]
 	if r.JobID != "job-123" {
 		t.Errorf("Expected JobID 'job-123', got %q", r.JobID)
 	}
-	if r.ID != "a1" {
-		t.Errorf("Expected ArtifactID 'a1', got %q", r.ID)
+	if r.ArtifactID != "a1" {
+		t.Errorf("Expected ArtifactID 'a1', got %q", r.ArtifactID)
 	}
 	if r.Status != "success" {
 		t.Errorf("Expected Status 'success', got %q", r.Status)
@@ -422,7 +410,7 @@ func TestHandler_ReportArtifact(t *testing.T) {
 
 func TestHandler_ReportArtifact_InvalidJSON(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
+	handler := &Handler{callbacks: &job.CallbackEmitter{}}
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewBufferString("invalid"))
 	req.SetPathValue("jobId", "job-123")
@@ -437,7 +425,7 @@ func TestHandler_ReportArtifact_InvalidJSON(t *testing.T) {
 
 func TestHandler_ReportArtifact_MissingJobID(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{artifactEmitter: &mockArtifactEmitter{}}
+	handler := &Handler{callbacks: &job.CallbackEmitter{}}
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/jobs//artifact", bytes.NewBufferString("{}"))
 	// No SetPathValue — jobId will be empty string

@@ -231,7 +231,7 @@ func (c *eventCapture) assertHasType(t *testing.T, want string) {
 func newTrackerFixture(t *testing.T) (*eventCapture, *k8sLifecycleWatcher) {
 	t.Helper()
 	capture := &eventCapture{}
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	capture.register(emitter)
 	w := newK8sLifecycleWatcher(fake.NewClientset(), "test", emitter, 0)
 	return capture, w
@@ -472,7 +472,7 @@ func TestJobTracker_FastFailureDrainsDelayedLogs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			emitter := job.NewCallbackEmitter()
+			emitter := &job.CallbackEmitter{}
 			var mu sync.Mutex
 			var events []string
 			var lines []string

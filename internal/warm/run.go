@@ -38,9 +38,7 @@ func (m *Manager) Stop() {
 
 // onLeadership records leadership transitions when metrics are wired.
 func (m *Manager) onLeadership(ctx context.Context, identity string, leading bool) {
-	if m.cfg.Metrics != nil {
-		m.cfg.Metrics.RecordLeadership(ctx, identity, leading)
-	}
+	m.cfg.Metrics.RecordLeadership(ctx, identity, leading)
 }
 
 // Await blocks until the claimed pod's sidecar reports its workload serving, so

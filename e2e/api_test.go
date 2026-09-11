@@ -160,7 +160,7 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		Workers:    2,
 	}, nil)
 
-	emitter := job.NewCallbackEmitter()
+	emitter := &job.CallbackEmitter{}
 	emitter.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
@@ -172,9 +172,11 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 		})
 	})
 
-	orchestrator, err := job.NewOrchestrator(emitter, docker.NewOrchestrator(t.Context(), docker.Config{
-		SidecarImage: "ko.local/job-sidecar:latest",
-	}))
+	orchestrator, err := docker.NewOrchestrator(docker.Config{
+		SidecarImage:        "ko.local/job-sidecar:latest",
+		JobRetention:        15 * time.Minute,
+		MaintenanceInterval: time.Minute,
+	}, emitter)
 	if err != nil {
 		t.Fatalf("Failed to create Docker orchestrator: %v", err)
 	}
@@ -182,14 +184,11 @@ func createTestServer(t *testing.T) (*httptest.Server, *job.Service, func()) {
 	svc := job.NewService(orchestrator, nil, artifact.DefaultRegistry(), "")
 	healthChecker := health.NewChecker(orchestrator)
 
-	routerCfg := api.RouterConfig{
+	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
 		JobService:    svc,
+		JobCallbacks:  emitter,
 		HealthChecker: healthChecker,
-	}
-	if ae, ok := orchestrator.(api.ArtifactEmitter); ok {
-		routerCfg.ArtifactEmitter = ae
-	}
-	router := api.NewRouter(routerCfg)
+	})
 
 	server := httptest.NewServer(router)
 

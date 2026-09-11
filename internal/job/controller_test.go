@@ -5,14 +5,8 @@ import (
 	"testing"
 )
 
-// newTestController is a convenience helper for tests that don't care about
-// the runtime handle type.
-func newTestController() *MemoryStore[struct{}] {
-	return NewMemoryStore[struct{}]()
-}
-
 func TestMemoryStore_Reserve_CreatesAccepted(t *testing.T) {
-	c := newTestController()
+	c := NewMemoryStore[struct{}]()
 
 	if err := c.Reserve("job-1"); err != nil {
 		t.Fatalf("Reserve: %v", err)
@@ -37,7 +31,7 @@ func TestMemoryStore_Reserve_CreatesAccepted(t *testing.T) {
 }
 
 func TestMemoryStore_Reserve_Duplicate(t *testing.T) {
-	c := newTestController()
+	c := NewMemoryStore[struct{}]()
 	_ = c.Reserve("job-1")
 
 	if err := c.Reserve("job-1"); err == nil {
@@ -83,7 +77,7 @@ func TestMemoryStore_Apply_ValidSignals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newTestController()
+			c := NewMemoryStore[struct{}]()
 			_ = c.Reserve("job-1")
 			c.Commit("job-1", struct{}{}, nil)
 
@@ -115,7 +109,7 @@ func TestMemoryStore_Apply_InvalidSignals(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newTestController()
+			c := NewMemoryStore[struct{}]()
 			_ = c.Reserve("job-1")
 			c.Commit("job-1", struct{}{}, nil)
 
@@ -131,7 +125,7 @@ func TestMemoryStore_Apply_InvalidSignals(t *testing.T) {
 }
 
 func TestMemoryStore_Apply_SetsExitCodeAndError(t *testing.T) {
-	c := newTestController()
+	c := NewMemoryStore[struct{}]()
 	_ = c.Reserve("job-1")
 	c.Commit("job-1", struct{}{}, nil)
 	_ = c.Apply("job-1", Started{})
@@ -147,7 +141,7 @@ func TestMemoryStore_Apply_SetsExitCodeAndError(t *testing.T) {
 }
 
 func TestMemoryStore_Apply_AfterRelease(t *testing.T) {
-	c := newTestController()
+	c := NewMemoryStore[struct{}]()
 	_ = c.Reserve("job-1")
 	c.Commit("job-1", struct{}{}, nil)
 	c.Release("job-1")
@@ -158,7 +152,7 @@ func TestMemoryStore_Apply_AfterRelease(t *testing.T) {
 }
 
 func TestMemoryStore_Apply_LogLine_NoTransition(t *testing.T) {
-	c := newTestController()
+	c := NewMemoryStore[struct{}]()
 	_ = c.Reserve("job-1")
 	c.Commit("job-1", struct{}{}, nil)
 
@@ -173,7 +167,7 @@ func TestMemoryStore_Apply_LogLine_NoTransition(t *testing.T) {
 }
 
 func TestMemoryStore_Release_ConcurrentSafe(t *testing.T) {
-	c := newTestController()
+	c := NewMemoryStore[struct{}]()
 	_ = c.Reserve("job-1")
 	c.Commit("job-1", struct{}{}, nil)
 

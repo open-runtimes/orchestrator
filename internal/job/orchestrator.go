@@ -1,10 +1,7 @@
 // Package job defines the Orchestrator interface and job-related types.
 package job
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
 // Orchestrator defines the interface for container orchestration platforms.
 // Implementations handle the full job lifecycle including container management,
@@ -23,9 +20,7 @@ import (
 //   - job.log - streamed from container stdout/stderr
 //   - job.exit - when job container exits
 //
-// Both Store and CallbackEmitter are provided via OrchestratorFactory, enforcing
-// that all implementations receive these shared dependencies.
-// Register listeners on the CallbackEmitter before calling NewOrchestrator.
+// Register listeners on the CallbackEmitter before calling Start.
 // Input/output callbacks are handled by the sidecar.
 type Orchestrator interface {
 	// Start initializes the orchestrator, reconciling any pre-existing jobs
@@ -48,6 +43,13 @@ type Orchestrator interface {
 	// List returns the status of all jobs.
 	List(ctx context.Context) ([]StatusResponse, error)
 
+	// ActiveJobs reports the jobs this replica holds that have not reached a
+	// terminal state. Read at scrape time by the jobs_active async gauge, so it
+	// must be derived from live state rather than tallied: a +1/-1 pair split
+	// across a create request and an exit callback drifts on every restart and
+	// every leadership handover.
+	ActiveJobs() int64
+
 	// Ready checks if the orchestrator backend is reachable.
 	// For Docker: verifies the daemon is reachable.
 	// For K8s: verifies the API server is reachable.
@@ -56,17 +58,4 @@ type Orchestrator interface {
 	// Close releases resources held by the orchestrator.
 	// Running jobs are NOT stopped - they continue independently.
 	Close() error
-}
-
-// OrchestratorFactory builds an Orchestrator with required shared dependencies.
-// Implementations return this from their constructor so that the CallbackEmitter
-// is guaranteed to be provided.
-type OrchestratorFactory func(emitter *CallbackEmitter) (Orchestrator, error)
-
-// NewOrchestrator validates that shared dependencies are non-nil and calls the factory.
-func NewOrchestrator(emitter *CallbackEmitter, factory OrchestratorFactory) (Orchestrator, error) {
-	if emitter == nil {
-		return nil, errors.New("emitter is required")
-	}
-	return factory(emitter)
 }

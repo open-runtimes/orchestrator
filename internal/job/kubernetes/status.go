@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"orchestrator/internal/job"
+	"orchestrator/internal/lifecycle"
 	"sync"
 	"time"
 
@@ -115,7 +116,7 @@ func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace st
 				// The exit is the answer. Reporting Accepted here would move the
 				// state backwards from Running, and contradict both the callback
 				// already emitted for this exit and the Docker backend.
-				resp.State = job.StateForExit(int(worker.State.Terminated.ExitCode))
+				resp.State = lifecycle.StateForExit(int(worker.State.Terminated.ExitCode))
 				annotateTermination(worker, &resp)
 				return resp, nil
 			case worker.State.Running != nil:

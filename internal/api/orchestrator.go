@@ -19,8 +19,8 @@ type OrchestratorRouterConfig struct {
 	HealthChecker *health.Checker
 	APIKey        string
 
-	JobService      *job.Service
-	ArtifactEmitter ArtifactEmitter
+	JobService   *job.Service
+	JobCallbacks *job.CallbackEmitter // required with JobService: where artifact reports are emitted
 
 	DeploymentService *deployment.Service
 	SandboxService    *sandbox.Service
@@ -54,9 +54,7 @@ func withMiddleware(mux *http.ServeMux, metrics *observability.Metrics) http.Han
 	h = JSONErrorMiddleware()(h)
 	h = ContentTypeMiddleware()(h)
 	h = CORSMiddleware()(h)
-	if metrics != nil {
-		h = MetricsMiddleware(metrics, mux)(h)
-	}
+	h = MetricsMiddleware(metrics, mux)(h)
 	h = LoggingMiddleware()(h)
 	h = RecoveryMiddleware()(h)
 	return h

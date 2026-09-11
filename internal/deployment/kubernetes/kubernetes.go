@@ -160,9 +160,7 @@ func (o *Orchestrator) onLeadership(ctx context.Context, identity string, leadin
 		o.leaderChanged = make(chan struct{})
 	}
 	o.leaderMu.Unlock()
-	if o.cfg.Metrics != nil {
-		o.cfg.Metrics.RecordLeadership(ctx, identity, leading)
-	}
+	o.cfg.Metrics.RecordLeadership(ctx, identity, leading)
 }
 
 // runReconcilers runs the background loops for one leadership term (or the

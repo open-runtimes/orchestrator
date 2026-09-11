@@ -23,11 +23,7 @@ var ErrCircuitOpen = errors.New("circuit open")
 // It is the leaf of the delivery chain — the only layer that does I/O.
 func HTTPSender(sender *cloudevent.Sender) DeliveryFunc {
 	return func(ctx context.Context, event *Event) error {
-		opts := cloudevent.SendOptions{
-			SigningKey: event.SigningKey,
-			Signature:  event.Signature,
-		}
-		return sender.Send(ctx, event.Destination, event.Payload, opts)
+		return sender.Send(ctx, event.Destination, event.Payload, event.SigningKey)
 	}
 }
 

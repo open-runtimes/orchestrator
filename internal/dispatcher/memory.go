@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"orchestrator/internal/circuitbreaker"
 	"orchestrator/internal/cloudevent"
+	"orchestrator/internal/observability"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +22,7 @@ type Memory struct {
 	breakers *circuitbreaker.Registry
 	config   Config
 	logger   *slog.Logger
-	metrics  MetricsRecorder
+	metrics  *observability.Metrics
 
 	// Internal counters (for Stats())
 	queued       atomic.Int64
@@ -36,18 +37,8 @@ type Memory struct {
 	isClosed atomic.Bool
 }
 
-// MetricsRecorder is an optional interface for recording dispatcher metrics.
-type MetricsRecorder interface {
-	RecordDispatcherDelivered(ctx context.Context, durationSeconds float64)
-	RecordDispatcherFailed(ctx context.Context)
-	RecordDispatcherDropped(ctx context.Context)
-	RecordDispatcherRequeued(ctx context.Context)
-}
-
 // NewMemory creates a new in-memory dispatcher.
-func NewMemory(cfg Config, metrics MetricsRecorder) *Memory {
-	cfg = cfg.withDefaults()
-
+func NewMemory(cfg Config, metrics *observability.Metrics) *Memory {
 	breakers := circuitbreaker.NewRegistry(circuitbreaker.Config{
 		Threshold: defaultBreakerThreshold,
 		Cooldown:  cfg.BreakerCooldown,
@@ -102,9 +93,7 @@ func (d *Memory) Dispatch(event *Event) error {
 		return nil
 	default:
 		d.dropped.Add(1)
-		if d.metrics != nil {
-			d.metrics.RecordDispatcherDropped(context.Background())
-		}
+		d.metrics.RecordDispatcherDropped(context.Background())
 		d.logger.Warn("Event dropped, buffer full",
 			"destination", extractHost(event.Destination),
 			"type", event.Payload.Type,
@@ -200,16 +189,12 @@ func (d *Memory) deliver(event *Event) {
 	switch {
 	case err == nil:
 		d.delivered.Add(1)
-		if d.metrics != nil {
-			d.metrics.RecordDispatcherDelivered(ctx, time.Since(start).Seconds())
-		}
+		d.metrics.RecordDispatcherDelivered(ctx, time.Since(start).Seconds())
 	case errors.Is(err, ErrCircuitOpen):
 		d.requeue(event, extractHost(event.Destination))
 	default:
 		d.failed.Add(1)
-		if d.metrics != nil {
-			d.metrics.RecordDispatcherFailed(ctx)
-		}
+		d.metrics.RecordDispatcherFailed(ctx)
 		d.logger.Warn("Delivery failed",
 			"destination", extractHost(event.Destination),
 			"type", event.Payload.Type,
@@ -222,9 +207,7 @@ func (d *Memory) deliver(event *Event) {
 func (d *Memory) requeue(event *Event, host string) {
 	if event.Requeues >= defaultMaxRequeues {
 		d.dropped.Add(1)
-		if d.metrics != nil {
-			d.metrics.RecordDispatcherDropped(context.Background())
-		}
+		d.metrics.RecordDispatcherDropped(context.Background())
 		d.logger.Warn("Event dropped, max requeues reached",
 			"destination", host,
 			"type", event.Payload.Type,
@@ -238,9 +221,7 @@ func (d *Memory) requeue(event *Event, host string) {
 	next := *event
 	next.Requeues++
 	d.requeued.Add(1)
-	if d.metrics != nil {
-		d.metrics.RecordDispatcherRequeued(context.Background())
-	}
+	d.metrics.RecordDispatcherRequeued(context.Background())
 
 	// Requeue after cooldown period so circuit has time to recover
 	go func() {
@@ -257,9 +238,7 @@ func (d *Memory) requeue(event *Event, host string) {
 		default:
 			// Buffer full, drop
 			d.dropped.Add(1)
-			if d.metrics != nil {
-				d.metrics.RecordDispatcherDropped(context.Background())
-			}
+			d.metrics.RecordDispatcherDropped(context.Background())
 			d.logger.Warn("Event dropped on requeue, buffer full", "destination", host, "type", next.Payload.Type)
 		}
 	}()

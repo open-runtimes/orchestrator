@@ -9,7 +9,6 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
-	"orchestrator/internal/observability"
 )
 
 // maxRequestBodySize limits request body to 1MB to prevent memory exhaustion
@@ -45,26 +44,10 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, v any) error {
 	return artifact.UnmarshalStrict(body, v)
 }
 
-// ArtifactEmitter receives artifact results from the sidecar and dispatches
-// the corresponding CloudEvents through the delivery pipeline.
-type ArtifactEmitter interface {
-	EmitArtifactEvent(report job.ArtifactReport)
-}
-
 // Handler contains HTTP handlers for the jobs API
 type Handler struct {
-	svc             *job.Service
-	metrics         *observability.Metrics
-	artifactEmitter ArtifactEmitter
-}
-
-// NewHandler creates a new API handler
-func NewHandler(svc *job.Service, metrics *observability.Metrics, ae ArtifactEmitter) *Handler {
-	return &Handler{
-		svc:             svc,
-		metrics:         metrics,
-		artifactEmitter: ae,
-	}
+	svc       *job.Service
+	callbacks *job.CallbackEmitter // artifact reports from the sidecar go out as callbacks
 }
 
 // CreateJob handles POST /v1/jobs
@@ -187,9 +170,7 @@ func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	report.JobID = jobID
 
-	if h.artifactEmitter != nil {
-		h.artifactEmitter.EmitArtifactEvent(report)
-	}
+	job.EmitArtifactCallback(h.callbacks, report)
 
 	w.WriteHeader(http.StatusAccepted)
 }

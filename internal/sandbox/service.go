@@ -90,14 +90,10 @@ func (s *Service) Create(ctx context.Context, req *Request) (*Status, error) {
 	// The sandbox's URL is a secret, so it is never logged — the id is.
 	logger := slog.With("poolId", req.Pool, "sandboxId", req.ID)
 	start := time.Now()
-	if s.metrics != nil {
-		s.metrics.RecordPoolClaimStarted(ctx, MetricKind, req.Pool)
-	}
+	s.metrics.RecordPoolClaimStarted(ctx, MetricKind, req.Pool)
 	status, err := s.orchestrator.Create(ctx, req)
-	if s.metrics != nil {
-		success := err == nil && status != nil && status.State != StateFailed
-		s.metrics.RecordPoolClaimFinished(ctx, MetricKind, req.Pool, success, time.Since(start).Seconds())
-	}
+	success := err == nil && status != nil && status.State != StateFailed
+	s.metrics.RecordPoolClaimFinished(ctx, MetricKind, req.Pool, success, time.Since(start).Seconds())
 	if err != nil {
 		logger.Error("Sandbox creation failed", "error", err)
 		return nil, err

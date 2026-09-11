@@ -15,7 +15,7 @@ func TestShapeKeyNormalizesEquivalentPodShapes(t *testing.T) {
 		Volumes: []volume.Volume{{Source: "b", Path: "/b"}, {Source: "a", Path: "/a"}}}
 	b := Spec{Image: "img", Port: 3000, CPU: 1, Memory: 256, RuntimeClass: "runc",
 		TerminationGracePeriodSeconds: 30,
-		Volumes: []volume.Volume{{Source: "a", Path: "/a"}, {Source: "b", Path: "/b"}}}
+		Volumes:                       []volume.Volume{{Source: "a", Path: "/a"}, {Source: "b", Path: "/b"}}}
 	if ShapeKey(&a) != ShapeKey(&b) {
 		t.Fatal("equivalent runtime, grace, and volume ordering must match")
 	}

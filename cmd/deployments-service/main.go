@@ -120,11 +120,11 @@ func main() {
 	}
 
 	healthChecker := health.NewChecker(orchestrator)
-	router := api.NewDeploymentsRouter(api.DeploymentsRouterConfig{
-		Service:       svc,
-		Metrics:       metrics,
-		HealthChecker: healthChecker,
-		APIKey:        svcCfg.APIKey,
+	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
+		DeploymentService: svc,
+		Metrics:           metrics,
+		HealthChecker:     healthChecker,
+		APIKey:            svcCfg.APIKey,
 	})
 
 	if svcCfg.APIKey == "" {

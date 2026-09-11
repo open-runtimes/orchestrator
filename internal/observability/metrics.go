@@ -320,7 +320,7 @@ func (m *Metrics) Shutdown(ctx context.Context) error {
 // the +1, and either way the gauge drifts negative and never recovers. An async
 // gauge re-derives the truth on every collection, so it cannot drift.
 //
-// Safe to call on a nil *Metrics (metrics disabled).
+// Every method is safe to call on a nil *Metrics (metrics disabled).
 func (m *Metrics) ObserveInt64(name, desc string, observe func() int64) error {
 	if m == nil {
 		return nil
@@ -337,6 +337,9 @@ func (m *Metrics) ObserveInt64(name, desc string, observe func() int64) error {
 
 // RecordHTTPRequest records HTTP request metrics.
 func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, path string, statusCode int, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	attrs := metric.WithAttributes(
 		methodAttr(method),
 		pathAttr(path),
@@ -353,6 +356,9 @@ func (m *Metrics) RecordHTTPRequest(ctx context.Context, method, path string, st
 
 // RecordJobCreated records a new job being created.
 func (m *Metrics) RecordJobCreated(ctx context.Context, image string) {
+	if m == nil {
+		return
+	}
 	m.JobsTotal.Add(ctx, 1, metric.WithAttributes(imageAttr(image)))
 }
 
@@ -360,34 +366,52 @@ func (m *Metrics) RecordJobCreated(ctx context.Context, image string) {
 // histogram's _count series, split by success, is the completion and error
 // rate — job_duration_seconds_count{success="false"} needs no counter of its own.
 func (m *Metrics) RecordJobCompleted(ctx context.Context, image string, success bool, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.JobDuration.Record(ctx, durationSeconds,
 		metric.WithAttributes(imageAttr(image), successAttr(success)))
 }
 
 // RecordDispatcherDelivered records a successful event delivery with its duration.
 func (m *Metrics) RecordDispatcherDelivered(ctx context.Context, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.DispatcherDelivered.Add(ctx, 1)
 	m.DispatcherDuration.Record(ctx, durationSeconds)
 }
 
 // RecordDispatcherFailed records a failed event delivery.
 func (m *Metrics) RecordDispatcherFailed(ctx context.Context) {
+	if m == nil {
+		return
+	}
 	m.DispatcherFailed.Add(ctx, 1)
 }
 
 // RecordDispatcherDropped records a dropped event.
 func (m *Metrics) RecordDispatcherDropped(ctx context.Context) {
+	if m == nil {
+		return
+	}
 	m.DispatcherDropped.Add(ctx, 1)
 }
 
 // RecordDispatcherRequeued records a requeued event.
 func (m *Metrics) RecordDispatcherRequeued(ctx context.Context) {
+	if m == nil {
+		return
+	}
 	m.DispatcherRequeued.Add(ctx, 1)
 }
 
 // RecordLeadership sets this replica's leader gauge and, when acquired, bumps
 // the transitions counter. identity labels both metrics.
 func (m *Metrics) RecordLeadership(ctx context.Context, identity string, acquired bool) {
+	if m == nil {
+		return
+	}
 	attrs := metric.WithAttributes(identityAttr(identity))
 	if acquired {
 		m.LeaderGauge.Record(ctx, 1, attrs)
@@ -399,17 +423,26 @@ func (m *Metrics) RecordLeadership(ctx context.Context, identity string, acquire
 
 // RecordStatusCacheHit bumps the Status cache-hit counter.
 func (m *Metrics) RecordStatusCacheHit(ctx context.Context) {
+	if m == nil {
+		return
+	}
 	m.StatusCacheHits.Add(ctx, 1)
 }
 
 // RecordStatusCacheMiss bumps the Status cache-miss counter.
 func (m *Metrics) RecordStatusCacheMiss(ctx context.Context) {
+	if m == nil {
+		return
+	}
 	m.StatusCacheMisses.Add(ctx, 1)
 }
 
 // RecordK8sAPIRequest records a K8s API call's latency and, if it returned a
 // 4xx/5xx or failed in transport, increments the error counter.
 func (m *Metrics) RecordK8sAPIRequest(ctx context.Context, verb, resource string, durationSeconds float64, status int) {
+	if m == nil {
+		return
+	}
 	attrs := metric.WithAttributes(verbAttr(verb), resourceAttr(resource))
 	m.K8sAPIDuration.Record(ctx, durationSeconds, attrs)
 	if status < 0 || status >= 400 {
@@ -420,22 +453,34 @@ func (m *Metrics) RecordK8sAPIRequest(ctx context.Context, verb, resource string
 
 // RecordDeploymentApplied records a deployment apply (create or update).
 func (m *Metrics) RecordDeploymentApplied(ctx context.Context, created bool) {
+	if m == nil {
+		return
+	}
 	m.DeploymentsApplied.Add(ctx, 1, metric.WithAttributes(createdAttr(created)))
 }
 
 // RecordDeploymentsActive records the managed-deployment count.
 func (m *Metrics) RecordDeploymentsActive(ctx context.Context, count int64) {
+	if m == nil {
+		return
+	}
 	m.DeploymentsActive.Record(ctx, count)
 }
 
 // RecordRolloutCut records traffic auto-cutting to a newly ready revision,
 // with the revision's minted→ready duration.
 func (m *Metrics) RecordRolloutCut(ctx context.Context, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.RolloutCuts.Add(ctx, 1)
 	m.RolloutDuration.Record(ctx, durationSeconds)
 }
 
 func (m *Metrics) RecordRevisionReconcile(ctx context.Context, success bool, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.RevisionReconcileDuration.Record(ctx, durationSeconds, metric.WithAttributes(successAttr(success)))
 	if !success {
 		m.RevisionReconcileErrors.Add(ctx, 1)
@@ -443,59 +488,95 @@ func (m *Metrics) RecordRevisionReconcile(ctx context.Context, success bool, dur
 }
 
 func (m *Metrics) RecordRevisionQueueWait(ctx context.Context, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.RevisionQueueWait.Record(ctx, durationSeconds)
 }
 
 func (m *Metrics) RecordRevisionPodCreate(ctx context.Context, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.RevisionPodCreates.Add(ctx, 1)
 	m.RevisionPodCreateDuration.Record(ctx, durationSeconds)
 }
 
 func (m *Metrics) RecordRevisionPodDelete(ctx context.Context, reason string) {
+	if m == nil {
+		return
+	}
 	m.RevisionPodDeletes.Add(ctx, 1, metric.WithAttributes(reasonAttr(reason)))
 }
 
 func (m *Metrics) RecordRevisionLeaderConvergence(ctx context.Context, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.RevisionLeaderConvergence.Record(ctx, durationSeconds)
 }
 
 // RecordActivatorHold records a completed capacity hold.
 func (m *Metrics) RecordActivatorHold(ctx context.Context, component, outcome string, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.ActivatorHoldDuration.Record(ctx, durationSeconds, metric.WithAttributes(componentAttr(component), outcomeAttr(outcome)))
 }
 
 // RecordActivatorQueueDelta adjusts the held-request gauge (+1 / -1).
 func (m *Metrics) RecordActivatorQueueDelta(ctx context.Context, component string, delta int64) {
+	if m == nil {
+		return
+	}
 	m.ActivatorQueued.Add(ctx, delta, metric.WithAttributes(componentAttr(component)))
 }
 
 // RecordActivatorRaise records a cold scale-up request.
 func (m *Metrics) RecordActivatorRaise(ctx context.Context, component string) {
+	if m == nil {
+		return
+	}
 	m.ActivatorRaises.Add(ctx, 1, metric.WithAttributes(componentAttr(component)))
 }
 
 // RecordActivatorAsync records an async request's final result.
 func (m *Metrics) RecordActivatorAsync(ctx context.Context, component, result string) {
+	if m == nil {
+		return
+	}
 	m.ActivatorAsync.Add(ctx, 1, metric.WithAttributes(componentAttr(component), resultAttr(result)))
 }
 
 // RecordAutoscalerDesired records the autoscaler's decision for a deployment.
 func (m *Metrics) RecordAutoscalerDesired(ctx context.Context, id string, replicas int64) {
+	if m == nil {
+		return
+	}
 	m.AutoscalerDesired.Record(ctx, replicas, metric.WithAttributes(deploymentAttr(id)))
 }
 
 // RecordAutoscalerScale records a scale write.
 func (m *Metrics) RecordAutoscalerScale(ctx context.Context, direction string) {
+	if m == nil {
+		return
+	}
 	m.AutoscalerScales.Add(ctx, 1, metric.WithAttributes(directionAttr(direction)))
 }
 
 // RecordAutoscalerScrapeError records a failed metrics scrape.
 func (m *Metrics) RecordAutoscalerScrapeError(ctx context.Context) {
+	if m == nil {
+		return
+	}
 	m.AutoscalerScrapeErrors.Add(ctx, 1)
 }
 
 // RecordPoolClaimStarted records a claim entering flight.
 func (m *Metrics) RecordPoolClaimStarted(ctx context.Context, kind, id string) {
+	if m == nil {
+		return
+	}
 	attrs := metric.WithAttributes(kindAttr(kind), poolAttr(id))
 	m.PoolClaims.Add(ctx, 1, attrs)
 	m.PoolClaimsActive.Add(ctx, 1, attrs)
@@ -504,6 +585,9 @@ func (m *Metrics) RecordPoolClaimStarted(ctx context.Context, kind, id string) {
 // RecordPoolClaimFinished records a claim leaving flight with its
 // wall time (claim through serving).
 func (m *Metrics) RecordPoolClaimFinished(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.PoolClaimsActive.Add(ctx, -1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
 	m.PoolClaimDuration.Record(ctx, durationSeconds, metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
 }
@@ -511,28 +595,43 @@ func (m *Metrics) RecordPoolClaimFinished(ctx context.Context, kind, id string, 
 // RecordPoolReservation records the API-server write that serializes a warm
 // claim and stamps its final workload identity before activation.
 func (m *Metrics) RecordPoolReservation(ctx context.Context, kind, id string, success bool, durationSeconds float64) {
+	if m == nil {
+		return
+	}
 	m.PoolReservationDuration.Record(ctx, durationSeconds,
 		metric.WithAttributes(kindAttr(kind), poolAttr(id), successAttr(success)))
 }
 
 // RecordPoolConflict records a lost claim race.
 func (m *Metrics) RecordPoolConflict(ctx context.Context, kind, id string) {
+	if m == nil {
+		return
+	}
 	m.PoolClaimConflicts.Add(ctx, 1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
 }
 
 // RecordPoolPoisoned records a pod poisoned by a failed activation.
 func (m *Metrics) RecordPoolPoisoned(ctx context.Context, kind, id string) {
+	if m == nil {
+		return
+	}
 	m.PoolPoisoned.Add(ctx, 1, metric.WithAttributes(kindAttr(kind), poolAttr(id)))
 }
 
 // RecordPoolBurst records an activation arriving at an empty pool and the
 // policy that decided its fate.
 func (m *Metrics) RecordPoolBurst(ctx context.Context, kind, id, policy string) {
+	if m == nil {
+		return
+	}
 	m.PoolBurst.Add(ctx, 1, metric.WithAttributes(kindAttr(kind), poolAttr(id), policyAttr(policy)))
 }
 
 // RecordPoolCapacity records a pool's warm/claimed pod counts.
 func (m *Metrics) RecordPoolCapacity(ctx context.Context, kind, id string, warm, claimed int64) {
+	if m == nil {
+		return
+	}
 	attrs := metric.WithAttributes(kindAttr(kind), poolAttr(id))
 	m.PoolWarm.Record(ctx, warm, attrs)
 	m.PoolClaimed.Record(ctx, claimed, attrs)

@@ -119,7 +119,7 @@ func main() {
 		HealthChecker:     healthChecker,
 		APIKey:            svcCfg.APIKey,
 		JobService:        jobs.service,
-		ArtifactEmitter:   jobs.artifacts,
+		JobCallbacks:      jobs.callbacks,
 		DeploymentService: deployments.service,
 		SandboxService:    sandboxes.service,
 	})
@@ -178,44 +178,33 @@ func main() {
 type jobsPlane struct {
 	orchestrator job.Orchestrator
 	service      *job.Service
-	artifacts    api.ArtifactEmitter
+	callbacks    *job.CallbackEmitter
 }
 
 func startJobs(ctx context.Context, svcCfg *config.ServiceConfig, queue dispatcher.Queue, metrics *observability.Metrics) (*jobsPlane, error) {
 	cfg := jobdocker.LoadConfigFromEnv()
-	factory := jobdocker.NewOrchestrator(ctx, jobdocker.Config{
-		SidecarImage:        svcCfg.JobSidecarImage,
-		RetentionPeriod:     cfg.JobRetention,
-		MaintenanceInterval: cfg.MaintenanceInterval,
-		ArtifactEndpoint:    cfg.ArtifactEndpoint,
-		ExtraHosts:          cfg.ExtraHosts,
-		Network:             cfg.Network,
-	})
-
-	orchestrator, err := job.NewOrchestrator(server.NewJobEmitter(queue, metrics), factory)
+	cfg.SidecarImage = svcCfg.JobSidecarImage
+	emitter := &job.CallbackEmitter{}
+	server.RegisterJobListeners(emitter, queue, metrics)
+	orchestrator, err := jobdocker.NewOrchestrator(cfg, emitter)
 	if err != nil {
 		return nil, err
 	}
-	if counter, ok := orchestrator.(interface{ ActiveJobs() int64 }); ok {
-		if err := metrics.ObserveInt64("jobs_active",
-			"Jobs currently in flight on this replica (saturation)",
-			counter.ActiveJobs,
-		); err != nil {
-			return nil, err
-		}
+	if err := metrics.ObserveInt64("jobs_active",
+		"Jobs currently in flight on this replica (saturation)",
+		orchestrator.ActiveJobs,
+	); err != nil {
+		return nil, err
 	}
 	if err := orchestrator.Start(ctx); err != nil {
 		return nil, err
 	}
 
-	plane := &jobsPlane{
+	return &jobsPlane{
 		orchestrator: orchestrator,
 		service:      job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), svcCfg.APIKey),
-	}
-	if emitter, ok := orchestrator.(api.ArtifactEmitter); ok {
-		plane.artifacts = emitter
-	}
-	return plane, nil
+		callbacks:    emitter,
+	}, nil
 }
 
 // deploymentsPlane is the serving plane plus its in-process data plane.

@@ -17,35 +17,18 @@ const (
 
 // Config holds configuration for the in-memory dispatcher.
 type Config struct {
-	BufferSize      int           // pending events buffer (default: 10000)
-	Workers         int           // concurrent delivery goroutines (default: 10)
-	HTTPTimeout     time.Duration // per-request timeout (default: 10s)
-	BreakerCooldown time.Duration // circuit breaker cooldown before retry (default: 30s)
+	BufferSize      int           // pending events buffer
+	Workers         int           // concurrent delivery goroutines
+	HTTPTimeout     time.Duration // per-request timeout
+	BreakerCooldown time.Duration // circuit breaker cooldown before retry
 }
 
 // LoadConfigFromEnv loads dispatcher configuration from environment variables.
 func LoadConfigFromEnv() Config {
-	cfg := Config{
-		BufferSize:  config.GetIntEnv("DISPATCHER_BUFFER_SIZE", 10000),
-		Workers:     config.GetIntEnv("DISPATCHER_WORKERS", 10),
-		HTTPTimeout: config.GetDurationEnv("DISPATCHER_HTTP_TIMEOUT", 10*time.Second),
+	return Config{
+		BufferSize:      config.GetIntEnv("DISPATCHER_BUFFER_SIZE", 10000),
+		Workers:         config.GetIntEnv("DISPATCHER_WORKERS", 10),
+		HTTPTimeout:     config.GetDurationEnv("DISPATCHER_HTTP_TIMEOUT", 10*time.Second),
+		BreakerCooldown: defaultBreakerCooldown,
 	}
-	return cfg.withDefaults()
-}
-
-// withDefaults fills in zero values with defaults.
-func (c Config) withDefaults() Config {
-	if c.BufferSize <= 0 {
-		c.BufferSize = 10000
-	}
-	if c.Workers <= 0 {
-		c.Workers = 10
-	}
-	if c.HTTPTimeout <= 0 {
-		c.HTTPTimeout = 10 * time.Second
-	}
-	if c.BreakerCooldown <= 0 {
-		c.BreakerCooldown = defaultBreakerCooldown
-	}
-	return c
 }

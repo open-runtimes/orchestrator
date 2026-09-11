@@ -7,7 +7,7 @@ import (
 )
 
 func TestEmitCallback_Started_EmitsStartEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -19,7 +19,7 @@ func TestEmitCallback_Started_EmitsStartEvent(t *testing.T) {
 }
 
 func TestEmitCallback_Started_NilDest_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -31,7 +31,7 @@ func TestEmitCallback_Started_NilDest_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_Started_FilteredOut_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -43,7 +43,7 @@ func TestEmitCallback_Started_FilteredOut_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_Exited_EmitsExitEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -55,7 +55,7 @@ func TestEmitCallback_Exited_EmitsExitEvent(t *testing.T) {
 }
 
 func TestEmitCallback_Exited_ReasonInPayload(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -67,7 +67,7 @@ func TestEmitCallback_Exited_ReasonInPayload(t *testing.T) {
 }
 
 func TestEmitCallback_Exited_NoReason_OmitsField(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -83,7 +83,7 @@ func TestEmitCallback_Exited_NoReason_OmitsField(t *testing.T) {
 
 func TestEmitCallback_Exited_NilDest_StillEmits(t *testing.T) {
 	// Exit events are always emitted even without a callback dest (no URL though).
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -98,7 +98,7 @@ func TestEmitCallback_Exited_NilDest_StillEmits(t *testing.T) {
 }
 
 func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -113,7 +113,7 @@ func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
 }
 
 func TestEmitCallback_Completed_EmitsCompleteEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -125,7 +125,7 @@ func TestEmitCallback_Completed_EmitsCompleteEvent(t *testing.T) {
 }
 
 func TestEmitCallback_Completed_NilDest_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -137,7 +137,7 @@ func TestEmitCallback_Completed_NilDest_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_Completed_FilteredOut_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -149,7 +149,7 @@ func TestEmitCallback_Completed_FilteredOut_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_LogLine_EmitsLogEvent(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -161,7 +161,7 @@ func TestEmitCallback_LogLine_EmitsLogEvent(t *testing.T) {
 }
 
 func TestEmitCallback_LogLine_NilDest_NoEmit(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -173,7 +173,7 @@ func TestEmitCallback_LogLine_NilDest_NoEmit(t *testing.T) {
 }
 
 func TestEmitCallback_CallbackURLAndKey_Propagated(t *testing.T) {
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var captured []*CallbackEnvelope
 	em.Register(func(e *CallbackEnvelope) { captured = append(captured, e) })
 
@@ -193,7 +193,7 @@ func TestApplyThenEmitCallback_FSMUpdatedBeforeCallback(t *testing.T) {
 	_ = store.Reserve("job-1")
 	store.Commit("job-1", struct{}{}, nil)
 
-	em := NewCallbackEmitter()
+	em := &CallbackEmitter{}
 	var stateAtCallback string
 	em.Register(func(e *CallbackEnvelope) {
 		if e.Payload.Type == CallbackTypeStart {
@@ -223,7 +223,7 @@ func TestExitErrorCodes(t *testing.T) {
 		{"setup failed", Failed{Reason: "init container failed"}, "job_failed", -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			em := NewCallbackEmitter()
+			em := &CallbackEmitter{}
 			var events []*CallbackEnvelope
 			em.Register(func(e *CallbackEnvelope) { events = append(events, e) })
 			EmitCallback(em, "job", "alpine", &CallbackDest{URL: "http://callback"}, tc.signal)

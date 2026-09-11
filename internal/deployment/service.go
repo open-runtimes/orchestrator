@@ -102,9 +102,7 @@ func (s *Service) Apply(ctx context.Context, req *Request) (*StatusResponse, boo
 		return nil, false, err
 	}
 	logger.Info("Deployment applied", "hosts", req.Hosts, "created", created)
-	if s.metrics != nil {
-		s.metrics.RecordDeploymentApplied(ctx, created)
-	}
+	s.metrics.RecordDeploymentApplied(ctx, created)
 
 	status, err := s.Get(ctx, req.ID)
 	return status, created, err

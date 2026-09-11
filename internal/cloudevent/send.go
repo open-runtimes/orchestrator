@@ -32,14 +32,9 @@ func NewSender(timeout time.Duration) *Sender {
 	}
 }
 
-// SendOptions controls how a CloudEvent is sent.
-type SendOptions struct {
-	SigningKey string // HMAC key for signing
-	Signature  string // Pre-computed signature (takes precedence over SigningKey)
-}
-
-// Send delivers a CloudEvent via HTTP POST.
-func (s *Sender) Send(ctx context.Context, url string, event *Event, opts SendOptions) error {
+// Send delivers a CloudEvent via HTTP POST. signingKey, when set, adds an
+// HMAC-SHA256 signature of the body in X-Signature-256.
+func (s *Sender) Send(ctx context.Context, url string, event *Event, signingKey string) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
@@ -59,12 +54,8 @@ func (s *Sender) Send(ctx context.Context, url string, event *Event, opts SendOp
 	req.Header.Set("Ce-Id", event.ID)
 	req.Header.Set("Ce-Time", event.Time.Format(time.RFC3339))
 
-	// HMAC signature - pre-computed takes precedence
-	if opts.Signature != "" {
-		req.Header.Set("X-Signature-256", opts.Signature)
-	} else if opts.SigningKey != "" {
-		signature := generateSignature(body, opts.SigningKey)
-		req.Header.Set("X-Signature-256", signature)
+	if signingKey != "" {
+		req.Header.Set("X-Signature-256", generateSignature(body, signingKey))
 	}
 
 	resp, err := s.client.Do(req)
@@ -78,15 +69,6 @@ func (s *Sender) Send(ctx context.Context, url string, event *Event, opts SendOp
 	}
 
 	return &HTTPError{StatusCode: resp.StatusCode}
-}
-
-// Sign computes HMAC-SHA256 signature for a CloudEvent.
-func Sign(event *Event, key string) (string, error) {
-	body, err := json.Marshal(event)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal event: %w", err)
-	}
-	return generateSignature(body, key), nil
 }
 
 // generateSignature generates HMAC-SHA256 signature.

@@ -7,7 +7,7 @@ import (
 
 func TestEventEmitter_NoListeners(t *testing.T) {
 	t.Parallel()
-	emitter := NewCallbackEmitter()
+	emitter := &CallbackEmitter{}
 
 	// Should not panic
 	emitter.Emit(&CallbackEnvelope{
@@ -18,7 +18,7 @@ func TestEventEmitter_NoListeners(t *testing.T) {
 
 func TestEventEmitter_SingleListener(t *testing.T) {
 	t.Parallel()
-	emitter := NewCallbackEmitter()
+	emitter := &CallbackEmitter{}
 
 	var received []*CallbackEnvelope
 	emitter.Register(func(e *CallbackEnvelope) { received = append(received, e) })
@@ -46,7 +46,7 @@ func TestEventEmitter_SingleListener(t *testing.T) {
 
 func TestEventEmitter_MultipleListeners(t *testing.T) {
 	t.Parallel()
-	emitter := NewCallbackEmitter()
+	emitter := &CallbackEmitter{}
 
 	var a, b []*CallbackEnvelope
 	emitter.Register(func(e *CallbackEnvelope) { a = append(a, e) })

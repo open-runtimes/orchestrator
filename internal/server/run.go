@@ -15,21 +15,11 @@ import (
 	"orchestrator/internal/observability"
 )
 
-// activeCounter is the optional surface a backend implements to report its live
-// in-flight job count. Run registers it as the jobs_active async gauge, which is
-// why the count must be derived from live state rather than tallied: a +1/-1
-// pair split across a create request and an exit callback drifts on every
-// restart and every leadership handover.
-type activeCounter interface {
-	ActiveJobs() int64
-}
-
-// NewJobEmitter builds the job callback emitter: it forwards every job event
-// with a callback URL to the dispatcher, and records the completion metrics off
-// the exit event. Exported because the all-in-one orchestrator binary wires the
-// jobs plane itself, and this is the part that must not drift between them.
-func NewJobEmitter(queue dispatcher.Queue, metrics *observability.Metrics) *job.CallbackEmitter {
-	emitter := job.NewCallbackEmitter()
+// RegisterJobListeners wires the job callback emitter: every job event with a
+// callback URL goes to the dispatcher, and the completion metrics are recorded
+// off the exit event. Exported because the all-in-one orchestrator binary wires
+// the jobs plane itself, and this is the part that must not drift between them.
+func RegisterJobListeners(emitter *job.CallbackEmitter, queue dispatcher.Queue, metrics *observability.Metrics) {
 	emitter.Register(func(e *job.CallbackEnvelope) {
 		if e.CallbackURL == "" {
 			return
@@ -47,25 +37,22 @@ func NewJobEmitter(queue dispatcher.Queue, metrics *observability.Metrics) *job.
 			metrics.RecordJobCompleted(context.Background(), exit.Image, exit.ExitCode == 0, exit.DurationSeconds)
 		}
 	})
-	return emitter
 }
 
-// Run bootstraps the orchestrator service against the supplied backend factory
-// and blocks until SIGINT/SIGTERM or a server error. It returns nil on a clean
-// shutdown.
+// Run bootstraps the jobs service around orchestrator and blocks until
+// SIGINT/SIGTERM or a server error. It returns nil on a clean shutdown.
 //
-// The factory provides the chosen backend (Docker, Kubernetes, or any other
-// implementation of job.Orchestrator). metrics must be the same instance the
-// factory was built against so recorders on both sides share the same meter.
-// Config is loaded from environment variables by the various internal
-// packages; add attributes to slog.Default before calling Run if you want
-// them attached to every log line.
-func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observability.Metrics) error {
+// emitter is the one the backend was built with; Run registers its listeners
+// before Start. metrics must be the same instance the backend was built
+// against so recorders on both sides share the same meter. Config is loaded
+// from environment variables by the various internal packages; add attributes
+// to slog.Default before calling Run if you want them attached to every log
+// line.
+func Run(ctx context.Context, orchestrator job.Orchestrator, emitter *job.CallbackEmitter, metrics *observability.Metrics) error {
 	svcCfg := config.LoadServiceConfig()
-	dispatcherCfg := dispatcher.LoadConfigFromEnv()
 
-	eventDispatcher := dispatcher.NewMemory(dispatcherCfg, metrics)
-	emitter := NewJobEmitter(eventDispatcher, metrics)
+	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
+	RegisterJobListeners(emitter, eventDispatcher, metrics)
 
 	if err := metrics.ObserveInt64("dispatcher_queue_size",
 		"Current number of events in dispatcher queue (saturation)",
@@ -74,19 +61,13 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 		return err
 	}
 
-	orchestrator, err := job.NewOrchestrator(emitter, factory)
-	if err != nil {
-		return err
-	}
 	defer orchestrator.Close()
 
-	if counter, ok := orchestrator.(activeCounter); ok {
-		if err := metrics.ObserveInt64("jobs_active",
-			"Jobs currently in flight on this replica (saturation)",
-			counter.ActiveJobs,
-		); err != nil {
-			return err
-		}
+	if err := metrics.ObserveInt64("jobs_active",
+		"Jobs currently in flight on this replica (saturation)",
+		orchestrator.ActiveJobs,
+	); err != nil {
+		return err
 	}
 
 	if err := orchestrator.Start(ctx); err != nil {
@@ -97,16 +78,13 @@ func Run(ctx context.Context, factory job.OrchestratorFactory, metrics *observab
 	healthChecker := health.NewChecker(orchestrator)
 	jobService := job.NewService(orchestrator, metrics, artifact.DefaultRegistry(), svcCfg.APIKey)
 
-	routerCfg := api.RouterConfig{
+	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
 		JobService:    jobService,
+		JobCallbacks:  emitter,
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
 		APIKey:        svcCfg.APIKey,
-	}
-	if ae, ok := orchestrator.(api.ArtifactEmitter); ok {
-		routerCfg.ArtifactEmitter = ae
-	}
-	router := api.NewRouter(routerCfg)
+	})
 
 	if svcCfg.APIKey != "" {
 		slog.Info("API authentication enabled")
