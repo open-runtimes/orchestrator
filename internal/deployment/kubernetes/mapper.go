@@ -40,9 +40,6 @@ const (
 
 	VolumeWorkspace = "workspace"
 	VolumeTmp       = "tmp"
-	// workspacePath is the default shared-volume mount path when a request
-	// does not set req.Workspace.
-	workspacePath = config.DefaultWorkspace
 
 	portNameProxy = "proxy"
 	portNameAdmin = "admin"

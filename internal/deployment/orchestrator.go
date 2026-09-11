@@ -13,7 +13,7 @@ import (
 // The backend is the source of truth — Status, List, Spec, and Endpoints
 // derive from it live, so any replica can serve any request and a restart
 // loses nothing.
-type Orchestrator interface {
+type Orchestrator interface { //nolint:interfacebloat // the whole backend contract; two implementations
 	// Start reconciles pre-existing deployments and begins maintenance.
 	Start(ctx context.Context) error
 

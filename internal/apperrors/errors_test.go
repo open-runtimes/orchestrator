@@ -37,7 +37,6 @@ func TestNotFound(t *testing.T) {
 	if err.Error() != "job abc123 not found" {
 		t.Errorf("expected message 'job abc123 not found', got %q", err.Error())
 	}
-
 }
 
 func TestConflict(t *testing.T) {
@@ -50,7 +49,6 @@ func TestConflict(t *testing.T) {
 	if err.Error() != "job already exists" {
 		t.Errorf("expected message 'job already exists', got %q", err.Error())
 	}
-
 }
 
 func TestExhausted(t *testing.T) {
@@ -63,7 +61,6 @@ func TestExhausted(t *testing.T) {
 	if err.Error() != "pool std has no free warm pod" {
 		t.Errorf("expected message 'pool std has no free warm pod', got %q", err.Error())
 	}
-
 }
 
 func TestInternal(t *testing.T) {

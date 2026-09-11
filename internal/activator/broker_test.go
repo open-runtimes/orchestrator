@@ -229,7 +229,7 @@ func TestBrokerAsyncDeliversResponseCallback(t *testing.T) {
 		t.Errorf("callback carried %v %q, want 201 done", data.StatusCode, data.Body)
 	}
 	if data.BodyTruncated {
-		t.Errorf("bodyTruncated = true, want false")
+		t.Error("bodyTruncated = true, want false")
 	}
 	if data.DurationSeconds <= 0 {
 		t.Errorf("durationSeconds = %v, want a positive number", data.DurationSeconds)
@@ -329,7 +329,7 @@ func TestBrokerAsyncBoundsRequestPath(t *testing.T) {
 		t.Errorf("requestPath length = %d, want %d", len(got), maxEchoedPathBytes)
 	}
 	if !data.RequestPathTruncated {
-		t.Errorf("requestPathTruncated = false, want true")
+		t.Error("requestPathTruncated = false, want true")
 	}
 }
 
@@ -378,7 +378,7 @@ func TestBrokerAsyncCallbackTruncatesLargeBody(t *testing.T) {
 
 	data := waitEvent(t, queue)
 	if !data.BodyTruncated {
-		t.Errorf("bodyTruncated = false, want true")
+		t.Error("bodyTruncated = false, want true")
 	}
 	if got := len(data.Body); got != maxCallbackResponseBody {
 		t.Errorf("body length = %d, want %d", got, maxCallbackResponseBody)
