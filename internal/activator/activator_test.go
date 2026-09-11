@@ -9,6 +9,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/dispatcher"
+	"orchestrator/internal/testutil"
 	"slices"
 	"strings"
 	"sync"
@@ -259,15 +260,15 @@ func TestAsync_AcceptsAndDeliversCallback(t *testing.T) {
 	if event.Payload.Type != "orchestrator.deployment.response" {
 		t.Fatalf("event type = %q", event.Payload.Type)
 	}
-	data := event.Payload.Data.(ResponseData)
-	if data.InvocationID != invocationID {
-		t.Fatalf("invocationId mismatch: %v vs %s", data.InvocationID, invocationID)
+	data := testutil.WireData(t, event.Payload)
+	if data["invocationId"] != invocationID {
+		t.Fatalf("invocationId mismatch: %v vs %s", data["invocationId"], invocationID)
 	}
-	if data.StatusCode != http.StatusCreated {
-		t.Fatalf("statusCode = %v, want 201", data.StatusCode)
+	if data["statusCode"] != float64(http.StatusCreated) {
+		t.Fatalf("statusCode = %v, want 201", data["statusCode"])
 	}
-	if data.Body != "done" {
-		t.Fatalf("body = %v, want done", data.Body)
+	if data["body"] != "done" {
+		t.Fatalf("body = %v, want done", data["body"])
 	}
 }
 
@@ -291,11 +292,12 @@ func TestAsync_ResponseTruncatedAtCap(t *testing.T) {
 	}
 
 	event := queue.last()
-	data := event.Payload.Data.(ResponseData)
-	if len(data.Body) != maxCallbackResponseBody {
-		t.Fatalf("body length = %d, want %d", len(data.Body), maxCallbackResponseBody)
+	data := testutil.WireData(t, event.Payload)
+	body, _ := data["body"].(string)
+	if len(body) != maxCallbackResponseBody {
+		t.Fatalf("body length = %d, want %d", len(body), maxCallbackResponseBody)
 	}
-	if !data.BodyTruncated {
+	if truncated, _ := data["bodyTruncated"].(bool); !truncated {
 		t.Fatal("expected bodyTruncated = true")
 	}
 }

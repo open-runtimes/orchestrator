@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
+	"orchestrator/internal/testutil"
 	"testing"
 )
 
@@ -370,9 +371,9 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 
 func TestHandler_ReportArtifact(t *testing.T) {
 	t.Parallel()
-	var reports []job.ArtifactData
+	var reports []map[string]any
 	callbacks := &job.CallbackEmitter{}
-	callbacks.Register(func(e *job.CallbackEnvelope) { reports = append(reports, e.Payload.Data.(job.ArtifactData)) })
+	callbacks.Register(func(e *job.CallbackEnvelope) { reports = append(reports, testutil.WireData(t, e.Payload)) })
 	handler := &Handler{callbacks: callbacks}
 
 	report := job.ArtifactReport{
@@ -397,14 +398,14 @@ func TestHandler_ReportArtifact(t *testing.T) {
 		t.Fatalf("Expected 1 report, got %d", len(reports))
 	}
 	r := reports[0]
-	if r.JobID != "job-123" {
-		t.Errorf("Expected JobID 'job-123', got %q", r.JobID)
+	if r["jobId"] != "job-123" {
+		t.Errorf("Expected jobId 'job-123', got %v", r["jobId"])
 	}
-	if r.ArtifactID != "a1" {
-		t.Errorf("Expected ArtifactID 'a1', got %q", r.ArtifactID)
+	if r["artifactId"] != "a1" {
+		t.Errorf("Expected artifactId 'a1', got %v", r["artifactId"])
 	}
-	if r.Status != "success" {
-		t.Errorf("Expected Status 'success', got %q", r.Status)
+	if r["status"] != "success" {
+		t.Errorf("Expected status 'success', got %v", r["status"])
 	}
 }
 

@@ -1,6 +1,7 @@
 package job
 
 import (
+	"orchestrator/internal/testutil"
 	"strings"
 	"testing"
 	"unicode"
@@ -15,11 +16,24 @@ func assertSentence(t *testing.T, message, mentions string) {
 	}
 }
 
-func artifactEventData(t *testing.T, r *ArtifactReport) ArtifactData {
+// artifactEventData is the artifact callback as a subscriber sees it.
+func artifactEventData(t *testing.T, r *ArtifactReport) map[string]any {
 	t.Helper()
 
 	r.JobID = "job-1"
-	return ArtifactEvent(r).Data.(ArtifactData)
+	return testutil.WireData(t, ArtifactEvent(r))
+}
+
+// failure reads the error object of a callback.
+func failure(t *testing.T, data map[string]any) (code, message string) {
+	t.Helper()
+	f, ok := data["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("no error object in %v", data)
+	}
+	code, _ = f["code"].(string)
+	message, _ = f["message"].(string)
+	return code, message
 }
 
 // The artifact endpoint and the callback subscriber see the same report, so a
@@ -33,11 +47,11 @@ func TestBuildArtifactEventCarriesClassification(t *testing.T) {
 		Compression: "lz4",
 	})
 
-	if data.Format != "squashfs" {
-		t.Errorf("format = %v, want squashfs", data.Format)
+	if data["format"] != "squashfs" {
+		t.Errorf("format = %v, want squashfs", data["format"])
 	}
-	if data.Compression != "lz4" {
-		t.Errorf("compression = %v, want lz4", data.Compression)
+	if data["compression"] != "lz4" {
+		t.Errorf("compression = %v, want lz4", data["compression"])
 	}
 }
 
@@ -50,8 +64,10 @@ func TestBuildArtifactEventOmitsUnknownClassification(t *testing.T) {
 		Status: "success",
 	})
 
-	if data.Format != "" || data.Compression != "" {
-		t.Errorf("format/compression = %q/%q, want omitted", data.Format, data.Compression)
+	for _, key := range []string{"format", "compression"} {
+		if v, ok := data[key]; ok {
+			t.Errorf("%s present as %v, want omitted", key, v)
+		}
 	}
 }
 
@@ -73,12 +89,13 @@ func TestBuildArtifactEventReportsFailureCode(t *testing.T) {
 				ID: "extract", Type: "unarchive", Status: "failed",
 				FailureReason: tc.reason, FailureMessage: tc.message,
 			})
-			if data.Error == nil || data.Error.Code != tc.code || data.Status != "failed" {
-				t.Fatalf("unexpected failure callback: %#v", data)
+			code, message := failure(t, data)
+			if code != tc.code || data["status"] != "failed" {
+				t.Fatalf("unexpected failure callback: %v", data)
 			}
-			assertSentence(t, data.Error.Message, tc.mentions)
-			if strings.Contains(data.Error.Message, "token=secret") {
-				t.Errorf("legacy diagnostic reached the wire: %q", data.Error.Message)
+			assertSentence(t, message, tc.mentions)
+			if strings.Contains(message, "token=secret") {
+				t.Errorf("legacy diagnostic reached the wire: %q", message)
 			}
 		})
 	}
@@ -87,13 +104,15 @@ func TestBuildArtifactEventReportsFailureCode(t *testing.T) {
 func TestBuildArtifactEventOmitsAbsentOptionalFields(t *testing.T) {
 	data := artifactEventData(t, &ArtifactReport{ID: "code", Type: "download", Status: "success"})
 
-	if data.Error != nil || data.Content != nil {
-		t.Errorf("error/content = %v/%v, want omitted", data.Error, data.Content)
+	for _, key := range []string{"error", "content"} {
+		if v, ok := data[key]; ok {
+			t.Errorf("%s present as %v, want omitted", key, v)
+		}
 	}
-	if data.ArtifactID != "code" {
-		t.Errorf("artifactId = %v, want code", data.ArtifactID)
+	if data["artifactId"] != "code" {
+		t.Errorf("artifactId = %v, want code", data["artifactId"])
 	}
-	if data.JobID != "job-1" {
-		t.Errorf("jobId = %v, want job-1", data.JobID)
+	if data["jobId"] != "job-1" {
+		t.Errorf("jobId = %v, want job-1", data["jobId"])
 	}
 }

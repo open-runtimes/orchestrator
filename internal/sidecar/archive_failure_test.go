@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
+	"orchestrator/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,7 +64,7 @@ func TestArchiveFailureCallback(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			events := make(chan job.ArtifactData, 2)
+			events := make(chan map[string]any, 2)
 			endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				var report job.ArtifactReport
 				if err := json.NewDecoder(req.Body).Decode(&report); err != nil {
@@ -71,7 +72,7 @@ func TestArchiveFailureCallback(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				events <- job.ArtifactEvent(&report).Data.(job.ArtifactData)
+				events <- testutil.WireData(t, job.ArtifactEvent(&report))
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer endpoint.Close()
@@ -86,8 +87,10 @@ func TestArchiveFailureCallback(t *testing.T) {
 			}
 			select {
 			case data := <-events:
-				if data.Status != "failed" || data.ArtifactID != "extract" || data.ArtifactType != "unarchive" || data.Error == nil ||
-					data.Error.Code != tc.code || data.Error.Message == "" || !strings.Contains(data.Error.Message, tc.mentions) {
+				failure, _ := data["error"].(map[string]any)
+				message, _ := failure["message"].(string)
+				if data["status"] != "failed" || data["artifactId"] != "extract" || data["artifactType"] != "unarchive" ||
+					failure["code"] != tc.code || message == "" || !strings.Contains(message, tc.mentions) {
 					t.Fatalf("failure detail was lost across the sidecar HTTP report and callback: %#v", data)
 				}
 			default:

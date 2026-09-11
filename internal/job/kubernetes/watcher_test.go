@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/job"
+	"orchestrator/internal/testutil"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -163,8 +164,9 @@ func TestJobTracker_OOMKilledWorker_ExitCarriesReason(t *testing.T) {
 
 	var reasons []string
 	w.emitter.Register(func(e *job.CallbackEnvelope) {
-		if exit, ok := e.Payload.Data.(job.ExitData); ok {
-			reasons = append(reasons, exit.Reason)
+		if e.Payload.Type == job.CallbackTypeExit {
+			reason, _ := testutil.WireData(t, e.Payload)["reason"].(string)
+			reasons = append(reasons, reason)
 		}
 	})
 
@@ -392,8 +394,9 @@ func TestJobTracker_InitFailureBeforeWorkerRan(t *testing.T) {
 
 	var reasons []string
 	w.emitter.Register(func(e *job.CallbackEnvelope) {
-		if exit, ok := e.Payload.Data.(job.ExitData); ok {
-			reasons = append(reasons, exit.Reason)
+		if e.Payload.Type == job.CallbackTypeExit {
+			reason, _ := testutil.WireData(t, e.Payload)["reason"].(string)
+			reasons = append(reasons, reason)
 		}
 	})
 
@@ -480,8 +483,10 @@ func TestJobTracker_FastFailureDrainsDelayedLogs(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				events = append(events, e.Payload.Type)
-				if log, ok := e.Payload.Data.(job.LogData); ok {
-					lines = append(lines, log.Lines...)
+				if e.Payload.Type == job.CallbackTypeLog {
+					for _, l := range testutil.WireData(t, e.Payload)["lines"].([]any) {
+						lines = append(lines, l.(string))
+					}
 				}
 			})
 			watcher := newK8sLifecycleWatcher(client, "test", emitter, time.Second)

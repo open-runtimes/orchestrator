@@ -1,6 +1,7 @@
 package job
 
 import (
+	"orchestrator/internal/testutil"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestEmitCallback_Exited_ReasonInPayload(t *testing.T) {
 
 	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb"}, Exited{ExitCode: 137, Reason: ExitReasonOOM})
 
-	if len(captured) != 1 || captured[0].Payload.Data.(ExitData).Reason != ExitReasonOOM {
+	if len(captured) != 1 || testutil.WireData(t, captured[0].Payload)["reason"] != ExitReasonOOM {
 		t.Errorf("want exit event with reason %q, got %v", ExitReasonOOM, captured)
 	}
 }
@@ -76,8 +77,8 @@ func TestEmitCallback_Exited_NoReason_OmitsField(t *testing.T) {
 	if len(captured) != 1 {
 		t.Fatalf("want 1 exit event, got %v", captured)
 	}
-	if reason := captured[0].Payload.Data.(ExitData).Reason; reason != "" {
-		t.Errorf("want reason omitted when empty, got %q", reason)
+	if reason, ok := testutil.WireData(t, captured[0].Payload)["reason"]; ok {
+		t.Errorf("want reason omitted when empty, got %v", reason)
 	}
 }
 
@@ -104,11 +105,15 @@ func TestEmitCallback_Failed_EmitsExitWithNegativeCode(t *testing.T) {
 
 	EmitCallback(em, "job-1", "alpine", &CallbackDest{URL: "http://example.com/cb", Key: "secret"}, Failed{Reason: "sidecar died"})
 
-	if len(captured) != 1 || captured[0].Payload.Data.(ExitData).ExitCode != -1 {
-		t.Errorf("want exit event with code -1, got %v", captured)
+	if len(captured) != 1 {
+		t.Fatalf("want 1 exit event, got %v", captured)
 	}
-	if reason := captured[0].Payload.Data.(ExitData).Reason; reason != "sidecar died" {
-		t.Errorf("want failure reason on the exit event, got %v", reason)
+	data := testutil.WireData(t, captured[0].Payload)
+	if data["exitCode"] != float64(-1) {
+		t.Errorf("want exit event with code -1, got %v", data["exitCode"])
+	}
+	if data["reason"] != "sidecar died" {
+		t.Errorf("want failure reason on the exit event, got %v", data["reason"])
 	}
 }
 
@@ -230,14 +235,15 @@ func TestExitErrorCodes(t *testing.T) {
 			if len(events) != 1 {
 				t.Fatalf("callbacks = %d", len(events))
 			}
-			data := events[0].Payload.Data.(ExitData)
-			if data.Error == nil || data.Error.Code != tc.code || data.ExitCode != tc.exit {
-				t.Fatalf("callback = %#v", data)
+			data := testutil.WireData(t, events[0].Payload)
+			code, message := failure(t, data)
+			if code != tc.code || data["exitCode"] != float64(tc.exit) {
+				t.Fatalf("callback = %v", data)
 			}
 			// The message speaks of the job; the backend's reason stays in reason.
-			assertSentence(t, data.Error.Message, "Job")
-			if strings.Contains(data.Error.Message, "init container") {
-				t.Errorf("backend vocabulary reached the message: %q", data.Error.Message)
+			assertSentence(t, message, "Job")
+			if strings.Contains(message, "init container") {
+				t.Errorf("backend vocabulary reached the message: %q", message)
 			}
 		})
 	}
