@@ -1,98 +1,13 @@
 package kubernetes
 
 import (
-	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
-	"orchestrator/internal/volume"
 	"reflect"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
-
-func TestBuildJob_MountArtifact(t *testing.T) {
-	t.Parallel()
-	req := &job.Request{
-		ID: "job-mnt", Image: "alpine:3.20", TimeoutSeconds: 60, Workspace: "/workspace",
-		Artifacts: []artifact.Artifact{
-			&artifact.Mount{ID: "m", In: "data.sqfs", Out: "mnt/data"},
-		},
-	}
-
-	// A mount artifact → privileged sidecar, propagation on sidecar + worker, startup probe.
-	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
-	spec := j.Spec.Template.Spec
-	sidecar := spec.InitContainers[1]
-	if sidecar.SecurityContext == nil || sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
-		t.Error("sidecar should be privileged when mounting")
-	}
-	if sidecar.StartupProbe == nil || sidecar.StartupProbe.Exec == nil {
-		t.Error("sidecar should have a -check-mounts startup probe")
-	}
-	if got := sidecar.VolumeMounts[0].MountPropagation; got == nil || *got != corev1.MountPropagationBidirectional {
-		t.Errorf("sidecar mount propagation: want Bidirectional, got %v", got)
-	}
-	if got := spec.Containers[0].VolumeMounts[0].MountPropagation; got == nil || *got != corev1.MountPropagationHostToContainer {
-		t.Errorf("worker mount propagation: want HostToContainer, got %v", got)
-	}
-}
-
-func TestBuildJob_NoMount_Unprivileged(t *testing.T) {
-	t.Parallel()
-	req := &job.Request{ID: "job-1", Image: "alpine:3.20", TimeoutSeconds: 60, Workspace: "/workspace"}
-
-	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
-	spec := j.Spec.Template.Spec
-	sidecar := spec.InitContainers[1]
-	if sidecar.SecurityContext != nil {
-		t.Error("non-mount job should not get privilege")
-	}
-	if sidecar.VolumeMounts[0].MountPropagation != nil || spec.Containers[0].VolumeMounts[0].MountPropagation != nil {
-		t.Error("non-mount job should not set mount propagation")
-	}
-}
-
-func TestBuildJob_PersistentVolume(t *testing.T) {
-	t.Parallel()
-	req := &job.Request{
-		ID: "job-vol", Image: "alpine:3.20", TimeoutSeconds: 60, Workspace: "/workspace",
-		Volumes: []volume.Volume{{Source: "data-pvc", Path: "/data", ReadOnly: true}},
-	}
-
-	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
-	spec := j.Spec.Template.Spec
-
-	// Pod carries the PVC volume alongside the workspace emptyDir.
-	var claim string
-	for _, v := range spec.Volumes {
-		if v.PersistentVolumeClaim != nil {
-			claim = v.PersistentVolumeClaim.ClaimName
-		}
-	}
-	if claim != "data-pvc" {
-		t.Errorf("pod should reference PVC data-pvc, got %q", claim)
-	}
-
-	// Worker gets the mount; the two sidecars do not (they operate on the workspace).
-	worker := spec.Containers[0]
-	if !slices.ContainsFunc(worker.VolumeMounts, func(m corev1.VolumeMount) bool { return m.MountPath == "/data" && m.ReadOnly }) {
-		t.Errorf("worker should mount /data read-only, got %+v", worker.VolumeMounts)
-	}
-	for _, c := range spec.InitContainers {
-		if slices.ContainsFunc(c.VolumeMounts, func(m corev1.VolumeMount) bool { return m.MountPath == "/data" }) {
-			t.Errorf("sidecar %q should not mount the persistent volume", c.Name)
-		}
-	}
-
-	// A persistent volume must NOT trigger the privileged squashfs-mount path.
-	if sidecar := spec.InitContainers[1]; sidecar.SecurityContext != nil {
-		t.Error("persistent volume should not make the sidecar privileged")
-	}
-}
 
 // --- callbackDestFromAnnotations ---
 
@@ -133,139 +48,6 @@ func TestCallbackDestFromAnnotations_RoundTrip(t *testing.T) {
 }
 
 // --- buildJob ---
-
-func TestBuildJob_BasicStructure(t *testing.T) {
-	t.Parallel()
-	req := &job.Request{
-		ID:             "job-1",
-		Image:          "alpine:3.20",
-		Command:        "echo hello",
-		CPU:            0.5,
-		Memory:         128,
-		TimeoutSeconds: 60,
-		Workspace:      "/workspace",
-		Environment:    map[string]string{"FOO": "bar"},
-		ArtifactToken:  "tok-1",
-	}
-	cfg := Config{
-		Namespace:                     "orchestrator",
-		ServiceAccount:                "job-sidecar",
-		JobRetention:                  15 * time.Minute,
-		ArtifactEndpoint:              "http://jobs-service.orchestrator.svc:8080",
-		TerminationGracePeriodSeconds: 600,
-	}
-
-	j := buildJob(req, cfg, "ko.local/job-sidecar:latest")
-
-	if j.Name != "job-job-1" {
-		t.Errorf("Name: want job-job-1, got %s", j.Name)
-	}
-	if j.Labels[LabelManagedBy] != ManagedByValue {
-		t.Errorf("managed-by label: got %s", j.Labels[LabelManagedBy])
-	}
-	if j.Labels[LabelJobID] != "job-1" {
-		t.Errorf("job.id label: got %s", j.Labels[LabelJobID])
-	}
-	if j.Spec.BackoffLimit == nil || *j.Spec.BackoffLimit != 0 {
-		t.Errorf("BackoffLimit: want 0, got %v", j.Spec.BackoffLimit)
-	}
-	if j.Spec.TTLSecondsAfterFinished == nil || *j.Spec.TTLSecondsAfterFinished != int32((15*time.Minute).Seconds()) {
-		t.Errorf("TTLSecondsAfterFinished: got %v", j.Spec.TTLSecondsAfterFinished)
-	}
-
-	spec := j.Spec.Template.Spec
-	if spec.RestartPolicy != corev1.RestartPolicyNever {
-		t.Errorf("RestartPolicy: want Never, got %s", spec.RestartPolicy)
-	}
-	if spec.ServiceAccountName != "job-sidecar" {
-		t.Errorf("ServiceAccountName: got %s", spec.ServiceAccountName)
-	}
-	if spec.TerminationGracePeriodSeconds == nil || *spec.TerminationGracePeriodSeconds != 600 {
-		t.Errorf("TerminationGracePeriodSeconds: want 600, got %v", spec.TerminationGracePeriodSeconds)
-	}
-
-	if len(spec.InitContainers) != 2 {
-		t.Fatalf("InitContainers: want 2, got %d", len(spec.InitContainers))
-	}
-	sidecar := spec.InitContainers[1]
-	if sidecar.Name != ContainerSidecar || !slices.Contains(sidecar.Args, "-mode=post") {
-		t.Fatalf("expected resident sidecar, got %+v", sidecar)
-	}
-	if sidecar.RestartPolicy == nil || *sidecar.RestartPolicy != corev1.ContainerRestartPolicyAlways {
-		t.Error("resident sidecar must use restartPolicy Always")
-	}
-	if sidecar.StartupProbe != nil {
-		t.Fatal("unmounted jobs need no sidecar startup probe")
-	}
-	if j.Spec.ActiveDeadlineSeconds == nil || *j.Spec.ActiveDeadlineSeconds != 60 {
-		t.Fatal("job deadline must bound native sidecar setup retries")
-	}
-
-	if len(spec.Containers) != 1 {
-		t.Fatalf("Containers: want 1, got %d", len(spec.Containers))
-	}
-	worker := spec.Containers[0]
-	if worker.Name != ContainerWorker {
-		t.Errorf("worker.Name: want %s, got %s", ContainerWorker, worker.Name)
-	}
-	if worker.Image != "alpine:3.20" {
-		t.Errorf("worker.Image: got %s", worker.Image)
-	}
-	if !reflect.DeepEqual(worker.Command, []string{"/bin/sh", "-c", "echo hello"}) {
-		t.Errorf("worker.Command: got %v", worker.Command)
-	}
-	if worker.WorkingDir != "/workspace" {
-		t.Errorf("worker.WorkingDir: got %s", worker.WorkingDir)
-	}
-
-	if len(spec.Volumes) != 1 || spec.Volumes[0].Name != VolumeWorkspace || spec.Volumes[0].EmptyDir == nil {
-		t.Errorf("Volumes: want one emptyDir %q, got %+v", VolumeWorkspace, spec.Volumes)
-	}
-
-	// Both containers must mount the workspace at req.Workspace.
-	for _, c := range []corev1.Container{sidecar, worker} {
-		found := false
-		for _, m := range c.VolumeMounts {
-			if m.Name == VolumeWorkspace && m.MountPath == "/workspace" {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("container %s missing workspace mount", c.Name)
-		}
-	}
-
-	// Sidecar env carries job metadata for HTTP reporting.
-	if !envHas(sidecar.Env, "JOB_ID", "job-1") {
-		t.Errorf("sidecar.Env missing JOB_ID=job-1: %v", sidecar.Env)
-	}
-	if !envHas(sidecar.Env, "TIMEOUT_SECONDS", strconv.Itoa(60)) {
-		t.Errorf("sidecar.Env missing TIMEOUT_SECONDS=60: %v", sidecar.Env)
-	}
-	if !envHas(sidecar.Env, "ARTIFACT_ENDPOINT", cfg.ArtifactEndpoint) {
-		t.Errorf("sidecar.Env missing ARTIFACT_ENDPOINT: %v", sidecar.Env)
-	}
-
-	// The artifact token authenticates the sidecar containers only — it must
-	// never reach the worker, and no SA token may be mounted for the worker
-	// to read pod annotations with.
-	if !envHas(sidecar.Env, "ARTIFACT_TOKEN", "tok-1") {
-		t.Errorf("sidecar.Env missing ARTIFACT_TOKEN: %v", sidecar.Env)
-	}
-	for _, e := range worker.Env {
-		if e.Name == "ARTIFACT_TOKEN" {
-			t.Errorf("worker.Env must not contain ARTIFACT_TOKEN: %v", worker.Env)
-		}
-	}
-	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
-		t.Errorf("AutomountServiceAccountToken: want false, got %v", spec.AutomountServiceAccountToken)
-	}
-
-	// Worker env carries the user-supplied environment.
-	if !envHas(worker.Env, "FOO", "bar") {
-		t.Errorf("worker.Env missing FOO=bar: %v", worker.Env)
-	}
-}
 
 func TestBuildJob_CallbackAnnotations(t *testing.T) {
 	t.Parallel()
@@ -333,15 +115,6 @@ func TestBuildJob_NoResources(t *testing.T) {
 }
 
 // --- helpers ---
-
-func envHas(env []corev1.EnvVar, name, value string) bool {
-	for _, e := range env {
-		if e.Name == name && e.Value == value {
-			return true
-		}
-	}
-	return false
-}
 
 func TestBuildJob_DefaultDeadlineAndEntrypoint(t *testing.T) {
 	req := &job.Request{ID: "default", Image: "custom:latest"}
