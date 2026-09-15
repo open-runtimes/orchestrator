@@ -44,14 +44,14 @@ POST /v1/jobs
 }
 ```
 
-On Kubernetes, one combined native sidecar prepares artifacts and mounts before
-its `-check-ready` startup probe admits the worker, then processes output artifacts
-when Kubernetes signals that the worker has exited. Mount jobs give this sidecar
-root and privileged access; jobs without mounts do not.
+On Kubernetes, a regular init container prepares input artifacts once. A failed
+preparation fails the Job without starting the worker or retrying until its deadline.
+A native sidecar establishes mounts before execution and processes outputs after
+SIGTERM when the worker exits. The Job deadline still bounds execution and mount retries.
 
 `timeoutSeconds` (default 1800) also sets the Kubernetes Job's active deadline,
-covering scheduling, setup, and execution. This bounds setup failures because a
-native sidecar restarts even with the Job's retry limit set to zero. At the deadline,
+covering scheduling, setup, and execution. This also bounds mount failures in the
+resident sidecar, which restarts even with the Job's retry limit set to zero. At the deadline,
 Kubernetes terminates the pod; shutdown processing is limited by its termination
 grace period. Workloads that need lengthy setup must include it in their timeout.
 

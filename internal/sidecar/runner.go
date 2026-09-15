@@ -360,8 +360,16 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 		}
 		mountCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
 		adopted, err := r.adoptExistingMounts(mounts)
-		if err == nil && !adopted {
-			err = r.establishMounts(mountCtx, mounts)
+		if err == nil {
+			if adopted {
+				for _, m := range mounts {
+					if m.Sync != "" {
+						r.startSync(m)
+					}
+				}
+			} else {
+				err = r.Mount(mountCtx, artifacts)
+			}
 		}
 		cancel()
 		if err != nil {
@@ -371,7 +379,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 		}
 		if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
 			logger.Error("Failed to write mounts-ready marker", "error", err)
-			return err
+			return errors.Join(err, r.Release())
 		}
 	}
 
@@ -388,7 +396,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
 
-	if err := r.unmountAll(); err != nil {
+	if err := r.Release(); err != nil {
 		return err
 	}
 	logger.Info("Sidecar post-mode completed")
