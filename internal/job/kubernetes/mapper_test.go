@@ -26,12 +26,12 @@ func TestBuildJob_MountArtifact(t *testing.T) {
 	// A mount artifact → privileged sidecar, propagation on sidecar + worker, startup probe.
 	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
 	spec := j.Spec.Template.Spec
-	sidecar := spec.InitContainers[0]
+	sidecar := spec.InitContainers[1]
 	if sidecar.SecurityContext == nil || sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
 		t.Error("sidecar should be privileged when mounting")
 	}
 	if sidecar.StartupProbe == nil || sidecar.StartupProbe.Exec == nil {
-		t.Error("sidecar should have a -check-ready startup probe")
+		t.Error("sidecar should have a -check-mounts startup probe")
 	}
 	if got := sidecar.VolumeMounts[0].MountPropagation; got == nil || *got != corev1.MountPropagationBidirectional {
 		t.Errorf("sidecar mount propagation: want Bidirectional, got %v", got)
@@ -47,7 +47,7 @@ func TestBuildJob_NoMount_Unprivileged(t *testing.T) {
 
 	j := buildJob(req, Config{Namespace: "orchestrator"}, "sidecar:latest")
 	spec := j.Spec.Template.Spec
-	sidecar := spec.InitContainers[0]
+	sidecar := spec.InitContainers[1]
 	if sidecar.SecurityContext != nil {
 		t.Error("non-mount job should not get privilege")
 	}
@@ -89,7 +89,7 @@ func TestBuildJob_PersistentVolume(t *testing.T) {
 	}
 
 	// A persistent volume must NOT trigger the privileged squashfs-mount path.
-	if sidecar := spec.InitContainers[0]; sidecar.SecurityContext != nil {
+	if sidecar := spec.InitContainers[1]; sidecar.SecurityContext != nil {
 		t.Error("persistent volume should not make the sidecar privileged")
 	}
 }
@@ -184,19 +184,18 @@ func TestBuildJob_BasicStructure(t *testing.T) {
 		t.Errorf("TerminationGracePeriodSeconds: want 600, got %v", spec.TerminationGracePeriodSeconds)
 	}
 
-	if len(spec.InitContainers) != 1 {
-		t.Fatalf("InitContainers: want 1, got %d", len(spec.InitContainers))
+	if len(spec.InitContainers) != 2 {
+		t.Fatalf("InitContainers: want 2, got %d", len(spec.InitContainers))
 	}
-	sidecar := spec.InitContainers[0]
-	if sidecar.Name != ContainerSidecar || !slices.Contains(sidecar.Args, "-mode=combined") {
-		t.Fatalf("expected combined sidecar, got %+v", sidecar)
+	sidecar := spec.InitContainers[1]
+	if sidecar.Name != ContainerSidecar || !slices.Contains(sidecar.Args, "-mode=post") {
+		t.Fatalf("expected resident sidecar, got %+v", sidecar)
 	}
 	if sidecar.RestartPolicy == nil || *sidecar.RestartPolicy != corev1.ContainerRestartPolicyAlways {
-		t.Error("combined sidecar must use restartPolicy Always")
+		t.Error("resident sidecar must use restartPolicy Always")
 	}
-	if sidecar.StartupProbe == nil || sidecar.StartupProbe.Exec == nil ||
-		!reflect.DeepEqual(sidecar.StartupProbe.Exec.Command, []string{"/ko-app/job-sidecar", "-check-ready"}) {
-		t.Fatal("worker must wait for artifacts and mounts, including jobs without mounts")
+	if sidecar.StartupProbe != nil {
+		t.Fatal("unmounted jobs need no sidecar startup probe")
 	}
 	if j.Spec.ActiveDeadlineSeconds == nil || *j.Spec.ActiveDeadlineSeconds != 60 {
 		t.Fatal("job deadline must bound native sidecar setup retries")
