@@ -353,34 +353,32 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 
 	// Establish mounts at startup, before signaling ready, so they exist when
 	// the worker starts. The startup probe gates the worker on the marker.
-	if len(mounts) > 0 {
-		logger.Info("Establishing artifact mounts")
-		if err := markerMountsReady.clear(r.sharedVolumePath); err != nil {
-			return err
-		}
-		mountCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
-		adopted, err := r.adoptExistingMounts(mounts)
-		if err == nil {
-			if adopted {
-				for _, m := range mounts {
-					if m.Sync != "" {
-						r.startSync(m)
-					}
+	logger.Info("Establishing artifact mounts")
+	if err := markerMountsReady.clear(r.sharedVolumePath); err != nil {
+		return err
+	}
+	mountCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
+	adopted, err := r.adoptExistingMounts(mounts)
+	if err == nil {
+		if adopted {
+			for _, m := range mounts {
+				if m.Sync != "" {
+					r.startSync(m)
 				}
-			} else {
-				err = r.Mount(mountCtx, artifacts)
 			}
+		} else {
+			err = r.Mount(mountCtx, artifacts)
 		}
-		cancel()
-		if err != nil {
-			cleanupErr := r.unmountAll() // roll back partially established mounts
-			logger.Error("Mount setup failed, aborting job", "error", err)
-			return errors.Join(fmt.Errorf("mount setup failed: %w", err), cleanupErr)
-		}
-		if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
-			logger.Error("Failed to write mounts-ready marker", "error", err)
-			return errors.Join(err, r.Release())
-		}
+	}
+	cancel()
+	if err != nil {
+		cleanupErr := r.unmountAll() // roll back partially established mounts
+		logger.Error("Mount setup failed, aborting job", "error", err)
+		return errors.Join(fmt.Errorf("mount setup failed: %w", err), cleanupErr)
+	}
+	if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
+		logger.Error("Failed to write mounts-ready marker", "error", err)
+		return errors.Join(err, r.Release())
 	}
 
 	logger.Info("Waiting for worker to finish")

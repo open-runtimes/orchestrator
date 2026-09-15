@@ -822,19 +822,19 @@ func TestIntegration_PreparationFailure(t *testing.T) {
 					t.Fatalf("worker ran despite failed preparation: %+v", cs)
 				}
 			}
-			failed := false
+			failedContainer := ""
 			for _, cs := range pod.Status.InitContainerStatuses {
 				if cs.RestartCount != 0 {
 					t.Fatalf("preparation restarted: %+v", cs)
 				}
 				if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
-					failed = true
+					failedContainer = cs.Name
 				}
 			}
-			if !failed {
+			if failedContainer == "" {
 				t.Fatal("no failed preparation container")
 			}
-			logs, err := o.client.CoreV1().Pods(testNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: "artifact-pre"}).DoRaw(t.Context())
+			logs, err := o.client.CoreV1().Pods(testNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: failedContainer}).DoRaw(t.Context())
 			if err != nil || !strings.Contains(string(logs), tc.code) {
 				t.Fatalf("missing original extraction error %s: %s (%v)", tc.code, logs, err)
 			}
