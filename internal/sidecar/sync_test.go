@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -436,5 +437,72 @@ func TestRestoreDelta_MakesTheRestoredTreeTheBaseline(t *testing.T) {
 	}
 	if got := store.writes("/session.tgz"); got != uploads {
 		t.Errorf("a session that changed nothing must not push: %d uploads, want %d", got, uploads)
+	}
+}
+
+// RunPost must preserve saved edits, keep syncing while the worker runs, and
+// flush its last edit before unmounting, including after a sidecar restart.
+func TestRunPost_SyncedMount(t *testing.T) {
+	for _, adopted := range []bool{false, true} {
+		name := "fresh"
+		if adopted {
+			name = "adopted"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := newObjectStore(t)
+			seed := filepath.Join(t.TempDir(), "saved.tgz")
+			createTarFile(t, seed, true, map[string]string{"notes.txt": "saved"})
+			body, err := os.ReadFile(seed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.put("/delta.tgz", body)
+			ws := t.TempDir()
+			target := filepath.Join(ws, "work")
+			upper := UpperDir(target)
+			createTarFile(t, filepath.Join(ws, "base.tgz"), true, map[string]string{"base.txt": "base"})
+			expected := "saved"
+			if adopted {
+				if err := os.MkdirAll(upper, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				expected = "local newer than saved"
+				write(t, filepath.Join(upper, "notes.txt"), expected)
+			}
+			m := &artifact.Mount{ID: "tree", In: "base.tgz", Out: "work", Writable: true,
+				Sync: store.url + "/delta.tgz", SyncIntervalSeconds: 1}
+			fake := &fakeMounter{active: map[string]bool{target: adopted}}
+			r := NewRunner("post", ws, 10, WithMounter(fake), WithSignalFunc(func(context.Context) {
+				got, err := os.ReadFile(filepath.Join(upper, "notes.txt"))
+				if err != nil || string(got) != expected {
+					t.Fatalf("worker sees %q (%v), want %q", got, err, expected)
+				}
+				write(t, filepath.Join(upper, "notes.txt"), "periodic edit")
+				testutil.MustWaitFor(t, func() bool { return store.writes("/delta.tgz") > 0 }, testutil.WithTimeout(5*time.Second))
+				write(t, filepath.Join(upper, "notes.txt"), "final edit")
+			}))
+			if err := r.RunPost(t.Context(), []artifact.Artifact{m}); err != nil {
+				t.Fatal(err)
+			}
+			store.mu.Lock()
+			saved := append([]byte(nil), store.objects["/delta.tgz"]...)
+			store.mu.Unlock()
+			check := t.TempDir()
+			if err := os.WriteFile(filepath.Join(check, "saved.tgz"), saved, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result := (&artifact.Unarchive{ID: "check", In: "saved.tgz", Out: "restored"}).Apply(t.Context(), check)
+			if result.Error != nil {
+				t.Fatal(result.Error)
+			}
+			got, err := os.ReadFile(filepath.Join(check, "restored", "notes.txt"))
+			if err != nil || string(got) != "final edit" {
+				t.Fatalf("persisted %q (%v), want final edit", got, err)
+			}
+			mounted, err := fake.IsMounted(target)
+			if err != nil || mounted {
+				t.Fatalf("mount remains after shutdown: %v (%v)", mounted, err)
+			}
+		})
 	}
 }

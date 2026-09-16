@@ -353,26 +353,32 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 
 	// Establish mounts at startup, before signaling ready, so they exist when
 	// the worker starts. The startup probe gates the worker on the marker.
-	if len(mounts) > 0 {
-		logger.Info("Establishing artifact mounts")
-		if err := markerMountsReady.clear(r.sharedVolumePath); err != nil {
-			return err
+	logger.Info("Establishing artifact mounts")
+	if err := markerMountsReady.clear(r.sharedVolumePath); err != nil {
+		return err
+	}
+	mountCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
+	adopted, err := r.adoptExistingMounts(mounts)
+	if err == nil {
+		if adopted {
+			for _, m := range mounts {
+				if m.Sync != "" {
+					r.startSync(m)
+				}
+			}
+		} else {
+			err = r.Mount(mountCtx, artifacts)
 		}
-		mountCtx, cancel := context.WithTimeout(context.Background(), r.phaseTimeout())
-		adopted, err := r.adoptExistingMounts(mounts)
-		if err == nil && !adopted {
-			err = r.establishMounts(mountCtx, mounts)
-		}
-		cancel()
-		if err != nil {
-			cleanupErr := r.unmountAll() // roll back partially established mounts
-			logger.Error("Mount setup failed, aborting job", "error", err)
-			return errors.Join(fmt.Errorf("mount setup failed: %w", err), cleanupErr)
-		}
-		if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
-			logger.Error("Failed to write mounts-ready marker", "error", err)
-			return err
-		}
+	}
+	cancel()
+	if err != nil {
+		cleanupErr := r.unmountAll() // roll back partially established mounts
+		logger.Error("Mount setup failed, aborting job", "error", err)
+		return errors.Join(fmt.Errorf("mount setup failed: %w", err), cleanupErr)
+	}
+	if err := markerMountsReady.write(r.sharedVolumePath); err != nil {
+		logger.Error("Failed to write mounts-ready marker", "error", err)
+		return errors.Join(err, r.Release())
 	}
 
 	logger.Info("Waiting for worker to finish")
@@ -388,7 +394,7 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 		logger.Warn("Post-job artifact processing failed", "error", err)
 	}
 
-	if err := r.unmountAll(); err != nil {
+	if err := r.Release(); err != nil {
 		return err
 	}
 	logger.Info("Sidecar post-mode completed")
