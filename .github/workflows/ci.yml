@@ -41,6 +41,9 @@ jobs:
       - name: Helm template (dev values)
         run: helm template orchestrator charts/orchestrator --namespace orchestrator --values hack/dev-values.yaml > /dev/null
 
+      - name: Validate node log collector configuration
+        run: bash hack/validate-log-collector.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

@@ -48,6 +48,48 @@ poolController:
     limits:
       memory: 128Mi
 
+# Node-local workload log shipping. One Grafana Alloy pod per selected Linux
+# node reads CRI files directly from /var/log/pods and exports OTLP/HTTP logs.
+# Disabled by default: enabling requires an OTLP endpoint.
+logCollector:
+  enabled: false
+  image:
+    ref: ""
+    repository: docker.io/grafana/alloy
+    tag: v1.19.2
+    pullPolicy: IfNotPresent
+  # Optional stable cluster identity attached to every record. Set this when
+  # one OTLP backend receives logs from more than one cluster.
+  clusterName: ""
+  otlp:
+    # Base OTLP/HTTP URL; Alloy appends /v1/logs.
+    endpoint: ""
+    # Optional existing Secret in the release namespace. Its selected value is
+    # sent verbatim as the Authorization header; credentials never enter the
+    # generated ConfigMap.
+    auth:
+      existingSecret: ""
+      secretKey: authorization
+  # Host-local state survives DaemonSet pod replacement on the same node. It
+  # contains file positions and the persistent OTLP retry queue, not log history.
+  # Empty derives /var/lib/orchestrator/<release>/log-collector so releases do
+  # not contend for the same positions database. Override with an absolute path.
+  storageHostPath: ""
+  queueSize: 1000
+  batchSize: 512
+  flushInterval: 1s
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  # Schedule on tainted workload nodes by default. Narrow this with nodeSelector
+  # when workloads only run on a dedicated node pool.
+  tolerations:
+    - operator: Exists
+  nodeSelector: {}
+
 # The chart ships one API today (jobs). Future APIs (deployments, statefulsets, ...)
 # will be added as additional Deployments + Services in the same chart, each
 # with its own component name. Resource naming for the jobs API lives under

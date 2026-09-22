@@ -70,6 +70,8 @@
 | **Exited** signal | Emitted when the worker container exits, carrying exit code and duration | Finished signal, done signal |
 | **Failed** signal | Emitted when the job fails before or without the worker starting (sidecar crash, image pull failure) | Error signal |
 | **LogLine** signal | Emitted for each batch of stdout/stderr lines from the worker | Log signal, output signal |
+| **Workload log** | One stdout or stderr record emitted by a Job, Deployment, or Sandbox user container and shipped independently of lifecycle callbacks | Service log, pod log |
+| **Log collector** | The node-local DaemonSet member that tails workload CRI files, adds final workload identity, and exports OTLP logs | Log agent, shipper |
 
 ## Deployments
 

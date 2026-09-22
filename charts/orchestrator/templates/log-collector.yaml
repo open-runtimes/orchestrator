@@ -1,0 +1,364 @@
+{{- if .Values.logCollector.enabled }}
+{{- $name := include "orchestrator.logCollectorName" . }}
+{{- $endpoint := required "logCollector.otlp.endpoint is required when logCollector.enabled=true" .Values.logCollector.otlp.endpoint }}
+{{- $storagePath := default (printf "/var/lib/orchestrator/%s/log-collector" (include "orchestrator.fullname" .)) .Values.logCollector.storageHostPath }}
+{{- $namespaces := list .Release.Namespace (include "orchestrator.jobNamespace" .) (include "orchestrator.workloadNamespace" .) | uniq }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.logCollectorLabels" . | nindent 4 }}
+data:
+  config.alloy: |
+    discovery.kubernetes "workloads" {
+      role = "pod"
+
+      namespaces {
+        names = {{ $namespaces | toJson }}
+      }
+
+      // Each DaemonSet member asks only for orchestrator workloads on its node.
+      // The API watch supplies identity; bytes come directly from the host.
+      selectors {
+        role  = "pod"
+        field = "spec.nodeName=" + sys.env("NODE_NAME")
+        label = "managed-by in (jobs-service,deployments-service,sandbox-service)"
+      }
+    }
+
+    discovery.relabel "workload_logs" {
+      targets = discovery.kubernetes.workloads.targets
+
+      // User output has one of these names. Init containers and sidecars are
+      // intentionally excluded, as are unclaimed warm workload containers.
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        regex         = "^(worker|workload)$"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_job_id", "__meta_kubernetes_pod_label_deployment_id", "__meta_kubernetes_pod_label_sandbox_id"]
+        separator     = ";"
+        regex         = "^([^;]+;;|;[^;]+;|;;[^;]+)$"
+        action        = "keep"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "k8s_namespace_name"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "k8s_pod_name"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_uid"]
+        target_label  = "k8s_pod_uid"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "k8s_node_name"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "k8s_container_name"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_job_id"]
+        regex         = "(.+)"
+        target_label  = "orchestrator_job_id"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_job_id"]
+        regex         = "(.+)"
+        replacement   = "job"
+        target_label  = "orchestrator_workload_kind"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_deployment_id"]
+        regex         = "(.+)"
+        target_label  = "orchestrator_deployment_id"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_deployment_revision"]
+        regex         = "(.+)"
+        target_label  = "orchestrator_deployment_revision"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_deployment_id"]
+        regex         = "(.+)"
+        replacement   = "deployment"
+        target_label  = "orchestrator_workload_kind"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_sandbox_id"]
+        regex         = "(.+)"
+        target_label  = "orchestrator_sandbox_id"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_sandbox_id"]
+        regex         = "(.+)"
+        replacement   = "sandbox"
+        target_label  = "orchestrator_workload_kind"
+      }
+      {{ if .Values.logCollector.clusterName }}
+      rule {
+        replacement  = {{ .Values.logCollector.clusterName | quote }}
+        target_label = "k8s_cluster_name"
+      }
+      {{ end }}
+
+      // Kubernetes stores CRI logs below a UID-bearing pod directory. The
+      // wildcard tolerates the namespace/pod prefix used by kubelet.
+      rule {
+        source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        replacement   = "/var/log/pods/*$1/$2/*.log"
+        target_label  = "__path__"
+      }
+    }
+
+    local.file_match "workload_logs" {
+      path_targets = discovery.relabel.workload_logs.output
+      sync_period  = "2s"
+    }
+
+    {{ if .Values.logCollector.otlp.auth.existingSecret }}
+    // Read credentials from the mounted Secret so kubelet's atomic Secret
+    // updates take effect without restarting the collector.
+    local.file "otlp_authorization" {
+      filename  = "/var/run/secrets/orchestrator-log-collector/authorization"
+      is_secret = true
+    }
+    {{ end }}
+
+    loki.source.file "workload_logs" {
+      targets                 = local.file_match.workload_logs.targets
+      forward_to              = [loki.process.cri.receiver]
+      tail_from_end           = false
+      on_positions_file_error = "restart_from_beginning"
+    }
+
+    loki.process "cri" {
+      stage.cri {}
+      stage.labels {
+        values = { stream = "" }
+      }
+      forward_to = [otelcol.receiver.loki.workload_logs.receiver]
+    }
+
+    otelcol.receiver.loki "workload_logs" {
+      output {
+        logs = [otelcol.processor.attributes.workload_logs.input]
+      }
+    }
+
+    // The Loki-to-OTLP bridge adds its source filename and a reverse-conversion
+    // hint. Drop those so the exported attribute surface remains the explicit
+    // identity allowlist above.
+    otelcol.processor.attributes "workload_logs" {
+      action {
+        key    = "filename"
+        action = "delete"
+      }
+      action {
+        key    = "log.file.path"
+        action = "delete"
+      }
+      action {
+        key    = "log.file.name"
+        action = "delete"
+      }
+      action {
+        key    = "loki.attribute.labels"
+        action = "delete"
+      }
+      output {
+        logs = [otelcol.exporter.otlphttp.workload_logs.input]
+      }
+    }
+
+    // Both the source positions and exporter queue live on the node disk.
+    // Queue writes are fsynced before acceptance so a collector restart
+    // replays unsent batches instead of silently advancing past them.
+    otelcol.storage.file "queue" {
+      directory = "/var/lib/alloy/queue"
+      fsync     = true
+    }
+
+    otelcol.exporter.otlphttp "workload_logs" {
+      client {
+        endpoint = sys.env("OTLP_ENDPOINT")
+        {{ if .Values.logCollector.otlp.auth.existingSecret }}
+        headers = {
+          "Authorization" = local.file.otlp_authorization.content,
+        }
+        {{ end }}
+      }
+      retry_on_failure {
+        enabled          = true
+        max_elapsed_time = "0s"
+      }
+      sending_queue {
+        enabled           = true
+        storage           = otelcol.storage.file.queue.handler
+        queue_size        = {{ .Values.logCollector.queueSize }}
+        block_on_overflow = true
+        batch {
+          flush_timeout = {{ .Values.logCollector.flushInterval | quote }}
+          min_size      = {{ .Values.logCollector.batchSize }}
+          max_size      = {{ .Values.logCollector.batchSize }}
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.logCollectorLabels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "orchestrator.logCollectorSelectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "orchestrator.logCollectorSelectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Values.logCollector | toJson | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      {{- with include "orchestrator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        {{- toYaml (merge (dict "kubernetes.io/os" "linux") .Values.logCollector.nodeSelector) | nindent 8 }}
+      {{- with .Values.logCollector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: alloy
+          image: {{ include "orchestrator.logCollectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.logCollector.image.pullPolicy }}
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --stability.level=public-preview
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OTLP_ENDPOINT
+              value: {{ $endpoint | quote }}
+          ports:
+            - name: http-metrics
+              containerPort: 12345
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http-metrics
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http-metrics
+            initialDelaySeconds: 15
+            timeoutSeconds: 2
+          resources:
+            {{- toYaml .Values.logCollector.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: storage
+              mountPath: /var/lib/alloy
+            {{- if .Values.logCollector.otlp.auth.existingSecret }}
+            - name: otlp-authorization
+              mountPath: /var/run/secrets/orchestrator-log-collector
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: storage
+          hostPath:
+            path: {{ $storagePath | quote }}
+            type: DirectoryOrCreate
+        {{- if .Values.logCollector.otlp.auth.existingSecret }}
+        - name: otlp-authorization
+          secret:
+            secretName: {{ .Values.logCollector.otlp.auth.existingSecret }}
+            items:
+              - key: {{ required "logCollector.otlp.auth.secretKey is required when an auth Secret is configured" .Values.logCollector.otlp.auth.secretKey }}
+                path: authorization
+        {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.logCollectorLabels" . | nindent 4 }}
+{{- range $namespace := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "orchestrator.logCollectorLabels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "orchestrator.logCollectorLabels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
