@@ -34,8 +34,6 @@ func TestHardenedSecurityContext(t *testing.T) {
 	}
 }
 
-// Reading any file takes root, and root must hold nothing but the read bypass:
-// an extra capability or privileged mode would come up exactly the same.
 func TestReadingSecurityContext(t *testing.T) {
 	t.Parallel()
 	sc := ReadingSecurityContext()

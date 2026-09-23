@@ -776,9 +776,7 @@ func TestIntegration_CombinedArtifacts(t *testing.T) {
 	}
 }
 
-// The worker runs as whatever user its image picks, usually root, and a build
-// leaves files only their owner can read (node's compile cache writes 0600). The
-// post sidecar packs that output, so it must read it regardless of owner or mode.
+// The post sidecar must pack worker output it does not own, e.g. node's 0600 compile cache.
 func TestIntegration_PostJobArchiveReadsOwnerOnlyOutput(t *testing.T) {
 	o, _, teardown := setup(t)
 	defer teardown()
@@ -811,8 +809,7 @@ func TestIntegration_PostJobArchiveReadsOwnerOnlyOutput(t *testing.T) {
 	}
 }
 
-// sidecarArtifactStatuses reads the post sidecar's log and returns the status it
-// logged for each artifact it processed.
+// sidecarArtifactStatuses maps each artifact ID to the status the post sidecar logged.
 func sidecarArtifactStatuses(t *testing.T, o *Orchestrator, pod *corev1.Pod) map[string]string {
 	t.Helper()
 	logs, err := o.client.CoreV1().Pods(testNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: ContainerSidecar}).DoRaw(t.Context())

@@ -44,12 +44,9 @@ func MountingSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{Privileged: ptr.To(true), RunAsUser: ptr.To(int64(0))}
 }
 
-// ReadingSecurityContext is what a container needs to read files another
-// container wrote, whatever their owner or mode: root holding only
-// CAP_DAC_READ_SEARCH. It must be root because Kubernetes does not raise added
-// capabilities into a non-root process's effective set. It is not privileged
-// and holds nothing else, so it can read anything in its mounts and write only
-// where the mode already lets it.
+// ReadingSecurityContext lets a container read files of any owner or mode:
+// root with only CAP_DAC_READ_SEARCH, since added capabilities have no effect
+// for a non-root user.
 func ReadingSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		RunAsUser:                ptr.To(int64(0)),

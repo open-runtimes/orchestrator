@@ -133,9 +133,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		// needs to open /dev/loop-control (root:disk 0660) and call mount(2).
 		sidecarSecurityContext = &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &runAsRoot}
 	} else if _, postJob := artifact.Partition(req.Artifacts); len(postJob) > 0 {
-		// Post-job artifacts read what the worker wrote, as the worker's user
-		// (often root) and with the modes it chose. The image's nonroot user
-		// cannot open an owner-only file, so the pack fails on it.
+		// Post-job artifacts must read worker output of any owner or mode.
 		sidecarSecurityContext = kube.ReadingSecurityContext()
 	}
 
