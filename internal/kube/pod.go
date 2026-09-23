@@ -44,16 +44,16 @@ func MountingSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{Privileged: ptr.To(true), RunAsUser: ptr.To(int64(0))}
 }
 
-// ReadingSecurityContext lets a container read files of any owner or mode:
-// root with only CAP_DAC_READ_SEARCH, since added capabilities have no effect
-// for a non-root user.
-func ReadingSecurityContext() *corev1.SecurityContext {
+// FileAccessSecurityContext lets a container read and write files of any owner
+// or mode: root with only CAP_DAC_OVERRIDE, since added capabilities have no
+// effect for a non-root user.
+func FileAccessSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		RunAsUser:                ptr.To(int64(0)),
 		AllowPrivilegeEscalation: ptr.To(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
-			Add:  []corev1.Capability{"DAC_READ_SEARCH"},
+			Add:  []corev1.Capability{"DAC_OVERRIDE"},
 		},
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}

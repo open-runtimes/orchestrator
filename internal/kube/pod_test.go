@@ -34,9 +34,9 @@ func TestHardenedSecurityContext(t *testing.T) {
 	}
 }
 
-func TestReadingSecurityContext(t *testing.T) {
+func TestFileAccessSecurityContext(t *testing.T) {
 	t.Parallel()
-	sc := ReadingSecurityContext()
+	sc := FileAccessSecurityContext()
 
 	if sc.RunAsUser == nil || *sc.RunAsUser != 0 {
 		t.Errorf("uid: got %v, want 0", sc.RunAsUser)
@@ -50,8 +50,8 @@ func TestReadingSecurityContext(t *testing.T) {
 	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 		t.Errorf("capabilities: got %+v, want all dropped", sc.Capabilities)
 	}
-	if len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "DAC_READ_SEARCH" {
-		t.Errorf("added capabilities: got %v, want only DAC_READ_SEARCH", sc.Capabilities.Add)
+	if len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "DAC_OVERRIDE" {
+		t.Errorf("added capabilities: got %v, want only DAC_OVERRIDE", sc.Capabilities.Add)
 	}
 }
 

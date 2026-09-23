@@ -776,18 +776,21 @@ func TestIntegration_CombinedArtifacts(t *testing.T) {
 	}
 }
 
-// The post sidecar must pack worker output it does not own, e.g. node's 0600 compile cache.
-func TestIntegration_PostJobArchiveReadsOwnerOnlyOutput(t *testing.T) {
+// Post-job artifacts must read worker output owned by another user (e.g. node's
+// 0600 compile cache) and still write where preparation (uid 65532) wrote.
+func TestIntegration_PostJobArtifactsCrossOwners(t *testing.T) {
 	o, _, teardown := setup(t)
 	defer teardown()
-	id := fmt.Sprintf("owner-only-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("cross-owner-%d", time.Now().UnixNano())
 	req := &job.Request{
 		ID: id, Image: "alpine:3.20", TimeoutSeconds: 60,
-		Command:   "mkdir -m 700 output && echo secret > output/cache && chmod 600 output/cache",
+		Command:   "mkdir -m 700 output && echo secret > output/cache && chmod 600 output/cache && chown -R 1000:1000 output",
 		Workspace: "/workspace",
 		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "seed", In: "prepared", Out: "results/seed"},
 			&artifact.Archive{ID: "erofs", In: "output", Out: "code.erofs", Format: "erofs", Compression: "lz4hc", Depends: "job"},
-			&artifact.Archive{ID: "tar", In: "output", Out: "code.tar.gz", Format: "tar", Compression: "gzip", Depends: "job"},
+			&artifact.Archive{ID: "tar", In: "output", Out: "results/code.tar.gz", Format: "tar", Compression: "gzip", Depends: "job"},
+			&artifact.Write{ID: "overwrite", In: "processed", Out: "results/seed", Depends: "job"},
 		},
 	}
 	if err := o.Run(t.Context(), req); err != nil {
@@ -802,7 +805,7 @@ func TestIntegration_PostJobArchiveReadsOwnerOnlyOutput(t *testing.T) {
 		t.Fatalf("pod failed: %+v", pod.Status)
 	}
 	statuses := sidecarArtifactStatuses(t, o, pod)
-	for _, id := range []string{"erofs", "tar"} {
+	for _, id := range []string{"erofs", "tar", "overwrite"} {
 		if statuses[id] != "success" {
 			t.Errorf("artifact %s: want success, got %q", id, statuses[id])
 		}
