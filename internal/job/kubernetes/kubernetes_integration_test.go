@@ -771,20 +771,65 @@ func TestIntegration_CombinedArtifacts(t *testing.T) {
 	if pod.Status.Phase != corev1.PodSucceeded {
 		t.Fatalf("pod failed: %+v", pod.Status)
 	}
+	if status := sidecarArtifactStatuses(t, o, pod)["output"]; status != "success" {
+		t.Fatalf("sidecar did not process worker output successfully: got %q", status)
+	}
+}
+
+// The worker runs as whatever user its image picks, usually root, and a build
+// leaves files only their owner can read (node's compile cache writes 0600). The
+// post sidecar packs that output, so it must read it regardless of owner or mode.
+func TestIntegration_PostJobArchiveReadsOwnerOnlyOutput(t *testing.T) {
+	o, _, teardown := setup(t)
+	defer teardown()
+	id := fmt.Sprintf("owner-only-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID: id, Image: "alpine:3.20", TimeoutSeconds: 60,
+		Command:   "mkdir -m 700 output && echo secret > output/cache && chmod 600 output/cache",
+		Workspace: "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Archive{ID: "erofs", In: "output", Out: "code.erofs", Format: "erofs", Compression: "lz4hc", Depends: "job"},
+			&artifact.Archive{ID: "tar", In: "output", Out: "code.tar.gz", Format: "tar", Compression: "gzip", Depends: "job"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	var pod *corev1.Pod
+	testutil.MustWaitFor(t, func() bool {
+		pod = fetchPodForJob(t.Context(), o.client, testNamespace, id)
+		return pod != nil && isPodTerminal(pod)
+	}, testutil.WithTimeout(90*time.Second), testutil.WithInterval(time.Second))
+	if pod.Status.Phase != corev1.PodSucceeded {
+		t.Fatalf("pod failed: %+v", pod.Status)
+	}
+	statuses := sidecarArtifactStatuses(t, o, pod)
+	for _, id := range []string{"erofs", "tar"} {
+		if statuses[id] != "success" {
+			t.Errorf("artifact %s: want success, got %q", id, statuses[id])
+		}
+	}
+}
+
+// sidecarArtifactStatuses reads the post sidecar's log and returns the status it
+// logged for each artifact it processed.
+func sidecarArtifactStatuses(t *testing.T, o *Orchestrator, pod *corev1.Pod) map[string]string {
+	t.Helper()
 	logs, err := o.client.CoreV1().Pods(testNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: ContainerSidecar}).DoRaw(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+	statuses := map[string]string{}
 	for _, line := range strings.Split(string(logs), "\n") {
 		var entry struct {
 			ArtifactID string `json:"artifactId"`
 			Status     string `json:"status"`
 		}
-		if json.Unmarshal([]byte(line), &entry) == nil && entry.ArtifactID == "output" && entry.Status == "success" {
-			return
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.ArtifactID != "" && entry.Status != "" {
+			statuses[entry.ArtifactID] = entry.Status
 		}
 	}
-	t.Fatalf("sidecar did not process worker output successfully: %s", logs)
+	return statuses
 }
 
 // Invalid inputs must fail before execution, without burning the job deadline.

@@ -44,6 +44,24 @@ func MountingSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{Privileged: ptr.To(true), RunAsUser: ptr.To(int64(0))}
 }
 
+// ReadingSecurityContext is what a container needs to read files another
+// container wrote, whatever their owner or mode: root holding only
+// CAP_DAC_READ_SEARCH. It must be root because Kubernetes does not raise added
+// capabilities into a non-root process's effective set. It is not privileged
+// and holds nothing else, so it can read anything in its mounts and write only
+// where the mode already lets it.
+func ReadingSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsUser:                ptr.To(int64(0)),
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  []corev1.Capability{"DAC_READ_SEARCH"},
+		},
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
 // SidecarResources is what a workload sidecar asks for: a small CPU request and
 // a memory request with a matching cap. No CPU limit — throttling a proxy adds
 // latency to every request through it, and the request already buys its share.
