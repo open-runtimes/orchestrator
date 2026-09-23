@@ -44,6 +44,21 @@ func MountingSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{Privileged: ptr.To(true), RunAsUser: ptr.To(int64(0))}
 }
 
+// FileAccessSecurityContext lets a container read and write files of any owner
+// or mode: root with only CAP_DAC_OVERRIDE, since added capabilities have no
+// effect for a non-root user.
+func FileAccessSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsUser:                ptr.To(int64(0)),
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  []corev1.Capability{"DAC_OVERRIDE"},
+		},
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
 // SidecarResources is what a workload sidecar asks for: a small CPU request and
 // a memory request with a matching cap. No CPU limit — throttling a proxy adds
 // latency to every request through it, and the request already buys its share.

@@ -132,6 +132,10 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		// Root + privileged: the sidecar image is distroless nonroot, but mounting
 		// needs to open /dev/loop-control (root:disk 0660) and call mount(2).
 		sidecarSecurityContext = &corev1.SecurityContext{Privileged: &privileged, RunAsUser: &runAsRoot}
+	} else if _, postJob := artifact.Partition(req.Artifacts); len(postJob) > 0 {
+		// Post-job artifacts read worker output and write where preparation did,
+		// whatever the owner or mode of either.
+		sidecarSecurityContext = kube.FileAccessSecurityContext()
 	}
 
 	var cmd []string

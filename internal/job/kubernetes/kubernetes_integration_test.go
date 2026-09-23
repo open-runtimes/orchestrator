@@ -771,20 +771,65 @@ func TestIntegration_CombinedArtifacts(t *testing.T) {
 	if pod.Status.Phase != corev1.PodSucceeded {
 		t.Fatalf("pod failed: %+v", pod.Status)
 	}
+	if status := sidecarArtifactStatuses(t, o, pod)["output"]; status != "success" {
+		t.Fatalf("sidecar did not process worker output successfully: got %q", status)
+	}
+}
+
+// Post-job artifacts must read worker output owned by another user (e.g. node's
+// 0600 compile cache) and still write where preparation (uid 65532) wrote.
+func TestIntegration_PostJobArtifactsCrossOwners(t *testing.T) {
+	o, _, teardown := setup(t)
+	defer teardown()
+	id := fmt.Sprintf("cross-owner-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID: id, Image: "alpine:3.20", TimeoutSeconds: 60,
+		Command:   "mkdir -m 700 output && echo secret > output/cache && chmod 600 output/cache && chown -R 1000:1000 output",
+		Workspace: "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "seed", In: "prepared", Out: "results/seed"},
+			&artifact.Archive{ID: "erofs", In: "output", Out: "code.erofs", Format: "erofs", Compression: "lz4hc", Depends: "job"},
+			&artifact.Archive{ID: "tar", In: "output", Out: "results/code.tar.gz", Format: "tar", Compression: "gzip", Depends: "job"},
+			&artifact.Write{ID: "overwrite", In: "processed", Out: "results/seed", Depends: "job"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	var pod *corev1.Pod
+	testutil.MustWaitFor(t, func() bool {
+		pod = fetchPodForJob(t.Context(), o.client, testNamespace, id)
+		return pod != nil && isPodTerminal(pod)
+	}, testutil.WithTimeout(90*time.Second), testutil.WithInterval(time.Second))
+	if pod.Status.Phase != corev1.PodSucceeded {
+		t.Fatalf("pod failed: %+v", pod.Status)
+	}
+	statuses := sidecarArtifactStatuses(t, o, pod)
+	for _, id := range []string{"erofs", "tar", "overwrite"} {
+		if statuses[id] != "success" {
+			t.Errorf("artifact %s: want success, got %q", id, statuses[id])
+		}
+	}
+}
+
+// sidecarArtifactStatuses maps each artifact ID to the status the post sidecar logged.
+func sidecarArtifactStatuses(t *testing.T, o *Orchestrator, pod *corev1.Pod) map[string]string {
+	t.Helper()
 	logs, err := o.client.CoreV1().Pods(testNamespace).GetLogs(pod.Name, &corev1.PodLogOptions{Container: ContainerSidecar}).DoRaw(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
+	statuses := map[string]string{}
 	for _, line := range strings.Split(string(logs), "\n") {
 		var entry struct {
 			ArtifactID string `json:"artifactId"`
 			Status     string `json:"status"`
 		}
-		if json.Unmarshal([]byte(line), &entry) == nil && entry.ArtifactID == "output" && entry.Status == "success" {
-			return
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.ArtifactID != "" && entry.Status != "" {
+			statuses[entry.ArtifactID] = entry.Status
 		}
 	}
-	t.Fatalf("sidecar did not process worker output successfully: %s", logs)
+	return statuses
 }
 
 // Invalid inputs must fail before execution, without burning the job deadline.
