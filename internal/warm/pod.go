@@ -180,7 +180,7 @@ func proxyContainer(cfg Config, token string, mounting *kube.Mounting) corev1.Co
 	}
 	// The proxy materializes s3:// artifacts in-process on claim, so it needs
 	// the deployments/pools service's S3 credentials.
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
+	for _, kv := range config.LoadS3Profiles().ToEnv() {
 		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
 	}
 	return corev1.Container{

@@ -58,7 +58,7 @@ type Config struct {
 
 	// S3 credentials for signing s3:// download artifacts materialized into the
 	// workspace. Forwarded by the deployments/pools orchestrator.
-	S3 config.S3Credentials
+	S3 config.S3Profiles
 
 	// MountAgentEndpoint and MountAgentToken, when set, have the node mount
 	// agent perform this pod's mounts instead of this container
@@ -91,7 +91,7 @@ func LoadConfigFromEnv() Config {
 		TargetHost: config.GetEnv(workload.EnvTargetHost, "127.0.0.1"),
 		ExtraPorts: parsePorts(config.GetEnv(workload.EnvExtraPorts, "")),
 		Workspace:  config.Workspace(),
-		S3:         config.LoadS3Credentials(),
+		S3:         config.LoadS3Profiles(),
 
 		MountAgentEndpoint: config.GetEnv(mountagent.EnvEndpoint, ""),
 		MountAgentToken:    config.GetEnv(mountagent.EnvToken, ""),

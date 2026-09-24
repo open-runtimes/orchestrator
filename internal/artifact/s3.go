@@ -29,18 +29,23 @@ func isS3URL(rawURL string) bool {
 // s3Now is overridable in tests; production uses the wall clock.
 var s3Now = time.Now
 
-// newSignedS3Request builds an http.Request for an s3://bucket/key URL, signed
-// with AWS Signature Version 4. For uploads, body is the source (an *os.File)
-// and size its length; the body is hashed for the signature and rewound before
-// it is sent. Downloads pass a nil body.
-func newSignedS3Request(ctx context.Context, method, rawURL string, body io.ReadSeeker, size int64, creds config.S3Credentials) (*http.Request, error) {
-	if !creds.Enabled() {
-		return nil, fmt.Errorf("s3 URL %q requires S3 credentials, but none are configured", rawURL)
-	}
-
+// newSignedS3Request builds an http.Request for an s3://[profile@]bucket/key
+// URL, signed with AWS Signature Version 4 using the named profile, or the
+// default one when the URL names none. For uploads, body is the source (an
+// *os.File) and size its length; the body is hashed for the signature and
+// rewound before it is sent. Downloads pass a nil body.
+func newSignedS3Request(ctx context.Context, method, rawURL string, body io.ReadSeeker, size int64, profiles config.S3Profiles) (*http.Request, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid s3 URL: %w", err)
+	}
+	profile := u.User.Username()
+	creds := profiles[profile]
+	if !creds.Enabled() {
+		if profile != "" {
+			return nil, fmt.Errorf("s3 URL %q uses S3 profile %q, but it is not configured", rawURL, profile)
+		}
+		return nil, fmt.Errorf("s3 URL %q requires S3 credentials, but none are configured", rawURL)
 	}
 	bucket := u.Host
 	key := strings.TrimPrefix(u.Path, "/")

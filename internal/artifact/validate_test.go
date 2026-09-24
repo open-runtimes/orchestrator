@@ -44,6 +44,16 @@ func TestValidate_Download(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "s3 url with profile",
+			art:     &Download{ID: "dl1", In: "s3://archive@bucket/key", Out: "input.txt"},
+			wantErr: false,
+		},
+		{
+			name:    "s3 url with inline credentials",
+			art:     &Download{ID: "dl1", In: "s3://AKID:SECRET@bucket/key", Out: "input.txt"},
+			wantErr: true,
+		},
+		{
 			name:    "path traversal",
 			art:     &Download{ID: "dl1", In: "https://example.com/file", Out: "../etc/passwd"},
 			wantErr: true,

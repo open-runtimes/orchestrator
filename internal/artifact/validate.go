@@ -27,6 +27,11 @@ func validateURL(rawURL string) error {
 	if scheme == s3Scheme && strings.TrimPrefix(parsed.Path, "/") == "" {
 		return errors.New("s3 URL must have a key: s3://bucket/key")
 	}
+	// s3://profile@bucket/key names a configured credential profile; the
+	// credentials themselves never ride the URL.
+	if _, hasPassword := parsed.User.Password(); scheme == s3Scheme && hasPassword {
+		return errors.New("s3 URL must not carry credentials; name a profile as s3://profile@bucket/key")
+	}
 	return nil
 }
 

@@ -80,35 +80,44 @@ app.kubernetes.io/component: {{ . }}
 {{- end -}}
 
 {{/*
-  s3Env: a plane's S3 credentials. Endpoint, region and path style are plain
-  values; the keys come from a Secret so they never rest in the pod manifest.
-  Call with (dict "root" $ "plane" "jobs").
+  s3Env: a plane's S3 credentials: the default profile as S3_*, each named
+  profile as S3_<NAME>_*, listed in S3_PROFILES. Endpoint, region and path
+  style are plain values; the keys come from a Secret so they never rest in the
+  pod manifest. Call with (dict "root" $ "plane" "jobs").
 */}}
 {{- define "orchestrator.s3Env" -}}
 {{- $s3 := index .root.Values .plane "s3" -}}
 {{- if $s3.enabled -}}
 {{- $secret := include "orchestrator.s3SecretName" . -}}
-{{- if $s3.endpoint }}
-- name: S3_ENDPOINT
-  value: {{ $s3.endpoint | quote }}
+{{- include "orchestrator.s3ProfileEnv" (dict "prefix" "S3_" "p" $s3 "secret" $secret) }}
+{{- with $s3.profiles }}
+- name: S3_PROFILES
+  value: {{ keys . | sortAlpha | join "," | quote }}
+{{- range $name, $p := . }}
+{{- include "orchestrator.s3ProfileEnv" (dict "prefix" (printf "S3_%s_" (upper $name)) "p" $p "secret" $secret) }}
 {{- end }}
-- name: S3_REGION
-  value: {{ $s3.region | quote }}
-{{- if $s3.forcePathStyle }}
-- name: S3_FORCE_PATH_STYLE
+{{- end }}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.s3ProfileEnv" -}}
+{{- if .p.endpoint }}
+- name: {{ .prefix }}ENDPOINT
+  value: {{ .p.endpoint | quote }}
+{{- end }}
+- name: {{ .prefix }}REGION
+  value: {{ default "us-east-1" .p.region | quote }}
+{{- if .p.forcePathStyle }}
+- name: {{ .prefix }}FORCE_PATH_STYLE
   value: "true"
 {{- end }}
-- name: S3_ACCESS_KEY_ID
+{{- range $key := list "ACCESS_KEY_ID" "SECRET_ACCESS_KEY" }}
+- name: {{ $.prefix }}{{ $key }}
   valueFrom:
     secretKeyRef:
-      name: {{ $secret }}
-      key: S3_ACCESS_KEY_ID
-- name: S3_SECRET_ACCESS_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ $secret }}
-      key: S3_SECRET_ACCESS_KEY
-{{- end -}}
+      name: {{ $.secret }}
+      key: {{ $.prefix }}{{ $key }}
+{{- end }}
 {{- end -}}
 
 {{/*

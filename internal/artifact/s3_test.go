@@ -27,7 +27,7 @@ var testCreds = config.S3Credentials{
 
 func TestNewSignedS3Request_VirtualHosted(t *testing.T) {
 	fixedClock(t)
-	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://mybucket/path/to/obj.txt", nil, 0, testCreds)
+	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://mybucket/path/to/obj.txt", nil, 0, config.S3Profiles{"": testCreds})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestNewSignedS3Request_PathStyleEndpoint(t *testing.T) {
 	fixedClock(t)
 	creds := testCreds
 	creds.Endpoint = "http://minio:9000"
-	req, err := newSignedS3Request(t.Context(), http.MethodPut, "s3://mybucket/obj", nil, 0, creds)
+	req, err := newSignedS3Request(t.Context(), http.MethodPut, "s3://mybucket/obj", nil, 0, config.S3Profiles{"": creds})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestNewSignedS3Request_EndpointPathPrefix(t *testing.T) {
 	fixedClock(t)
 	creds := testCreds
 	creds.Endpoint = "http://gw:9000/s3"
-	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://mybucket/obj", nil, 0, creds)
+	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://mybucket/obj", nil, 0, config.S3Profiles{"": creds})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestNewSignedS3Request_SessionToken(t *testing.T) {
 	fixedClock(t)
 	creds := testCreds
 	creds.SessionToken = "FQoGZ-session-token"
-	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, creds)
+	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, config.S3Profiles{"": creds})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,11 +100,11 @@ func TestNewSignedS3Request_SessionToken(t *testing.T) {
 
 func TestNewSignedS3Request_Deterministic(t *testing.T) {
 	fixedClock(t)
-	a, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, testCreds)
+	a, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, config.S3Profiles{"": testCreds})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, testCreds)
+	b, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, config.S3Profiles{"": testCreds})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,14 +114,37 @@ func TestNewSignedS3Request_Deterministic(t *testing.T) {
 }
 
 func TestNewSignedS3Request_NoCredentials(t *testing.T) {
-	_, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, config.S3Credentials{})
+	_, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, nil)
 	if err == nil {
 		t.Fatal("expected error when credentials are not configured")
 	}
 }
 
+func TestNewSignedS3Request_Profile(t *testing.T) {
+	fixedClock(t)
+	archive := testCreds
+	archive.AccessKeyID = "AKIDARCHIVE"
+	archive.Endpoint = "http://minio:9000"
+	profiles := config.S3Profiles{"": testCreds, "archive": archive}
+
+	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://archive@mybucket/obj", nil, 0, profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := req.URL.String(), "http://minio:9000/mybucket/obj"; got != want {
+		t.Errorf("URL = %q, want %q", got, want)
+	}
+	if auth := req.Header.Get("Authorization"); !strings.Contains(auth, "Credential=AKIDARCHIVE/") {
+		t.Errorf("signed with the wrong profile: %q", auth)
+	}
+
+	if _, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://missing@mybucket/obj", nil, 0, profiles); err == nil || !strings.Contains(err.Error(), `"missing"`) {
+		t.Errorf("unknown profile: err = %v, want one naming the profile", err)
+	}
+}
+
 func TestNewSignedS3Request_BadURL(t *testing.T) {
-	if _, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://bucket", nil, 0, testCreds); err == nil {
+	if _, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://bucket", nil, 0, config.S3Profiles{"": testCreds}); err == nil {
 		t.Error("expected error for s3 URL with no key")
 	}
 }
@@ -157,7 +180,7 @@ func TestDownload_ApplyS3(t *testing.T) {
 
 	tmp := t.TempDir()
 	a := &Download{ID: "d", In: "s3://bucket/dir/key.txt", Out: "out.txt"}
-	a.SetS3Credentials(creds)
+	a.SetS3Profiles(config.S3Profiles{"": creds})
 	if res := a.Apply(t.Context(), tmp); res.Error != nil {
 		t.Fatalf("Apply() error = %v", res.Error)
 	}
@@ -211,7 +234,7 @@ func TestUpload_ApplyS3(t *testing.T) {
 	creds.Endpoint = server.URL
 
 	a := &Upload{ID: "u", In: "in.txt", Out: "s3://bucket/key.txt"}
-	a.SetS3Credentials(creds)
+	a.SetS3Profiles(config.S3Profiles{"": creds})
 	if res := a.Apply(t.Context(), tmp); res.Error != nil {
 		t.Fatalf("Apply() error = %v", res.Error)
 	}
@@ -258,7 +281,7 @@ func TestUpload_ApplyS3_RetryRehashesBody(t *testing.T) {
 	creds.Endpoint = server.URL
 
 	a := &Upload{ID: "u", In: "in.txt", Out: "s3://bucket/key.txt"}
-	a.SetS3Credentials(creds)
+	a.SetS3Profiles(config.S3Profiles{"": creds})
 	if res := a.Apply(t.Context(), tmp); res.Error != nil {
 		t.Fatalf("Apply() error = %v", res.Error)
 	}

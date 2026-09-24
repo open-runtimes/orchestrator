@@ -12,9 +12,9 @@ import (
 // hashed for the signature), any other scheme a plain HTTP request. For uploads
 // body is the source file and size its length; downloads pass a nil body.
 // Callers layer their own headers, timeout, and retry policy on top.
-func buildRequest(ctx context.Context, method, rawURL string, body io.ReadSeeker, size int64, creds config.S3Credentials) (*http.Request, error) {
+func buildRequest(ctx context.Context, method, rawURL string, body io.ReadSeeker, size int64, profiles config.S3Profiles) (*http.Request, error) {
 	if isS3URL(rawURL) {
-		return newSignedS3Request(ctx, method, rawURL, body, size, creds)
+		return newSignedS3Request(ctx, method, rawURL, body, size, profiles)
 	}
 
 	reqBody := io.Reader(http.NoBody)

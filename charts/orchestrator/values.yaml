@@ -154,8 +154,20 @@ jobs:
     forcePathStyle: false  # true for MinIO/path-style endpoints
     accessKeyId: ""
     secretAccessKey: ""
-    # A Secret with keys S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY instead.
+    # A Secret with keys S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY (plus
+    # S3_<NAME>_ACCESS_KEY_ID and S3_<NAME>_SECRET_ACCESS_KEY per profile)
+    # instead of the inline keys.
     existingSecret: ""
+    # Named credential profiles for another store (account, endpoint or
+    # provider), with the same fields as above. An artifact selects one as
+    # s3://<name>@bucket/key; a plain s3://bucket/key uses the default.
+    profiles: {}
+    #   archive:
+    #     endpoint: http://minio:9000
+    #     region: us-east-1
+    #     forcePathStyle: true
+    #     accessKeyId: ""
+    #     secretAccessKey: ""
   # An HTTPRoute for the jobs API on the gateway above.
   httpRoute:
     enabled: false
@@ -250,6 +262,7 @@ deployments:
     accessKeyId: ""
     secretAccessKey: ""
     existingSecret: ""
+    profiles: {} # see jobs.s3.profiles
   # The service reconciles an HTTPRoute per deployment on the gateway above
   # (Traefik, Envoy Gateway, Istio with backendRef-filter support).
   httpRoute:
@@ -367,6 +380,7 @@ sandbox:
     accessKeyId: ""
     secretAccessKey: ""
     existingSecret: ""
+    profiles: {} # see jobs.s3.profiles
   # One wildcard HTTPRoute for *.{domain}, backed by the sandbox proxy. Per
   # sandbox routes are deliberately not used: gateway programming takes
   # seconds, which would negate the sub-second claim a create is built on.
