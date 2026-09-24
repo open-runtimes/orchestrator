@@ -184,7 +184,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
 		env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
 	}
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
+	for _, kv := range config.LoadS3Profiles().ToEnv() {
 		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
 	}
 	return corev1.Container{

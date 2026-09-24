@@ -257,7 +257,7 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *sandbox.Request) e
 	if o.cfg.ArtifactEndpoint != "" {
 		env = append(env, "ARTIFACT_ENDPOINT="+o.cfg.ArtifactEndpoint)
 	}
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
+	for _, kv := range config.LoadS3Profiles().ToEnv() {
 		env = append(env, kv[0]+"="+kv[1])
 	}
 

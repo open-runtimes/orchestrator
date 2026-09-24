@@ -430,7 +430,7 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		env = append(env, "ARTIFACT_TOKEN="+req.ArtifactToken)
 	}
 
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
+	for _, kv := range config.LoadS3Profiles().ToEnv() {
 		env = append(env, kv[0]+"="+kv[1])
 	}
 
