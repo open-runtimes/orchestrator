@@ -61,11 +61,11 @@ func WithPostJobFileGrace(d time.Duration) Option {
 	return func(r *Runner) { r.postFileGrace = d }
 }
 
-// WithS3Credentials sets the credentials used to sign s3:// download/upload
+// WithS3Profiles sets the credential profiles used to sign s3:// download/upload
 // artifacts. Configured per service (jobs vs deployments) and forwarded by the
 // orchestrator into this sidecar's environment.
-func WithS3Credentials(creds config.S3Credentials) Option {
-	return func(r *Runner) { r.s3 = creds }
+func WithS3Profiles(profiles config.S3Profiles) Option {
+	return func(r *Runner) { r.s3 = profiles }
 }
 
 // Runner orchestrates the sidecar flow.
@@ -81,7 +81,7 @@ type Runner struct {
 	mounter          Mounter
 	mounted          []string // mount targets to unmount on teardown
 	emitter          emitter.Emitter[job.ArtifactReport]
-	s3               config.S3Credentials
+	s3               config.S3Profiles
 	postFileGrace    time.Duration // wait for a post-job artifact's source file
 	sync             syncState     // delta sync loops for synced mounts
 }
@@ -542,7 +542,7 @@ func (r *Runner) unmountAll() error {
 // SigV4 credentials. Download and Upload satisfy it; artifacts that never touch
 // S3 do not, so the runner injects credentials only where they are used.
 type s3Configurable interface {
-	SetS3Credentials(config.S3Credentials)
+	SetS3Profiles(config.S3Profiles)
 }
 
 // processArtifacts processes artifacts in dependency order. For post-job
@@ -552,7 +552,7 @@ func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Arti
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
 		start := time.Now()
 		if c, ok := a.(s3Configurable); ok {
-			c.SetS3Credentials(r.s3)
+			c.SetS3Profiles(r.s3)
 		}
 		if waitForFiles {
 			if srcPath := artifact.SourceFile(a); srcPath != "" {

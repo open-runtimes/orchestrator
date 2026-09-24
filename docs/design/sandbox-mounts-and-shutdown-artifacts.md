@@ -110,7 +110,7 @@ If that is not good enough for the use case, the answer is periodic snapshots â€
 
 ### The reason to do this in the platform at all
 
-The sandbox could run `aws s3 cp` itself today. The difference is credentials: the artifact runner **already holds the S3 credentials** (`sidecar.WithS3Credentials` on the claim path), and the untrusted workload never sees them. Doing the upload as an artifact keeps the secret on the sidecar's side of the container boundary. For untrusted code that is the whole argument, and it is a good one.
+The sandbox could run `aws s3 cp` itself today. The difference is credentials: the artifact runner **already holds the S3 credentials** (`sidecar.WithS3Profiles` on the claim path), and the untrusted workload never sees them. Doing the upload as an artifact keeps the secret on the sidecar's side of the container boundary. For untrusted code that is the whole argument, and it is a good one.
 
 ## The use case, end to end
 

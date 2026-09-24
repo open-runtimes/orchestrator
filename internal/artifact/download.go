@@ -23,7 +23,7 @@ type Download struct {
 	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 	Headers        map[string]string `json:"headers,omitempty"`
 
-	creds config.S3Credentials // injected by the runner for s3:// URLs
+	s3 config.S3Profiles // injected by the runner for s3:// URLs
 }
 
 // HTTPStatusError is a download response outside 2xx. Callers that treat a
@@ -40,8 +40,8 @@ func (a *Download) ArtifactID() string   { return a.ID }
 func (a *Download) ArtifactType() string { return "download" }
 func (a *Download) DependsOn() string    { return a.Depends }
 
-// SetS3Credentials satisfies S3Configurable.
-func (a *Download) SetS3Credentials(c config.S3Credentials) { a.creds = c }
+// SetS3Profiles satisfies S3Configurable.
+func (a *Download) SetS3Profiles(p config.S3Profiles) { a.s3 = p }
 
 // Apply downloads a file from a URL.
 func (a *Download) Apply(ctx context.Context, basePath string) *Result {
@@ -51,7 +51,7 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.creds)
+	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.s3)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create request: %w", err)}
 	}

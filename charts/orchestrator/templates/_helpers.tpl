@@ -251,34 +251,44 @@ app.kubernetes.io/component: deployments
 
 {{/*
 S3 credential env for a service. Call with a dict: {s3: <s3 values>, secretName: <secret>}.
-Renders nothing when s3.enabled is false. Endpoint/region/path-style are plain
-values; the keys come from a Secret (secretKeyRef) so they never rest in the
-pod manifest.
+Renders nothing when s3.enabled is false. The default profile reads S3_*, each
+named profile S3_<NAME>_*, listed in S3_PROFILES. Endpoint/region/path-style
+are plain values; the keys come from a Secret (secretKeyRef) so they never rest
+in the pod manifest.
 */}}
 {{- define "orchestrator.s3Env" -}}
 {{- $s3 := .s3 -}}
 {{- if $s3.enabled -}}
-{{- if $s3.endpoint }}
-- name: S3_ENDPOINT
-  value: {{ $s3.endpoint | quote }}
+{{- include "orchestrator.s3ProfileEnv" (dict "prefix" "S3_" "p" $s3 "secretName" .secretName) }}
+{{- with $s3.profiles }}
+- name: S3_PROFILES
+  value: {{ keys . | sortAlpha | join "," | quote }}
+{{- range $name, $p := . }}
+{{- include "orchestrator.s3ProfileEnv" (dict "prefix" (printf "S3_%s_" (upper $name)) "p" $p "secretName" $.secretName) }}
 {{- end }}
-- name: S3_REGION
-  value: {{ $s3.region | quote }}
-{{- if $s3.forcePathStyle }}
-- name: S3_FORCE_PATH_STYLE
+{{- end }}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.s3ProfileEnv" -}}
+{{- $p := .p }}
+{{- if $p.endpoint }}
+- name: {{ .prefix }}ENDPOINT
+  value: {{ $p.endpoint | quote }}
+{{- end }}
+- name: {{ .prefix }}REGION
+  value: {{ default "us-east-1" $p.region | quote }}
+{{- if $p.forcePathStyle }}
+- name: {{ .prefix }}FORCE_PATH_STYLE
   value: "true"
 {{- end }}
-- name: S3_ACCESS_KEY_ID
+{{- range $key := list "ACCESS_KEY_ID" "SECRET_ACCESS_KEY" }}
+- name: {{ $.prefix }}{{ $key }}
   valueFrom:
     secretKeyRef:
-      name: {{ .secretName }}
-      key: S3_ACCESS_KEY_ID
-- name: S3_SECRET_ACCESS_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ .secretName }}
-      key: S3_SECRET_ACCESS_KEY
-{{- end -}}
+      name: {{ $.secretName }}
+      key: {{ $.prefix }}{{ $key }}
+{{- end }}
 {{- end -}}
 
 {{/* Resolve the S3 secret name for a service: an existing secret, or the chart-created one. */}}

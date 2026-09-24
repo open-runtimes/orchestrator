@@ -269,7 +269,7 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 	if req.ArtifactToken != "" {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACT_TOKEN", Value: req.ArtifactToken})
 	}
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
+	for _, kv := range config.LoadS3Profiles().ToEnv() {
 		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
 	}
 	if req.Callback != nil && req.Callback.URL != "" {

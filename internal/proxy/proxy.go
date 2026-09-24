@@ -219,7 +219,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 // S3 credentials are the sidecar's, never the workload's — which is the reason a
 // snapshot upload belongs here rather than in a command the workload runs.
 func (p *Proxy) newRunner(id, workspace string, timeoutSeconds int) *sidecar.Runner {
-	opts := []sidecar.Option{sidecar.WithS3Credentials(p.cfg.S3)}
+	opts := []sidecar.Option{sidecar.WithS3Profiles(p.cfg.S3)}
 	if p.mounter != nil {
 		opts = append(opts, sidecar.WithMounter(p.mounter))
 	}

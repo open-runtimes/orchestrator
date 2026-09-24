@@ -84,8 +84,19 @@ jobs:
     accessKeyId: ""
     secretAccessKey: ""
     # Reference an existing Secret with keys S3_ACCESS_KEY_ID and
-    # S3_SECRET_ACCESS_KEY instead of the inline values above.
+    # S3_SECRET_ACCESS_KEY (plus S3_<NAME>_ACCESS_KEY_ID and
+    # S3_<NAME>_SECRET_ACCESS_KEY per profile) instead of the inline values.
     existingSecret: ""
+    # Named credential profiles for a second store (another account, endpoint
+    # or provider). An artifact selects one as s3://<name>@bucket/key; a plain
+    # s3://bucket/key uses the credentials above. Same fields as above.
+    profiles: {}
+    #   archive:
+    #     endpoint: http://minio:9000
+    #     region: us-east-1
+    #     forcePathStyle: true
+    #     accessKeyId: ""
+    #     secretAccessKey: ""
   # Bearer-token auth for the jobs API (internal/api.AuthMiddleware). The key
   # also derives the per-job tokens sidecars use to post artifact results to
   # the internal endpoint. Empty existingSecret leaves both unauthenticated.
@@ -177,6 +188,7 @@ deployments:
     accessKeyId: ""
     secretAccessKey: ""
     existingSecret: ""
+    profiles: {} # see jobs.s3.profiles
   # Data-plane port the in-process activator listens on (Host-based routing).
   dataPort: 8081
   # Base domain for auto-assigned hosts: {id}.{domain}.
@@ -348,6 +360,7 @@ sandbox:
     accessKeyId: ""
     secretAccessKey: ""
     existingSecret: ""
+    profiles: {} # see jobs.s3.profiles
   # Bearer-token auth for the sandbox API, same mechanism as jobs.auth.
   auth:
     existingSecret: ""

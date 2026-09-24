@@ -763,6 +763,34 @@
         },
         "existingSecret": {
           "type": "string"
+        },
+        "profiles": {
+          "type": "object",
+          "description": "Named credential profiles, selected per artifact as s3://<name>@bucket/key.",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "endpoint": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "forcePathStyle": {
+                "type": "boolean"
+              },
+              "accessKeyId": {
+                "type": "string"
+              },
+              "secretAccessKey": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     },
