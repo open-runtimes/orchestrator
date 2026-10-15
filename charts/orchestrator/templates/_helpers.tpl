@@ -72,6 +72,29 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/component: pool-controller
 {{- end -}}
 
+{{- define "orchestrator.logCollectorName" -}}
+{{- printf "%s-log-collector" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "orchestrator.logCollectorImage" -}}
+{{- if .Values.logCollector.image.ref -}}
+{{- .Values.logCollector.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.logCollector.image.repository .Values.logCollector.image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "orchestrator.logCollectorLabels" -}}
+{{ include "orchestrator.labels" . }}
+app.kubernetes.io/component: log-collector
+{{- end -}}
+
+{{- define "orchestrator.logCollectorSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: log-collector
+{{- end -}}
+
 {{/*
   workloadSidecarImage: one image for every serving workload's sidecar —
   deployment replicas (created or pool-claimed) and sandboxes.

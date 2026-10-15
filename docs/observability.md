@@ -48,6 +48,15 @@ PromQL dashboard without exposing application scrape ports.
 
 See: `cmd/jobs-service/main.go`
 
+### Workload logs use a node-local data path
+
+The optional `logCollector` DaemonSet tails user-container CRI files on each
+node and exports them over OTLP/HTTP. This covers Jobs, Deployments, and
+Sandboxes without routing log volume through their control planes. See the
+[workload logging guide](logging.md) for attributes, delivery guarantees, and
+Helm configuration. Alloy exposes its own health and Prometheus metrics on port
+`12345` of each collector pod.
+
 ### Golden 4 Signals
 
 Metrics follow Google's Golden 4 Signals pattern: Latency, Traffic, Errors, Saturation.

@@ -37,6 +37,32 @@
         "resources": { "$ref": "#/$defs/resources" }
       }
     },
+    "logCollector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image", "otlp", "storageHostPath", "queueSize", "batchSize", "flushInterval"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "$ref": "#/$defs/pullableImage" },
+        "clusterName": { "type": "string" },
+        "otlp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["endpoint", "auth"],
+          "properties": {
+            "endpoint": { "type": "string" },
+            "auth": { "$ref": "#/$defs/auth" }
+          }
+        },
+        "storageHostPath": { "type": "string", "pattern": "^(|/.*)$" },
+        "queueSize": { "type": "integer", "minimum": 1 },
+        "batchSize": { "type": "integer", "minimum": 1 },
+        "flushInterval": { "$ref": "#/$defs/duration" },
+        "resources": { "$ref": "#/$defs/resources" },
+        "tolerations": { "$ref": "#/$defs/tolerations" },
+        "nodeSelector": { "$ref": "#/$defs/stringMap" }
+      }
+    },
     "replicaCount": {
       "type": "integer",
       "minimum": 0

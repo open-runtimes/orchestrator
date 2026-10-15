@@ -2,7 +2,7 @@ apiVersion: v2
 name: orchestrator
 description: Job orchestration service for containerized workloads with async callbacks
 type: application
-version: 0.4.5
+version: 0.4.6
 appVersion: "0.4.4"
 # Jobs run their sidecar as a native sidecar container, which is 1.29+. Declared
 # so an older cluster fails the install instead of accepting jobs that then
