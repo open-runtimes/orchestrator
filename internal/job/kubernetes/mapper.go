@@ -194,6 +194,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 				WorkingDir:      workspace,
 				VolumeMounts:    workerMounts,
 				Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),
+				SecurityContext: kube.WorkloadSecurityContext(),
 			},
 		},
 	}
