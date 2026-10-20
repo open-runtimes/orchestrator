@@ -103,6 +103,29 @@ func TestBuildJob_Tolerations(t *testing.T) {
 	}
 }
 
+// The worker runs the user's command, so it keeps root and a writable image, but
+// gets the runtime's seccomp profile, no new privileges and no raw sockets.
+func TestBuildJob_WorkerSecurityContext(t *testing.T) {
+	t.Parallel()
+	req := &job.Request{ID: "job-7", Image: "alpine:latest", Command: "npm install"}
+	sc := buildJob(req, Config{}, "sidecar:latest").Spec.Template.Spec.Containers[0].SecurityContext
+	if sc == nil {
+		t.Fatal("worker: missing SecurityContext")
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("seccomp: want RuntimeDefault, got %+v", sc.SeccompProfile)
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("allowPrivilegeEscalation: want false, got %v", sc.AllowPrivilegeEscalation)
+	}
+	if sc.Capabilities == nil || !reflect.DeepEqual(sc.Capabilities.Drop, []corev1.Capability{"NET_RAW"}) {
+		t.Errorf("capabilities.drop: want [NET_RAW], got %+v", sc.Capabilities)
+	}
+	if sc.RunAsNonRoot != nil || sc.RunAsUser != nil || sc.ReadOnlyRootFilesystem != nil {
+		t.Errorf("worker must keep the image's user and a writable root: got %+v", sc)
+	}
+}
+
 // Ensure buildJob does not panic on zero resources — Requests/Limits just stay empty.
 func TestBuildJob_NoResources(t *testing.T) {
 	t.Parallel()

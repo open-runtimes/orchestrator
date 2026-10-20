@@ -11,10 +11,8 @@ import (
 // a hardening policy written twice is a hardening policy that drifts, and the
 // drift is silent — a pod comes up either way.
 //
-// Applied today by the deployments backend (revision replicas) and by
-// internal/warm (warm pods for pools and sandboxes). The jobs backend does not
-// harden its containers; that predates this package and is a behaviour question,
-// not a duplication one.
+// Applied today by the deployments backend (revision replicas), by internal/warm
+// (warm pods for pools and sandboxes) and by the jobs backend's worker.
 
 // HardenedSecurityContext is the container security context for anything we run
 // ourselves: no root, no new privileges, no capabilities, no writable root
@@ -32,6 +30,18 @@ func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		ReadOnlyRootFilesystem:   ptr.To(true),
+	}
+}
+
+// WorkloadSecurityContext is for a container running the user's own command,
+// such as a build: it keeps the image's user and a writable filesystem, since
+// installers run as root and write everywhere, but takes the runtime's default
+// seccomp profile, no new privileges, and no CAP_NET_RAW, which no build needs.
+func WorkloadSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"NET_RAW"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 }
 
