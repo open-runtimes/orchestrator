@@ -3,7 +3,10 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/job"
 	"runtime"
 	"strings"
@@ -116,4 +119,36 @@ func callbackDestFromLabels(labels map[string]string) *job.CallbackDest {
 		Key:    labels["job.callback.key"],
 		Events: events,
 	}
+}
+
+// sidecarEnv is the job sidecar's environment. It carries what the sidecar
+// needs to run the artifacts and report on them, and nothing about where those
+// reports end up: the callback URL, its signing key and the job's meta stay
+// with the service, which looks them up when a report arrives.
+func sidecarEnv(req *job.Request, artifactEndpoint string) ([]string, error) {
+	env := []string{
+		"JOB_ID=" + req.ID,
+		fmt.Sprintf("TIMEOUT_SECONDS=%d", req.TimeoutSeconds),
+		config.EnvSharedVolume + "=" + req.Workspace,
+	}
+
+	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
+	// needs to unmarshal them back into concrete types.
+	artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal artifacts: %w", err)
+	}
+	env = append(env, "ARTIFACTS_JSON="+string(artifactsJSON))
+
+	if artifactEndpoint != "" {
+		env = append(env, "ARTIFACT_ENDPOINT="+artifactEndpoint)
+	}
+	if req.ArtifactToken != "" {
+		env = append(env, "ARTIFACT_TOKEN="+req.ArtifactToken)
+	}
+
+	for _, kv := range config.LoadS3Credentials().ToEnv() {
+		env = append(env, kv[0]+"="+kv[1])
+	}
+	return env, nil
 }

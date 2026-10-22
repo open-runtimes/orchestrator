@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/config"
 	"orchestrator/internal/job"
 	"orchestrator/internal/moby"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
@@ -279,6 +279,22 @@ func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
 	return nil
 }
 
+// Callback returns the job's callback destination, read from the labels its
+// worker container was created with — the same record a restart resumes from.
+func (o *Orchestrator) Callback(ctx context.Context, jobID string) (*job.CallbackDest, error) {
+	if _, exists := o.ctrl.Get(jobID); !exists {
+		return nil, apperrors.NotFound("job", jobID)
+	}
+	info, err := o.client.ContainerInspect(ctx, fmt.Sprintf("job-%s-worker", jobID))
+	if cerrdefs.IsNotFound(err) {
+		return nil, apperrors.NotFound("job", jobID)
+	}
+	if err != nil {
+		return nil, apperrors.Internal("docker.inspectWorker", err)
+	}
+	return callbackDestFromLabels(info.Config.Labels), nil
+}
+
 // Status returns the current status of a job.
 func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusResponse, error) {
 	entry, exists := o.ctrl.Get(jobID)
@@ -409,47 +425,9 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 }
 
 func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Request, h dockerHandle) (string, error) {
-	env := []string{
-		"JOB_ID=" + req.ID,
-		fmt.Sprintf("TIMEOUT_SECONDS=%d", req.TimeoutSeconds),
-		config.EnvSharedVolume + "=" + req.Workspace,
-	}
-
-	// MarshalArtifacts injects each artifact's "type" field, which the sidecar
-	// needs to unmarshal them back into concrete types.
-	artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts)
+	env, err := sidecarEnv(req, o.artifactEndpoint)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal artifacts: %w", err)
-	}
-	env = append(env, "ARTIFACTS_JSON="+string(artifactsJSON))
-
-	if o.artifactEndpoint != "" {
-		env = append(env, "ARTIFACT_ENDPOINT="+o.artifactEndpoint)
-	}
-	if req.ArtifactToken != "" {
-		env = append(env, "ARTIFACT_TOKEN="+req.ArtifactToken)
-	}
-
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
-		env = append(env, kv[0]+"="+kv[1])
-	}
-
-	if req.Callback != nil && req.Callback.URL != "" {
-		env = append(env, "CALLBACK_URL="+req.Callback.URL)
-		if req.Callback.Key != "" {
-			env = append(env, "CALLBACK_KEY="+req.Callback.Key)
-		}
-		if len(req.Callback.Events) > 0 {
-			env = append(env, "CALLBACK_EVENTS="+strings.Join(req.Callback.Events, ","))
-		}
-	}
-
-	if len(req.Meta) > 0 {
-		metaJSON, err := json.Marshal(req.Meta)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal meta: %w", err)
-		}
-		env = append(env, "JOB_META="+string(metaJSON))
+		return "", err
 	}
 
 	healthCheck := &container.HealthConfig{

@@ -67,8 +67,9 @@ type ListResponse struct {
 
 // ArtifactReport is posted by the sidecar to report the result of a single artifact operation.
 // The orchestrator uses it to construct and dispatch the corresponding CloudEvent.
-// Callback config is passed through from the sidecar so the orchestrator does not need to
-// duplicate it in its own state.
+// Where that event goes — URL, signing key, event filter, meta — is the job's
+// own callback configuration, looked up by the service; nothing in the report
+// can choose it. (Older sidecars still send those fields; they are ignored.)
 type ArtifactReport struct {
 	JobID   string `json:"jobId"`
 	ID      string `json:"id"`
@@ -89,11 +90,6 @@ type ArtifactReport struct {
 	Compression string `json:"compression,omitempty"`
 
 	DurationSeconds float64 `json:"durationSeconds"`
-
-	CallbackURL    string            `json:"callbackUrl,omitempty"`
-	CallbackKey    string            `json:"callbackKey,omitempty"`
-	CallbackEvents []string          `json:"callbackEvents,omitempty"`
-	Meta           map[string]string `json:"meta,omitempty"`
 }
 
 // State constants, shared with pkg/lifecycle.

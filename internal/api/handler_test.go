@@ -2,12 +2,15 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"orchestrator/internal/apperrors"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
 	"orchestrator/internal/testutil"
+	"strings"
 	"testing"
 )
 
@@ -369,35 +372,69 @@ func TestMiddleware_ContentType_EmptyBodyAllowed(t *testing.T) {
 	}
 }
 
+// callbackOrchestrator is a job.Orchestrator that knows one job and its
+// callback destination; everything else is unused by the artifact endpoint.
+type callbackOrchestrator struct {
+	jobID string
+	dest  *job.CallbackDest
+}
+
+func (o *callbackOrchestrator) Start(context.Context) error             { return nil }
+func (o *callbackOrchestrator) Run(context.Context, *job.Request) error { return nil }
+func (o *callbackOrchestrator) Stop(context.Context, string) error      { return nil }
+func (o *callbackOrchestrator) Status(_ context.Context, jobID string) (*job.StatusResponse, error) {
+	return nil, apperrors.NotFound("job", jobID)
+}
+func (o *callbackOrchestrator) List(context.Context) ([]job.StatusResponse, error) { return nil, nil }
+func (o *callbackOrchestrator) ActiveJobs() int64                                  { return 0 }
+func (o *callbackOrchestrator) Ready(context.Context) error                        { return nil }
+func (o *callbackOrchestrator) Close() error                                       { return nil }
+func (o *callbackOrchestrator) Callback(_ context.Context, jobID string) (*job.CallbackDest, error) {
+	if jobID != o.jobID {
+		return nil, apperrors.NotFound("job", jobID)
+	}
+	return o.dest, nil
+}
+
+func reportHandler(dest *job.CallbackDest) (*Handler, *[]*job.CallbackEnvelope) {
+	var sent []*job.CallbackEnvelope
+	callbacks := &job.CallbackEmitter{}
+	callbacks.Register(func(e *job.CallbackEnvelope) { sent = append(sent, e) })
+	svc := job.NewService(&callbackOrchestrator{jobID: "job-123", dest: dest}, nil, "")
+	return &Handler{svc: svc, callbacks: callbacks}, &sent
+}
+
+func postReport(t *testing.T, h *Handler, jobID string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/jobs/"+jobID+"/artifact", bytes.NewReader(body))
+	req.SetPathValue("jobId", jobID)
+	w := httptest.NewRecorder()
+	h.ReportArtifact(w, req)
+	return w
+}
+
 func TestHandler_ReportArtifact(t *testing.T) {
 	t.Parallel()
-	var reports []map[string]any
-	callbacks := &job.CallbackEmitter{}
-	callbacks.Register(func(e *job.CallbackEnvelope) { reports = append(reports, testutil.WireData(t, e.Payload)) })
-	handler := &Handler{callbacks: callbacks}
+	handler, sent := reportHandler(&job.CallbackDest{
+		URL:  "http://callbacks.test/hook",
+		Key:  "job-key",
+		Meta: map[string]string{"projectId": "p1"},
+	})
 
-	report := job.ArtifactReport{
-		ID:          "a1",
-		Type:        "upload",
-		Status:      "success",
-		CallbackURL: "http://callbacks.test/hook",
-	}
-	body, _ := json.Marshal(report)
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/internal/jobs/job-123/artifact", bytes.NewReader(body))
-	req.SetPathValue("jobId", "job-123")
-	w := httptest.NewRecorder()
-
-	handler.ReportArtifact(w, req)
+	body, _ := json.Marshal(job.ArtifactReport{ID: "a1", Type: "upload", Status: "success"})
+	w := postReport(t, handler, "job-123", body)
 
 	if w.Code != http.StatusAccepted {
 		t.Errorf("Expected status %d, got %d", http.StatusAccepted, w.Code)
 	}
-
-	if len(reports) != 1 {
-		t.Fatalf("Expected 1 report, got %d", len(reports))
+	if len(*sent) != 1 {
+		t.Fatalf("Expected 1 report, got %d", len(*sent))
 	}
-	r := reports[0]
+	e := (*sent)[0]
+	if e.CallbackURL != "http://callbacks.test/hook" || e.SigningKey != "job-key" {
+		t.Errorf("delivered to %q signed with %q, want the job's callback", e.CallbackURL, e.SigningKey)
+	}
+	r := testutil.WireData(t, e.Payload)
 	if r["jobId"] != "job-123" {
 		t.Errorf("Expected jobId 'job-123', got %v", r["jobId"])
 	}
@@ -406,6 +443,77 @@ func TestHandler_ReportArtifact(t *testing.T) {
 	}
 	if r["status"] != "success" {
 		t.Errorf("Expected status 'success', got %v", r["status"])
+	}
+	if meta, _ := r["meta"].(map[string]any); meta["projectId"] != "p1" {
+		t.Errorf("Expected the job's meta, got %v", r["meta"])
+	}
+}
+
+// A report says what happened, never where it goes: a destination, signing
+// key, filter or meta in the body is ignored in favour of the job's own.
+func TestHandler_ReportArtifact_IgnoresDestinationInBody(t *testing.T) {
+	t.Parallel()
+	handler, sent := reportHandler(&job.CallbackDest{
+		URL:  "http://callbacks.test/hook",
+		Key:  "job-key",
+		Meta: map[string]string{"projectId": "p1"},
+	})
+
+	body := []byte(`{"id":"a1","type":"read","status":"success",
+		"callbackUrl":"http://elsewhere.test/hook","callbackKey":"other-key",
+		"callbackEvents":["orchestrator.job.artifact"],"meta":{"projectId":"p2"}}`)
+	if w := postReport(t, handler, "job-123", body); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusAccepted)
+	}
+
+	if len(*sent) != 1 {
+		t.Fatalf("Expected 1 callback, got %d", len(*sent))
+	}
+	e := (*sent)[0]
+	if e.CallbackURL != "http://callbacks.test/hook" || e.SigningKey != "job-key" {
+		t.Errorf("delivered to %q signed with %q, want the job's callback", e.CallbackURL, e.SigningKey)
+	}
+	if meta, _ := testutil.WireData(t, e.Payload)["meta"].(map[string]any); meta["projectId"] != "p1" {
+		t.Errorf("meta = %v, want the job's", meta)
+	}
+}
+
+func TestHandler_ReportArtifact_UnknownJob(t *testing.T) {
+	t.Parallel()
+	handler, sent := reportHandler(&job.CallbackDest{URL: "http://callbacks.test/hook"})
+
+	body := []byte(`{"id":"a1","type":"read","status":"success","callbackUrl":"http://elsewhere.test/hook"}`)
+	if w := postReport(t, handler, "job-999", body); w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("sent %d callbacks for an unknown job, want none", len(*sent))
+	}
+}
+
+func TestHandler_ReportArtifact_JobWithoutCallback(t *testing.T) {
+	t.Parallel()
+	handler, sent := reportHandler(nil)
+
+	body := []byte(`{"id":"a1","type":"read","status":"success","callbackUrl":"http://elsewhere.test/hook"}`)
+	if w := postReport(t, handler, "job-123", body); w.Code != http.StatusAccepted {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusAccepted)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("sent %d callbacks for a job without one, want none", len(*sent))
+	}
+}
+
+func TestHandler_ReportArtifact_BodyTooLarge(t *testing.T) {
+	t.Parallel()
+	handler, sent := reportHandler(&job.CallbackDest{URL: "http://callbacks.test/hook"})
+
+	body := []byte(`{"id":"a1","type":"read","status":"success","content":"` + strings.Repeat("x", maxRequestBodySize) + `"}`)
+	if w := postReport(t, handler, "job-123", body); w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("sent %d callbacks for an oversized report, want none", len(*sent))
 	}
 }
 

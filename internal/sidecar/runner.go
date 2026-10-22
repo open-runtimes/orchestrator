@@ -105,19 +105,16 @@ func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, opts ...Optio
 }
 
 // NewHTTPSink returns an emitter listener that POSTs artifact results to the orchestrator.
-// It captures all job-level fields (callback config, meta) and merges them into each report.
-// The HTTP client timeout governs per-request cancellation.
-func NewHTTPSink(jobID, endpoint, token string, timeout time.Duration, callbackURL, callbackKey string, callbackEvents []string, meta map[string]string) func(job.ArtifactReport) {
+// The orchestrator delivers them to the job's own callback; the sidecar holds
+// none of that configuration. The HTTP client timeout governs per-request
+// cancellation.
+func NewHTTPSink(jobID, endpoint, token string, timeout time.Duration) func(job.ArtifactReport) {
 	client := &http.Client{Timeout: timeout}
 	return func(report job.ArtifactReport) {
 		if endpoint == "" {
 			return
 		}
 		report.JobID = jobID
-		report.CallbackURL = callbackURL
-		report.CallbackKey = callbackKey
-		report.CallbackEvents = callbackEvents
-		report.Meta = meta
 		data, err := json.Marshal(report)
 		if err != nil {
 			slog.With("artifactId", report.ID, "error", err).Warn("Failed to marshal artifact report")

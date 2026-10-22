@@ -22,7 +22,7 @@ import "context"
 //
 // Register listeners on the CallbackEmitter before calling Start.
 // Input/output callbacks are handled by the sidecar.
-type Orchestrator interface {
+type Orchestrator interface { //nolint:interfacebloat // Callback is part of the job lifecycle the API serves; it belongs with Run and Status
 	// Start initializes the orchestrator, reconciling any pre-existing jobs
 	// and beginning background maintenance.
 	Start(ctx context.Context) error
@@ -42,6 +42,12 @@ type Orchestrator interface {
 
 	// List returns the status of all jobs.
 	List(ctx context.Context) ([]StatusResponse, error)
+
+	// Callback returns the callback destination the job was created with, or
+	// nil when it has none. Returns a not-found error for an unknown job.
+	// Artifact reports are delivered here, never to a destination a report
+	// names.
+	Callback(ctx context.Context, jobID string) (*CallbackDest, error)
 
 	// ActiveJobs reports the jobs this replica holds that have not reached a
 	// terminal state. Read at scrape time by the jobs_active async gauge, so it

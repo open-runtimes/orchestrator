@@ -96,6 +96,11 @@ func (s *Service) Get(ctx context.Context, jobID string) (*StatusResponse, error
 	return s.orchestrator.Status(ctx, jobID)
 }
 
+// Callback returns the job's callback destination (nil when it has none).
+func (s *Service) Callback(ctx context.Context, jobID string) (*CallbackDest, error) {
+	return s.orchestrator.Callback(ctx, jobID)
+}
+
 // Cancel stops a running job.
 func (s *Service) Cancel(ctx context.Context, jobID string) error {
 	logger := slog.With("jobId", jobID)

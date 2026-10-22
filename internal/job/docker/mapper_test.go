@@ -4,6 +4,7 @@ import (
 	"orchestrator/internal/job"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -299,5 +300,25 @@ func TestCallbackDestFromLabels_AllFields(t *testing.T) {
 	wantMeta := map[string]string{"team": "platform"}
 	if !reflect.DeepEqual(dest.Meta, wantMeta) {
 		t.Errorf("Meta: want %v, got %v", wantMeta, dest.Meta)
+	}
+}
+
+// The sidecar reports results; it holds no callback destination, signing key
+// or meta.
+func TestSidecarEnv_CarriesNoCallbackConfig(t *testing.T) {
+	req := &job.Request{
+		ID:        "job-1",
+		Workspace: "/workspace",
+		Callback:  &job.Callback{URL: "http://callbacks.test/hook", Key: "job-key", Events: []string{"orchestrator.job.artifact"}},
+		Meta:      map[string]string{"projectId": "p1"},
+	}
+	env, err := sidecarEnv(req, "http://orchestrator:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CALLBACK_") || strings.HasPrefix(kv, "JOB_META=") || strings.Contains(kv, "job-key") {
+			t.Errorf("sidecar env carries %q", kv)
+		}
 	}
 }

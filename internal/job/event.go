@@ -104,14 +104,14 @@ func LogEvent(jobID string, meta map[string]string, lines []string, stream strin
 	return newEvent(jobID, CallbackTypeLog, LogData{JobID: jobID, Lines: lines, Stream: stream, Meta: meta})
 }
 
-func ArtifactEvent(r *ArtifactReport) *cloudevent.Event {
+func ArtifactEvent(r *ArtifactReport, meta map[string]string) *cloudevent.Event {
 	data := ArtifactData{
 		JobID:           r.JobID,
 		ArtifactID:      r.ID,
 		ArtifactType:    r.Type,
 		Status:          r.Status,
 		DurationSeconds: r.DurationSeconds,
-		Meta:            r.Meta,
+		Meta:            meta,
 		Content:         r.Content,
 		Format:          r.Format,
 		Compression:     r.Compression,

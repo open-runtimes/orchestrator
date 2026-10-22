@@ -640,7 +640,7 @@ func TestNewHTTPSink_SendsBearerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sink := NewHTTPSink("job-1", srv.URL, "tok-1", time.Second, "", "", nil, nil)
+	sink := NewHTTPSink("job-1", srv.URL, "tok-1", time.Second)
 	sink(job.ArtifactReport{ID: "a1", Status: "success"})
 
 	if gotAuth != "Bearer tok-1" {
