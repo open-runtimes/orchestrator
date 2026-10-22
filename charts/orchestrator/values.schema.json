@@ -134,12 +134,6 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "jobNamespace": {
-          "type": "string"
-        },
-        "jobNamespaceCreate": {
-          "type": "boolean"
-        },
         "artifactEndpoint": {
           "type": "string"
         },
@@ -168,6 +162,12 @@
         "enabled"
       ],
       "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "networkPolicy": {
+          "$ref": "#/$defs/networkPolicy"
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -272,6 +272,21 @@
         "enabled"
       ],
       "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "gatewayNamespace": {
+              "type": "string"
+            }
+          }
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -403,6 +418,12 @@
       "additionalProperties": false,
       "description": "Sandboxes (docs/sandboxes.md): a workload kind alongside jobs and deployments, served by its own sandbox-service. Enabled independently of the deployments plane; sandbox.domain is required when enabled.",
       "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "networkPolicy": {
+          "$ref": "#/$defs/networkPolicy"
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -550,66 +571,18 @@
     },
     "workloadSidecarImage": {
       "$ref": "#/$defs/pullableImage"
-    },
-    "workloadNamespace": {
+    }
+  },
+  "$defs": {
+    "networkPolicy": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean"
-        },
-        "deploymentsName": {
-          "type": "string"
-        },
-        "sandboxName": {
-          "type": "string"
-        },
-        "create": {
-          "type": "boolean"
-        },
-        "podSecurity": {
-          "enum": [
-            "",
-            "privileged",
-            "baseline",
-            "restricted"
-          ]
-        },
-        "networkPolicy": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "gatewayNamespace": {
-              "type": "string"
-            }
-          }
-        },
-        "resourceQuota": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "pods": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "requestsCpu": {
-              "$ref": "#/$defs/quantity"
-            },
-            "requestsMemory": {
-              "$ref": "#/$defs/quantity"
-            }
-          }
         }
       }
-    }
-  },
-  "$defs": {
+    },
     "pool": {
       "type": "object",
       "additionalProperties": false,

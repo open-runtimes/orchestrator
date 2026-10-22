@@ -87,24 +87,14 @@ app.kubernetes.io/component: pool-controller
 {{/*
   deploymentsNamespace / sandboxNamespace: where each plane's workload pods
   (revisions and their warm pools; sandboxes and theirs), markers, routes and
-  leader leases live. The release namespace unless the hardened workload
-  namespaces are enabled, which give each plane its own, so untrusted sandbox
-  code never shares a namespace, policy or quota with deployments.
+  leader leases live: <plane>.namespace, else the release namespace.
 */}}
 {{- define "orchestrator.deploymentsNamespace" -}}
-{{- if .Values.workloadNamespace.enabled -}}
-{{- default (printf "%s-deployments" .Release.Namespace) .Values.workloadNamespace.deploymentsName -}}
-{{- else -}}
-{{- .Release.Namespace -}}
-{{- end -}}
+{{- default .Release.Namespace .Values.deployments.namespace -}}
 {{- end -}}
 
 {{- define "orchestrator.sandboxNamespace" -}}
-{{- if .Values.workloadNamespace.enabled -}}
-{{- default (printf "%s-sandboxes" .Release.Namespace) .Values.workloadNamespace.sandboxName -}}
-{{- else -}}
-{{- .Release.Namespace -}}
-{{- end -}}
+{{- default .Release.Namespace .Values.sandbox.namespace -}}
 {{- end -}}
 
 {{- define "orchestrator.mountAgentImage" -}}
@@ -255,7 +245,7 @@ app.kubernetes.io/component: deployments
 {{- end -}}
 
 {{- define "orchestrator.jobNamespace" -}}
-{{- default .Release.Namespace .Values.orchestrator.jobNamespace -}}
+{{- default .Release.Namespace .Values.jobs.namespace -}}
 {{- end -}}
 
 {{- define "orchestrator.artifactEndpoint" -}}
