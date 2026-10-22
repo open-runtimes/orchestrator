@@ -29,6 +29,7 @@ import (
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	"orchestrator/internal/deployment"
 	"orchestrator/internal/moby"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/sandbox"
@@ -101,6 +102,12 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if artifact.HasMount(req.Artifacts) {
 		return nil, apperrors.Validation("artifacts",
 			"the Docker backend cannot mount: sibling containers do not share a mount namespace (see docs/sandboxes.md#the-docker-backend)")
+	}
+	// An isolation tier selects a Kubernetes RuntimeClass. Accepting one here
+	// would run the sandbox on runc all the same — the weakest isolation for
+	// code the tier was chosen to contain — so refuse it instead.
+	if req.RuntimeClass != "" && req.RuntimeClass != deployment.RuntimeClassRunc {
+		return nil, apperrors.Validation("runtimeClass", "runtimeClass tiers require the Kubernetes backend")
 	}
 	if _, err := o.client.VolumeInspect(ctx, volumeName(req.ID)); err == nil {
 		return nil, apperrors.Conflict("sandbox " + req.ID + " already exists")
