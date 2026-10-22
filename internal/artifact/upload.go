@@ -116,7 +116,7 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, root *os.Roo
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to upload file: %w", err)
+		return fmt.Errorf("failed to upload file: %w", redactTransferError(err))
 	}
 	defer resp.Body.Close()
 

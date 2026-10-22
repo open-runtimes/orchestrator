@@ -70,7 +70,7 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return &Result{Status: "failed", Error: fmt.Errorf("failed to download file: %w", err)}
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to download file: %w", redactTransferError(err))}
 	}
 	defer resp.Body.Close()
 
