@@ -273,3 +273,25 @@ func TestUpload_ApplyS3_RetryRehashesBody(t *testing.T) {
 		t.Errorf("retried X-Amz-Content-Sha256 = %q, want the file's content hash", lastHash)
 	}
 }
+
+func TestUsesS3(t *testing.T) {
+	s3 := []Artifact{&Download{ID: "d", In: "s3://bucket/key", Out: "out"}}
+	if !UsesS3(s3) {
+		t.Error("UsesS3(s3 download) = false, want true")
+	}
+	upS3 := []Artifact{&Upload{ID: "u", In: "out", Out: "S3://bucket/key"}}
+	if !UsesS3(upS3) {
+		t.Error("UsesS3(s3 upload, mixed case) = false, want true")
+	}
+	httpOnly := []Artifact{
+		&Download{ID: "d", In: "https://example.test/x", Out: "out"},
+		&Upload{ID: "u", In: "out", Out: "https://example.test/put"},
+		&Read{ID: "r", In: "out"},
+	}
+	if UsesS3(httpOnly) {
+		t.Error("UsesS3(http only) = true, want false")
+	}
+	if UsesS3(nil) {
+		t.Error("UsesS3(nil) = true, want false")
+	}
+}

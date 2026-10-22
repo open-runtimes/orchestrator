@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestCallback_ReadsTheJobsOwnDestination(t *testing.T) {
@@ -50,4 +53,34 @@ func TestSidecarEnv_CarriesNoCallbackConfig(t *testing.T) {
 			t.Errorf("sidecar env carries %s=%q", e.Name, e.Value)
 		}
 	}
+}
+
+// A sidecar with no s3:// artifact has no reason to hold the platform's
+// object-store credentials.
+func TestSidecarEnv_S3OnlyWithS3Artifacts(t *testing.T) {
+	t.Setenv("S3_ACCESS_KEY_ID", "AKIAEXAMPLE")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "s3cr3t")
+
+	withS3 := &job.Request{ID: "job-1", Artifacts: []artifact.Artifact{
+		&artifact.Upload{ID: "out", In: "out", Out: "s3://bucket/key"},
+	}}
+	if !hasEnvPrefix(sidecarEnv(withS3, "http://jobs:8080", "/workspace"), "S3_") {
+		t.Error("s3 artifact: sidecar env should carry S3 credentials")
+	}
+
+	httpOnly := &job.Request{ID: "job-1", Artifacts: []artifact.Artifact{
+		&artifact.Download{ID: "src", In: "https://example.test/src.tgz", Out: "src.tgz"},
+	}}
+	if hasEnvPrefix(sidecarEnv(httpOnly, "http://jobs:8080", "/workspace"), "S3_") {
+		t.Error("http-only artifacts: sidecar env must not carry S3 credentials")
+	}
+}
+
+func hasEnvPrefix(env []corev1.EnvVar, prefix string) bool {
+	for _, e := range env {
+		if strings.HasPrefix(e.Name, prefix) {
+			return true
+		}
+	}
+	return false
 }

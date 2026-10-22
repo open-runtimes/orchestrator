@@ -270,8 +270,12 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 	if req.ArtifactToken != "" {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACT_TOKEN", Value: req.ArtifactToken})
 	}
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
-		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
+	// S3 credentials only when an artifact transfers over s3://; a sidecar with
+	// none has no reason to hold the platform's object-store keys.
+	if artifact.UsesS3(req.Artifacts) {
+		for _, kv := range config.LoadS3Credentials().ToEnv() {
+			env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
+		}
 	}
 	// No callback URL, key or meta: the service delivers the sidecar's reports
 	// to the destination recorded on the Job, so the sidecar never holds the

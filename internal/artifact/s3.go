@@ -26,6 +26,25 @@ func isS3URL(rawURL string) bool {
 	return strings.HasPrefix(strings.ToLower(rawURL), s3Scheme+"://")
 }
 
+// UsesS3 reports whether any artifact transfers over s3://, i.e. whether the
+// runner needs the S3 credentials at all. A set with none can run without them,
+// so the orchestrator need not hand them to that sidecar.
+func UsesS3(artifacts []Artifact) bool {
+	for _, a := range artifacts {
+		switch v := a.(type) {
+		case *Download:
+			if isS3URL(v.In) {
+				return true
+			}
+		case *Upload:
+			if isS3URL(v.Out) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // s3Now is overridable in tests; production uses the wall clock.
 var s3Now = time.Now
 

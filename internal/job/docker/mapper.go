@@ -162,8 +162,12 @@ func sidecarEnv(req *job.Request, artifactEndpoint string) ([]string, error) {
 		env = append(env, "ARTIFACT_TOKEN="+req.ArtifactToken)
 	}
 
-	for _, kv := range config.LoadS3Credentials().ToEnv() {
-		env = append(env, kv[0]+"="+kv[1])
+	// S3 credentials only when an artifact transfers over s3://; a sidecar with
+	// none has no reason to hold the platform's object-store keys.
+	if artifact.UsesS3(req.Artifacts) {
+		for _, kv := range config.LoadS3Credentials().ToEnv() {
+			env = append(env, kv[0]+"="+kv[1])
+		}
 	}
 	return env, nil
 }
