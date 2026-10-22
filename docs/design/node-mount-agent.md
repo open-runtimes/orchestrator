@@ -1,6 +1,6 @@
 # Node mount agent
 
-**Status: proposal, spiked.** Nothing here is implemented. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind (results below), and the answers changed the design more than once. What is left open is listed at the end.
+**Status: proposal, spiked.** Nothing here is implemented. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
 
 ## The problem
 
@@ -53,7 +53,7 @@ This also gives the agent the only lifecycle hook it needs. There is no pod info
 
 ### How the sidecar reaches the agent
 
-The obvious choice is a Unix socket with `SO_PEERCRED`, and it does not survive gVisor. By default runsc refuses connections from the sandbox to host Unix sockets (`--host-uds`), and the peer credentials it would present belong to the sandbox's processes, not the sidecar. The spike did not exercise this; it is what runsc documents. So it is a network call:
+The obvious choice is a Unix socket with `SO_PEERCRED`, and it does not survive gVisor. runsc refuses connections from the sandbox to host Unix sockets unless it runs with `--host-uds=open` (the flag's default is `none` in `release-20261012.0`). Even with it, the peer credentials would belong to the sandbox's processes, not the sidecar. So it is a network call:
 
 - The agent listens on the node (host port or host network). The sidecar reaches it at the downward-API `status.hostIP`.
 - The sidecar authenticates with `hex(HMAC-SHA256(agentKey, namespace/podName))`, injected as env at pod creation. That is the scheme warm pods already use for claim tokens (`internal/warm/token.go`), with its own key. The worker container never sees it.
@@ -94,20 +94,71 @@ Kind (Kubernetes 1.37, containerd 2.3.4, kernel 7.2 arm64), gVisor `release-2026
 | --- | --- | --- | --- |
 | erofs on a subdirectory the container never looked at | ✅ read, exec, 200-file listing | ✅ | ✅ |
 | erofs on a subdirectory the container had already listed | ✅ | ✅ | ✅ |
-| writable overlay (erofs lower, tmpfs upper) on a subdirectory | ✅ | ✅ | ✅ |
+| writable overlay (erofs lower, tmpfs upper) on a subdirectory | ✅ | ✅ | ✅ on kernel 7.2; on 6.12 it needs ID mapping (below) |
 | a mount stacked on the volume root | ✅ | ❌ still shows the old contents | ✅ |
 | control: no `HostToContainer` | ❌ not visible, as expected | | |
 | plain `emptyDir` workspace instead of CSI | ✅ | ✅ | ✅ |
 
 - **gVisor with `hostUsers: false`** never starts: `gofer: error setting namespace of type user ... invalid argument`. A pool picks one.
-- **User namespaces need no ID-mapped mounts.** Files on a read-only image appear as `65534` and are readable and executable. Writes to the overlay land as the pod's mapped host uid and read back as uid 0 inside, because overlayfs performs upper-layer operations with the mounter's credentials.
 - **Teardown through `NodeUnpublishVolume`** unmounted all 30 late submounts in the spike and freed every loop device. With a plain `emptyDir`, deletion hung until the mount was removed by hand (the 21s above).
 - The plain-`emptyDir` result depends on the node's root mount being `shared`, which is the systemd default. The CSI volume does not depend on it, because the agent marks its own target shared. That is a second, smaller reason to prefer CSI.
+
+### On a production-shaped node
+
+DOKS, amd64, kernel 6.12.96, containerd 2.2.3, kubelet 1.36.3, plain `emptyDir` workspaces, mounts made from the host mount namespace by a privileged helper. gVisor was not installed, because that means restarting containerd on a shared node.
+
+- **Propagation is the same as on kind.** Late erofs mounts on fresh and already-listed subdirectories appear in running runc and `hostUsers: false` containers. The control pod without `HostToContainer` sees nothing. `hostUsers: false` pods start with no node changes.
+- **Writable overlays in user-namespaced pods differ from kind, and they are the one case that needs care.** On kernel 6.12 the container gets `Permission denied` writing to an overlay whose layers belong to host root. (On kind's kernel 7.2 the same overlay was writable.) What I tried:
+
+  | Overlay setup | Result in the `hostUsers: false` pod |
+  | --- | --- |
+  | plain layers, mounted by host root | read-only files show as `65534`; writes refused |
+  | ID-mapped bind of the finished overlay | `mount_setattr: Invalid argument`: overlayfs cannot itself be ID-mapped |
+  | ID-mapped lower **and** ID-mapped tmpfs for upper/work | mounts, but read-only: overlayfs creates its `work/` directory as the mounter, which has no ID in that mapping (`EOVERFLOW`), so it falls back to read-only |
+  | **ID-mapped lower, plain tmpfs for upper/work owned by the pod's root host uid** | ✅ files show as uid 0; writes at the root, modifying an image file, `mkdir` inside an image directory, and deleting an image file all work. The upper holds the pod's mapped uid on the host |
+
+  So in user-namespace mode, the agent ID-maps the erofs lower layer into the pod's user namespace (`mount_setattr(MOUNT_ATTR_IDMAP)` with `/proc/<pid>/ns/user` of any process in the pod). It also creates the upper and work directories owned by the host uid that the pod's root maps to (read from the same process's `uid_map`). Read-only mounts should be ID-mapped too, so code shows as root-owned rather than `65534`. That is cosmetic for reading, but it matches what runtimes expect.
+
+### Workspace size limits
+
+DOKS nodes run ext4 on a single disk with `Quota mode: none`. Project quotas cannot be enabled on a mounted root filesystem, so filesystem quotas are not an option there, and they would not be on most managed node images. That also means an `emptyDir` `sizeLimit` is not a hard limit on these nodes today: without quotas, kubelet measures usage periodically and evicts the pod.
+
+A sparse, loop-backed ext4 per workspace (no journal, lazy inode-table init), measured on the dev machine:
+
+| | ext4, no journal, 2 GiB | ext4, no journal, 10 GiB | ext4 with journal, 2 GiB | xfs, 2 GiB |
+| --- | --- | --- | --- | --- |
+| `mkfs` | 11ms | 15ms | 12ms | 5ms |
+| `mount` | 3ms | 4ms | 6ms | 5ms |
+| on-disk overhead | 1.2 MB | 4.3 MB | 1.7 MB | 65 MB |
+
+- **Hard limit:** writes stop with `ENOSPC` at the size, and usage is a `statfs` instead of a tree walk.
+- **Steady-state cost:** none measurable. Creating 3,000 small files in 30 directories took 29–37ms through the loop device against 33–35ms on the host filesystem, and reading them back was the same. An explicit `sync` is slower: about 20–40ms against 15–18ms.
+- **The first seconds after mount are slower,** because ext4 zeroes inode tables in the background. A pool of pre-formatted images the agent keeps ready would take both that and the 15ms off the startup path.
+- **What it costs:** one loop device per pod. Space is not attributed to the pod in kubelet's disk-pressure eviction ranking (the sparse file lives on the node's root filesystem), so the agent should report per-workspace usage itself.
+
+So: **a loop-backed ext4 workspace, no journal**, sized from the same field `sizeLimit` comes from today.
+
+### Cold-start cost of each isolation tier
+
+Kind (arm64), a Node 22 app with `express` and an SDK (939 files, 8.4 MB) on an erofs mount, timed from pod creation to the first HTTP 200, 10 runs each after warm-up:
+
+| | create → HTTP 200, p50 / p90 | module loading (p50) | Node start → listening (p50) | warm request, p50 / p99 |
+| --- | --- | --- | --- | --- |
+| runc | 564 / 572ms | 46ms | 55ms | 0.09 / 0.62ms |
+| runc + `hostUsers: false` | 575 / 595ms | 46ms | 56ms | 0.09 / 0.47ms |
+| gVisor | 771 / 1072ms | 178ms | 208ms | 0.28 / 2.81ms |
+
+- **User namespaces are free.** The 11ms at p50 is within noise.
+- **gVisor costs about 200ms at p50 and 500ms at p90.** Part of it is a slower sandbox start. The larger part is module loading, about 3.9× slower because every file open and stat goes through gVisor's file proxy. That share grows with the number of files an app loads at startup.
+- **Warm requests are cheap under every tier.** gVisor's network stack adds a fraction of a millisecond.
+
+These are relative numbers from an arm64 laptop. The absolute numbers on amd64 nodes will differ.
 
 ## What it costs
 
 - **A cluster component that needs privilege.** It is privileged in one place, ours, instead of in every pod that mounts. That is the trade, and it is a good one, but it is not free: the agent is now the most sensitive thing on the node, and its API is the boundary.
-- **Workspace size limits move to us.** kubelet enforces an `emptyDir` `sizeLimit`; it does not enforce anything on a CSI volume. Options: XFS project quotas on the agent's root, a sparse loop-backed filesystem per workspace (one more loop device per pod), or monitoring only. This is the one decision I would want made before building.
+- **Workspace size limits move to us.** kubelet enforces nothing on a CSI volume. The loop-backed workspace above is a harder limit than today's on nodes without quotas, at about 15ms per pod and one loop device.
+- **User namespaces need the agent to know the pod's user namespace.** Writable overlays need an ID-mapped lower layer and an upper owned by the pod's mapped root, so the agent has to find a process in the pod and read its user namespace. Pods without `hostUsers: false` skip all of it.
 - **Download timing is unchanged, deliberately.** The download stays in the pod's pre phase, so this proposal costs no cold-start latency: the mount itself is the same `LOOP_CONFIGURE` + `mount(2)`, just issued from a different process. A node-level cache keyed by content digest (below) is where latency could improve, not regress.
 
 ## What it does not change
@@ -117,7 +168,10 @@ Kind (Kubernetes 1.37, containerd 2.3.4, kernel 7.2 arm64), gVisor `release-2026
 
 ## What I would do next
 
-1. **Settle workspace size limits.** It is the one open design decision and it shapes the agent's storage layout.
-2. **Repeat the spike on a production-shaped node** (amd64, the operator's kernel and containerd) before writing the agent, because the gVisor results in particular are version-sensitive.
-3. **Build it behind `KUBE_MOUNT_MODE=agent`**, jobs first (no warm pods, simplest lifecycle), then revisions and pools. Add a `k8s_integration` test on kind that covers propagation into a running container and teardown, and a unit suite for the `openat2` path resolution with symlink races.
-4. **Then turn on `hostUsers: false` for mounting pools.** It has no runtime cost, and it is most of what gVisor would buy.
+1. **Build it behind `KUBE_MOUNT_MODE=agent`**, jobs first (no warm pods, simplest lifecycle), then revisions and pools. Workspaces are loop-backed ext4.
+2. **Test what the spike found, not what it hoped:**
+   - A `k8s_integration` test on kind that covers propagation into a running container and teardown.
+   - A writable-overlay test in a `hostUsers: false` pod, because that case behaves differently across kernels.
+   - A unit suite for the `openat2` path resolution with symlink races.
+3. **Then turn on `hostUsers: false` for mounting pools.** It costs nothing at cold start or per request, and it is most of what gVisor would buy.
+4. **gVisor stays per pool.** It costs about 200ms at p50, more for apps that load many files. Repeat the gVisor half of the spike on the target node image before offering it, since it was only run on kind.
