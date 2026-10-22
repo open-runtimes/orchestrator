@@ -65,22 +65,27 @@ func (a *Archive) ArtifactID() string   { return a.ID }
 func (a *Archive) ArtifactType() string { return "archive" }
 func (a *Archive) DependsOn() string    { return a.Depends }
 
-// sourceFS returns an fs.FS over srcPath for streaming into an image writer
-// (squashfs or erofs). A directory maps to its whole tree; a single file maps
-// to a one-entry fs.FS (via singleFileFS) so the writer streams it rather than
-// buffering the entire file in memory.
-func sourceFS(srcPath string) (fs.FS, error) {
+// sourceFS returns an fs.FS over the workspace entry name for streaming into an
+// image writer (squashfs or erofs). A directory maps to its whole tree; a single
+// file maps to a one-entry fs.FS (via singleFileFS) so the writer streams it
+// rather than buffering the entire file in memory. Both are views of the
+// workspace root, so nothing the tree links to can lead the writer out of it.
+func sourceFS(root *os.Root, name string) (fs.FS, error) {
 	// Image archives preserve the historical command-line behavior of
 	// following a top-level directory symlink and packing the target tree. Tar
 	// handles links separately below because it can represent the link itself.
-	info, err := os.Stat(srcPath)
+	info, err := root.Stat(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat source: %w", err)
 	}
 	if info.IsDir() {
-		return os.DirFS(srcPath), nil
+		return fs.Sub(root.FS(), fsName(name))
 	}
-	return singleFileFS{fsys: os.DirFS(filepath.Dir(srcPath)), name: filepath.Base(srcPath)}, nil
+	parent, err := fs.Sub(root.FS(), fsName(filepath.Dir(name)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open source directory: %w", err)
+	}
+	return singleFileFS{fsys: parent, name: filepath.Base(name)}, nil
 }
 
 // gzipLevel maps an unset level (0) to the gzip default; otherwise returns it.
@@ -93,19 +98,22 @@ func gzipLevel(level int) int {
 
 // Apply creates the archive in the configured format.
 func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
-	srcPath := filepath.Join(basePath, a.In)
-	destPath := filepath.Join(basePath, a.Out)
+	root, err := openWorkspace(basePath)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+	defer root.Close()
 
 	switch a.Format {
 	case "tar":
-		return a.applyTar(srcPath, destPath)
+		return a.applyTar(root)
 	case "squashfs":
-		if err := writeSquashfs(srcPath, destPath, a.Compression, a.BlockSize); err != nil {
+		if err := writeSquashfs(root, a.In, a.Out, a.Compression, a.BlockSize); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 		return &Result{Status: "success"}
 	case "erofs":
-		if err := writeErofs(srcPath, destPath, a.Compression); err != nil {
+		if err := writeErofs(root, a.In, a.Out, a.Compression); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 		return &Result{Status: "success"}
@@ -114,9 +122,9 @@ func (a *Archive) Apply(ctx context.Context, basePath string) *Result {
 	}
 }
 
-// applyTar creates a tar archive from srcPath at destPath, optionally gzipped.
-func (a *Archive) applyTar(srcPath, destPath string) *Result {
-	outFile, err := os.Create(destPath)
+// applyTar creates a tar archive of In at Out, optionally compressed.
+func (a *Archive) applyTar(root *os.Root) *Result {
+	outFile, err := root.Create(a.Out)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create archive file: %w", err)}
 	}
@@ -160,17 +168,21 @@ func (a *Archive) applyTar(srcPath, destPath string) *Result {
 	tarWriter := tar.NewWriter(w)
 	defer tarWriter.Close()
 
-	info, err := os.Lstat(srcPath)
+	info, err := root.Lstat(a.In)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to stat source: %w", err)}
 	}
 
 	if info.IsDir() {
-		if err := archiveDir(tarWriter, srcPath); err != nil {
+		src, err := fs.Sub(root.FS(), fsName(a.In))
+		if err != nil {
+			return &Result{Status: "failed", Error: fmt.Errorf("failed to open source: %w", err)}
+		}
+		if err := archiveDir(tarWriter, src); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 	} else {
-		if err := archiveFile(tarWriter, srcPath, info); err != nil {
+		if err := archiveFile(tarWriter, root, a.In, info); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 	}
@@ -178,25 +190,28 @@ func (a *Archive) applyTar(srcPath, destPath string) *Result {
 	return &Result{Status: "success"}
 }
 
-func archiveDir(tw *tar.Writer, srcDir string) error {
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+// archiveDir writes every entry of src into tw. src is a view of the
+// workspace root: a symlink is recorded as a link, never followed, and a
+// regular file can only be opened if it lives inside the workspace.
+func archiveDir(tw *tar.Writer, src fs.FS) error {
+	return fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		relPath, err := filepath.Rel(srcDir, path)
-		if err != nil {
-			return err
-		}
-
-		if relPath == "." {
+		if p == "." {
 			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("failed to stat entry: %w", err)
 		}
 
 		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			linkname := ""
 			if info.Mode()&os.ModeSymlink != 0 {
-				linkname, err = os.Readlink(path)
+				linkname, err = fs.ReadLink(src, p)
 				if err != nil {
 					return fmt.Errorf("failed to read symlink: %w", err)
 				}
@@ -205,11 +220,11 @@ func archiveDir(tw *tar.Writer, srcDir string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create tar header: %w", err)
 			}
-			header.Name = relPath
+			header.Name = filepath.FromSlash(p)
 			return tw.WriteHeader(header)
 		}
 
-		file, err := os.Open(path)
+		file, err := src.Open(p)
 		if err != nil {
 			return fmt.Errorf("failed to open file: %w", err)
 		}
@@ -224,7 +239,7 @@ func archiveDir(tw *tar.Writer, srcDir string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create tar header: %w", err)
 		}
-		header.Name = relPath
+		header.Name = filepath.FromSlash(p)
 
 		if err := tw.WriteHeader(header); err != nil {
 			return fmt.Errorf("failed to write tar header: %w", err)
@@ -238,11 +253,11 @@ func archiveDir(tw *tar.Writer, srcDir string) error {
 	})
 }
 
-func archiveFile(tw *tar.Writer, filePath string, info os.FileInfo) error {
+func archiveFile(tw *tar.Writer, root *os.Root, name string, info os.FileInfo) error {
 	linkname := ""
 	if info.Mode()&os.ModeSymlink != 0 {
 		var err error
-		linkname, err = os.Readlink(filePath)
+		linkname, err = root.Readlink(name)
 		if err != nil {
 			return fmt.Errorf("failed to read symlink: %w", err)
 		}
@@ -251,7 +266,7 @@ func archiveFile(tw *tar.Writer, filePath string, info os.FileInfo) error {
 	if err != nil {
 		return fmt.Errorf("failed to create tar header: %w", err)
 	}
-	header.Name = filepath.Base(filePath)
+	header.Name = filepath.Base(name)
 
 	if err := tw.WriteHeader(header); err != nil {
 		return fmt.Errorf("failed to write tar header: %w", err)
@@ -260,7 +275,7 @@ func archiveFile(tw *tar.Writer, filePath string, info os.FileInfo) error {
 		return nil
 	}
 
-	file, err := os.Open(filePath)
+	file, err := root.Open(name)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

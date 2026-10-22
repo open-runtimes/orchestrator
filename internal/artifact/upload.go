@@ -10,7 +10,6 @@ import (
 	"orchestrator/internal/backoff"
 	"orchestrator/internal/config"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -41,11 +40,15 @@ func (a *Upload) SetS3Credentials(c config.S3Credentials) { a.creds = c }
 
 // Apply uploads a file to a URL with retry.
 func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
-	srcPath := filepath.Join(basePath, a.In)
-
-	fileInfo, err := os.Stat(srcPath)
+	root, err := openWorkspace(basePath)
 	if err != nil {
-		return &Result{Status: "failed", Error: fmt.Errorf("file not found: %w", err)}
+		return &Result{Status: "failed", Error: err}
+	}
+	defer root.Close()
+
+	fileInfo, err := root.Stat(a.In)
+	if err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to stat file: %w", err)}
 	}
 	size := fileInfo.Size()
 
@@ -68,7 +71,7 @@ func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
 
 		if attempt > 0 {
 			wait := backoff.Exponential(attempt, backoff.Config{})
-			slog.Debug("Retrying upload", "attempt", attempt, "backoff", wait, "path", srcPath)
+			slog.Debug("Retrying upload", "attempt", attempt, "backoff", wait, "path", a.In)
 			select {
 			case <-ctx.Done():
 				return &Result{Status: "failed", Error: ctx.Err()}
@@ -76,10 +79,10 @@ func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
 			}
 		}
 
-		lastErr = a.doUpload(ctx, client, srcPath, size)
+		lastErr = a.doUpload(ctx, client, root, size)
 		if lastErr == nil {
 			if attempt > 0 {
-				slog.Info("Upload succeeded after retry", "attempt", attempt, "path", srcPath)
+				slog.Info("Upload succeeded after retry", "attempt", attempt, "path", a.In)
 			}
 			return &Result{Status: "success"}
 		}
@@ -88,14 +91,14 @@ func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
 			return &Result{Status: "failed", Error: lastErr}
 		}
 
-		slog.Warn("Upload failed", "attempt", attempt, "error", lastErr, "path", srcPath)
+		slog.Warn("Upload failed", "attempt", attempt, "error", lastErr, "path", a.In)
 	}
 
 	return &Result{Status: "failed", Error: fmt.Errorf("upload failed after %d retries: %w", maxRetries, lastErr)}
 }
 
-func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath string, size int64) error {
-	file, err := os.Open(filePath)
+func (a *Upload) doUpload(ctx context.Context, client *http.Client, root *os.Root, size int64) error {
+	file, err := root.Open(a.In)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

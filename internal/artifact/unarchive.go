@@ -401,8 +401,11 @@ func underRoot(candidate, root string) bool {
 // the subdir is resolved against the unwrapped tree, without it (legacy) a
 // tar's detected root folder is implicitly prepended to the subdir.
 func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
-	srcPath := filepath.Join(basePath, a.In)
-	destDir := filepath.Join(basePath, a.Out)
+	root, err := openWorkspace(basePath)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+	defer root.Close()
 
 	// Read enough to cover every magic we sniff. squashfs "hsqs" sits at offset
 	// 0 and tar "ustar" at 257, but erofs's magic is at offset 1024 — so read
@@ -410,13 +413,14 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 	// A source that is missing or empty has no magic to sniff, so it would
 	// otherwise fall through to "unrecognized archive format" and mask the real
 	// failure (typically the download artifact that was meant to produce it).
-	header := make([]byte, 1028)
-	f, err := os.Open(srcPath)
+	f, err := root.Open(a.In)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to open archive: %w", err)}
 	}
+	defer f.Close()
+
+	header := make([]byte, 1028)
 	n, err := io.ReadFull(f, header)
-	f.Close()
 
 	// A short read is expected — a small archive is legitimately shorter than
 	// the header we sniff — but any other read error is a filesystem failure
@@ -430,32 +434,45 @@ func (a *Unarchive) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("%w: archive %s is empty", ErrArchiveEmpty, a.In)}
 	}
 
+	// The destination is created through the workspace root, so a link
+	// already sitting on the way to it cannot move the extraction elsewhere.
+	// Below it, the extractors refuse links of their own accord.
+	if err := root.MkdirAll(a.Out, extractDirMode); err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to create destination: %w", err)}
+	}
+	srcPath := filepath.Join(basePath, a.In)
+	destDir := filepath.Join(basePath, a.Out)
+
 	format, compression := Classify(header)
 
 	switch format {
 	case "squashfs":
-		if err := extractSquashfs(srcPath, destDir, a.Subdir, a.Strip); err != nil {
+		if err := extractSquashfs(f, destDir, a.Subdir, a.Strip); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", format, "compression", compression)
 		return &Result{Status: "success", Format: format, Compression: compression}
 	case "erofs":
-		if err := extractErofs(srcPath, destDir, a.Subdir, a.Strip); err != nil {
+		if err := extractErofs(f, destDir, a.Subdir, a.Strip); err != nil {
 			return &Result{Status: "failed", Error: err}
 		}
 		slog.Debug("Extracted archive", "src", srcPath, "dest", destDir, "subdir", a.Subdir, "strip", a.Strip, "format", format)
 		return &Result{Status: "success", Format: format}
 	case "tar":
-		return a.extractTar(srcPath, destDir, compression)
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return &Result{Status: "failed", Error: fmt.Errorf("failed to rewind archive: %w", err)}
+		}
+		return a.extractTar(f, srcPath, destDir, compression)
 	default:
 		return &Result{Status: "failed", Error: fmt.Errorf("%w: unrecognized archive format for %s", ErrArchiveUnknownFormat, a.In)}
 	}
 }
 
-// extractTar extracts a tar archive at srcPath into destDir, decompressing the
-// stream first with the named codec ("gzip", "zstd", "lz4", or "none" for plain
-// tar). The codec is echoed on the Result so callers learn what it actually was.
-func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Result) {
+// extractTar extracts the tar archive read from file (srcPath names it in
+// logs) into destDir, decompressing the stream first with the named codec
+// ("gzip", "zstd", "lz4", or "none" for plain tar). The codec is echoed on the
+// Result so callers learn what it actually was.
+func (a *Unarchive) extractTar(file io.Reader, srcPath, destDir, compression string) (result *Result) {
 	// Under the contained policy the sweep runs on every exit, not just the
 	// successful one: a later entry can change where an earlier relative link
 	// resolves, and returning early must not leave that link in the workspace.
@@ -481,12 +498,6 @@ func (a *Unarchive) extractTar(srcPath, destDir, compression string) (result *Re
 		}
 		result = &Result{Status: "failed", Error: sweepErr}
 	}()
-
-	file, err := os.Open(srcPath)
-	if err != nil {
-		return &Result{Status: "failed", Error: fmt.Errorf("failed to open archive: %w", err)}
-	}
-	defer file.Close()
 
 	src, closeStream, err := decompress(file, compression)
 	if err != nil {
@@ -658,8 +669,19 @@ func pruneIfEscaping(entry string, d fs.DirEntry, walkErr error, root string) (r
 func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 	subdir = cleanSubdir(subdir)
 
+	// Written through a root on the destination: an entry name cannot climb
+	// out of it, and neither can a link something else left inside it.
+	if err := os.MkdirAll(destDir, extractDirMode); err != nil {
+		return fmt.Errorf("failed to create destination: %w", err)
+	}
+	dest, err := os.OpenRoot(destDir)
+	if err != nil {
+		return fmt.Errorf("failed to open destination: %w", err)
+	}
+	defer dest.Close()
+
 	extracted := 0
-	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -693,17 +715,17 @@ func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 			return nil
 		}
 
-		target := filepath.Join(destDir, rel)
+		target := filepath.FromSlash(rel)
 		extracted++
 		if d.IsDir() {
-			return os.MkdirAll(target, extractDirMode)
+			return dest.MkdirAll(target, extractDirMode)
 		}
 
 		fi, err := d.Info()
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(target), extractDirMode); err != nil {
+		if err := dest.MkdirAll(filepath.Dir(target), extractDirMode); err != nil {
 			return fmt.Errorf("failed to create parent directory: %w", err)
 		}
 
@@ -714,7 +736,7 @@ func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 		defer entry.Close()
 
 		mode := extractMode(fi.Mode())
-		outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+		outFile, err := dest.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 		if err != nil {
 			return fmt.Errorf("failed to create file: %w", err)
 		}

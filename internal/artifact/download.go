@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/config"
-	"os"
 	"path/filepath"
 	"time"
 )
@@ -45,9 +44,13 @@ func (a *Download) SetS3Credentials(c config.S3Credentials) { a.creds = c }
 
 // Apply downloads a file from a URL.
 func (a *Download) Apply(ctx context.Context, basePath string) *Result {
-	destPath := filepath.Join(basePath, a.Out)
+	root, err := openWorkspace(basePath)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+	defer root.Close()
 
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(a.Out), 0o755); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
@@ -75,14 +78,14 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("%w: %w", ErrDownloadHTTPError, &HTTPStatusError{StatusCode: resp.StatusCode})}
 	}
 
-	tmpPath := destPath + ".partial"
-	file, err := os.Create(tmpPath)
+	tmpName := a.Out + ".partial"
+	file, err := root.Create(tmpName)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create file: %w", err)}
 	}
 	defer func() {
 		file.Close()
-		os.Remove(tmpPath) // no-op after the rename; removes debris on failure
+		_ = root.Remove(tmpName) // no-op after the rename; removes debris on failure
 	}()
 
 	written, err := io.Copy(file, resp.Body)
@@ -97,10 +100,10 @@ func (a *Download) Apply(ctx context.Context, basePath string) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to close file: %w", err)}
 	}
 
-	if err := os.Rename(tmpPath, destPath); err != nil {
+	if err := root.Rename(tmpName, a.Out); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to move file into place: %w", err)}
 	}
 
-	slog.Debug("Downloaded file", "bytes", written, "path", destPath)
+	slog.Debug("Downloaded file", "bytes", written, "path", filepath.Join(basePath, a.Out))
 	return &Result{Status: "success"}
 }

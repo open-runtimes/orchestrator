@@ -3,8 +3,8 @@ package artifact
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -24,16 +24,21 @@ func (a *List) DependsOn() string    { return a.Depends }
 
 // Apply lists files in a directory.
 func (a *List) Apply(ctx context.Context, basePath string) *Result {
-	srcPath := filepath.Join(basePath, a.In)
+	root, err := openWorkspace(basePath)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+	defer root.Close()
+
 	recursive := a.IsRecursive == nil || *a.IsRecursive
 
-	info, err := os.Stat(srcPath)
+	info, err := root.Stat(a.In)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to stat path: %w", err)}
 	}
 
 	if !info.IsDir() {
-		baseName := filepath.Base(srcPath)
+		baseName := filepath.Base(a.In)
 		if !matchesAnyPattern(baseName, a.Excludes) {
 			return &Result{Status: "success", Content: []string{baseName}}
 		}
@@ -42,13 +47,18 @@ func (a *List) Apply(ctx context.Context, basePath string) *Result {
 
 	files := []string{} // an empty listing serializes as [], never null
 
+	dir, err := fs.Sub(root.FS(), fsName(a.In))
+	if err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to open directory: %w", err)}
+	}
+
 	if recursive {
-		err = filepath.Walk(srcPath, a.walkCollect(srcPath, &files))
+		err = fs.WalkDir(dir, ".", a.walkCollect(&files))
 		if err != nil {
 			return &Result{Status: "failed", Error: fmt.Errorf("failed to walk directory: %w", err)}
 		}
 	} else {
-		entries, err := os.ReadDir(srcPath)
+		entries, err := fs.ReadDir(dir, ".")
 		if err != nil {
 			return &Result{Status: "failed", Error: fmt.Errorf("failed to read directory: %w", err)}
 		}
@@ -65,29 +75,26 @@ func (a *List) Apply(ctx context.Context, basePath string) *Result {
 		}
 	}
 
-	slog.Debug("Listed files", "path", srcPath, "count", len(files), "recursive", recursive)
+	slog.Debug("Listed files", "path", filepath.Join(basePath, a.In), "count", len(files), "recursive", recursive)
 	return &Result{Status: "success", Content: files}
 }
 
-func (a *List) walkCollect(root string, files *[]string) filepath.WalkFunc {
-	return func(path string, info os.FileInfo, err error) error {
+func (a *List) walkCollect(files *[]string) fs.WalkDirFunc {
+	return func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		relPath, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if relPath == "." {
+		if p == "." {
 			return nil
 		}
-		if matchesAnyPattern(relPath, a.Excludes) || matchesAnyPattern(filepath.Base(path), a.Excludes) {
-			if info.IsDir() {
-				return filepath.SkipDir
+		relPath := filepath.FromSlash(p)
+		if matchesAnyPattern(relPath, a.Excludes) || matchesAnyPattern(d.Name(), a.Excludes) {
+			if d.IsDir() {
+				return fs.SkipDir
 			}
 			return nil
 		}
-		if !info.IsDir() {
+		if !d.IsDir() {
 			*files = append(*files, relPath)
 		}
 		return nil

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 )
 
 // Read reads file contents for inclusion in a callback event.
@@ -22,9 +20,13 @@ func (a *Read) DependsOn() string    { return a.Depends }
 
 // Apply reads file contents for inclusion in a callback event.
 func (a *Read) Apply(ctx context.Context, basePath string) *Result {
-	srcPath := filepath.Join(basePath, a.In)
+	root, err := openWorkspace(basePath)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+	defer root.Close()
 
-	content, err := os.ReadFile(srcPath)
+	content, err := root.ReadFile(a.In)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to read file: %w", err)}
 	}

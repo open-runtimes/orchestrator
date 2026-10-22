@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"orchestrator/internal/erofs"
@@ -45,25 +46,25 @@ func erofsCompression(name string) (opts erofs.CompressionOptions, ok bool, err 
 	}
 }
 
-// writeErofs builds an erofs image at destPath from the file or directory at
-// srcPath, uncompressed or z_erofs lz4/lz4hc compressed. The kernel erofs
-// driver and the reader mount and extract both forms directly.
-func writeErofs(srcPath, destPath, compression string) error {
+// writeErofs builds an erofs image at the workspace path out from the file or
+// directory at in, uncompressed or z_erofs lz4/lz4hc compressed. The kernel
+// erofs driver and the reader mount and extract both forms directly.
+func writeErofs(root *os.Root, in, out, compression string) error {
 	comp, compressed, err := erofsCompression(compression)
 	if err != nil {
 		return err
 	}
 
-	src, err := sourceFS(srcPath)
+	src, err := sourceFS(root, in)
 	if err != nil {
 		return err
 	}
 
-	out, err := os.Create(destPath)
+	dest, err := root.Create(out)
 	if err != nil {
 		return fmt.Errorf("failed to create archive file: %w", err)
 	}
-	defer out.Close()
+	defer dest.Close()
 
 	// CopyFrom streams each entry from src; sourceFS wraps a single file so it
 	// streams too rather than buffering it (symmetric with writeSquashfs).
@@ -74,7 +75,7 @@ func writeErofs(srcPath, destPath, compression string) error {
 		// roughly half the per-inode metadata on small-file-heavy trees.
 		opts = append(opts, erofs.WithCompression(comp), erofs.WithCompactInodes())
 	}
-	w := erofs.Create(out, opts...)
+	w := erofs.Create(dest, opts...)
 	if err := w.CopyFrom(src); err != nil {
 		return fmt.Errorf("failed to add source: %w", err)
 	}
@@ -84,17 +85,12 @@ func writeErofs(srcPath, destPath, compression string) error {
 	return nil
 }
 
-// extractErofs extracts an erofs image at srcPath into destDir. See extractFS
-// for how strip and subdir are applied. (This is the `unarchive` path; the
-// `mount` artifact mounts the image read-only instead of materializing it.)
-func extractErofs(srcPath, destDir, subdir string, strip bool) error {
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed to open erofs: %w", err)
-	}
-	defer f.Close()
-
-	img, err := erofs.Open(f)
+// extractErofs extracts the erofs image read from src into destDir. See
+// extractFS for how strip and subdir are applied. (This is the `unarchive`
+// path; the `mount` artifact mounts the image read-only instead of
+// materializing it.)
+func extractErofs(src io.ReaderAt, destDir, subdir string, strip bool) error {
+	img, err := erofs.Open(src)
 	if err != nil {
 		return fmt.Errorf("failed to open erofs: %w", err)
 	}
