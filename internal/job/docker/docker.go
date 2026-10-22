@@ -12,6 +12,7 @@ import (
 	"orchestrator/internal/job"
 	"orchestrator/internal/moby"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -173,7 +174,7 @@ func (o *Orchestrator) reconcile(ctx context.Context) error {
 			_ = o.ctrl.Apply(jobID, job.Started{})
 		}
 		o.watchWg.Go(func() {
-			o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
+			o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, cfg.timeout, func(s job.Signal) {
 				_ = o.ctrl.Apply(cfg.jobID, s)
 				job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
 			})
@@ -255,7 +256,7 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	o.ctrl.Commit(req.ID, h, cancelWatch)
 	success = true
 	o.watchWg.Go(func() {
-		o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, func(s job.Signal) {
+		o.watcher.Watch(watchCtx, cfg.sidecarID, cfg.workerID, cfg.timeout, func(s job.Signal) {
 			_ = o.ctrl.Apply(cfg.jobID, s)
 			job.EmitCallback(o.emitter, cfg.jobID, cfg.image, cfg.dest, s)
 		})
@@ -377,9 +378,10 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 	}
 
 	labels := map[string]string{
-		"job.id":     req.ID,
-		"job.type":   "worker",
-		"managed-by": "jobs-service",
+		"job.id":      req.ID,
+		"job.type":    "worker",
+		"managed-by":  "jobs-service",
+		"job.timeout": strconv.Itoa(req.TimeoutSeconds), // the deadline survives a restart
 	}
 
 	// Store original callback config as labels so it can be reconstructed

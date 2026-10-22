@@ -9,7 +9,9 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/job"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/client"
 )
@@ -32,6 +34,7 @@ type watchConfig struct {
 	image     string
 	sidecarID string
 	workerID  string
+	timeout   time.Duration // worker deadline; 0 for none
 	dest      *job.CallbackDest
 }
 
@@ -69,6 +72,7 @@ func watchConfigFromRequest(req *job.Request, h dockerHandle) *watchConfig {
 		image:     req.Image,
 		sidecarID: h.sidecarContainerID,
 		workerID:  h.jobContainerID,
+		timeout:   time.Duration(req.TimeoutSeconds) * time.Second,
 	}
 	if req.Callback != nil && req.Callback.URL != "" {
 		cfg.dest = &job.CallbackDest{
@@ -89,8 +93,19 @@ func watchConfigFromState(cs containerState, h dockerHandle) *watchConfig {
 		image:     cs.workerImage,
 		sidecarID: h.sidecarContainerID,
 		workerID:  h.jobContainerID,
+		timeout:   timeoutFromLabels(cs.workerLabels),
 		dest:      callbackDestFromLabels(cs.workerLabels),
 	}
+}
+
+// timeoutFromLabels reads the worker deadline recorded at creation. Workers
+// created before it was recorded carry none; their sidecar still bounds them.
+func timeoutFromLabels(labels map[string]string) time.Duration {
+	seconds, err := strconv.Atoi(labels["job.timeout"])
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // callbackDestFromLabels parses callback destination from worker container labels.

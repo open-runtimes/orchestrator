@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"orchestrator/internal/job"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -24,7 +25,11 @@ type LifecycleWatcher interface {
 	// each signal in order: optionally Started, then Exited or Failed, then
 	// Completed once the sidecar has finished post-job artifacts.
 	// LogLine signals may be interleaved after Started.
-	Watch(ctx context.Context, sidecarID, workerID string, emit func(job.Signal))
+	//
+	// A worker still running timeout after it started is killed and exits with
+	// ExitReasonTimeout; 0 sets no deadline. A worker still running when its
+	// sidecar exits is killed too, and the job fails.
+	Watch(ctx context.Context, sidecarID, workerID string, timeout time.Duration, emit func(job.Signal))
 }
 
 // dockerLifecycleWatcher implements LifecycleWatcher using the Docker API.
@@ -44,14 +49,21 @@ type watcherState struct {
 	startTime       time.Time
 	logCancel       context.CancelFunc
 	logDone         chan struct{}
+
+	timeout  time.Duration
+	deadline *time.Timer
+	timedOut atomic.Bool // set by the deadline before it kills the worker
 }
 
-func (w *dockerLifecycleWatcher) Watch(ctx context.Context, sidecarID, workerID string, out func(job.Signal)) {
+func (w *dockerLifecycleWatcher) Watch(ctx context.Context, sidecarID, workerID string, timeout time.Duration, out func(job.Signal)) {
 	logger := slog.With("sidecarID", sidecarID)
-	state := &watcherState{}
+	state := &watcherState{timeout: timeout}
 
 	defer func() {
 		w.stopLogStreaming(state)
+		if state.deadline != nil {
+			state.deadline.Stop()
+		}
 	}()
 
 	for {
@@ -107,6 +119,8 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 			// Sidecar exit missed during a stream disconnect; the worker exit
 			// was already emitted, so only the completion is outstanding.
 			out(job.Completed{})
+		default:
+			w.stopOrphanedWorker(ctx, logger, workerID, state, out)
 		}
 		return true
 	}
@@ -138,6 +152,9 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		case "running", "exited", "dead":
 			state.isWorkerStarted = true
 			state.startTime = ws.startedAt
+			if ws.running {
+				w.armDeadline(logger, workerID, state)
+			}
 		}
 	}
 
@@ -152,6 +169,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		}
 		state.isWorkerStarted = true
 		ws.running = true
+		w.armDeadline(logger, workerID, state)
 		out(job.Started{})
 	}
 
@@ -167,7 +185,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		if !state.startTime.IsZero() {
 			duration = time.Since(state.startTime)
 		}
-		reason := exitReason(ws.exitCode, state.isWorkerOOM || ws.oomKilled)
+		reason := w.workerExitReason(ws.exitCode, state.isWorkerOOM || ws.oomKilled, state)
 		logger.Info("Worker exited (reconciled)", "exitCode", ws.exitCode, "reason", reason)
 		w.stopLogStreaming(state)
 		if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
@@ -208,6 +226,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 					return true
 				}
 				state.isWorkerStarted = true
+				w.armDeadline(logger, workerID, state)
 				out(job.Started{})
 				state.logCancel, state.logDone = w.startLogStreaming(ctx, logger, workerID, out)
 
@@ -221,7 +240,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 			case event.Actor.ID == workerID && event.Action == "die" && !state.isWorkerExited:
 				state.isWorkerExited = true
 				exitCode := w.parseExitCode(event)
-				reason := exitReason(exitCode, state.isWorkerOOM || w.inspectOOMKilled(ctx, workerID))
+				reason := w.workerExitReason(exitCode, state.isWorkerOOM || w.inspectOOMKilled(ctx, workerID), state)
 				duration := time.Duration(0)
 				if !state.startTime.IsZero() {
 					duration = time.Since(state.startTime)
@@ -242,7 +261,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 					logger.Error("Sidecar exited before inputs completed", "reason", reason)
 					out(job.Failed{Reason: reason})
 				case !state.isWorkerExited:
-					logger.Warn("Sidecar exited while worker still running")
+					w.stopOrphanedWorker(ctx, logger, workerID, state, out)
 				default:
 					logger.Info("Sidecar exited, job complete")
 					out(job.Completed{})
@@ -251,6 +270,50 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 			}
 		}
 	}
+}
+
+// armDeadline kills the worker once it has run for the job's timeout,
+// counted from when it started. The kill surfaces as the worker's die event,
+// which reports ExitReasonTimeout and releases the sidecar's post phase; the
+// sidecar's own wait outlasts this deadline, so the post phase never starts
+// while the worker still runs.
+func (w *dockerLifecycleWatcher) armDeadline(logger *slog.Logger, workerID string, state *watcherState) {
+	if state.timeout <= 0 || state.deadline != nil {
+		return
+	}
+	remaining := state.timeout
+	if !state.startTime.IsZero() {
+		remaining -= time.Since(state.startTime)
+	}
+	state.deadline = time.AfterFunc(max(remaining, 0), func() {
+		state.timedOut.Store(true)
+		logger.Warn("Worker exceeded its timeout, stopping it", "timeout", state.timeout)
+		if err := w.client.ContainerKill(context.Background(), workerID, "SIGKILL"); err != nil {
+			logger.Warn("Failed to stop worker at its timeout", "error", err)
+		}
+	})
+}
+
+// workerExitReason classifies a worker exit, preferring the deadline: a
+// worker this watcher killed at its timeout exited because of it.
+func (w *dockerLifecycleWatcher) workerExitReason(exitCode int, oomKilled bool, state *watcherState) string {
+	if state.timedOut.Load() {
+		return job.ExitReasonTimeout
+	}
+	return exitReason(exitCode, oomKilled)
+}
+
+// stopOrphanedWorker handles a sidecar that exited while its worker still
+// runs: nothing is left to collect the worker's outputs or bound its run, so
+// the worker is killed and the job fails.
+func (w *dockerLifecycleWatcher) stopOrphanedWorker(ctx context.Context, logger *slog.Logger, workerID string, state *watcherState, out func(job.Signal)) {
+	logger.Warn("Sidecar exited while worker still running, stopping worker")
+	w.stopLogStreaming(state)
+	if err := w.client.ContainerKill(context.WithoutCancel(ctx), workerID, "SIGKILL"); err != nil {
+		logger.Warn("Failed to stop worker", "error", err)
+	}
+	state.isWorkerExited = true
+	out(job.Failed{Reason: "sidecar exited while the worker was running"})
 }
 
 func (w *dockerLifecycleWatcher) startLogStreaming(ctx context.Context, logger *slog.Logger, workerID string, out func(job.Signal)) (cancel context.CancelFunc, done chan struct{}) {

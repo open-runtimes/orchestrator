@@ -14,7 +14,7 @@ type fakeWatcher struct {
 	events []job.Signal
 }
 
-func (f *fakeWatcher) Watch(_ context.Context, _, _ string, emit func(job.Signal)) {
+func (f *fakeWatcher) Watch(_ context.Context, _, _ string, _ time.Duration, emit func(job.Signal)) {
 	for _, e := range f.events {
 		emit(e)
 	}
@@ -23,7 +23,7 @@ func (f *fakeWatcher) Watch(_ context.Context, _, _ string, emit func(job.Signal
 // blockingWatcher blocks until ctx is cancelled.
 type blockingWatcher struct{}
 
-func (b *blockingWatcher) Watch(ctx context.Context, _, _ string, _ func(job.Signal)) {
+func (b *blockingWatcher) Watch(ctx context.Context, _, _ string, _ time.Duration, _ func(job.Signal)) {
 	<-ctx.Done()
 }
 
@@ -93,7 +93,7 @@ func TestLifecycle_HappyPath(t *testing.T) {
 		job.Exited{ExitCode: 0, Duration: 2 * time.Second},
 		job.Completed{},
 	}}
-	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", 0, func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -131,7 +131,7 @@ func TestLifecycle_WorkerFailure(t *testing.T) {
 		job.Started{},
 		job.Exited{ExitCode: 1, Duration: time.Second},
 	}}
-	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", 0, func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -162,7 +162,7 @@ func TestLifecycle_SidecarCrashBeforeWorker(t *testing.T) {
 	w := &fakeWatcher{events: []job.Signal{
 		job.Failed{Reason: "sidecar exited before inputs completed"},
 	}}
-	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", 0, func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -196,7 +196,7 @@ func TestLifecycle_LogDelivered(t *testing.T) {
 		job.LogLine{Stream: "stdout", Lines: []string{"hello", "world"}},
 		job.Exited{ExitCode: 0},
 	}}
-	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", 0, func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -227,7 +227,7 @@ func TestLifecycle_LogSkippedWhenNoCallback(t *testing.T) {
 		job.LogLine{Stream: "stdout", Lines: []string{"hello"}},
 		job.Exited{ExitCode: 0},
 	}}
-	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", 0, func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", nil, s)
 	})
@@ -254,7 +254,7 @@ func TestLifecycle_LogSkippedWhenFilteredOut(t *testing.T) {
 		job.LogLine{Stream: "stderr", Lines: []string{"warning"}},
 		job.Exited{ExitCode: 0},
 	}}
-	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", 0, func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -297,7 +297,7 @@ func TestLifecycle_ResumeNoStarted(t *testing.T) {
 	w := &fakeWatcher{events: []job.Signal{
 		job.Exited{ExitCode: 0, Duration: 5 * time.Second},
 	}}
-	w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+	w.Watch(t.Context(), "sc-1", "wk-1", 0, func(s job.Signal) {
 		_ = ctrl.Apply("job-1", s)
 		job.EmitCallback(emitter, "job-1", "alpine:latest", dest, s)
 	})
@@ -328,7 +328,7 @@ func TestLifecycle_ContextCancelled(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		(&blockingWatcher{}).Watch(ctx, "sc-1", "wk-1", func(s job.Signal) {
+		(&blockingWatcher{}).Watch(ctx, "sc-1", "wk-1", 0, func(s job.Signal) {
 			_ = ctrl.Apply("job-1", s)
 			job.EmitCallback(emitter, "job-1", "alpine:latest", nil, s)
 		})

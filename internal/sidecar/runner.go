@@ -228,10 +228,15 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	// (timeout 0) waits on the caller's context alone: the pod, not a job
 	// deadline, decides when it dies, and kubelet's SIGTERM ends the hold —
 	// a deadline there would tear the mounts out from under a serving workload.
+	//
+	// The backend enforces the deadline on the worker and signals completion
+	// once the worker is gone, so the hold outlasts the deadline by holdGrace:
+	// it only fires when that signal is lost, and the post phase never starts
+	// against a worker that is still running.
 	holdCtx := ctx
 	if r.timeoutSeconds > 0 {
 		var cancelHold context.CancelFunc
-		holdCtx, cancelHold = context.WithTimeout(ctx, r.phaseTimeout())
+		holdCtx, cancelHold = context.WithTimeout(ctx, r.phaseTimeout()+holdGrace)
 		defer cancelHold()
 	}
 	logger.Info("Waiting for worker completion signal")
@@ -398,6 +403,10 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	logger.Info("Sidecar post-mode completed")
 	return nil
 }
+
+// holdGrace is how long the combined-mode hold outlasts the job deadline the
+// backend enforces on the worker.
+const holdGrace = 30 * time.Second
 
 // phaseTimeout bounds an individual artifact phase (downloads, mounts, the
 // post-job flush). It is the job timeout when the job is bounded; an unbounded
