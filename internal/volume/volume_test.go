@@ -26,3 +26,24 @@ func TestVolume_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestVolume_Validate_AllowedVolumes(t *testing.T) {
+	vol := func(source string) Volume { return Volume{Source: source, Path: "/data"} }
+
+	t.Setenv(EnvAllowedVolumes, "")
+	if err := vol("anything").Validate("volumes[0]"); err != nil {
+		t.Errorf("no allowlist: Validate() = %v, want any source accepted", err)
+	}
+
+	t.Setenv(EnvAllowedVolumes, " appwrite-builds , cache ")
+	for _, source := range []string{"appwrite-builds", "cache"} {
+		if err := vol(source).Validate("volumes[0]"); err != nil {
+			t.Errorf("Validate(%q) = %v, want allowed", source, err)
+		}
+	}
+	for _, source := range []string{"appwrite-mariadb", "job-other-workspace", "appwrite-builds2", "Cache"} {
+		if err := vol(source).Validate("volumes[0]"); err == nil {
+			t.Errorf("Validate(%q) = nil, want it refused", source)
+		}
+	}
+}
