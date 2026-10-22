@@ -230,7 +230,7 @@ Defense in depth, each layer independently optional:
 
 **Pod security floor (always on).** Every workload pod runs as non-root (uid 65532) with all capabilities dropped, `RuntimeDefault` seccomp, a read-only root filesystem, and no ServiceAccount token — admissible under Pod Security Standards `restricted`.
 
-**Dedicated workload namespace.** With `workloadNamespace.enabled=true`, workload pods (deployment revisions, warm pools, sandboxes) run in their own namespace (default `{release}-workloads`), separated from the control plane:
+**Dedicated workload namespaces.** With `workloadNamespace.enabled=true`, each plane's workload pods run in a namespace of their own, separated from the control plane and from each other: deployment revisions and their warm pools in `{release}-deployments`, sandboxes and theirs in `{release}-sandboxes` (`deploymentsName` / `sandboxName` override them). Sandboxes run untrusted code, so they never share a namespace, isolation policy or quota with deployments, and each plane's pool controller has its own ServiceAccount, allowed only in its own namespace:
 
 ```yaml
 workloadNamespace:
@@ -246,7 +246,7 @@ workloadNamespace:
     requestsMemory: 200Gi
 ```
 
-The NetworkPolicy admits ingress only from the gateway, the activator, the sandbox proxy, and the control planes, and blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
+Each namespace's NetworkPolicy admits ingress only from its own plane: the gateway, the activator, the deployments service and the revision pool controller for deployments; the sandbox proxy, the sandbox service and the sandbox pool controller for sandboxes. It also blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
 <a id="isolation-tiers"></a>
 **Isolation tiers.** Workloads can request stronger kernel isolation with `"runtimeClass": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.

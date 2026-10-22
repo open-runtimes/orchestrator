@@ -558,7 +558,10 @@
         "enabled": {
           "type": "boolean"
         },
-        "name": {
+        "deploymentsName": {
+          "type": "string"
+        },
+        "sandboxName": {
           "type": "string"
         },
         "create": {

@@ -1,6 +1,14 @@
-{{- if and (or .Values.deployments.enabled .Values.sandbox.enabled) .Values.workloadNamespace.enabled }}
-{{- $ns := include "orchestrator.workloadNamespace" . }}
+{{- /*
+  One hardened namespace per enabled workload plane, so sandboxes (untrusted
+  code) and deployments never share a namespace, isolation policy or quota.
+*/}}
+{{- if .Values.workloadNamespace.enabled }}
+{{- range $plane := list "deployments" "sandbox" }}
+{{- with $ }}
+{{- if index .Values $plane "enabled" }}
+{{- $ns := include (printf "orchestrator.%sNamespace" $plane) . }}
 {{- if .Values.workloadNamespace.create }}
+---
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -15,32 +23,30 @@ metadata:
 {{- end }}
 {{- if .Values.workloadNamespace.networkPolicy.enabled }}
 ---
-# Workload isolation: default-deny ingress to managed pods, admitting only
-# the data path (gateway), the activator (deployment cold/async buffering), the
-# sandbox proxy, and the control planes (claim POSTs, /stats scrapes, direct
+# Workload isolation: default-deny ingress to the plane's pods, admitting only
+# its data path (the gateway and activator for deployments, the sandbox proxy
+# for sandboxes) and its control planes (claim POSTs, /stats scrapes, direct
 # probes).
 # Egress blocks the cloud metadata endpoint — the highest-value single rule
 # (docs/operations.md). Requires an enforcing CNI.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "orchestrator.fullname" . }}-workload-isolation
+  name: {{ include "orchestrator.fullname" . }}-{{ $plane }}-isolation
   namespace: {{ $ns }}
   labels:
     {{- include "orchestrator.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchExpressions:
-      - key: managed-by
-        operator: In
-        values: ["deployments-service", "sandbox-service"]
+    matchLabels:
+      managed-by: {{ $plane }}-service
   policyTypes: ["Ingress", "Egress"]
   ingress:
     - from:
+        {{- if eq $plane "deployments" }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.workloadNamespace.networkPolicy.gatewayNamespace }}
-        {{- if .Values.deployments.enabled }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
@@ -61,8 +67,9 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/component: pool-controller
+              orchestrator.open-runtimes.io/pool-kind: {{ ternary "revision" "sandbox" (eq $plane "deployments") }}
         {{- end }}
-        {{- if .Values.sandbox.enabled }}
+        {{- if eq $plane "sandbox" }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
@@ -70,7 +77,7 @@ spec:
             matchLabels:
               app.kubernetes.io/component: sandbox
         {{- end }}
-        {{- if .Values.sandbox.proxy.enabled }}
+        {{- if and (eq $plane "sandbox") .Values.sandbox.proxy.enabled }}
         # The sandbox proxy is permanently on the data path for sandbox pods.
         - namespaceSelector:
             matchLabels:
@@ -94,7 +101,7 @@ spec:
             cidr: 0.0.0.0/0
             except: ["169.254.169.254/32"]
 {{- end }}
-{{- if and .Values.deployments.enabled (ne $ns .Release.Namespace) }}
+{{- if and (eq $plane "deployments") (ne $ns .Release.Namespace) }}
 ---
 # The cold endpoint flip watches activator pods, which stay with the control
 # plane in the release namespace — the service's workload-namespace Role
@@ -154,7 +161,7 @@ spec:
 apiVersion: v1
 kind: ResourceQuota
 metadata:
-  name: {{ include "orchestrator.fullname" . }}-workloads
+  name: {{ include "orchestrator.fullname" . }}-{{ $plane }}
   namespace: {{ $ns }}
   labels:
     {{- include "orchestrator.labels" . | nindent 4 }}
@@ -163,5 +170,8 @@ spec:
     pods: {{ .Values.workloadNamespace.resourceQuota.pods | quote }}
     requests.cpu: {{ .Values.workloadNamespace.resourceQuota.requestsCpu | quote }}
     requests.memory: {{ .Values.workloadNamespace.resourceQuota.requestsMemory | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}

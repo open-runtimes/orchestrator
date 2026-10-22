@@ -4,7 +4,8 @@
 {{- $pluginDir := printf "/var/lib/kubelet/plugins/%s" $driver -}}
 {{- $namespaces := list -}}
 {{- if .Values.jobs.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.jobNamespace" .) }}{{ end -}}
-{{- if or .Values.deployments.enabled .Values.sandbox.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.workloadNamespace" .) }}{{ end -}}
+{{- if .Values.deployments.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.deploymentsNamespace" .) }}{{ end -}}
+{{- if .Values.sandbox.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.sandboxNamespace" .) }}{{ end -}}
 {{- if not $namespaces }}{{ fail "mountAgent.enabled needs jobs, deployments or sandbox enabled" }}{{ end -}}
 # Inline ephemeral volumes only: each mounting pod's workspace is created on
 # publish and destroyed on unpublish, so there is no controller to attach.

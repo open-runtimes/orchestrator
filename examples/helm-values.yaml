@@ -34,8 +34,8 @@ jobs:
 
 # Run workload pods in their own hardened namespace: restricted Pod Security
 # admission, default-deny NetworkPolicy (requires an enforcing CNI), the
-# cloud-metadata egress block, and a capacity quota. This is chart-global
-# because deployment and sandbox workloads share it.
+# cloud-metadata egress block, and a capacity quota, applied to each enabled
+# plane's own namespace (<release>-deployments, <release>-sandboxes).
 workloadNamespace:
   enabled: true
   podSecurity: restricted

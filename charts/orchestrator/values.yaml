@@ -283,15 +283,18 @@ deployments:
     limits:
       memory: 256Mi
 
-# Hardened workload namespace: run workloads (deployment revisions, warm
-# pools, sandboxes) in a dedicated namespace instead of the release namespace,
-# with Pod Security Admission and network isolation applied. Shared by the
-# deployments and sandboxes planes. The Gateway must allow routes from this
-# namespace (allowedRoutes.namespaces != Same).
+# Hardened workload namespaces: run each plane's workloads (deployment
+# revisions and their pools; sandboxes and theirs) in a dedicated namespace
+# instead of the release namespace, with Pod Security Admission and network
+# isolation applied. Sandboxes never share one with deployments. The Gateway
+# must allow routes from the deployments namespace
+# (allowedRoutes.namespaces != Same).
 workloadNamespace:
   enabled: false
-  # Empty = "<release namespace>-workloads".
-  name: ""
+  # Each enabled plane gets its own namespace, hardened the same way. Empty =
+  # "<release namespace>-deployments" / "<release namespace>-sandboxes".
+  deploymentsName: ""
+  sandboxName: ""
   # Create the namespace (with the labels below). Disable if it is
   # provisioned externally.
   create: true

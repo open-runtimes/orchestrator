@@ -87,7 +87,7 @@ spec:
             - name: POOL_SHIM_IMAGE
               value: {{ include "orchestrator.poolShimImage" . | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ include "orchestrator.workloadNamespace" . | quote }}
+              value: {{ include "orchestrator.sandboxNamespace" . | quote }}
             - name: KUBE_CPU_OVERCOMMIT
               value: {{ .Values.sandbox.cpuOvercommit | quote }}
             - name: KUBE_MEMORY_OVERCOMMIT
@@ -185,7 +185,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.sandboxName" . }}
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  namespace: {{ include "orchestrator.sandboxNamespace" . }}
   labels:
     {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
 rules:
@@ -209,7 +209,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.sandboxName" . }}
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  namespace: {{ include "orchestrator.sandboxNamespace" . }}
   labels:
     {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
 roleRef:
