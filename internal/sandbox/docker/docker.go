@@ -357,6 +357,10 @@ func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Spec, req *sandb
 	if command := cmp.Or(req.Command, p.Command); command != "" {
 		cmd = []string{"/bin/sh", "-c", command}
 	}
+	volumeMounts, err := moby.Mounts(ctx, o.client, p.Volumes)
+	if err != nil {
+		return "", err
+	}
 	resp, err := o.client.ContainerCreate(ctx,
 		&container.Config{
 			Image:      p.Image,
@@ -366,7 +370,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Spec, req *sandb
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
 		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID)}, moby.Mounts(p.Volumes)...),
+			Mounts: append([]mount.Mount{o.workspaceMount(req.ID)}, volumeMounts...),
 			Resources: container.Resources{
 				NanoCPUs: int64(p.CPU * 1e9),
 				Memory:   int64(p.Memory) * 1024 * 1024,

@@ -409,8 +409,13 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 		Labels:     labels,
 	}
 
+	volumeMounts, err := moby.Mounts(ctx, o.client, req.Volumes)
+	if err != nil {
+		return "", err
+	}
+
 	hostConfig := &container.HostConfig{
-		Mounts: append([]mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)}, moby.Mounts(req.Volumes)...),
+		Mounts: append([]mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)}, volumeMounts...),
 		Resources: container.Resources{
 			NanoCPUs: int64(clampCPU(req.CPU) * 1e9),
 			Memory:   int64(req.Memory) * 1024 * 1024,
