@@ -163,15 +163,17 @@ sandbox:
 
 Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-backend), without warm pools or isolation tiers. In production the sandbox proxy is its own Deployment behind one wildcard `HTTPRoute` for `*.{domain}` — not a mode of the activator: it is permanently on the request path, reads pods only, and raises nothing. Scale it for sandbox traffic (`sandbox.proxy.autoscaling`) rather than for cold starts.
 
-**Mounting costs a privileged container, wherever it happens.** A loop mount needs `CAP_SYS_ADMIN` and root, so the sidecar performing it runs privileged and the shared workspace carries mount propagation. It is granted only where a mount was actually asked for:
+**Mounting costs a privileged container, unless the node mount agent does it.** A loop mount needs `CAP_SYS_ADMIN` and root, so by default the sidecar performing it runs privileged and the shared workspace carries mount propagation. It is granted only where a mount was actually asked for:
 
 | Workload | Privileged when |
 | --- | --- |
-| [Job](jobs.md#mount-artifact) | the request has a `mount` artifact — that pod only |
+| [Job](jobs.md#mount-artifact) | the request has a `mount` artifact — that pod only. Never with `jobs.mountMode: agent` (below) |
 | [Deployment revision](deployments.md#the-request-spec) | the request has a `mount` artifact — every replica of that revision |
 | [Sandbox](sandboxes.md#mounting-a-filesystem-image) / [pooled Revision](pools.md) | the **pool** sets `mounts: true` — every pod in the pool, since warm pods predate the claim |
 
 The last row is the one to watch: standing capacity means the privileged container is there before any request arrives, so treat a mounting pool as trusted infrastructure and keep untrusted workloads on pools without the capability.
+
+**The node mount agent moves that privilege out of the pod** ([design](design/node-mount-agent.md)). With `mountAgent.enabled: true` and `jobs.mountMode: agent`, a DaemonSet serves each mounting job's workspace as a CSI inline volume and performs its mounts from the node; the job's sidecar stays unprivileged and asks the agent over HTTP with a token minted for that pod. Same artifact API, same mount layout, no measurable latency. The agent itself runs privileged on the host network, and its API is reachable on every node's IP: the per-pod token is the boundary, so treat the agent as node infrastructure. Deployments, pools and sandboxes still mount from a privileged sidecar for now.
 
 **A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandbox.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
 

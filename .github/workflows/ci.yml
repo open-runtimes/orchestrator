@@ -54,10 +54,14 @@ jobs:
       - name: Run tests
         run: go test -race -coverprofile=coverage.out ./...
 
-      - name: Test kernel mount cleanup
+      - name: Test kernel mounts
         run: |
           go test -c ./internal/sidecar -o /tmp/sidecar.test
+          go test -c ./internal/mount -o /tmp/mount.test
+          go test -c ./internal/mountagent -o /tmp/mountagent.test
           sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/sidecar.test -test.run TestKernelMounterBusyCleanup -test.v
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/mount.test -test.run 'TestBeneath|TestRoot' -test.v
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/mountagent.test -test.run TestPublishMountUnpublish -test.v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -87,6 +91,7 @@ jobs:
           go build -o /dev/null ./cmd/deployments-activator
           go build -o /dev/null ./cmd/sandbox-proxy
           go build -o /dev/null ./cmd/pool-shim
+          go build -o /dev/null ./cmd/mount-agent
 
   images:
     needs: [lint, helm, test, build]
@@ -212,6 +217,16 @@ jobs:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/pool-shim
         run: |
           ko build ./cmd/pool-shim \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
+      - name: Build and push mount-agent
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/mount-agent
+          RELEASE_VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          ko build ./cmd/mount-agent \
             --bare \
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64

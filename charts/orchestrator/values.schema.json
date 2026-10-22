@@ -198,6 +198,10 @@
         "workloadNodeSelector": {
           "$ref": "#/$defs/stringMap"
         },
+        "mountMode": {
+          "type": "string",
+          "enum": ["sidecar", "agent"]
+        },
         "logFlushInterval": {
           "$ref": "#/$defs/duration"
         },
@@ -514,6 +518,41 @@
         },
         "agentImage": {
           "$ref": "#/$defs/pullableImage"
+        }
+      }
+    },
+    "mountAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/$defs/pullableImage"
+        },
+        "driverName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "$ref": "#/$defs/port"
+        },
+        "registrarImage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/$defs/tolerations"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
         }
       }
     },

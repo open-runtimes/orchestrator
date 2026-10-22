@@ -135,6 +135,11 @@ jobs:
   #   workloadNodeSelector:
   #     workload: edge-builds
   workloadNodeSelector: {}
+  # Who performs a job's `mount` artifacts. "sidecar" (default): a privileged
+  # container inside the job pod. "agent": the node mount agent (mountAgent
+  # below, which must be enabled), so the job pod has no privileged container
+  # (docs/design/node-mount-agent.md). Jobs without a mount are unaffected.
+  mountMode: sidecar
   # Max time buffered job log lines wait before a callback flush (they also
   # flush at 32 lines) — keeps low-volume build logs streaming in near real time.
   logFlushInterval: 1s
@@ -313,6 +318,35 @@ workloadNamespace:
     pods: 200
     requestsCpu: "100"
     requestsMemory: 200Gi
+
+# Node mount agent (docs/design/node-mount-agent.md): a DaemonSet that serves
+# each mounting pod's workspace as a CSI inline volume and performs its
+# artifact mounts from the node, so the pod needs no privileged container.
+# Required by jobs.mountMode=agent. The agent itself runs privileged on the
+# host network; its API is gated by a per-pod token, not by address.
+mountAgent:
+  enabled: false
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/mount-agent
+    tag: "" # defaults to the chart's appVersion
+    pullPolicy: IfNotPresent
+  # CSI driver name; the jobs service targets the same name.
+  driverName: mount.open-runtimes.dev
+  # Port the mount API listens on, on each node's own IP.
+  port: 9878
+  registrarImage: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
+  # Run wherever mounting pods run: match the job pods' node selector and
+  # tolerations.
+  nodeSelector: {}
+  tolerations: []
+  priorityClassName: system-node-critical
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
 
 # Image for the workload-sidecar: the reverse proxy in front of every serving
 # workload — deployment replicas (created or pool-claimed) and sandboxes. One image for

@@ -30,3 +30,10 @@ builds:
     main: .
     ldflags:
       - -s -w
+
+  - id: mount-agent
+    dir: ./cmd/mount-agent
+    main: .
+    ldflags:
+      - -s -w
+      - -X main.releaseVersion={{index .Env "RELEASE_VERSION"}}

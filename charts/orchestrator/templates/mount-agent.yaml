@@ -1,0 +1,123 @@
+{{- if .Values.mountAgent.enabled }}
+{{- $name := printf "%s-mount-agent" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $driver := .Values.mountAgent.driverName -}}
+{{- $pluginDir := printf "/var/lib/kubelet/plugins/%s" $driver -}}
+# Inline ephemeral volumes only: each mounting pod's workspace is created on
+# publish and destroyed on unpublish, so there is no controller to attach.
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: {{ $driver }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+spec:
+  attachRequired: false
+  podInfoOnMount: true
+  volumeLifecycleModes: [Ephemeral]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mount-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: mount-agent
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: mount-agent
+    spec:
+      # The mount API listens on the node's own IP, which is where sidecars
+      # reach it (status.hostIP); the workspace token is the boundary.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .Values.mountAgent.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with include "orchestrator.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.mountAgent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mountAgent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mount-agent
+          image: {{ include "orchestrator.mountAgentImage" . | quote }}
+          imagePullPolicy: {{ .Values.mountAgent.image.pullPolicy }}
+          # Loop devices, mount(2), and propagation into kubelet's pod
+          # directories: privileged here, so that no job pod has to be.
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: NODE_IP
+              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
+            - name: LISTEN_ADDR
+              value: "$(NODE_IP):{{ .Values.mountAgent.port }}"
+            - name: DRIVER_NAME
+              value: {{ $driver | quote }}
+            - name: CSI_ENDPOINT
+              value: /csi/csi.sock
+            - name: STATE_DIR
+              value: {{ $pluginDir | quote }}
+          ports:
+            - name: api
+              containerPort: {{ .Values.mountAgent.port }}
+          livenessProbe:
+            httpGet: {path: /healthz, port: api}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.mountAgent.resources | nindent 12 }}
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: state-dir
+              mountPath: {{ $pluginDir }}
+            # Same path as on the host, Bidirectional: the workspace binds and
+            # artifact mounts made here must reach kubelet and the pods.
+            - name: kubelet-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: dev
+              mountPath: /dev
+        - name: registrar
+          image: {{ .Values.mountAgent.registrarImage | quote }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path={{ $pluginDir }}/csi.sock
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {memory: 32Mi}
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      volumes:
+        - name: plugin-dir
+          hostPath: {path: {{ $pluginDir }}, type: DirectoryOrCreate}
+        - name: state-dir
+          hostPath: {path: {{ $pluginDir }}, type: DirectoryOrCreate}
+        - name: kubelet-dir
+          hostPath: {path: /var/lib/kubelet, type: Directory}
+        - name: registration-dir
+          hostPath: {path: /var/lib/kubelet/plugins_registry, type: Directory}
+        - name: dev
+          hostPath: {path: /dev, type: Directory}
+{{- end }}
