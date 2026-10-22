@@ -56,12 +56,10 @@ jobs:
 
       - name: Test kernel mounts
         run: |
-          go test -c ./internal/sidecar -o /tmp/sidecar.test
           go test -c ./internal/mount -o /tmp/mount.test
-          go test -c ./internal/mountagent -o /tmp/mountagent.test
-          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/sidecar.test -test.run TestKernelMounterBusyCleanup -test.v
+          go test -c ./internal/mountagent/node -o /tmp/node.test
           sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/mount.test -test.run 'TestBeneath|TestRoot' -test.v
-          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/mountagent.test -test.run TestPublishMountUnpublish -test.v
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/node.test -test.run TestPublishMountUnpublish -test.v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -343,18 +341,7 @@ jobs:
 
       - name: Install node mount agent
         # For the agent-mode mount tests (TestIntegration_AgentMounts).
-        run: |
-          kubectl --context kind-orchestrator-dev create namespace orchestrator-integration --dry-run=client -o yaml \
-            | kubectl --context kind-orchestrator-dev apply -f -
-          helm template orchestrator charts/orchestrator \
-            --namespace orchestrator-integration \
-            --set mountAgent.enabled=true \
-            --set mountAgent.image.ref=ko.local/mount-agent:latest \
-            --set mountAgent.image.pullPolicy=Never \
-            --show-only templates/mount-agent.yaml \
-            | kubectl --context kind-orchestrator-dev apply -f -
-          kubectl --context kind-orchestrator-dev -n orchestrator-integration \
-            rollout status daemonset/orchestrator-mount-agent --timeout=120s
+        run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-mount-agent.sh
 
       - name: Install Gateway API + Traefik
         run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-gateway.sh

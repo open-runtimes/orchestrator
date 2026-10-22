@@ -93,7 +93,7 @@ func run(mode string) error {
 	// With a workspace token the node agent performs the mounts and this
 	// container holds no privilege; without one it mounts itself.
 	if token := os.Getenv(mountagent.EnvToken); token != "" {
-		opts = append(opts, sidecar.WithMounter(mountagent.NewClient(os.Getenv(mountagent.EnvEndpoint), token, cfg.SharedVolumePath)))
+		opts = append(opts, sidecar.WithMounter(mountagent.NewClient(os.Getenv(mountagent.EnvEndpoint), token)))
 	}
 	runner := sidecar.NewRunner(cfg.JobID, cfg.SharedVolumePath, cfg.TimeoutSeconds, opts...)
 

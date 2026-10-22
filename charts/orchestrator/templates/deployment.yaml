@@ -100,14 +100,7 @@ spec:
             - name: KUBE_WORKLOAD_NODE_SELECTOR
               value: {{ toJson . | quote }}
             {{- end }}
-            {{- if eq .Values.jobs.mountMode "agent" }}
-            {{- if not .Values.mountAgent.enabled }}
-            {{- fail "jobs.mountMode=agent requires mountAgent.enabled=true" }}
-            {{- end }}
-            - name: KUBE_MOUNT_MODE
-              value: agent
-            - name: KUBE_MOUNT_AGENT_DRIVER
-              value: {{ .Values.mountAgent.driverName | quote }}
+            {{- if .Values.mountAgent.enabled }}
             - name: KUBE_MOUNT_AGENT_PORT
               value: {{ .Values.mountAgent.port | quote }}
             {{- end }}

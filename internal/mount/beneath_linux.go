@@ -7,23 +7,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// Beneath performs artifact mounts inside a Root from outside the pod: the
-// node mount agent's half of the job the privileged in-pod sidecar does today.
-// The layout is identical (LowerDir, ScratchDir, UpperDir), so a runner that
-// syncs an upper or adopts existing mounts cannot tell which one did the work.
-//
-// Paths are relative to the Root and resolved through it on every step,
-// because the workload shares the workspace and can rename or replace any
+// Beneath performs artifact mounts inside a workspace directory: the sidecar's
+// Mounter when it mounts in the pod, and the node mount agent's when it mounts
+// from the host. Paths are relative to Dir and resolved through a Root on every
+// step, because the workload shares the workspace and can rename or replace any
 // entry at any time. After each mount the path is opened again, since a
 // descriptor taken before a mount still points underneath it.
 type Beneath struct {
-	Root *Root
+	Dir string
 }
+
+// MaxMounts bounds the mounts one workspace may hold. Each image mount takes a
+// loop device and every mount an entry in the node's mount table; a writable
+// image mount uses three.
+const MaxMounts = 64
 
 // unmountBudget bounds how long a teardown waits on a busy mount before
 // detaching it.
@@ -32,38 +35,58 @@ const unmountBudget = 500 * time.Millisecond
 // Mount mounts source at target. A read-only mount loop-mounts an image (or
 // binds a directory) at target directly; a writable mount makes it the lower
 // layer of an overlay whose upper and work layers sit in ScratchDir(target).
-func (b Beneath) Mount(source, target string, opts Opts) (err error) {
+func (b Beneath) Mount(source, target string, opts Opts) error {
+	root, err := OpenRoot(b.Dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	if source, err = Local(source); err != nil {
 		return err
 	}
 	if target, err = Local(target); err != nil {
 		return err
 	}
-	t, err := b.Root.MkdirAll(target, 0o755)
+	if n, err := countMountsUnder(root.Path()); err != nil {
+		return err
+	} else if n >= MaxMounts {
+		return fmt.Errorf("workspace already holds %d mounts (limit %d)", n, MaxMounts)
+	}
+	t, err := root.MkdirAll(target, 0o755)
 	if err != nil {
 		return fmt.Errorf("create mount point: %w", err)
 	}
 	defer t.Close()
 
 	if opts.SourceDir {
-		// Make the extracted directory lower read-only in place first, as the
-		// in-pod mounter does: an overlay over it, or a bind of it, then rests
-		// on a lower the workload cannot change underneath.
-		if err := b.onDir(source, func(dir *os.File) error { return BindReadOnly(dir, dir) }); err != nil {
+		// Make the extracted directory lower read-only in place first: an
+		// overlay over it, or a bind of it, then rests on a lower the workload
+		// cannot change underneath.
+		dir, err := root.OpenDir(source)
+		if err != nil {
+			return err
+		}
+		err = BindReadOnly(dir, dir)
+		dir.Close()
+		if err != nil {
 			return fmt.Errorf("protect directory lower: %w", err)
 		}
 	}
 	if opts.Writable {
-		return b.mountOverlay(source, target, t, opts)
+		return mountOverlay(root, source, target, t, opts)
 	}
 	if opts.SourceDir {
-		err := b.onDir(source, func(dir *os.File) error { return BindReadOnly(dir, t) })
+		dir, err := root.OpenDir(source) // the read-only bind just stacked
+		if err == nil {
+			err = BindReadOnly(dir, t)
+			dir.Close()
+		}
 		if err != nil {
-			_ = b.unmountTop(source, time.Now().Add(unmountBudget))
+			_ = unmountTop(root, source, time.Now().Add(unmountBudget))
 		}
 		return err
 	}
-	img, err := b.Root.OpenFile(source)
+	img, err := root.OpenFile(source)
 	if err != nil {
 		return fmt.Errorf("open image: %w", err)
 	}
@@ -71,16 +94,16 @@ func (b Beneath) Mount(source, target string, opts Opts) (err error) {
 	return Image(img, ProcPath(t))
 }
 
-func (b Beneath) mountOverlay(source, target string, t *os.File, opts Opts) (err error) {
+func mountOverlay(root *Root, source, target string, t *os.File, opts Opts) (err error) {
 	lower, scratch := LowerDir(target), ScratchDir(target)
 	defer func() {
 		if err != nil {
 			deadline := time.Now().Add(unmountBudget)
-			_ = b.unmountTop(scratch, deadline)
-			_ = b.unmountTop(lower, deadline)
-			_ = b.Root.RemoveAll(scratch)
+			_ = unmountTop(root, scratch, deadline)
+			_ = unmountTop(root, lower, deadline)
+			_ = root.RemoveAll(scratch)
 			if !opts.SourceDir {
-				_ = b.Root.RemoveAll(lower)
+				_ = root.RemoveAll(lower)
 			}
 		}
 	}()
@@ -89,11 +112,11 @@ func (b Beneath) mountOverlay(source, target string, t *os.File, opts Opts) (err
 		return fmt.Errorf("directory lower %s does not match mount lower %s", source, lower)
 	}
 	if !opts.SourceDir {
-		l, err := b.Root.MkdirAll(lower, 0o755)
+		l, err := root.MkdirAll(lower, 0o755)
 		if err != nil {
 			return err
 		}
-		img, err := b.Root.OpenFile(source)
+		img, err := root.OpenFile(source)
 		if err != nil {
 			l.Close()
 			return fmt.Errorf("open image: %w", err)
@@ -106,7 +129,7 @@ func (b Beneath) mountOverlay(source, target string, t *os.File, opts Opts) (err
 		}
 	}
 
-	s, err := b.Root.MkdirAll(scratch, 0o755)
+	s, err := root.MkdirAll(scratch, 0o755)
 	if err != nil {
 		return err
 	}
@@ -120,14 +143,14 @@ func (b Beneath) mountOverlay(source, target string, t *os.File, opts Opts) (err
 		return err
 	}
 
-	// Reopen everything the overlay is built from: the lower and scratch
-	// descriptors taken above point underneath the mounts just stacked on them.
-	l, err := b.Root.OpenDir(lower)
+	// Reopen what the overlay is built from: the lower and scratch descriptors
+	// taken above point underneath the mounts just stacked on them.
+	l, err := root.OpenDir(lower)
 	if err != nil {
 		return err
 	}
 	defer l.Close()
-	s, err = b.Root.OpenDir(scratch)
+	s, err = root.OpenDir(scratch)
 	if err != nil {
 		return err
 	}
@@ -155,10 +178,14 @@ func (b Beneath) mountOverlay(source, target string, t *os.File, opts Opts) (err
 // Unmount tears down a mount at target and the scratch and lower beside it,
 // innermost first, then removes their directories. Partial state from an
 // earlier failure is fine: missing pieces are skipped. The target directory
-// itself is left in place, as the in-pod mounter leaves it.
+// itself is left in place.
 func (b Beneath) Unmount(target string) error {
-	target, err := Local(target)
+	root, err := OpenRoot(b.Dir)
 	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if target, err = Local(target); err != nil {
 		return err
 	}
 	deadline := time.Now().Add(unmountBudget)
@@ -167,67 +194,72 @@ func (b Beneath) Unmount(target string) error {
 		return err
 	}
 	if mounted {
-		if err := b.unmountTop(target, deadline); err != nil {
+		if err := unmountTop(root, target, deadline); err != nil {
 			return err
 		}
 	}
 	for _, p := range []string{ScratchDir(target), LowerDir(target)} {
-		if err := b.unmountTop(p, deadline); err != nil {
+		if err := unmountTop(root, p, deadline); err != nil {
 			return err
 		}
-		if err := b.Root.RemoveAll(p); err != nil {
+		if err := root.RemoveAll(p); err != nil {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
 	}
 	return nil
 }
 
-// IsMounted reports whether an artifact mount is stacked at target, by the
-// same mountinfo test the in-pod mounter uses. Only names are compared here,
-// so nothing is resolved.
+// IsMounted reports whether an artifact mount is stacked at target. Unlike a
+// marker file, the kernel mount table survives a native-sidecar container
+// restart and is authoritative for adoption. Only names are compared, so
+// nothing is resolved.
 func (b Beneath) IsMounted(target string) (bool, error) {
 	target, err := Local(target)
 	if err != nil {
 		return false, err
 	}
-	data, err := os.ReadFile("/proc/self/mountinfo")
+	info, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
 		return false, fmt.Errorf("read mountinfo: %w", err)
 	}
-	return HasArtifactMount(string(data), filepath.Join(b.Root.Path(), target)), nil
+	return HasArtifactMount(string(info), filepath.Join(filepath.Clean(b.Dir), target)), nil
 }
 
-// unmountTop removes the top mount at rel, if rel exists and is a mount point.
-// The mount point is checked by name in mountinfo and then unmounted through a
-// descriptor, so a swapped path can neither redirect the unmount nor make the
-// agent unmount something that is not inside the root.
-func (b Beneath) unmountTop(rel string, deadline time.Time) error {
-	data, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		return fmt.Errorf("read mountinfo: %w", err)
+// unmountTop removes the top mount at rel, if rel is a mount point. The mount
+// point is checked by name in mountinfo and then unmounted through the Root, so
+// a swapped path can neither redirect the unmount nor reach outside it.
+func unmountTop(root *Root, rel string, deadline time.Time) error {
+	isMount, err := IsMountPoint(filepath.Join(root.Path(), rel))
+	if err != nil || !isMount {
+		return err
 	}
-	full := filepath.Join(b.Root.Path(), rel)
-	found := false
-	for _, m := range MountsUnder(string(data), full) {
-		if m == full {
-			found = true
-		}
-	}
-	if !found {
-		return nil
-	}
-	err = b.Root.Unmount(rel, deadline)
+	err = root.Unmount(rel, deadline)
 	if errors.Is(err, unix.ENOENT) {
-		return nil // gone between the mountinfo read and the open
+		return nil // gone between the mountinfo read and the unmount
 	}
 	return err
 }
 
-func (b Beneath) onDir(rel string, fn func(*os.File) error) error {
-	dir, err := b.Root.OpenDir(rel)
+// IsMountPoint reports whether path is a mount point, by name in mountinfo.
+func IsMountPoint(path string) (bool, error) {
+	info, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return err
+		return false, fmt.Errorf("read mountinfo: %w", err)
 	}
-	defer dir.Close()
-	return fn(dir)
+	path = filepath.Clean(path)
+	return slices.Contains(MountsUnder(string(info), path), path), nil
+}
+
+func countMountsUnder(dir string) (int, error) {
+	info, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return 0, fmt.Errorf("read mountinfo: %w", err)
+	}
+	n := 0
+	for _, m := range MountsUnder(string(info), dir) {
+		if m != dir {
+			n++
+		}
+	}
+	return n, nil
 }

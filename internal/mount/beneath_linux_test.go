@@ -4,7 +4,7 @@ package mount
 
 import (
 	"errors"
-	"orchestrator/internal/squashfs"
+	"orchestrator/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,19 +94,14 @@ func TestRootRefusesSymlinks(t *testing.T) {
 
 func TestBeneathRefusesSymlinkedPaths(t *testing.T) {
 	ws, outside := t.TempDir(), t.TempDir()
-	writeImage(t, filepath.Join(ws, "img.sqfs"))
+	testutil.WriteSquashfs(t, filepath.Join(ws, "img.sqfs"))
 	if err := os.Symlink(outside, filepath.Join(ws, "out")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(filepath.Join(ws, "img.sqfs"), filepath.Join(ws, "img-link")); err != nil {
 		t.Fatal(err)
 	}
-	root, err := OpenRoot(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	b := Beneath{Root: root}
+	b := Beneath{Dir: ws}
 
 	if err := b.Mount("img.sqfs", "out/code", Opts{}); err == nil {
 		t.Fatal("mounted through a symlinked target")
@@ -123,26 +118,18 @@ func TestBeneathRefusesSymlinkedPaths(t *testing.T) {
 	}
 }
 
-// Run in an isolated mount namespace with CAP_SYS_ADMIN, like the sidecar's
-// kernel mount test: CI invokes it with sudo unshare; unprivileged runs skip.
+// Needs CAP_SYS_ADMIN in a private mount namespace: CI runs it under sudo
+// unshare; unprivileged runs skip.
 func TestBeneathMountLifecycle(t *testing.T) {
+	testutil.RequireMountPrivilege(t)
 	ws := t.TempDir()
-	// Model the workspace volume the agent publishes: a mount point of its own.
+	// Model the workspace volume: a mount point of its own.
 	if err := unix.Mount(ws, ws, "", unix.MS_BIND, ""); err != nil {
-		if errors.Is(err, unix.EPERM) && os.Getenv("REQUIRE_MOUNT_TESTS") != "1" {
-			t.Skip("requires CAP_SYS_ADMIN")
-		}
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = unix.Unmount(ws, unix.MNT_DETACH) })
-	writeImage(t, filepath.Join(ws, "img.sqfs"))
-
-	root, err := OpenRoot(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	b := Beneath{Root: root}
+	testutil.WriteSquashfs(t, filepath.Join(ws, "img.sqfs"))
+	b := Beneath{Dir: ws}
 
 	t.Run("read-only image", func(t *testing.T) {
 		if err := b.Mount("img.sqfs", "ro", Opts{}); err != nil {
@@ -225,6 +212,50 @@ func TestBeneathMountLifecycle(t *testing.T) {
 		assertNoMountsUnder(t, filepath.Join(ws, "tree"))
 	})
 
+	// The target can itself be a Kubernetes volume mount (the runtime pod nests
+	// its code volume inside the workspace), and the workload can hold a file
+	// open in the mount when it is released. Unmount must take only the
+	// artifact mounts, detach the busy one rather than fail, and stay safe to
+	// repeat.
+	t.Run("busy reader is detached and a volume under the target survives", func(t *testing.T) {
+		nested := filepath.Join(ws, "nested")
+		if err := os.MkdirAll(filepath.Join(nested, ".lower"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.Mount(nested, nested, "", unix.MS_BIND, ""); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = unix.Unmount(nested, unix.MNT_DETACH) })
+		if err := os.WriteFile(filepath.Join(nested, ".lower/data"), []byte("still readable"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Mount(LowerDir("nested"), "nested", Opts{Writable: true, SourceDir: true, SizeMiB: 16}); err != nil {
+			t.Fatal(err)
+		}
+		reader, err := os.Open(filepath.Join(nested, "data"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		if err := b.Unmount("nested"); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 32)
+		if n, err := reader.Read(buf); err != nil || string(buf[:n]) != "still readable" {
+			t.Fatalf("detached reader: %q, %v", buf[:n], err)
+		}
+		if err := b.Unmount("nested"); err != nil {
+			t.Fatalf("repeat cleanup: %v", err)
+		}
+		info, err := os.ReadFile("/proc/self/mountinfo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := MountsUnder(string(info), nested); len(got) != 1 || got[0] != nested {
+			t.Fatalf("mounts under the target = %v, want only the volume", got)
+		}
+	})
+
 	t.Run("failed mount leaves nothing behind", func(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(ws, "junk.img"), []byte("not an image"), 0o644); err != nil {
 			t.Fatal(err)
@@ -235,33 +266,6 @@ func TestBeneathMountLifecycle(t *testing.T) {
 		assertNoMountsUnder(t, filepath.Join(ws, "broken"))
 		assertNoMountsUnder(t, filepath.Join(ws, ScratchDir("broken")))
 	})
-}
-
-func writeImage(t *testing.T, path string) {
-	t.Helper()
-	out, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
-	w, err := squashfs.NewWriter(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.AddFile("hello.txt", []byte("hello from the image"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Finalize(); err != nil {
-		t.Fatal(err)
-	}
-	// The kernel reads the image in 4 KiB blocks through the loop device.
-	fi, err := out.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := out.Truncate((fi.Size() + 4095) / 4096 * 4096); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func assertContent(t *testing.T, path, want string) {

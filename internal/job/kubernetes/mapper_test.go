@@ -188,7 +188,7 @@ func envValue(c corev1.Container, name string) (corev1.EnvVar, bool) {
 // and nobody else.
 func TestBuildJob_AgentMountMode(t *testing.T) {
 	t.Parallel()
-	cfg := Config{MountMode: MountModeAgent, MountAgentDriver: "mount.example.dev", MountAgentPort: 9999}
+	cfg := Config{MountAgentPort: 9999}
 	spec := buildJob(mountRequest(), cfg, "sidecar:latest").Spec.Template.Spec
 
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
@@ -198,12 +198,12 @@ func TestBuildJob_AgentMountMode(t *testing.T) {
 	}
 
 	ws := spec.Volumes[0]
-	if ws.Name != VolumeWorkspace || ws.CSI == nil || ws.CSI.Driver != "mount.example.dev" {
+	if ws.Name != VolumeWorkspace || ws.CSI == nil || ws.CSI.Driver != mountagent.Driver {
 		t.Fatalf("workspace volume = %+v, want an inline volume of the agent's driver", ws.VolumeSource)
 	}
 	token := ws.CSI.VolumeAttributes[mountagent.AttributeToken]
-	if len(token) != 64 {
-		t.Fatalf("workspace token = %q, want 32 random bytes in hex", token)
+	if len(token) < 26 {
+		t.Fatalf("workspace token = %q, want at least 128 random bits", token)
 	}
 
 	sidecar := containerByName(spec, ContainerSidecar)
@@ -242,7 +242,7 @@ func TestBuildJob_AgentMountMode(t *testing.T) {
 // propagates outward to the worker.
 func TestBuildJob_SidecarMountMode(t *testing.T) {
 	t.Parallel()
-	spec := buildJob(mountRequest(), Config{MountMode: MountModeSidecar}, "sidecar:latest").Spec.Template.Spec
+	spec := buildJob(mountRequest(), Config{}, "sidecar:latest").Spec.Template.Spec
 	if spec.Volumes[0].EmptyDir == nil {
 		t.Fatalf("workspace = %+v, want an emptyDir", spec.Volumes[0].VolumeSource)
 	}
@@ -262,7 +262,7 @@ func TestBuildJob_SidecarMountMode(t *testing.T) {
 func TestBuildJob_AgentModeWithoutMounts(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "plain", Image: "alpine"}
-	spec := buildJob(req, Config{MountMode: MountModeAgent, MountAgentDriver: "d", MountAgentPort: 1}, "sidecar:latest").Spec.Template.Spec
+	spec := buildJob(req, Config{MountAgentPort: 1}, "sidecar:latest").Spec.Template.Spec
 	if spec.Volumes[0].EmptyDir == nil {
 		t.Fatalf("workspace = %+v, want an emptyDir", spec.Volumes[0].VolumeSource)
 	}

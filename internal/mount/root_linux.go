@@ -5,6 +5,7 @@ package mount
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -85,26 +86,30 @@ func (r *Root) OpenDir(rel string) (*os.File, error) {
 	return openBeneath(r.dir, rel, unix.O_RDONLY|unix.O_DIRECTORY)
 }
 
-// OpenFile opens the regular file at rel for reading.
+// OpenFile opens the regular file at rel for reading. The workload can put
+// anything at rel, so the path is first opened O_PATH — which has no side
+// effects and cannot block — and only a regular file is then reopened for
+// reading. Opening a FIFO there would hang the caller; opening a device node
+// the workload made with mknod would act on the host, outside the pod's
+// device cgroup.
 func (r *Root) OpenFile(rel string) (*os.File, error) {
 	rel, err := Local(rel)
 	if err != nil {
 		return nil, err
 	}
-	f, err := openBeneath(r.dir, rel, unix.O_RDONLY)
+	p, err := openBeneath(r.dir, rel, unix.O_PATH)
 	if err != nil {
 		return nil, err
 	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
+	defer p.Close()
+	var st unix.Stat_t
+	if err := unix.Fstat(int(p.Fd()), &st); err != nil {
 		return nil, err
 	}
-	if !st.Mode().IsRegular() {
-		f.Close()
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
 		return nil, fmt.Errorf("%s is not a regular file", rel)
 	}
-	return f, nil
+	return os.OpenFile(ProcPath(p), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 }
 
 // MkdirAll creates every missing directory along rel, one component at a time,
@@ -209,15 +214,24 @@ func removeAt(parent *os.File, name string, dev uint64) error {
 		return err
 	}
 	defer dir.Close()
-	// Read the whole listing before removing anything, so deletions cannot
-	// shift what a later read returns.
-	names, err := dir.Readdirnames(-1)
-	if err != nil {
-		return err
-	}
-	for _, child := range names {
-		if err := removeAt(dir, child, dev); err != nil {
+	// The workload sizes this tree. Read a bounded batch, remove it, and read
+	// again from the start until the directory is empty, so neither a huge
+	// listing nor deletions shifting the read offset can hurt.
+	for {
+		if _, err := dir.Seek(0, io.SeekStart); err != nil {
 			return err
+		}
+		names, err := dir.Readdirnames(1024)
+		if errors.Is(err, io.EOF) || len(names) == 0 {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		for _, child := range names {
+			if err := removeAt(dir, child, dev); err != nil {
+				return err
+			}
 		}
 	}
 	return unlinkAt(parent, name, unix.AT_REMOVEDIR)

@@ -1,6 +1,6 @@
 {{- if .Values.mountAgent.enabled }}
 {{- $name := printf "%s-mount-agent" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- $driver := .Values.mountAgent.driverName -}}
+{{- $driver := "mount.open-runtimes.dev" -}}
 {{- $pluginDir := printf "/var/lib/kubelet/plugins/%s" $driver -}}
 # Inline ephemeral volumes only: each mounting pod's workspace is created on
 # publish and destroyed on unpublish, so there is no controller to attach.
@@ -70,12 +70,8 @@ spec:
               valueFrom: {fieldRef: {fieldPath: status.hostIP}}
             - name: LISTEN_ADDR
               value: "$(NODE_IP):{{ .Values.mountAgent.port }}"
-            - name: DRIVER_NAME
-              value: {{ $driver | quote }}
-            - name: CSI_ENDPOINT
-              value: /csi/csi.sock
-            - name: STATE_DIR
-              value: {{ $pluginDir | quote }}
+            - name: ALLOWED_NAMESPACES
+              value: {{ include "orchestrator.jobNamespace" . | quote }}
           ports:
             - name: api
               containerPort: {{ .Values.mountAgent.port }}
@@ -85,12 +81,9 @@ spec:
           resources:
             {{- toYaml .Values.mountAgent.resources | nindent 12 }}
           volumeMounts:
-            - name: plugin-dir
-              mountPath: /csi
-            - name: state-dir
-              mountPath: {{ $pluginDir }}
             # Same path as on the host, Bidirectional: the workspace binds and
-            # artifact mounts made here must reach kubelet and the pods.
+            # artifact mounts made here must reach kubelet and the pods. The
+            # agent's socket and state live in its plugin directory under it.
             - name: kubelet-dir
               mountPath: /var/lib/kubelet
               mountPropagation: Bidirectional
@@ -110,12 +103,10 @@ spec:
             - name: registration-dir
               mountPath: /registration
       volumes:
-        - name: plugin-dir
-          hostPath: {path: {{ $pluginDir }}, type: DirectoryOrCreate}
-        - name: state-dir
-          hostPath: {path: {{ $pluginDir }}, type: DirectoryOrCreate}
         - name: kubelet-dir
           hostPath: {path: /var/lib/kubelet, type: Directory}
+        - name: plugin-dir
+          hostPath: {path: {{ $pluginDir }}, type: DirectoryOrCreate}
         - name: registration-dir
           hostPath: {path: /var/lib/kubelet/plugins_registry, type: Directory}
         - name: dev

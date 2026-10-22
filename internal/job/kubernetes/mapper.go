@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"orchestrator/internal/artifact"
@@ -85,10 +84,10 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 	// The workspace token is minted here, once per pod, and handed to the
 	// agent (as a volume attribute) and to the sidecar (as env) — never to the
 	// worker.
-	agentMounts := hasMounts && cfg.MountMode == MountModeAgent
+	agentMounts := hasMounts && cfg.MountAgentPort > 0
 	var agentToken string
 	if agentMounts {
-		agentToken = newWorkspaceToken()
+		agentToken = rand.Text() // 130 random bits: the sidecar's capability for its own workspace
 	}
 
 	labels := map[string]string{
@@ -177,7 +176,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		NodeSelector:                  cfg.NodeSelector,
 		TerminationGracePeriodSeconds: &grace,
 		Volumes: append([]corev1.Volume{
-			{Name: VolumeWorkspace, VolumeSource: workspaceSource(cfg, agentToken)},
+			{Name: VolumeWorkspace, VolumeSource: workspaceSource(agentToken)},
 		}, pvVolumes...),
 		InitContainers: []corev1.Container{
 			{
@@ -245,12 +244,12 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 // workspaceSource is the job's shared workspace: an emptyDir, or, when the node
 // agent performs the mounts, an inline volume the agent serves and can mount
 // into from the host.
-func workspaceSource(cfg Config, agentToken string) corev1.VolumeSource {
+func workspaceSource(agentToken string) corev1.VolumeSource {
 	if agentToken == "" {
 		return corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	}
 	return corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{
-		Driver:           cfg.MountAgentDriver,
+		Driver:           mountagent.Driver,
 		VolumeAttributes: map[string]string{mountagent.AttributeToken: agentToken},
 	}}
 }
@@ -266,16 +265,6 @@ func agentEnv(cfg Config, agentToken string) []corev1.EnvVar {
 		{Name: mountagent.EnvEndpoint, Value: "http://$(HOST_IP):" + strconv.Itoa(cfg.MountAgentPort)},
 		{Name: mountagent.EnvToken, Value: agentToken},
 	}
-}
-
-// newWorkspaceToken returns 32 random bytes, hex-encoded: the capability a
-// sidecar presents to the agent for its own workspace.
-func newWorkspaceToken() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		panic(err) // crypto/rand does not fail on supported platforms
-	}
-	return hex.EncodeToString(b)
 }
 
 func jobAnnotations(req *job.Request) map[string]string {

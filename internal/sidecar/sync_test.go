@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/mount"
 	"orchestrator/internal/testutil"
 	"os"
 	"path/filepath"
@@ -87,7 +88,7 @@ func TestPushDelta_ArchivesTheUpperLayerOnly(t *testing.T) {
 
 	// What a writable mount looks like on disk: the image's content is in the
 	// lower layer, the workload's changes in the upper.
-	upper := UpperDir(filepath.Join(ws, "work"))
+	upper := mount.UpperDir(filepath.Join(ws, "work"))
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestRestoreDelta_MissingDestinationIsAFirstSession(t *testing.T) {
 		t.Fatalf("a first session must not fail: %v", err)
 	}
 	// And the upper layer exists, ready for the overlay to stack over it.
-	if _, err := os.Stat(UpperDir(filepath.Join(ws, "work"))); err != nil {
+	if _, err := os.Stat(mount.UpperDir(filepath.Join(ws, "work"))); err != nil {
 		t.Errorf("upper layer should have been created: %v", err)
 	}
 }
@@ -156,7 +157,7 @@ func TestDelta_RoundTrips(t *testing.T) {
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/session.tgz"}
 
 	first := t.TempDir()
-	upper := UpperDir(filepath.Join(first, "work"))
+	upper := mount.UpperDir(filepath.Join(first, "work"))
 	if err := os.MkdirAll(filepath.Join(upper, "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestDelta_RoundTrips(t *testing.T) {
 	if err := NewRunner("b", second, 30).restoreDelta(t.Context(), m); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(UpperDir(filepath.Join(second, "work")), "nested/notes.txt"))
+	got, err := os.ReadFile(filepath.Join(mount.UpperDir(filepath.Join(second, "work")), "nested/notes.txt"))
 	if err != nil {
 		t.Fatalf("the restored delta is missing: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestRestoreDelta_RestoredTreeIsWritableByTheWorkload(t *testing.T) {
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/modes.tgz"}
 
 	first := t.TempDir()
-	upper := UpperDir(filepath.Join(first, "work"))
+	upper := mount.UpperDir(filepath.Join(first, "work"))
 	if err := os.MkdirAll(filepath.Join(upper, "dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func TestRestoreDelta_RestoredTreeIsWritableByTheWorkload(t *testing.T) {
 		t.Fatalf("restore: %v", err)
 	}
 
-	root := UpperDir(filepath.Join(second, "work"))
+	root := mount.UpperDir(filepath.Join(second, "work"))
 	for path, want := range map[string]os.FileMode{
 		filepath.Join(root, "dir"):              0o777,
 		filepath.Join(root, "dir", "notes.txt"): 0o666,
@@ -254,7 +255,7 @@ func TestPushDelta_NoticesChangesThatMoveNoBytes(t *testing.T) {
 	t.Parallel()
 	ws := t.TempDir()
 	store := newObjectStore(t)
-	upper := UpperDir(filepath.Join(ws, "work"))
+	upper := mount.UpperDir(filepath.Join(ws, "work"))
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +299,7 @@ func TestStopSync_FlushesOnTheWayOut(t *testing.T) {
 	t.Parallel()
 	ws := t.TempDir()
 	store := newObjectStore(t)
-	upper := UpperDir(filepath.Join(ws, "work"))
+	upper := mount.UpperDir(filepath.Join(ws, "work"))
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +334,7 @@ func TestPushDelta_SkipsWhenNothingChanged(t *testing.T) {
 	t.Parallel()
 	ws := t.TempDir()
 	store := newObjectStore(t)
-	upper := UpperDir(filepath.Join(ws, "work"))
+	upper := mount.UpperDir(filepath.Join(ws, "work"))
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +389,7 @@ func TestPushDelta_FailedPushIsRetried(t *testing.T) {
 	ws := t.TempDir()
 	store := newObjectStore(t)
 	store.fail = true
-	upper := UpperDir(filepath.Join(ws, "work"))
+	upper := mount.UpperDir(filepath.Join(ws, "work"))
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +418,7 @@ func TestRestoreDelta_MakesTheRestoredTreeTheBaseline(t *testing.T) {
 	m := &artifact.Mount{ID: "tree", Out: "work", Writable: true, Sync: store.url + "/session.tgz"}
 
 	first := t.TempDir()
-	upper := UpperDir(filepath.Join(first, "work"))
+	upper := mount.UpperDir(filepath.Join(first, "work"))
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -458,8 +459,8 @@ func TestRunPost_SyncedMount(t *testing.T) {
 			}
 			store.put("/delta.tgz", body)
 			ws := t.TempDir()
-			target := filepath.Join(ws, "work")
-			upper := UpperDir(target)
+			target := "work"
+			upper := mount.UpperDir(filepath.Join(ws, target))
 			createTarFile(t, filepath.Join(ws, "base.tgz"), true, map[string]string{"base.txt": "base"})
 			expected := "saved"
 			if adopted {

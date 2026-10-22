@@ -1,10 +1,8 @@
 package kubernetes
 
 import (
-	"fmt"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/mountagent"
 	"orchestrator/internal/observability"
 	"strings"
 	"time"
@@ -34,27 +32,17 @@ type Config struct {
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every job pod to a node pool (internal/kube).
 	NodeSelector map[string]string
-	// MountMode decides who performs a job's artifact mounts. "sidecar" (the
-	// default) mounts from a privileged sidecar inside the pod; "agent" has the
-	// node mount agent mount into a CSI workspace, so the pod needs no
-	// privilege (docs/design/node-mount-agent.md). Jobs without a mount are
-	// unaffected either way.
-	MountMode string
-	// MountAgentDriver and MountAgentPort locate the agent; they must match the
-	// chart's mountAgent values.
-	MountAgentDriver string
-	MountAgentPort   int
+	// MountAgentPort, when set, has the node mount agent listening on that port
+	// perform jobs' artifact mounts in a CSI workspace, so the pod needs no
+	// privileged container (docs/design/node-mount-agent.md). Zero mounts from
+	// a privileged sidecar in the pod. Jobs without a mount are unaffected.
+	// The chart sets it when mountAgent is enabled.
+	MountAgentPort int
 	// Metrics wires backend-specific recorders (leadership, status cache,
 	// tracker saturation, K8s API latency). Optional — when nil, recording
 	// is skipped.
 	Metrics *observability.Metrics
 }
-
-// Mount modes (Config.MountMode).
-const (
-	MountModeSidecar = "sidecar"
-	MountModeAgent   = "agent"
-)
 
 // LeaderElectionConfig coordinates replicas so exactly one runs the lifecycle
 // watcher; shared with other services via internal/kube.
@@ -75,10 +63,6 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	mountMode := config.GetEnv("KUBE_MOUNT_MODE", MountModeSidecar)
-	if mountMode != MountModeSidecar && mountMode != MountModeAgent {
-		return Config{}, fmt.Errorf("KUBE_MOUNT_MODE must be %q or %q, got %q", MountModeSidecar, MountModeAgent, mountMode)
-	}
 	cfg := Config{
 		Kubeconfig:                    config.GetEnv("KUBECONFIG", ""),
 		Context:                       config.GetEnv("KUBE_CONTEXT", ""),
@@ -94,9 +78,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:                    kube.OvercommitFromEnv(),
 		Tolerations:                   tolerations,
 		NodeSelector:                  nodeSelector,
-		MountMode:                     mountMode,
-		MountAgentDriver:              config.GetEnv("KUBE_MOUNT_AGENT_DRIVER", mountagent.DefaultDriver),
-		MountAgentPort:                config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", mountagent.DefaultPort),
+		MountAgentPort:                config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", ""),

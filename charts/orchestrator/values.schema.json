@@ -198,10 +198,6 @@
         "workloadNodeSelector": {
           "$ref": "#/$defs/stringMap"
         },
-        "mountMode": {
-          "type": "string",
-          "enum": ["sidecar", "agent"]
-        },
         "logFlushInterval": {
           "$ref": "#/$defs/duration"
         },
@@ -530,10 +526,6 @@
         },
         "image": {
           "$ref": "#/$defs/pullableImage"
-        },
-        "driverName": {
-          "type": "string",
-          "minLength": 1
         },
         "port": {
           "$ref": "#/$defs/port"

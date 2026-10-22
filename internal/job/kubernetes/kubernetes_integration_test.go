@@ -914,7 +914,7 @@ func TestIntegration_PreparationFailure(t *testing.T) {
 }
 
 // TestIntegration_AgentMounts runs the same read-only and writable mounts with
-// the node mount agent performing them (mountMode agent), and then checks the
+// the node mount agent performing them (MountAgentPort set), and then checks the
 // pod it ran in: no container may be privileged, and the workspace must be the
 // agent's inline volume. Completed proves the agent mounted inside the
 // workspace from the host and propagation reached the worker; the overlay
@@ -922,8 +922,6 @@ func TestIntegration_PreparationFailure(t *testing.T) {
 // mount agent DaemonSet (task test-k8s-integration installs it).
 func TestIntegration_AgentMounts(t *testing.T) {
 	o, emitter, teardown := setup(t, func(c *Config) {
-		c.MountMode = MountModeAgent
-		c.MountAgentDriver = mountagent.DefaultDriver
 		c.MountAgentPort = mountagent.DefaultPort
 	})
 	defer teardown()
@@ -976,7 +974,7 @@ func TestIntegration_AgentMounts(t *testing.T) {
 			t.Errorf("container %s ran privileged in agent mode", c.Name)
 		}
 	}
-	if spec.Volumes[0].CSI == nil || spec.Volumes[0].CSI.Driver != mountagent.DefaultDriver {
+	if spec.Volumes[0].CSI == nil || spec.Volumes[0].CSI.Driver != mountagent.Driver {
 		t.Errorf("workspace volume = %+v, want the agent's inline volume", spec.Volumes[0].VolumeSource)
 	}
 }

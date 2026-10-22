@@ -11,26 +11,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// BindDirectory exposes an extracted tar tree with the same read-only
-// contract as a mounted filesystem image. The second mount call remounts the
-// bind read-only; a plain bind inherits the source's writable flags.
-func BindDirectory(source, target string) error {
-	if err := unix.Mount(source, target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
-		return fmt.Errorf("bind mount %s on %s: %w", source, target, err)
-	}
-	if err := unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NODEV|unix.MS_NOSUID, ""); err != nil {
-		_ = unix.Unmount(target, 0)
-		return fmt.Errorf("remount %s read-only: %w", target, err)
-	}
-	return nil
-}
-
 // BindReadOnly attaches a read-only, nodev, nosuid bind of src onto dst, both
 // given as open directories. The bind is cloned detached (open_tree), made
 // read-only while detached (mount_setattr), and only then attached by
 // descriptor (move_mount), so it is never visible writable — which the
-// two-step bind-then-remount of BindDirectory cannot promise once propagation
-// is involved — and it lands on exactly the directory dst holds. Kernel 5.12+.
+// two-step bind-then-remount cannot promise once propagation is involved — and it lands on exactly the directory dst holds. Kernel 5.12+.
 func BindReadOnly(src, dst *os.File) error {
 	tree, err := unix.OpenTree(int(src.Fd()), "", unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC|unix.AT_EMPTY_PATH|unix.AT_RECURSIVE)
 	if err != nil {

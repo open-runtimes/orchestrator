@@ -10,19 +10,19 @@ import "path/filepath"
 // Opts configures a mount. The zero value is a plain read-only image mount;
 // Writable layers an overlay on top, and SizeMiB caps it (0 = kernel default).
 type Opts struct {
-	Writable bool
-	SizeMiB  int
+	Writable bool `json:"writable,omitempty"`
+	SizeMiB  int  `json:"sizeMiB,omitempty"`
 	// SourceDir says the source is an already-materialized directory rather
 	// than a loop-mountable filesystem image. Tar archives are extracted into
 	// a lower directory inside the future mount point, so the resulting bind or
 	// overlay hides that implementation path from the worker.
-	SourceDir bool
+	SourceDir bool `json:"sourceDir,omitempty"`
 	// UpperOnDisk puts the overlay's upper layer on the shared workspace instead
 	// of a tmpfs. A tmpfs upper is RAM and dies with the pod, which is the right
 	// default; a synced mount needs the delta to be an ordinary directory that
 	// outlives each write and can be read by the artifact runner. SizeMiB does
 	// not apply — the workspace volume's own limit does.
-	UpperOnDisk bool
+	UpperOnDisk bool `json:"upperOnDisk,omitempty"`
 }
 
 // LowerDir lives inside the directory that is about to become the mount point.

@@ -14,12 +14,15 @@ import (
 	"net/http"
 	"orchestrator/internal/config"
 	"orchestrator/internal/mountagent"
+	"orchestrator/internal/mountagent/node"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"golang.org/x/net/netutil"
 	"google.golang.org/grpc"
 )
 
@@ -38,18 +41,23 @@ func main() {
 }
 
 func run() error {
-	driver := config.GetEnv("DRIVER_NAME", mountagent.DefaultDriver)
 	nodeID := config.GetEnv("NODE_NAME", "")
 	if nodeID == "" {
 		return errors.New("NODE_NAME is required")
 	}
-	csiEndpoint := config.GetEnv("CSI_ENDPOINT", "/csi/csi.sock")
 	// The chart binds the API to the node's own IP (the agent runs on the host
-	// network); the token, not the address, is the boundary.
+	// network); the per-pod token, not the address, is the boundary.
 	listen := config.GetEnv("LISTEN_ADDR", ":"+strconv.Itoa(mountagent.DefaultPort))
-	stateDir := config.GetEnv("STATE_DIR", "/var/lib/kubelet/plugins/"+driver)
+	// Namespaces whose pods may use the driver: the job namespace. Empty
+	// allows any, for development clusters.
+	var namespaces []string
+	if raw := config.GetEnv("ALLOWED_NAMESPACES", ""); raw != "" {
+		namespaces = strings.Split(raw, ",")
+	}
+	pluginDir := "/var/lib/kubelet/plugins/" + mountagent.Driver
+	csiEndpoint := pluginDir + "/csi.sock"
 
-	agent, err := mountagent.New(driver, releaseVersion, nodeID, stateDir)
+	agent, err := node.New(releaseVersion, nodeID, pluginDir, namespaces)
 	if err != nil {
 		return err
 	}
@@ -66,12 +74,26 @@ func run() error {
 	grpcServer := grpc.NewServer()
 	agent.RegisterCSI(grpcServer)
 
-	api := &http.Server{Addr: listen, Handler: agent.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	// Any pod can reach this port, so bound what an unauthenticated client can
+	// hold open. WriteTimeout covers the slowest mount (a large image under
+	// contention).
+	apiListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
+	if err != nil {
+		return err
+	}
+	api := &http.Server{
+		Handler:           agent.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      3 * time.Minute,
+		IdleTimeout:       time.Minute,
+		MaxHeaderBytes:    8 << 10,
+	}
 
 	errs := make(chan error, 2)
 	go func() { errs <- grpcServer.Serve(csiListener) }()
-	go func() { errs <- api.ListenAndServe() }()
-	slog.Info("Mount agent started", "driver", driver, "node", nodeID, "csi", csiEndpoint, "api", listen)
+	go func() { errs <- api.Serve(netutil.LimitListener(apiListener, 256)) }()
+	slog.Info("Mount agent started", "node", nodeID, "csi", csiEndpoint, "api", listen, "namespaces", namespaces)
 
 	select {
 	case err := <-errs:
