@@ -28,12 +28,17 @@ func TestSourceFS_FollowsTopLevelDirectorySymlink(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "nested", "file.txt"), []byte("payload"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(tmpDir, "source")
-	if err := os.Symlink(target, link); err != nil {
+	if err := os.Symlink("target", filepath.Join(tmpDir, "source")); err != nil {
 		t.Fatal(err)
 	}
 
-	fSys, err := sourceFS(link)
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	fSys, err := sourceFS(root, "source")
 	if err != nil {
 		t.Fatal(err)
 	}

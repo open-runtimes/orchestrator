@@ -4,6 +4,8 @@ import (
 	"orchestrator/internal/job"
 	"reflect"
 	"runtime"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -299,5 +301,77 @@ func TestCallbackDestFromLabels_AllFields(t *testing.T) {
 	wantMeta := map[string]string{"team": "platform"}
 	if !reflect.DeepEqual(dest.Meta, wantMeta) {
 		t.Errorf("Meta: want %v, got %v", wantMeta, dest.Meta)
+	}
+}
+
+// The sidecar reports results; it holds no callback destination, signing key
+// or meta.
+func TestSidecarEnv_CarriesNoCallbackConfig(t *testing.T) {
+	req := &job.Request{
+		ID:        "job-1",
+		Workspace: "/workspace",
+		Callback:  &job.Callback{URL: "http://callbacks.test/hook", Key: "job-key", Events: []string{"orchestrator.job.artifact"}},
+		Meta:      map[string]string{"projectId": "p1"},
+	}
+	env, err := sidecarEnv(req, "http://orchestrator:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CALLBACK_") || strings.HasPrefix(kv, "JOB_META=") || strings.Contains(kv, "job-key") {
+			t.Errorf("sidecar env carries %q", kv)
+		}
+	}
+}
+
+// A build runs the user's command: no raw sockets on the shared bridge, no
+// privilege gain through setuid binaries, and a process cap.
+func TestWorkerHostConfig_Hardened(t *testing.T) {
+	req := &job.Request{ID: "job-1", Workspace: "/workspace", CPU: 1, Memory: 512}
+	hc := workerHostConfig(req, dockerHandle{volumeName: "job-job-1-workspace"}, nil, 4096)
+
+	if !slices.Contains(hc.CapDrop, "NET_RAW") {
+		t.Errorf("CapDrop = %v, want NET_RAW dropped", hc.CapDrop)
+	}
+	if !slices.Contains(hc.SecurityOpt, "no-new-privileges") {
+		t.Errorf("SecurityOpt = %v, want no-new-privileges", hc.SecurityOpt)
+	}
+	if hc.Privileged {
+		t.Error("worker must not be privileged")
+	}
+	if hc.PidsLimit == nil || *hc.PidsLimit != 4096 {
+		t.Errorf("PidsLimit = %v, want 4096", hc.PidsLimit)
+	}
+	if hc.Memory != 512*1024*1024 {
+		t.Errorf("Memory = %d, want the requested 512 MiB", hc.Memory)
+	}
+}
+
+// The artifact sidecar touches files the worker left behind: it keeps only
+// file access, unless the job mounts images, which needs a privileged sidecar.
+func TestSidecarHostConfig_FileAccessOnly(t *testing.T) {
+	req := &job.Request{ID: "job-1", Workspace: "/workspace"}
+
+	hc := sidecarHostConfig(req, dockerHandle{volumeName: "job-job-1-workspace"}, nil)
+	if hc.Privileged {
+		t.Error("sidecar of a job without mounts must not be privileged")
+	}
+	if !slices.Contains(hc.CapDrop, "ALL") {
+		t.Errorf("CapDrop = %v, want ALL", hc.CapDrop)
+	}
+	for _, c := range hc.CapAdd {
+		if c != "CHOWN" && c != "DAC_OVERRIDE" && c != "FOWNER" {
+			t.Errorf("CapAdd carries %s, want file access only", c)
+		}
+	}
+	if !slices.Contains(hc.SecurityOpt, "no-new-privileges") {
+		t.Errorf("SecurityOpt = %v, want no-new-privileges", hc.SecurityOpt)
+	}
+	if hc.PidsLimit == nil {
+		t.Error("sidecar has no process cap")
+	}
+
+	if hc := sidecarHostConfig(req, dockerHandle{hostDir: "/tmp/job-1-ws"}, nil); !hc.Privileged {
+		t.Error("sidecar of a mount job must be privileged to loop-mount")
 	}
 }

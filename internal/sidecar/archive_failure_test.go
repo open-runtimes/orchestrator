@@ -72,12 +72,12 @@ func TestArchiveFailureCallback(t *testing.T) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				events <- testutil.WireData(t, job.ArtifactEvent(&report))
+				events <- testutil.WireData(t, job.ArtifactEvent(&report, nil))
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer endpoint.Close()
 			runner := NewRunner("test-build", dir, 10,
-				WithArtifactListener(NewHTTPSink("test-build", endpoint.URL, "", time.Second, "", "", nil, map[string]string{"deploymentId": "deployment"})))
+				WithArtifactListener(NewHTTPSink("test-build", endpoint.URL, "", time.Second)))
 			err := runner.RunPre(context.Background(), []artifact.Artifact{
 				&artifact.Unarchive{ID: "extract", In: "source.tar.gz", Out: "source", Subdir: tc.subdir},
 				&artifact.Stat{ID: "after-extract", In: "source", Depends: "extract"},

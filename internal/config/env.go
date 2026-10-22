@@ -75,8 +75,9 @@ func GetDurationEnv(key string, defaultValue time.Duration) time.Duration {
 
 // GetSecretFile reads a secret from a file path (Docker secrets under
 // /run/secrets/, K8s secrets mounted as volumes). An empty path means the
-// secret is not configured. An unreadable one is logged loudly: for the API
-// key it silently disables authentication otherwise.
+// secret is not configured. An unreadable one is logged loudly. The API key
+// does not come through here: LoadServiceConfig fails on an unreadable key
+// file instead.
 func GetSecretFile(path string) string {
 	if path == "" {
 		return ""

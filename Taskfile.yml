@@ -36,6 +36,7 @@ tasks:
       JOB_SIDECAR_IMAGE: ko.local/job-sidecar:latest
       SHUTDOWN_DRAIN_WAIT: "0s"
       EXTRA_HOSTS: "appwrite.test:host-gateway"
+      ALLOW_UNAUTHENTICATED: "true"
     cmds:
       - go run github.com/air-verse/air@latest
 
@@ -45,6 +46,7 @@ tasks:
     env:
       JOB_SIDECAR_IMAGE: ko.local/job-sidecar:latest
       EXTRA_HOSTS: "appwrite.test:host-gateway"
+      ALLOW_UNAUTHENTICATED: "true"
     cmds:
       - go run ./cmd/jobs-service
 

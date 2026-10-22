@@ -137,7 +137,9 @@ func handleServiceError(w http.ResponseWriter, r *http.Request, err error) {
 
 // ReportArtifact handles POST /internal/jobs/{jobId}/artifact.
 // Called by the sidecar to report the result of an artifact operation.
-// The orchestrator constructs the CloudEvent and dispatches it via the delivery pipeline.
+// The orchestrator constructs the CloudEvent and dispatches it via the delivery
+// pipeline, to the callback the job was created with: the report says what
+// happened, never where it goes or how it is signed.
 func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("jobId")
 	if jobID == "" {
@@ -148,6 +150,7 @@ func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 	// Deliberately lenient (no unknown-field rejection): the sender is the
 	// job sidecar, which may be a release ahead of or behind this service
 	// during a rolling upgrade.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	var report job.ArtifactReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid artifact report: "+err.Error())
@@ -155,7 +158,13 @@ func (h *Handler) ReportArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	report.JobID = jobID
 
-	job.EmitArtifactCallback(h.callbacks, report)
+	dest, err := h.svc.Callback(r.Context(), jobID)
+	if err != nil {
+		handleServiceError(w, r, err)
+		return
+	}
+
+	job.EmitArtifactCallback(h.callbacks, dest, report)
 
 	w.WriteHeader(http.StatusAccepted)
 }

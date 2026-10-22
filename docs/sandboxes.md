@@ -291,7 +291,7 @@ The workspace is ephemeral: an `emptyDir` that dies with the sandbox. Two opt-in
   | --- | --- | --- |
   | `source` | string | **Required.** An existing PVC name (a Docker volume name on the Docker backend). |
   | `path` | string | **Required.** Absolute mount path inside the container. |
-  | `subPath` | string | Mount only this subdirectory of the volume. |
+  | `subPath` | string | Mount only this subdirectory of the volume. On Docker this needs Engine API 1.45 (Docker 26) or newer; an older daemon refuses the request instead of mounting the whole volume. |
   | `readonly` | bool | Mount read-only. |
 
 `volumes` is always a request field and also participates in exact pool matching. A warm pod cannot have storage attached after creation, so an operator only gets a warm hit by declaring that identical volume shape:

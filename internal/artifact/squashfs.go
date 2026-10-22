@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 
@@ -118,9 +119,10 @@ func squashfsCompression(name string) (squashfs.Compression, error) {
 	}
 }
 
-// writeSquashfs builds a squashfs image at destPath from the file or directory
-// at srcPath, using the given compression and block size in bytes (0 = default).
-func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
+// writeSquashfs builds a squashfs image at the workspace path out from the file
+// or directory at in, using the given compression and block size in bytes
+// (0 = default).
+func writeSquashfs(root *os.Root, in, out, compression string, blockSize int) error {
 	comp, err := squashfsCompression(compression)
 	if err != nil {
 		return err
@@ -131,13 +133,13 @@ func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
 		return err
 	}
 
-	out, err := os.Create(destPath)
+	dest, err := root.Create(out)
 	if err != nil {
 		return fmt.Errorf("failed to create archive file: %w", err)
 	}
-	defer out.Close()
+	defer dest.Close()
 
-	w, err := squashfs.NewWriter(out, squashfs.WithCompression(comp), squashfs.WithBlockSize(resolvedBlockSize))
+	w, err := squashfs.NewWriter(dest, squashfs.WithCompression(comp), squashfs.WithBlockSize(resolvedBlockSize))
 	if err != nil {
 		return fmt.Errorf("failed to create squashfs writer: %w", err)
 	}
@@ -145,7 +147,7 @@ func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
 	// AddFS streams each file block-by-block during Finalize; sourceFS wraps a
 	// single file in a one-entry fs.FS so it streams too, instead of buffering
 	// the whole file in the sidecar's memory (an OOM risk on large inputs).
-	src, err := sourceFS(srcPath)
+	src, err := sourceFS(root, in)
 	if err != nil {
 		return err
 	}
@@ -161,37 +163,35 @@ func writeSquashfs(srcPath, destPath, compression string, blockSize int) error {
 	// device in blocks and returns EIO when the image isn't block-aligned;
 	// mksquashfs pads for the same reason. The superblock records the real
 	// size, so trailing zeros are inert (and the image still reads back fine).
-	fi, err := out.Stat()
+	fi, err := dest.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to stat squashfs: %w", err)
 	}
 	const align = 4096
 	if padded := (fi.Size() + align - 1) / align * align; padded != fi.Size() {
-		if err := out.Truncate(padded); err != nil {
+		if err := dest.Truncate(padded); err != nil {
 			return fmt.Errorf("failed to pad squashfs: %w", err)
 		}
 	}
 	return nil
 }
 
-// extractSquashfs extracts a squashfs image at srcPath into destDir. If
+// extractSquashfs extracts the squashfs image read from src into destDir. If
 // strip is set, the first path component of every entry is dropped. If
 // subdir is set, only entries under it are extracted, with the prefix
-// stripped. (This is the `unarchive` path; the `mount` artifact mounts the
-// image read-only instead of materializing it.)
-func extractSquashfs(srcPath, destDir, subdir string, strip bool) error {
-	sb, err := squashfs.Open(srcPath)
+// removed.
+func extractSquashfs(src io.ReaderAt, destDir, subdir string, strip bool) error {
+	sb, err := squashfs.New(src)
 	if err != nil {
 		return fmt.Errorf("failed to open squashfs: %w", err)
 	}
-	defer sb.Close()
 
 	return extractFS(sb, destDir, subdir, strip)
 }
 
 // singleFileFS exposes exactly one file from an underlying fs.FS at its
 // basename, so AddFS streams it (Open delegates to the real file) instead of
-// buffering the whole thing. fsys is typically os.DirFS(parentDir).
+// buffering the whole thing. fsys is a view of the parent directory.
 type singleFileFS struct {
 	fsys fs.FS
 	name string

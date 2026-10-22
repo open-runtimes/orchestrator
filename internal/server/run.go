@@ -48,7 +48,10 @@ func RegisterJobListeners(emitter *job.CallbackEmitter, queue dispatcher.Queue, 
 // to slog.Default before calling Run if you want them attached to every log
 // line.
 func Run(ctx context.Context, orchestrator job.Orchestrator, emitter *job.CallbackEmitter, metrics *observability.Metrics) error {
-	svcCfg := config.LoadServiceConfig()
+	svcCfg, err := config.LoadServiceConfig()
+	if err != nil {
+		return err
+	}
 
 	eventDispatcher := dispatcher.NewMemory(dispatcher.LoadConfigFromEnv(), metrics)
 	RegisterJobListeners(emitter, eventDispatcher, metrics)

@@ -92,6 +92,12 @@ func (r *Request) Shape() pool.Spec {
 // A pooled sandbox names no shape of its own — its pool holds one — and that
 // pool may be re-imaged or dropped while the pod keeps running, which would
 // leave a reader with the replacement or with nothing at all.
+//
+// It is stored on the pod as an annotation, so it carries nothing secret: the
+// command, environment and artifacts (whose download headers hold the source
+// credentials) reach the workload over the claim protocol instead, and are
+// dropped here. Only the serving shape is kept, which is all statusFromPod
+// reads back.
 func (r *Request) Recorded(shape pool.Spec) *Request {
 	recorded := *r
 	recorded.Image = shape.Image
@@ -99,6 +105,10 @@ func (r *Request) Recorded(shape pool.Spec) *Request {
 	recorded.CPU = shape.CPU
 	recorded.Memory = shape.Memory
 	recorded.RuntimeClass = shape.RuntimeClass
+
+	recorded.Command = ""
+	recorded.Environment = nil
+	recorded.Artifacts = nil
 
 	return &recorded
 }

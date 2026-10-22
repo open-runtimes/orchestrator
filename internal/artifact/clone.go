@@ -78,7 +78,16 @@ func (h cloneAuth) SetAuth(r *http.Request) {
 func (a *Clone) Apply(ctx context.Context, basePath string) *Result {
 	destPath := filepath.Join(basePath, a.Out)
 
-	if err := os.MkdirAll(basePath, 0o755); err != nil {
+	ws, err := openWorkspace(basePath)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+	defer ws.Close()
+
+	// Created through the workspace root, so a link already on the way to Out
+	// cannot carry the tree out of the workspace. moveTree takes it from
+	// there and never follows a link it lands on.
+	if err := ws.MkdirAll(a.Out, 0o755); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 

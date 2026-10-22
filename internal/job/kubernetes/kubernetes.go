@@ -151,6 +151,19 @@ func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusRes
 	return &out, nil
 }
 
+// Callback returns the job's callback destination from the annotations its
+// Job was created with, so any replica can answer for any job.
+func (o *Orchestrator) Callback(ctx context.Context, jobID string) (*job.CallbackDest, error) {
+	j, err := o.client.BatchV1().Jobs(o.cfg.Namespace).Get(ctx, jobNameFor(jobID), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, apperrors.NotFound("job", jobID)
+	}
+	if err != nil {
+		return nil, apperrors.Internal("kubernetes.getJob", err)
+	}
+	return callbackDestFromAnnotations(j.Annotations), nil
+}
+
 // List returns the status of all managed jobs, derived live from the K8s API.
 // No cache: List is already a single paginated API call, and the response is
 // a moving target that's hard to cache correctly.

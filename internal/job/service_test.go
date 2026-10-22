@@ -418,3 +418,34 @@ func TestUnmarshalArtifact(t *testing.T) {
 		})
 	}
 }
+
+func TestValidate_Workspace(t *testing.T) {
+	t.Parallel()
+	svc := &Service{}
+
+	tests := []struct {
+		name      string
+		workspace string
+		wantErr   bool
+	}{
+		{"empty (default applied later)", "", false},
+		{"ordinary absolute", "/mnt/code", false},
+		{"default", "/workspace", false},
+		{"relative", "code", true},
+		{"unclean dotdot", "/mnt/../etc", true},
+		{"trailing slash", "/mnt/code/", true},
+		{"root", "/", true},
+		{"proc", "/proc", true},
+		{"under etc", "/etc/secrets", true},
+		{"under run secrets", "/run/secrets", true},
+		{"ko-app", "/ko-app", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := svc.validate(&Request{ID: "job-1", Image: "alpine", Workspace: tt.workspace})
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validate(workspace=%q) error = %v, wantErr %v", tt.workspace, err, tt.wantErr)
+			}
+		})
+	}
+}

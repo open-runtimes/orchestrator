@@ -13,10 +13,6 @@ type Config struct {
 	ArtifactTimeout  time.Duration // Per-request timeout for artifact reporting
 	TimeoutSeconds   int           // Job deadline; 0 = unbounded workload (holds until the shutdown signal; artifact phases keep the default budget)
 	SharedVolumePath string
-	Meta             string
-	CallbackURL      string
-	CallbackKey      string
-	CallbackEvents   string // comma-separated event type filter
 	S3               config.S3Credentials
 }
 
@@ -29,10 +25,6 @@ func LoadConfigFromEnv() *Config {
 		ArtifactTimeout:  config.GetDurationEnv("ARTIFACT_TIMEOUT", 30*time.Second),
 		TimeoutSeconds:   config.GetIntEnv("TIMEOUT_SECONDS", 1800),
 		SharedVolumePath: config.Workspace(),
-		Meta:             config.GetEnv("JOB_META", "{}"),
-		CallbackURL:      config.GetEnv("CALLBACK_URL", ""),
-		CallbackKey:      config.GetEnv("CALLBACK_KEY", ""),
-		CallbackEvents:   config.GetEnv("CALLBACK_EVENTS", ""),
 		S3:               config.LoadS3Credentials(),
 	}
 }

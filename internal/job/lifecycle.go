@@ -48,11 +48,12 @@ func EmitCallback(em *CallbackEmitter, jobID, image string, dest *CallbackDest, 
 	em.Emit(&CallbackEnvelope{Payload: event, CallbackURL: dest.URL, SigningKey: dest.Key})
 }
 
-// EmitArtifactCallback dispatches a sidecar's artifact report as a callback.
-// It is a no-op when the job has no callback or filters the artifact event out.
-func EmitArtifactCallback(em *CallbackEmitter, r ArtifactReport) {
-	if r.CallbackURL == "" || !MatchesCallbackFilter(CallbackTypeArtifact, r.CallbackEvents) {
+// EmitArtifactCallback dispatches a sidecar's artifact report as a callback to
+// the job's own destination. It is a no-op when the job has no callback or
+// filters the artifact event out.
+func EmitArtifactCallback(em *CallbackEmitter, dest *CallbackDest, r ArtifactReport) {
+	if dest == nil || dest.URL == "" || !MatchesCallbackFilter(CallbackTypeArtifact, dest.Events) {
 		return
 	}
-	em.Emit(&CallbackEnvelope{Payload: ArtifactEvent(&r), CallbackURL: r.CallbackURL, SigningKey: r.CallbackKey})
+	em.Emit(&CallbackEnvelope{Payload: ArtifactEvent(&r, dest.Meta), CallbackURL: dest.URL, SigningKey: dest.Key})
 }

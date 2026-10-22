@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"orchestrator/internal/workload"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 )
 
@@ -63,27 +61,11 @@ func run(mode string) error {
 		return err
 	}
 
-	var meta map[string]string
-	if cfg.Meta != "" {
-		if err := json.Unmarshal([]byte(cfg.Meta), &meta); err != nil {
-			return fmt.Errorf("decode JOB_META: %w", err)
-		}
-	}
-
-	var callbackEvents []string
-	if cfg.CallbackEvents != "" {
-		callbackEvents = strings.Split(cfg.CallbackEvents, ",")
-	}
-
 	reporter := sidecar.NewHTTPSink(
 		cfg.JobID,
 		cfg.ArtifactEndpoint,
 		cfg.ArtifactToken,
 		cfg.ArtifactTimeout,
-		cfg.CallbackURL,
-		cfg.CallbackKey,
-		callbackEvents,
-		meta,
 	)
 
 	opts := []sidecar.Option{

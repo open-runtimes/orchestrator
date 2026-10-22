@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +103,30 @@ func TestDownload_Apply_LeavesNoPartialFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, "file.bin")); err != nil {
 		t.Fatalf("final file missing: %v", err)
+	}
+}
+
+// A presigned URL carries its credential in the query string. A transport
+// failure must not leak it into the artifact's error, which travels into the
+// callback, the logs and the job status.
+func TestDownload_Apply_RedactsURLCredentialsOnError(t *testing.T) {
+	a := &Download{
+		ID:  "dl",
+		In:  "http://127.0.0.1:1/source.tar.gz?X-Amz-Signature=deadbeefsecret&token=hunter2",
+		Out: "out.tar.gz",
+	}
+	result := a.Apply(t.Context(), t.TempDir())
+	if result.Error == nil {
+		t.Fatal("expected a connection error")
+	}
+	msg := result.Error.Error()
+	for _, secret := range []string{"deadbeefsecret", "hunter2", "X-Amz-Signature"} {
+		if strings.Contains(msg, secret) {
+			t.Errorf("error leaked %q: %s", secret, msg)
+		}
+	}
+	// The host still names what failed.
+	if !strings.Contains(msg, "127.0.0.1") {
+		t.Errorf("error should still name the host: %s", msg)
 	}
 }

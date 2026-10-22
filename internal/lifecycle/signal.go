@@ -38,6 +38,9 @@ type Exited struct {
 // ExitReasonOOM marks a workload killed by the kernel OOM killer.
 const ExitReasonOOM = "oom"
 
+// ExitReasonTimeout marks a workload stopped because it outlived its timeout.
+const ExitReasonTimeout = "timeout"
+
 // Failed is emitted when the workload fails before or without starting
 // (e.g. sidecar crash, failure to start the container).
 type Failed struct {

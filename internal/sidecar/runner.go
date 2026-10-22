@@ -105,19 +105,16 @@ func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, opts ...Optio
 }
 
 // NewHTTPSink returns an emitter listener that POSTs artifact results to the orchestrator.
-// It captures all job-level fields (callback config, meta) and merges them into each report.
-// The HTTP client timeout governs per-request cancellation.
-func NewHTTPSink(jobID, endpoint, token string, timeout time.Duration, callbackURL, callbackKey string, callbackEvents []string, meta map[string]string) func(job.ArtifactReport) {
+// The orchestrator delivers them to the job's own callback; the sidecar holds
+// none of that configuration. The HTTP client timeout governs per-request
+// cancellation.
+func NewHTTPSink(jobID, endpoint, token string, timeout time.Duration) func(job.ArtifactReport) {
 	client := &http.Client{Timeout: timeout}
 	return func(report job.ArtifactReport) {
 		if endpoint == "" {
 			return
 		}
 		report.JobID = jobID
-		report.CallbackURL = callbackURL
-		report.CallbackKey = callbackKey
-		report.CallbackEvents = callbackEvents
-		report.Meta = meta
 		data, err := json.Marshal(report)
 		if err != nil {
 			slog.With("artifactId", report.ID, "error", err).Warn("Failed to marshal artifact report")
@@ -231,10 +228,15 @@ func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	// (timeout 0) waits on the caller's context alone: the pod, not a job
 	// deadline, decides when it dies, and kubelet's SIGTERM ends the hold —
 	// a deadline there would tear the mounts out from under a serving workload.
+	//
+	// The backend enforces the deadline on the worker and signals completion
+	// once the worker is gone, so the hold outlasts the deadline by holdGrace:
+	// it only fires when that signal is lost, and the post phase never starts
+	// against a worker that is still running.
 	holdCtx := ctx
 	if r.timeoutSeconds > 0 {
 		var cancelHold context.CancelFunc
-		holdCtx, cancelHold = context.WithTimeout(ctx, r.phaseTimeout())
+		holdCtx, cancelHold = context.WithTimeout(ctx, r.phaseTimeout()+holdGrace)
 		defer cancelHold()
 	}
 	logger.Info("Waiting for worker completion signal")
@@ -401,6 +403,10 @@ func (r *Runner) RunPost(ctx context.Context, artifacts []artifact.Artifact) err
 	logger.Info("Sidecar post-mode completed")
 	return nil
 }
+
+// holdGrace is how long the combined-mode hold outlasts the job deadline the
+// backend enforces on the worker.
+const holdGrace = 30 * time.Second
 
 // phaseTimeout bounds an individual artifact phase (downloads, mounts, the
 // post-job flush). It is the job timeout when the job is bounded; an unbounded

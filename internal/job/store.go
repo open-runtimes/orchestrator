@@ -26,6 +26,9 @@ type (
 // ExitReasonOOM marks a workload killed by the kernel OOM killer.
 const ExitReasonOOM = lifecycle.ExitReasonOOM
 
+// ExitReasonTimeout marks a job whose worker was stopped at its timeout.
+const ExitReasonTimeout = lifecycle.ExitReasonTimeout
+
 // NewMemoryStore creates a MemoryStore whose errors name the "job" resource.
 func NewMemoryStore[T any]() *MemoryStore[T] {
 	return lifecycle.NewMemoryStore[T]("job")

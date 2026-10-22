@@ -14,7 +14,15 @@ type Config struct {
 	ArtifactEndpoint    string        // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
 	ExtraHosts          []string      // Extra /etc/hosts entries for containers (e.g., ["appwrite.test:host-gateway"])
 	Network             string        // Docker network to attach worker and sidecar containers to
+	PidsLimit           int64         // Max processes/threads in a job's worker; 0 for the daemon default (unlimited)
 }
+
+// defaultPidsLimit bounds a build's process count generously: far above what a
+// compiler or bundler spawns, far below what exhausts the host.
+const defaultPidsLimit = 16384
+
+// sidecarPidsLimit bounds the artifact sidecar, a single Go process.
+const sidecarPidsLimit = 1024
 
 // LoadConfigFromEnv loads orchestrator configuration from environment variables.
 // SidecarImage is service-level configuration and is set by the caller.
@@ -30,5 +38,6 @@ func LoadConfigFromEnv() Config {
 		ArtifactEndpoint:    config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8080"),
 		ExtraHosts:          extraHosts,
 		Network:             config.GetEnv("ORCHESTRATOR_NETWORK", ""),
+		PidsLimit:           int64(config.GetIntEnv("JOB_PIDS_LIMIT", defaultPidsLimit)),
 	}
 }

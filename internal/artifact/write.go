@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 )
 
@@ -22,16 +21,20 @@ func (a *Write) DependsOn() string    { return a.Depends }
 
 // Apply writes inline content to a file.
 func (a *Write) Apply(ctx context.Context, basePath string) *Result {
-	destPath := filepath.Join(basePath, a.Out)
+	root, err := openWorkspace(basePath)
+	if err != nil {
+		return &Result{Status: "failed", Error: err}
+	}
+	defer root.Close()
 
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(a.Out), 0o755); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	if err := os.WriteFile(destPath, []byte(a.In), 0o644); err != nil {
+	if err := root.WriteFile(a.Out, []byte(a.In), 0o644); err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to write file: %w", err)}
 	}
 
-	slog.Debug("Wrote file", "bytes", len(a.In), "path", destPath)
+	slog.Debug("Wrote file", "bytes", len(a.In), "path", filepath.Join(basePath, a.Out))
 	return &Result{Status: "success"}
 }

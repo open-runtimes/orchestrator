@@ -27,12 +27,20 @@ import (
 
 func main() {
 	ctx := context.Background()
-	svcCfg := config.LoadServiceConfig()
 	backend := config.GetEnv("ORCHESTRATOR_BACKEND", "docker")
 	domain := config.GetEnv("DEPLOYMENTS_DOMAIN", "localhost")
 	dataPort := config.GetEnv("DATA_PORT", "8081")
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "deployments", "backend", backend))
+
+	svcCfg, err := config.LoadServiceConfig()
+	if err == nil {
+		err = svcCfg.RequireAPIKey(backend)
+	}
+	if err != nil {
+		slog.Error("Invalid API authentication configuration", "error", err)
+		os.Exit(1)
+	}
 
 	metrics, err := observability.NewMetrics(ctx)
 	if err != nil {

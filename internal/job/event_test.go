@@ -21,7 +21,7 @@ func artifactEventData(t *testing.T, r *ArtifactReport) map[string]any {
 	t.Helper()
 
 	r.JobID = "job-1"
-	return testutil.WireData(t, ArtifactEvent(r))
+	return testutil.WireData(t, ArtifactEvent(r, nil))
 }
 
 // failure reads the error object of a callback.

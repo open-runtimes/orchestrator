@@ -25,7 +25,8 @@ type fakeDaemon struct {
 
 	conns   int
 	stream  func(conn int, send func(action, id string, attrs map[string]string), done <-chan struct{})
-	onStart func() // called when the worker container is started
+	onStart func()                  // called when the worker container is started
+	onKill  func(id, signal string) // called for every kill request
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -82,6 +83,13 @@ func (d *fakeDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 
 	case strings.HasSuffix(path, "/kill"):
+		parts := strings.Split(path, "/")
+		d.mu.Lock()
+		onKill := d.onKill
+		d.mu.Unlock()
+		if onKill != nil {
+			onKill(parts[len(parts)-2], r.URL.Query().Get("signal"))
+		}
 		w.WriteHeader(http.StatusNoContent)
 
 	case strings.HasSuffix(path, "/logs"):
@@ -131,12 +139,17 @@ func newFakeDaemonWatcher(t *testing.T, d *fakeDaemon) (*dockerLifecycleWatcher,
 // with log lines filtered out.
 func watchAndCollect(t *testing.T, w *dockerLifecycleWatcher) []job.Signal {
 	t.Helper()
+	return watchAndCollectWithTimeout(t, w, 0)
+}
+
+func watchAndCollectWithTimeout(t *testing.T, w *dockerLifecycleWatcher, timeout time.Duration) []job.Signal {
+	t.Helper()
 	var mu sync.Mutex
 	var sigs []job.Signal
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w.Watch(t.Context(), "sc-1", "wk-1", func(s job.Signal) {
+		w.Watch(t.Context(), "sc-1", "wk-1", timeout, func(s job.Signal) {
 			if _, ok := s.(job.LogLine); ok {
 				return
 			}
@@ -252,4 +265,81 @@ func TestWatcher_OOMBeforeReconnect_ReasonSurvivesReconcile(t *testing.T) {
 	}
 
 	assertLifecycleWithExit(t, watchAndCollect(t, w), 137, job.ExitReasonOOM)
+}
+
+// A worker that outlives its timeout is killed, reports ExitReasonTimeout, and
+// only then is the sidecar released into the post phase.
+func TestWatcher_WorkerPastTimeout_IsKilled(t *testing.T) {
+	t.Parallel()
+	d := newFakeDaemon()
+	w, started := newFakeDaemonWatcher(t, d)
+
+	killed := make(chan struct{})
+	var sidecarSignalled sync.Once
+	sidecarReleased := make(chan struct{})
+	d.onKill = func(id, signal string) {
+		switch {
+		case id == "wk-1" && signal == "SIGKILL":
+			d.setInspect("wk-1", workerJSON("exited", false, 137, false))
+			close(killed)
+		case id == "sc-1" && signal == "SIGUSR1":
+			sidecarSignalled.Do(func() { close(sidecarReleased) })
+		}
+	}
+	d.stream = func(conn int, send func(action, id string, attrs map[string]string), done <-chan struct{}) {
+		<-started
+		// The worker never exits on its own.
+		select {
+		case <-killed:
+		case <-done:
+			return
+		}
+		send("die", "wk-1", map[string]string{"exitCode": "137"})
+		select {
+		case <-sidecarReleased:
+		case <-done:
+			return
+		}
+		send("die", "sc-1", nil)
+		<-done
+	}
+
+	assertLifecycleWithExit(t, watchAndCollectWithTimeout(t, w, 200*time.Millisecond), 137, job.ExitReasonTimeout)
+}
+
+// A sidecar that exits while its worker still runs leaves nothing to bound
+// or collect the worker: the worker is killed and the job fails.
+func TestWatcher_SidecarExitsBeforeWorker_KillsWorkerAndFails(t *testing.T) {
+	t.Parallel()
+	d := newFakeDaemon()
+	w, started := newFakeDaemonWatcher(t, d)
+
+	var mu sync.Mutex
+	var workerKills int
+	d.onKill = func(id, signal string) {
+		if id == "wk-1" && signal == "SIGKILL" {
+			mu.Lock()
+			workerKills++
+			mu.Unlock()
+		}
+	}
+	d.stream = func(conn int, send func(action, id string, attrs map[string]string), done <-chan struct{}) {
+		<-started
+		d.setInspect("sc-1", `{"Id":"sc-1","State":{"Running":false,"Status":"exited"}}`)
+		send("die", "sc-1", nil)
+		<-done
+	}
+
+	sigs := watchAndCollect(t, w)
+	if len(sigs) != 2 {
+		t.Fatalf("want [Started, Failed], got %v", sigs)
+	}
+	if _, ok := sigs[1].(job.Failed); !ok {
+		t.Errorf("signal[1]: want Failed, got %T", sigs[1])
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if workerKills != 1 {
+		t.Errorf("worker killed %d times, want 1", workerKills)
+	}
 }

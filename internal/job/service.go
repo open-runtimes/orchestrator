@@ -11,6 +11,7 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/observability"
 	"orchestrator/internal/workload"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -96,6 +97,11 @@ func (s *Service) Get(ctx context.Context, jobID string) (*StatusResponse, error
 	return s.orchestrator.Status(ctx, jobID)
 }
 
+// Callback returns the job's callback destination (nil when it has none).
+func (s *Service) Callback(ctx context.Context, jobID string) (*CallbackDest, error) {
+	return s.orchestrator.Callback(ctx, jobID)
+}
+
 // Cancel stops a running job.
 func (s *Service) Cancel(ctx context.Context, jobID string) error {
 	logger := slog.With("jobId", jobID)
@@ -146,6 +152,10 @@ func (s *Service) validate(req *Request) error {
 
 	if req.Image == "" {
 		return apperrors.Validation("image", "image is required")
+	}
+
+	if err := validateWorkspace(req.Workspace); err != nil {
+		return err
 	}
 
 	if req.TimeoutSeconds > maxTimeoutSecs {
@@ -205,6 +215,38 @@ func (s *Service) validate(req *Request) error {
 		}
 	}
 
+	return nil
+}
+
+// reservedWorkspacePrefixes are host trees the workspace must not name: it is
+// bind-mounted into the worker and the privileged mount sidecar and is the base
+// path markers and artifacts are written under, so mounting over one of these
+// would shadow or expose host state.
+func reservedWorkspacePrefixes() []string {
+	return []string{"/proc", "/sys", "/dev", "/etc", "/ko-app", "/boot", "/run"}
+}
+
+// validateWorkspace checks the job's workspace path. An empty value is the
+// default (applyDefaults fills it); a set one must be an absolute, already-clean
+// path that is neither the root nor a host system tree.
+func validateWorkspace(workspace string) error {
+	if workspace == "" {
+		return nil
+	}
+	if !path.IsAbs(workspace) {
+		return apperrors.Validation("workspace", "workspace must be an absolute path")
+	}
+	if path.Clean(workspace) != workspace {
+		return apperrors.Validation("workspace", "workspace must be a clean path (no '.', '..' or trailing slash)")
+	}
+	if workspace == "/" {
+		return apperrors.Validation("workspace", "workspace must not be the root directory")
+	}
+	for _, prefix := range reservedWorkspacePrefixes() {
+		if workspace == prefix || strings.HasPrefix(workspace, prefix+"/") {
+			return apperrors.Validation("workspace", "workspace must not be under "+prefix)
+		}
+	}
 	return nil
 }
 

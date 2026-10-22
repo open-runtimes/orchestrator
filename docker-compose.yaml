@@ -56,6 +56,9 @@ services:
       # set either variable on the host to override that image explicitly.
       JOB_SIDECAR_IMAGE: ${JOB_SIDECAR_IMAGE:-}
       WORKLOAD_SIDECAR_IMAGE: ${WORKLOAD_SIDECAR_IMAGE:-}
+      # Local profile: the API is open on purpose. Remove this and set
+      # API_KEY_FILE (or API_KEY) anywhere the ports are reachable by others.
+      ALLOW_UNAUTHENTICATED: "true"
       # API_KEY_FILE: /run/secrets/api-key   # uncomment to require Bearer auth
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
