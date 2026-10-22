@@ -47,11 +47,16 @@ func Tmpfs(target string, sizeMiB int) error {
 	return nil
 }
 
+// overlayMountFlags: the workload writes into the overlay as an unknown uid in
+// a shared tree, so neither a setuid binary nor a device node it plants there
+// takes effect, as on the read-only image and the tmpfs beneath.
+const overlayMountFlags = unix.MS_NODEV | unix.MS_NOSUID
+
 // Overlay stacks an overlay at target. overlayfs requires upper and work on
 // the same filesystem.
 func Overlay(lower, upper, work, target string) error {
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
-	if err := unix.Mount("overlay", target, "overlay", unix.MS_NOSUID, opts); err != nil {
+	if err := unix.Mount("overlay", target, "overlay", overlayMountFlags, opts); err != nil {
 		return fmt.Errorf("mount overlay on %s: %w", target, err)
 	}
 	return nil
