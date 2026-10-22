@@ -12,6 +12,7 @@ kubectl --context "$CONTEXT" create namespace "$NAMESPACE" --dry-run=client -o y
 "$HELM" template orchestrator charts/orchestrator \
   --namespace "$NAMESPACE" \
   --set mountAgent.enabled=true \
+  --set jobs.enabled=true --set deployments.enabled=true \
   --set mountAgent.image.ref=ko.local/mount-agent:latest \
   --set mountAgent.image.pullPolicy=Never \
   --show-only templates/mount-agent.yaml \

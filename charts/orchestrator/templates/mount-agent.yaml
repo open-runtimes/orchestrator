@@ -2,6 +2,10 @@
 {{- $name := printf "%s-mount-agent" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- $driver := "mount.open-runtimes.dev" -}}
 {{- $pluginDir := printf "/var/lib/kubelet/plugins/%s" $driver -}}
+{{- $namespaces := list -}}
+{{- if .Values.jobs.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.jobNamespace" .) }}{{ end -}}
+{{- if or .Values.deployments.enabled .Values.sandbox.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.workloadNamespace" .) }}{{ end -}}
+{{- if not $namespaces }}{{ fail "mountAgent.enabled needs jobs, deployments or sandbox enabled" }}{{ end -}}
 # Inline ephemeral volumes only: each mounting pod's workspace is created on
 # publish and destroyed on unpublish, so there is no controller to attach.
 apiVersion: storage.k8s.io/v1
@@ -70,8 +74,10 @@ spec:
               valueFrom: {fieldRef: {fieldPath: status.hostIP}}
             - name: LISTEN_ADDR
               value: "$(NODE_IP):{{ .Values.mountAgent.port }}"
+            # Only the namespaces of enabled planes: an empty list would let any
+            # namespace use the driver.
             - name: ALLOWED_NAMESPACES
-              value: {{ list (include "orchestrator.jobNamespace" .) (include "orchestrator.workloadNamespace" .) | uniq | join "," | quote }}
+              value: {{ $namespaces | uniq | join "," | quote }}
           ports:
             - name: api
               containerPort: {{ .Values.mountAgent.port }}

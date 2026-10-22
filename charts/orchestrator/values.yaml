@@ -319,8 +319,8 @@ workloadNamespace:
 # mounts from the node. Enabling it switches every workload that mounts (jobs,
 # deployment revisions, pools, sandboxes) to it, so their pods have no
 # privileged container. The agent itself runs privileged on the host network;
-# its API is gated by a per-pod token, and only pods in the job and workload
-# namespaces may use its driver.
+# its API is gated by a per-pod token, and only pods in the namespaces of the
+# enabled planes may use its driver.
 mountAgent:
   enabled: false
   image:
