@@ -15,8 +15,8 @@ fullnameOverride: ""
 # A pull secret is referenced by name only, and that name always resolves in
 # the namespace of the pod using it. Every pod the chart renders lives in the
 # release namespace, so that is where these must exist. The one exception is
-# the job-pod ServiceAccount, which the chart creates in
-# orchestrator.jobNamespace and which inherits this list — see
+# the job-pod ServiceAccount, which the chart creates in jobs.namespace and
+# which inherits this list — see
 # serviceAccount.jobSidecarImagePullSecrets when that namespace differs.
 # Deployment replicas and warm pods are created by the service rather than the
 # chart; their credentials go on the account they run as (docs/operations.md).
@@ -56,6 +56,18 @@ jobs:
   # Install the jobs service (Deployment + Service + RBAC + PDB/HPA). Opt-in
   # like every component, so a bare `helm install` renders nothing at all.
   enabled: false
+  # Namespace job pods run in; "" = the release namespace. The chart does not
+  # create it: provision it with its Pod Security labels (baseline or
+  # privileged: job workers often run as root, and without the mount agent a
+  # mounting job's sidecar is privileged). The chart creates the job-pod
+  # ServiceAccount and the jobs service's Role in it.
+  namespace: ""
+  # NetworkPolicy for job pods: no ingress, egress anywhere but the cloud
+  # metadata endpoint. Off by default, since what a build may reach is a
+  # platform decision (enable it, or ship your own policy). Requires an
+  # enforcing CNI.
+  networkPolicy:
+    enabled: false
   # Empty uses "jobs" when the release is named "orchestrator", otherwise
   # "<release>-jobs" to keep resources scoped to the release.
   fullnameOverride: ""
@@ -152,6 +164,20 @@ jobs:
 # Serving-plane API (deployments, with optional warm Revision pools). Disabled by default —
 deployments:
   enabled: false
+  # Namespace deployment replicas and their warm pools run in, with their
+  # markers, routes and leases; "" = the release namespace. The chart does not
+  # create it: provision it with its Pod Security labels (restricted admits
+  # every pod the service creates). The Gateway must allow routes from it
+  # (allowedRoutes.namespaces != Same). The chart creates the services' Roles in
+  # it.
+  namespace: ""
+  # NetworkPolicy for deployment pods: ingress only from the gateway, the
+  # activator and this plane's control plane; egress anywhere but the cloud
+  # metadata endpoint. Requires an enforcing CNI.
+  networkPolicy:
+    enabled: true
+    # Namespace the gateway controller pods run in (ingress allow rule).
+    gatewayNamespace: traefik-system
   # Empty uses "deployments" when the release is named "orchestrator",
   # otherwise "<release>-deployments".
   fullnameOverride: ""
@@ -283,44 +309,13 @@ deployments:
     limits:
       memory: 256Mi
 
-# Hardened workload namespace: run workloads (deployment revisions, warm
-# pools, sandboxes) in a dedicated namespace instead of the release namespace,
-# with Pod Security Admission and network isolation applied. Shared by the
-# deployments and sandboxes planes. The Gateway must allow routes from this
-# namespace (allowedRoutes.namespaces != Same).
-workloadNamespace:
-  enabled: false
-  # Empty = "<release namespace>-workloads".
-  name: ""
-  # Create the namespace (with the labels below). Disable if it is
-  # provisioned externally.
-  create: true
-  # Pod Security Admission enforce level label ("" = no PSA labels). The
-  # generated pods run under the hardened floor and admit cleanly at
-  # "restricted".
-  podSecurity: restricted
-  # Default-deny ingress to workload pods except from the gateway, activator,
-  # sandbox proxy, and the control planes; egress blocks the cloud metadata
-  # endpoint. Requires an enforcing CNI — kind's default kindnet does NOT
-  # enforce NetworkPolicy.
-  networkPolicy:
-    enabled: true
-    # Namespace the gateway controller pods run in (ingress allow rule).
-    gatewayNamespace: traefik-system
-  # Per-namespace ceiling on workload consumption.
-  resourceQuota:
-    enabled: false
-    pods: 200
-    requestsCpu: "100"
-    requestsMemory: 200Gi
-
 # Node mount agent (docs/design/node-mount-agent.md): a DaemonSet that serves
 # each mounting pod's workspace as a CSI inline volume and performs its artifact
 # mounts from the node. Enabling it switches every workload that mounts (jobs,
 # deployment revisions, pools, sandboxes) to it, so their pods have no
 # privileged container. The agent itself runs privileged on the host network;
-# its API is gated by a per-pod token, and only pods in the job and workload
-# namespaces may use its driver.
+# its API is gated by a per-pod token, and only pods in the namespaces of the
+# enabled planes may use its driver.
 mountAgent:
   enabled: false
   image:
@@ -360,6 +355,17 @@ workloadSidecarImage:
 # without the deployments plane.
 sandbox:
   enabled: false
+  # Namespace sandboxes and their warm pools run in; "" = the release
+  # namespace. Sandboxes run untrusted code: give them a namespace of their
+  # own, apart from deployments. The chart does not create it: provision it
+  # with its Pod Security labels (restricted admits every pod the service
+  # creates). The chart creates the services' Roles in it.
+  namespace: ""
+  # NetworkPolicy for sandbox pods: ingress only from the sandbox proxy and
+  # this plane's control plane; egress anywhere but the cloud metadata
+  # endpoint. Requires an enforcing CNI.
+  networkPolicy:
+    enabled: true
   # Empty uses "sandbox" when the release is named "orchestrator",
   # otherwise "<release>-sandbox".
   fullnameOverride: ""
@@ -546,9 +552,9 @@ serviceAccount:
   # Empty defaults to "<release>-job-sidecar" so releases sharing a namespace don't collide.
   jobSidecarName: ""
   # Pull secrets for the job-pod ServiceAccount, which lives in
-  # orchestrator.jobNamespace. Empty inherits the top-level imagePullSecrets,
-  # which is right while jobs share the release namespace. Set this when
-  # orchestrator.jobNamespace differs and the credentials are named
+  # jobs.namespace. Empty inherits the top-level imagePullSecrets, which is
+  # right while jobs share the release namespace. Set this when jobs.namespace
+  # differs and the credentials are named
   # differently there — a name that does not exist in the job namespace leaves
   # private-image job pods in ImagePullBackOff, whatever the top-level list says.
   jobSidecarImagePullSecrets: []
@@ -565,12 +571,6 @@ service:
 
 # Orchestrator runtime config.
 orchestrator:
-  # Namespace where temporary Kubernetes Jobs and their Pods are created.
-  # Empty keeps them in the Helm release namespace.
-  jobNamespace: ""
-  # Create orchestrator.jobNamespace when it is set to a namespace different
-  # from the Helm release namespace.
-  jobNamespaceCreate: false
   # Full URL the sidecar POSTs artifact reports to. Empty auto-derives from release+namespace.
   artifactEndpoint: ""
   jobRetention: 15m

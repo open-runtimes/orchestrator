@@ -64,7 +64,7 @@ spec:
             - name: ACTIVATOR_PORT
               value: {{ .Values.sandbox.proxy.port | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ include "orchestrator.workloadNamespace" . | quote }}
+              value: {{ include "orchestrator.sandboxNamespace" . | quote }}
             - name: SANDBOX_DOMAIN
               value: {{ required "sandbox.domain is required when the sandbox proxy is enabled" .Values.sandbox.domain | quote }}
             - name: SANDBOX_HOLD_SECONDS
@@ -130,7 +130,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.sandboxName" . }}-proxy
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  namespace: {{ include "orchestrator.sandboxNamespace" . }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 rules:
@@ -142,7 +142,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.sandboxName" . }}-proxy
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  namespace: {{ include "orchestrator.sandboxNamespace" . }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
 roleRef:

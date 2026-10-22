@@ -2,6 +2,7 @@
 {{- $root := .root -}}
 {{- $kind := .kind -}}
 {{- $name := printf "%s-%s" (include "orchestrator.poolControllerName" $root) $kind | trunc 63 | trimSuffix "-" -}}
+{{- $ns := ternary (include "orchestrator.deploymentsNamespace" $root) (include "orchestrator.sandboxNamespace" $root) (eq $kind "revision") -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,7 +26,7 @@ spec:
         orchestrator.open-runtimes.io/pool-kind: {{ $kind }}
     spec:
       terminationGracePeriodSeconds: {{ $root.Values.service.terminationGracePeriodSeconds }}
-      serviceAccountName: {{ include "orchestrator.poolControllerName" $root }}
+      serviceAccountName: {{ $name }}
       {{- with include "orchestrator.imagePullSecrets" $root }}
       {{- . | nindent 6 }}
       {{- end }}
@@ -46,7 +47,7 @@ spec:
             - name: HEALTH_PORT
               value: {{ $root.Values.poolController.healthPort | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ include "orchestrator.workloadNamespace" $root | quote }}
+              value: {{ $ns | quote }}
             - name: WORKLOAD_SIDECAR_IMAGE
               value: {{ include "orchestrator.workloadSidecarImage" $root | quote }}
             - name: POOL_SHIM_IMAGE
@@ -147,6 +148,51 @@ spec:
       {{- include "orchestrator.poolControllerSelectorLabels" $root | nindent 6 }}
       orchestrator.open-runtimes.io/pool-kind: {{ $kind }}
 {{- end }}
+---
+# One account per kind, allowed only in its own plane's namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "orchestrator.poolControllerLabels" $root | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orchestrator.poolControllerLabels" $root | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create"]
+  {{- if $root.Values.poolController.leaderElection.enabled }}
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orchestrator.poolControllerLabels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $root.Release.Namespace }}
 {{- end -}}
 
 {{- if and .Values.poolController.enabled (or .Values.deployments.enabled .Values.sandbox.enabled) }}
@@ -162,50 +208,6 @@ spec:
 {{- if .Values.sandbox.enabled }}
 {{ include "orchestrator.poolControllerDeployment" (dict "root" . "kind" "sandbox") }}
 {{- end }}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {{ include "orchestrator.poolControllerName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "orchestrator.poolControllerLabels" . | nindent 4 }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: {{ include "orchestrator.poolControllerName" . }}
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
-  labels:
-    {{- include "orchestrator.poolControllerLabels" . | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "delete"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "create"]
-  {{- if .Values.poolController.leaderElection.enabled }}
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-  {{- end }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: {{ include "orchestrator.poolControllerName" . }}
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
-  labels:
-    {{- include "orchestrator.poolControllerLabels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: {{ include "orchestrator.poolControllerName" . }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ include "orchestrator.poolControllerName" . }}
-    namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -229,7 +231,11 @@ roleRef:
   kind: ClusterRole
   name: {{ include "orchestrator.poolControllerName" . }}
 subjects:
+  {{- range $kind, $enabled := dict "revision" .Values.deployments.enabled "sandbox" .Values.sandbox.enabled }}
+  {{- if $enabled }}
   - kind: ServiceAccount
-    name: {{ include "orchestrator.poolControllerName" . }}
-    namespace: {{ .Release.Namespace }}
+    name: {{ printf "%s-%s" (include "orchestrator.poolControllerName" $) $kind | trunc 63 | trimSuffix "-" }}
+    namespace: {{ $.Release.Namespace }}
+  {{- end }}
+  {{- end }}
 {{- end }}

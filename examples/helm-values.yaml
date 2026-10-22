@@ -32,25 +32,14 @@ jobs:
     hostnames:
       - jobs.example.com
 
-# Run workload pods in their own hardened namespace: restricted Pod Security
-# admission, default-deny NetworkPolicy (requires an enforcing CNI), the
-# cloud-metadata egress block, and a capacity quota. This is chart-global
-# because deployment and sandbox workloads share it.
-workloadNamespace:
-  enabled: true
-  podSecurity: restricted
-  networkPolicy:
-    enabled: true
-    gatewayNamespace: traefik-system # where your gateway controller runs
-  resourceQuota:
-    enabled: true
-    pods: 200
-    requestsCpu: "100"
-    requestsMemory: 200Gi
-
 # ── Serving plane ────────────────────────────────────────────────────────────
 deployments:
   enabled: true
+
+  # Run replicas in a namespace of their own, which you provision with its Pod
+  # Security labels (docs/operations.md "A namespace per plane"); the chart
+  # creates the Roles it needs there, and a NetworkPolicy by default.
+  namespace: orchestrator-deployments
 
   # Deployments get hosts like {id}.apps.example.com; point a wildcard DNS
   # record for this domain at your gateway's address.

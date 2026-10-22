@@ -109,7 +109,7 @@ spec:
       port: 80
       protocol: HTTP
       allowedRoutes:
-        namespaces: { from: All }   # required when workloadNamespace is enabled
+        namespaces: { from: All }   # required when deployments.namespace differs
 ```
 
 Point a wildcard DNS record (`*.apps.example.com`) at the gateway's address and deployments are reachable the moment they're ready.
@@ -173,7 +173,7 @@ Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-b
 
 None of them, with the node mount agent enabled (below). Without it, the last row is the one to watch: standing capacity means the privileged container is there before any request arrives, so treat a mounting pool as trusted infrastructure and keep untrusted workloads on pools without the capability.
 
-**The node mount agent moves that privilege out of the pod** ([design](design/node-mount-agent.md)). With `mountAgent.enabled: true`, a DaemonSet serves each mounting pod's workspace as a CSI inline volume and performs its mounts from the node; the pod's sidecar stays unprivileged and asks the agent over HTTP with a token minted for that pod. Every replica of a revision and every warm pod gets a token of its own. Same artifact API, same mount layout, no measurable latency. The agent itself runs privileged on the host network, and its API is reachable on every node's IP: the per-pod token is the boundary, and only pods in the job and workload namespaces may use its driver, so treat the agent as node infrastructure. It must run on every node a mounting pod can land on, or that pod sits in `ContainerCreating`: by default it tolerates every workload toleration and runs on every node, so set `mountAgent.nodeSelector`/`tolerations` only to narrow that. Switching the agent on or off replaces mounting pools' warm pods, but a revision keeps the pod template it was minted with, so redeploy revisions that mount afterwards. Docker backends are unaffected.
+**The node mount agent moves that privilege out of the pod** ([design](design/node-mount-agent.md)). With `mountAgent.enabled: true`, a DaemonSet serves each mounting pod's workspace as a CSI inline volume and performs its mounts from the node; the pod's sidecar stays unprivileged and asks the agent over HTTP with a token minted for that pod. Every replica of a revision and every warm pod gets a token of its own. Same artifact API, same mount layout, no measurable latency. The agent itself runs privileged on the host network, and its API is reachable on every node's IP: the per-pod token is the boundary, and only pods in the namespaces of the enabled planes (the job namespace with `jobs`, the workload namespace with `deployments` or `sandbox`) may use its driver, so treat the agent as node infrastructure. It must run on every node a mounting pod can land on, or that pod sits in `ContainerCreating`: by default it tolerates every workload toleration and runs on every node, so set `mountAgent.nodeSelector`/`tolerations` only to narrow that. Switching the agent on or off replaces mounting pools' warm pods, but a revision keeps the pod template it was minted with, so redeploy revisions that mount afterwards. Docker backends are unaffected.
 
 **A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandbox.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
 
@@ -197,7 +197,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `poolController.replicaCount` | `1` | Replicas of each per-kind pool-controller workload |
 | `sandbox.enabled` | `false` | Install the sandboxes service |
 | `sandbox.domain` | `""` | Wildcard domain sandboxes are addressed at (required when enabled) |
-| `workloadNamespace.*` | disabled | Hardened namespace for workload pods (below) |
+| `{jobs,deployments,sandbox}.namespace` | `""` | Namespace each plane's pods run in; empty is the release namespace (below) |
+| `{jobs,deployments,sandbox}.networkPolicy.enabled` | `false`, `true`, `true` | Per-plane NetworkPolicy (below) |
 | `deployments.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for workloads (below) |
 | `jobs.{cpu,memory}Overcommit` | `1` | Same, independently for job pods |
 | `deployments.workloadTolerations` | `[]` | Tolerations on workload pods (deployment replicas + warm pools) |
@@ -220,9 +221,9 @@ Autoscaler tuning via `extraEnv`: `AUTOSCALER_WINDOW` (sliding window, default 6
 
 `imagePullSecrets` supplies pull credentials to every pod the chart renders. Each entry is `{name: <secret>}`.
 
-Workload pods — job pods, deployment replicas, warm pods — are created by the services rather than the chart, so pod-level values cannot reach them; they inherit credentials from the ServiceAccount they run as. The chart stamps `imagePullSecrets` onto the job-pod ServiceAccount it creates (`serviceAccount.jobSidecarCreate`), which covers job pods. Deployment replicas and warm pods currently run under the workload namespace's `default` ServiceAccount, so a private *runtime* image there needs the secret attached to that account out of band.
+Workload pods — job pods, deployment replicas, warm pods — are created by the services rather than the chart, so pod-level values cannot reach them; they inherit credentials from the ServiceAccount they run as. The chart stamps `imagePullSecrets` onto the job-pod ServiceAccount it creates (`serviceAccount.jobSidecarCreate`), which covers job pods. Deployment replicas, sandboxes and warm pods currently run under the `default` ServiceAccount of their plane's namespace, so a private *runtime* image there needs the secret attached to that account out of band.
 
-A pull secret is referenced **by name only, and the name resolves in the namespace of the pod using it** — there is no cross-namespace reference. Every pod the chart renders lives in the release namespace, so that is where `imagePullSecrets` must exist. The job-pod ServiceAccount is the exception: the chart creates it in `orchestrator.jobNamespace`. While that is the release namespace (the default) one secret covers everything, but once they differ the same name has to exist in the job namespace too, and `serviceAccount.jobSidecarImagePullSecrets` overrides the list when the credentials are named differently there.
+A pull secret is referenced **by name only, and the name resolves in the namespace of the pod using it** — there is no cross-namespace reference. Every pod the chart renders lives in the release namespace, so that is where `imagePullSecrets` must exist. The job-pod ServiceAccount is the exception: the chart creates it in `jobs.namespace`. While that is the release namespace (the default) one secret covers everything, but once they differ the same name has to exist in the job namespace too, and `serviceAccount.jobSidecarImagePullSecrets` overrides the list when the credentials are named differently there.
 
 ## Hardening
 
@@ -230,23 +231,32 @@ Defense in depth, each layer independently optional:
 
 **Pod security floor (always on).** Every workload pod runs as non-root (uid 65532) with all capabilities dropped, `RuntimeDefault` seccomp, a read-only root filesystem, and no ServiceAccount token — admissible under Pod Security Standards `restricted`.
 
-**Dedicated workload namespace.** With `workloadNamespace.enabled=true`, workload pods (deployment revisions, warm pools, sandboxes) run in their own namespace (default `{release}-workloads`), separated from the control plane:
+**A namespace per plane.** Each plane names the namespace its pods run in: `jobs.namespace`, `deployments.namespace` (revisions and their warm pools) and `sandbox.namespace` (sandboxes and theirs). Empty means the release namespace. Give each one its own, apart from the control plane. Sandboxes run untrusted code, so never put them in the same namespace as deployments. The chart creates what its components need in each namespace: the Roles and RoleBindings for that plane's control plane, a ServiceAccount per pool-controller kind that is allowed only in its own plane's namespace, and the job-pod ServiceAccount.
+
+**The chart does not create or label namespaces.** That follows Helm's own practice: a chart that owns a namespace deletes everything in it when the release goes. Provision them where you manage cluster policy (ArgoCD `CreateNamespace` with `managedNamespaceMetadata`, Terraform, or `kubectl`), with their Pod Security level and any ResourceQuota:
 
 ```yaml
-workloadNamespace:
-  enabled: true
-  podSecurity: restricted        # PSA enforce/audit/warn labels
-  networkPolicy:
-    enabled: true                # default-deny ingress; egress blocks 169.254.169.254
-    gatewayNamespace: traefik-system
-  resourceQuota:
-    enabled: true
-    pods: 200
-    requestsCpu: "100"
-    requestsMemory: 200Gi
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orchestrator-sandboxes
+  labels:
+    pod-security.kubernetes.io/enforce: restricted   # deployments and sandboxes: every pod the services create admits
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orchestrator-jobs
+  labels:
+    pod-security.kubernetes.io/enforce: baseline     # jobs: workers keep the image's user; use privileged for in-pod mounting without the node mount agent
 ```
 
-The NetworkPolicy admits ingress only from the gateway, the activator, the sandbox proxy, and the control planes, and blocks egress to the cloud metadata endpoint — the highest-value single rule against SSRF credential theft. It requires an enforcing CNI (Cilium, Calico; kindnet does not enforce).
+**A NetworkPolicy per plane** (`<plane>.networkPolicy.enabled`), in the plane's namespace and selecting only its pods. Every policy blocks egress to the cloud metadata endpoint, the highest-value single rule against SSRF credential theft. Ingress depends on the plane:
+- deployments (on by default): the gateway (`deployments.networkPolicy.gatewayNamespace`), the activator, the deployments service and the revision pool controller;
+- sandboxes (on by default): the sandbox proxy, the sandbox service and the sandbox pool controller;
+- jobs (off by default): none. Egress reaches the jobs service for artifact reports. What a build may reach is a platform decision, so enable this policy or ship your own. With the node mount agent, also allow the node on `mountAgent.port`, which NetworkPolicy cannot name (in Cilium: `toEntities: [host]`).
+
+The policies need an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
 <a id="isolation-tiers"></a>
 **Isolation tiers.** Workloads can request stronger kernel isolation with `"runtimeClass": "gvisor"` or `"kata"` in their spec. Map tiers to your cluster's RuntimeClasses with `KUBE_RUNTIME_CLASSES` (e.g. `gvisor=gvisor,kata=kata-qemu` via `extraEnv`); the service validates the RuntimeClass exists before accepting the workload, so a missing runtime is a `400`, not a stuck pod.

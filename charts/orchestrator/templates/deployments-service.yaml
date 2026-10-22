@@ -83,7 +83,7 @@ spec:
             - name: JOB_SIDECAR_IMAGE
               value: {{ include "orchestrator.jobSidecarImage" . | quote }}
             - name: KUBE_NAMESPACE
-              value: {{ include "orchestrator.workloadNamespace" . | quote }}
+              value: {{ include "orchestrator.deploymentsNamespace" . | quote }}
             - name: KUBE_ACTIVATOR_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: KUBE_GATEWAY_ENABLED
@@ -204,7 +204,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  namespace: {{ include "orchestrator.deploymentsNamespace" . }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 rules:
@@ -260,7 +260,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}
-  namespace: {{ include "orchestrator.workloadNamespace" . }}
+  namespace: {{ include "orchestrator.deploymentsNamespace" . }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 roleRef:
@@ -367,5 +367,60 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.deployments.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
+{{- if and .Values.deployments.enabled (ne (include "orchestrator.deploymentsNamespace" .) .Release.Namespace) }}
+---
+# The cold endpoint flip watches activator pods, which stay with the control
+# plane in the release namespace — the service's Role in the deployments namespace
+# cannot see them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "orchestrator.deploymentsName" . }}-activator-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.deploymentsName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.deployments.gateway.enabled }}
+---
+# HTTPRoutes in the deployments namespace point their Prefer: respond-async rule
+# at the activator Service here; cross-namespace backendRefs need the target
+# namespace's consent.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ include "orchestrator.deploymentsNamespace" . }}
+  to:
+    - group: ""
+      kind: Service
+      name: deployments-activator
 {{- end }}
 {{- end }}

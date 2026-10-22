@@ -1,0 +1,94 @@
+{{- /*
+  Per-plane workload isolation (<plane>.networkPolicy.enabled), in the
+  namespace that plane's pods run in and selecting only them: ingress only from
+  the plane's own data path and control plane, egress anywhere but the cloud
+  metadata endpoint (IAM-credential SSRF). Requires an enforcing CNI.
+*/}}
+{{- range $plane := list "jobs" "deployments" "sandbox" }}
+{{- with $ }}
+{{- $values := index .Values $plane }}
+{{- if and $values.enabled $values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orchestrator.fullname" . }}-{{ $plane }}-isolation
+  namespace: {{ include (printf "orchestrator.%sNamespace" (ternary "job" $plane (eq $plane "jobs"))) . }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      managed-by: {{ $plane }}-service
+  policyTypes: ["Ingress", "Egress"]
+  {{- if eq $plane "jobs" }}
+  # Job pods serve nothing; their sidecar reports outward.
+  ingress: []
+  {{- else }}
+  ingress:
+    - from:
+        {{- if eq $plane "deployments" }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $values.networkPolicy.gatewayNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: deployments-activator
+        {{- else }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: sandbox-proxy
+        {{- end }}
+        # The plane's control plane: claim POSTs, /stats scrapes, direct probes.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: {{ $plane }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: pool-controller
+              orchestrator.open-runtimes.io/pool-kind: {{ ternary "revision" "sandbox" (eq $plane "deployments") }}
+  {{- end }}
+  egress:
+    # DNS anywhere in-cluster (kube-dns lives in kube-system).
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if eq $plane "jobs" }}
+    # The sidecar's artifact reports. Some CNIs never match pod IPs with an
+    # ipBlock, so the jobs service gets its own rule. The node mount agent is
+    # on the host network, which NetworkPolicy cannot name: with it enabled,
+    # allow the node on mountAgent.port in a CNI policy.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: jobs
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.apiPort }}
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["169.254.169.254/32"]
+{{- end }}
+{{- end }}
+{{- end }}
