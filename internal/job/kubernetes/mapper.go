@@ -80,14 +80,12 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 	}
 
 	hasMounts := artifact.HasMount(req.Artifacts)
-	// The workspace token is minted here, once per pod, and handed to the
-	// agent (as a volume attribute) and to the sidecar (as env) — never to the
-	// worker.
-	agentMounts := hasMounts && cfg.MountAgentPort > 0
+	// One Job, one pod: its workspace token is minted here.
+	mounting := kube.NewMounting(cfg.MountAgentPort, rand.Text())
 	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	var agentEnv []corev1.EnvVar
-	if agentMounts {
-		workspaceVolume, agentEnv = kube.AgentWorkspace(cfg.MountAgentPort, rand.Text())
+	if hasMounts {
+		workspaceVolume, agentEnv = mounting.Workspace, mounting.SidecarEnv
 	}
 
 	labels := map[string]string{
@@ -135,21 +133,8 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		}
 		hostToContainer := corev1.MountPropagationHostToContainer
 		workerMounts[0].MountPropagation = &hostToContainer
-		if agentMounts {
-			// The node agent mounts inside the workspace from the host. Both
-			// containers only receive: the sidecar to see what it syncs and what
-			// post-job artifacts read, the worker to see its inputs. Neither
-			// needs privilege; the sidecar keeps file access for that same work.
-			sidecarMounts[0].MountPropagation = &hostToContainer
-			sidecarSecurityContext = kube.FileAccessSecurityContext()
-		} else {
-			bidirectional := corev1.MountPropagationBidirectional
-			sidecarMounts[0].MountPropagation = &bidirectional
-			// Root + privileged: the sidecar image is distroless nonroot, but
-			// mounting needs to open /dev/loop-control (root:disk 0660) and call
-			// mount(2).
-			sidecarSecurityContext = kube.MountingSecurityContext()
-		}
+		sidecarMounts[0].MountPropagation = &mounting.SidecarPropagation
+		sidecarSecurityContext = mounting.SidecarSecurity
 	} else if _, postJob := artifact.Partition(req.Artifacts); len(postJob) > 0 {
 		// Post-job artifacts read worker output and write where preparation did,
 		// whatever the owner or mode of either.

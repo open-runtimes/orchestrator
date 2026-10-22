@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -73,13 +74,15 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 	podVolumes, _ := kube.PersistentVolumes(p.Volumes)
 	cfg := m.cfg
 	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-	if agentMounts(p, cfg) {
-		workspaceVolume, _ = kube.AgentWorkspace(cfg.MountAgentPort, "")
+	var mounting *kube.Mounting
+	if p.Mounts {
+		mounting = ptr.To(kube.NewMounting(cfg.MountAgentPort, rand.Text()))
+		workspaceVolume = mounting.Workspace
 	}
 	warmPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Labels: m.PoolLabels(poolID),
-			Annotations: map[string]string{annotationPoolSpecHash: poolSpecHash(p)},
+			Annotations: map[string]string{annotationPoolSpecHash: poolSpecHash(p, cfg)},
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                 corev1.RestartPolicyNever,
@@ -91,7 +94,7 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 				{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			}, podVolumes...),
-			InitContainers: initContainers(p, cfg, token),
+			InitContainers: initContainers(p, cfg, token, mounting),
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
@@ -102,12 +105,17 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 	if rc := kube.RuntimeClassFor(cfg.RuntimeClasses, p.RuntimeClass); rc != "" {
 		warmPod.Spec.RuntimeClassName = &rc
 	}
-	kube.StampAgentToken(&warmPod.Spec)
 	return warmPod
 }
 
-func poolSpecHash(spec *pool.Spec) string {
+// poolSpecHash identifies what a warm pod was built from, so a pool whose spec
+// changes is replaced. Turning the node mount agent on or off changes a
+// mounting pool's pods too.
+func poolSpecHash(spec *pool.Spec, cfg Config) string {
 	encoded, _ := json.Marshal(spec)
+	if spec.Mounts && cfg.MountAgentPort > 0 {
+		encoded = append(encoded, " agent"...)
+	}
 	sum := sha256.Sum256(encoded)
 	return fmt.Sprintf("sha256:%x", sum[:])
 }
@@ -115,12 +123,12 @@ func poolSpecHash(spec *pool.Spec) string {
 // initContainers builds the pod's init containers in order: the shim install,
 // the optional agent install, then the sidecar (a native sidecar, which the
 // kubelet starts and leaves running).
-func initContainers(p *pool.Spec, cfg Config, token string) []corev1.Container {
+func initContainers(p *pool.Spec, cfg Config, token string, mounting *kube.Mounting) []corev1.Container {
 	containers := []corev1.Container{shimInstallContainer(cfg)}
 	if cfg.Agent.Image != "" {
 		containers = append(containers, agentInstallContainer(cfg))
 	}
-	return append(containers, proxyContainer(p, cfg, token))
+	return append(containers, proxyContainer(p, cfg, token, mounting))
 }
 
 // agentInstallContainer copies the contract-serving binary out of the image that
@@ -153,22 +161,22 @@ func shimInstallContainer(cfg Config) corev1.Container {
 
 // proxyContainer is the workload-sidecar in pool mode: a native sidecar
 // listening from pod start, holding the claim endpoints. Its kubelet /ready
-// probe gates the pod's Ready condition — warm-ready while unclaimed.
-func proxyContainer(p *pool.Spec, cfg Config, token string) corev1.Container {
+// probe gates the pod's Ready condition — warm-ready while unclaimed. It is
+// hardened unless the shape lets a claim mount.
+func proxyContainer(p *pool.Spec, cfg Config, token string, mounting *kube.Mounting) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	env := []corev1.EnvVar{
 		{Name: workload.EnvClaimToken, Value: token},
 		{Name: envSharedVolume, Value: workspacePath},
 		{Name: workload.EnvTargetHost, Value: "127.0.0.1"},
 	}
-	if p.Mounts {
+	workspace := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: workspacePath}
+	security := kube.HardenedSecurityContext(cfg.RunAsUser)
+	if mounting != nil {
 		env = append(env, corev1.EnvVar{Name: workload.EnvMounts, Value: "true"})
-	}
-	propagation := corev1.MountPropagationBidirectional
-	if agentMounts(p, cfg) {
-		_, agentEnv := kube.AgentWorkspace(cfg.MountAgentPort, "")
-		env = append(env, agentEnv...)
-		propagation = corev1.MountPropagationHostToContainer
+		env = append(env, mounting.SidecarEnv...)
+		workspace.MountPropagation = &mounting.SidecarPropagation
+		security = mounting.SidecarSecurity
 	}
 	// The proxy materializes s3:// artifacts in-process on claim, so it needs
 	// the deployments/pools service's S3 credentials.
@@ -196,27 +204,9 @@ func proxyContainer(p *pool.Spec, cfg Config, token string) corev1.Container {
 		},
 		RestartPolicy:   &alwaysRestart,
 		Resources:       kube.SidecarResources(),
-		VolumeMounts:    []corev1.VolumeMount{workspaceMount(p, propagation)},
-		SecurityContext: sidecarSecurityContext(p, cfg),
+		VolumeMounts:    []corev1.VolumeMount{workspace},
+		SecurityContext: security,
 	}
-}
-
-// agentMounts reports whether the node mount agent performs this shape's
-// mounts, so its sidecar needs no privilege.
-func agentMounts(p *pool.Spec, cfg Config) bool { return p.Mounts && cfg.MountAgentPort > 0 }
-
-// sidecarSecurityContext hardens the sidecar, unless the shape lets a claim
-// mount — then it needs privilege, which is the cost of the capability, or,
-// when the node agent mounts, only file access for the artifacts it still
-// materializes and syncs.
-func sidecarSecurityContext(p *pool.Spec, cfg Config) *corev1.SecurityContext {
-	if agentMounts(p, cfg) {
-		return kube.FileAccessSecurityContext()
-	}
-	if p.Mounts {
-		return kube.MountingSecurityContext()
-	}
-	return kube.HardenedSecurityContext(cfg.RunAsUser)
 }
 
 // gracePeriod is how long teardown may take: the drain, the post-phase
@@ -230,14 +220,12 @@ func gracePeriod(p *pool.Spec) *int64 {
 	return &grace
 }
 
-// workspaceMount mounts the shared workspace, carrying propagation only for a
-// shape that mounts: a mount established in the sidecar reaches the workload
-// through the shared subtree, and the workload's copy must accept it. Nothing
-// is propagated for a shape without the capability.
-func workspaceMount(p *pool.Spec, propagation corev1.MountPropagationMode) corev1.VolumeMount {
+// workerWorkspaceMount receives mounts only for a shape that lets a claim
+// make them.
+func workerWorkspaceMount(p *pool.Spec) corev1.VolumeMount {
 	m := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: workspacePath}
 	if p.Mounts {
-		m.MountPropagation = &propagation
+		m.MountPropagation = ptr.To(corev1.MountPropagationHostToContainer)
 	}
 	return m
 }
@@ -267,7 +255,7 @@ func workloadContainer(p *pool.Spec, cfg Config) corev1.Container {
 		Env:             env,
 		WorkingDir:      workspacePath,
 		VolumeMounts: append([]corev1.VolumeMount{
-			workspaceMount(p, corev1.MountPropagationHostToContainer),
+			workerWorkspaceMount(p),
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
 		Resources:       cfg.Overcommit.WorkerResources(p.CPU, p.Memory),

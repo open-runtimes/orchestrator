@@ -45,7 +45,7 @@ func TestBuildPod_Shape(t *testing.T) {
 	if pod.Labels[testNaming.Claim] != "" {
 		t.Error("a warm pod must not carry a claim label")
 	}
-	if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(mapperPool()) {
+	if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(mapperPool(), Config{}) {
 		t.Errorf("warm pod must identify its fixed pool spec without storing a token: got %v", pod.Annotations)
 	}
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
@@ -353,7 +353,17 @@ func TestBuildPod_AgentMounts(t *testing.T) {
 	if a, b := tokenOf(first), tokenOf(second); a == "" || a == b {
 		t.Fatalf("warm pod tokens %q and %q: each pod needs its own", a, b)
 	}
-	if !hasEnv(sidecar, mountagent.EnvToken) {
-		t.Error("the sidecar was not given the workspace token")
+	var sidecarToken string
+	for _, e := range sidecar.Env {
+		if e.Name == mountagent.EnvToken {
+			sidecarToken = e.Value
+		}
+	}
+	if sidecarToken != tokenOf(first) {
+		t.Errorf("sidecar token %q, want the workspace's %q", sidecarToken, tokenOf(first))
+	}
+	// Turning the agent on or off must replace a mounting pool's warm pods.
+	if first.Annotations[annotationPoolSpecHash] == poolSpecHash(&p.Spec, Config{}) {
+		t.Error("the pool spec hash ignores whether the agent serves the pool")
 	}
 }

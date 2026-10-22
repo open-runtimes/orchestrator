@@ -331,8 +331,9 @@ mountAgent:
   # Port the mount API listens on, on each node's own IP.
   port: 9878
   registrarImage: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
-  # Run wherever mounting pods run: match the job pods' node selector and
-  # tolerations.
+  # The agent must run on every node a mounting pod can land on, or that pod
+  # never gets its workspace. Empty tolerations take every workload toleration
+  # (jobs, deployments, sandbox); the empty node selector runs it on every node.
   nodeSelector: {}
   tolerations: []
   priorityClassName: system-node-critical

@@ -16,6 +16,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -127,19 +128,22 @@ func buildService(id, revision string) *corev1.Service {
 func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.PodSpec {
 	autoMount := false
 
+	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	var mounting *kube.Mounting
+	if artifact.HasMount(req.Artifacts) {
+		// A Revision's template is shared by every replica; each pod gets its
+		// own token when it is created (buildRevisionPod).
+		mounting = ptr.To(kube.NewMounting(cfg.MountAgentPort, ""))
+		workspaceVolume = mounting.Workspace
+	}
+
 	var initContainers []corev1.Container
 	if len(req.Artifacts) > 0 {
 		initContainers = append(initContainers, artifactPreContainer(req, cfg))
 	}
-	initContainers = append(initContainers, proxyContainer(req, cfg))
+	initContainers = append(initContainers, proxyContainer(req, cfg, mounting))
 
 	podVolumes, _ := kube.PersistentVolumes(req.Volumes)
-	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-	if agentMounts(req, cfg) {
-		// A Revision's template is shared by every replica; each pod gets its
-		// own token when it is created (buildRevisionPod).
-		workspaceVolume, _ = kube.AgentWorkspace(cfg.MountAgentPort, "")
-	}
 
 	spec := corev1.PodSpec{
 		ServiceAccountName:           cfg.ServiceAccount,
@@ -207,16 +211,17 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 // proxyContainer is the workload-sidecar: a native sidecar (init container
 // with restartPolicy Always) reverse-proxying traffic to the worker. Its
 // kubelet readiness probe (GET /ready on the admin port) is what admits the
-// pod into the Service's EndpointSlice.
-func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
+// pod into the Service's EndpointSlice. It is hardened unless the revision
+// mounts, which is the reason mounting is per-request rather than always on.
+func proxyContainer(req *deployment.Request, cfg Config, mounting *kube.Mounting) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
-	workspace := req.WorkspacePath()
+	workspace := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: req.WorkspacePath()}
 	env := proxyEnv(req)
-	propagation := corev1.MountPropagationBidirectional
-	if agentMounts(req, cfg) {
-		_, agentEnv := kube.AgentWorkspace(cfg.MountAgentPort, "")
-		env = append(env, agentEnv...)
-		propagation = corev1.MountPropagationHostToContainer
+	security := kube.HardenedSecurityContext(cfg.RunAsUser)
+	if mounting != nil {
+		env = append(env, mounting.SidecarEnv...)
+		workspace.MountPropagation = &mounting.SidecarPropagation
+		security = mounting.SidecarSecurity
 	}
 	return corev1.Container{
 		Name:            ContainerProxy,
@@ -240,8 +245,8 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 		StartupProbe:    mountsReadyProbe(req),
 		RestartPolicy:   &alwaysRestart,
 		Resources:       kube.SidecarResources(),
-		VolumeMounts:    []corev1.VolumeMount{workspaceMount(req, workspace, propagation)},
-		SecurityContext: sidecarSecurityContext(req, cfg),
+		VolumeMounts:    []corev1.VolumeMount{workspace},
+		SecurityContext: security,
 	}
 }
 
@@ -265,34 +270,11 @@ func mountsReadyProbe(req *deployment.Request) *corev1.Probe {
 	}
 }
 
-// agentMounts reports whether the node mount agent performs this revision's
-// mounts, so its sidecar needs no privilege.
-func agentMounts(req *deployment.Request, cfg Config) bool {
-	return artifact.HasMount(req.Artifacts) && cfg.MountAgentPort > 0
-}
-
-// sidecarSecurityContext hardens the sidecar, unless this revision mounts — then
-// it needs CAP_SYS_ADMIN and root, which is the cost of the capability and the
-// reason it is per-request rather than always on.
-func sidecarSecurityContext(req *deployment.Request, cfg Config) *corev1.SecurityContext {
-	if agentMounts(req, cfg) {
-		// The agent mounts; the sidecar still materializes artifacts and syncs
-		// a delta, whatever their owners and modes.
-		return kube.FileAccessSecurityContext()
-	}
-	if artifact.HasMount(req.Artifacts) {
-		return kube.MountingSecurityContext()
-	}
-	return kube.HardenedSecurityContext(cfg.RunAsUser)
-}
-
-// workspaceMount carries propagation only for a revision that mounts: the mount
-// is made in the sidecar and read in the worker, which takes Bidirectional out
-// of one and HostToContainer into the other.
-func workspaceMount(req *deployment.Request, workspace string, propagation corev1.MountPropagationMode) corev1.VolumeMount {
+// workerWorkspaceMount receives mounts only for a revision that makes them.
+func workerWorkspaceMount(req *deployment.Request, workspace string) corev1.VolumeMount {
 	m := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: workspace}
 	if artifact.HasMount(req.Artifacts) {
-		m.MountPropagation = &propagation
+		m.MountPropagation = ptr.To(corev1.MountPropagationHostToContainer)
 	}
 	return m
 }
@@ -367,7 +349,7 @@ func workerContainer(req *deployment.Request, cfg Config) corev1.Container {
 		Env:             env,
 		WorkingDir:      workspace,
 		VolumeMounts: append([]corev1.VolumeMount{
-			workspaceMount(req, workspace, corev1.MountPropagationHostToContainer),
+			workerWorkspaceMount(req, workspace),
 			{Name: VolumeTmp, MountPath: "/tmp"},
 		}, workerVolumeMounts...),
 		Resources:       cfg.Overcommit.WorkerResources(req.CPU, req.Memory),

@@ -56,11 +56,7 @@ type Config struct {
 	// code is the expected sandbox workload, so gvisor or kata is the right
 	// choice for a sandbox pool even though runc is the platform default.
 	RuntimeClasses map[string]string
-	// MountAgentPort, when set, has the node mount agent listening on that port
-	// perform mounts in an agent-served workspace, so no pod that mounts runs a
-	// privileged container (docs/design/node-mount-agent.md). Zero mounts from
-	// a privileged sidecar in the pod. The chart sets it when mountAgent is
-	// enabled.
+	// MountAgentPort: see the jobs backend's Config.
 	MountAgentPort int
 
 	// SandboxDomain is the wildcard domain sandboxes are reached at:

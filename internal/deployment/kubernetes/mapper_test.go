@@ -638,7 +638,9 @@ func TestBuildRevision_AgentMounts(t *testing.T) {
 	req := &deployment.Request{ID: "web", Image: "app:v1", Port: 8080, Replicas: 2, Artifacts: []artifact.Artifact{
 		&artifact.Download{ID: "img", In: "https://acme.test/x.erofs", Out: "x.erofs"},
 		&artifact.Mount{ID: "tree", In: "x.erofs", Out: "work", Depends: "img"},
-	}}
+	},
+		// The tenant chooses worker env, names included.
+		Environment: map[string]string{mountagent.EnvToken: "mine"}}
 	revision := buildRevision(req, Config{RunAsUser: 65532, MountAgentPort: 9878}, "web-00001")
 	template := revision.Spec.Template.Spec
 
@@ -670,6 +672,9 @@ func TestBuildRevision_AgentMounts(t *testing.T) {
 		}
 		if seen[tok] {
 			t.Fatal("two replicas share a workspace token")
+		}
+		if got := envOf(containerNamed(t, pod.Spec, ContainerWorker), mountagent.EnvToken); got != "mine" {
+			t.Fatalf("slot %d: the worker's %s = %q; the token must never reach the worker", slot, mountagent.EnvToken, got)
 		}
 		seen[tok] = true
 	}

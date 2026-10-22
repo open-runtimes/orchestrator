@@ -24,9 +24,9 @@ const (
 	// DefaultPort is where the agent's API listens on each node.
 	DefaultPort = 9878
 	// AttributeToken is the workspace volume attribute carrying the pod's
-	// token. Each pod gets its own (kube.AgentWorkspace, kube.StampAgentToken),
-	// and its sidecar the same value (EnvToken); presenting it authorizes
-	// mounts in that pod's workspace and nowhere else. The worker sees neither.
+	// token. Each pod gets its own (kube.NewMounting), and its sidecar the
+	// same value (EnvToken); presenting it authorizes mounts in that pod's
+	// workspace and nowhere else. The worker sees neither.
 	AttributeToken = "token"
 	// EnvEndpoint and EnvToken are how the sidecar finds and authenticates to
 	// the agent on its node. With a token set the sidecar uses the agent.

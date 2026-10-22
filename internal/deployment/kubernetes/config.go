@@ -49,11 +49,7 @@ type Config struct {
 	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
 	// default. Defaults: gvisor→gvisor, kata→kata.
 	RuntimeClasses map[string]string
-	// MountAgentPort, when set, has the node mount agent listening on that port
-	// perform mounts in an agent-served workspace, so no pod that mounts runs a
-	// privileged container (docs/design/node-mount-agent.md). Zero mounts from
-	// a privileged sidecar in the pod. The chart sets it when mountAgent is
-	// enabled.
+	// MountAgentPort: see the jobs backend's Config.
 	MountAgentPort int
 
 	GatewayEnabled       bool   // reconcile HTTPRoutes + the cold endpoint flip; off for pre-Gateway clusters

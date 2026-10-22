@@ -51,6 +51,10 @@ spec:
               value: {{ include "orchestrator.workloadSidecarImage" $root | quote }}
             - name: POOL_SHIM_IMAGE
               value: {{ include "orchestrator.poolShimImage" $root | quote }}
+            {{- if $root.Values.mountAgent.enabled }}
+            - name: KUBE_MOUNT_AGENT_PORT
+              value: {{ $root.Values.mountAgent.port | quote }}
+            {{- end }}
             {{- if eq $kind "revision" }}
             - name: POOLS_JSON
               value: {{ $root.Values.deployments.pools | toJson | quote }}
@@ -65,10 +69,6 @@ spec:
             {{- with $root.Values.deployments.workloadNodeSelector }}
             - name: KUBE_WORKLOAD_NODE_SELECTOR
               value: {{ toJson . | quote }}
-            {{- end }}
-            {{- if $root.Values.mountAgent.enabled }}
-            - name: KUBE_MOUNT_AGENT_PORT
-              value: {{ $root.Values.mountAgent.port | quote }}
             {{- end }}
             {{- include "orchestrator.s3Env" (dict "s3" $root.Values.deployments.s3 "secretName" (include "orchestrator.deploymentsS3SecretName" $root)) | nindent 12 }}
             {{- else }}
@@ -87,10 +87,6 @@ spec:
             {{- with $root.Values.sandbox.workloadNodeSelector }}
             - name: KUBE_WORKLOAD_NODE_SELECTOR
               value: {{ toJson . | quote }}
-            {{- end }}
-            {{- if $root.Values.mountAgent.enabled }}
-            - name: KUBE_MOUNT_AGENT_PORT
-              value: {{ $root.Values.mountAgent.port | quote }}
             {{- end }}
             {{- include "orchestrator.s3Env" (dict "s3" $root.Values.sandbox.s3 "secretName" (include "orchestrator.sandboxS3SecretName" $root)) | nindent 12 }}
             {{- end }}

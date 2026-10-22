@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,7 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"orchestrator/internal/apperrors"
-	"orchestrator/internal/kube"
+	"orchestrator/internal/mountagent"
 	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/warm"
@@ -595,8 +596,31 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []st
 		},
 		Spec: *revision.Spec.Template.Spec.DeepCopy(),
 	}
-	kube.StampAgentToken(&pod.Spec) // each replica its own workspace token
+	stampAgentToken(&pod.Spec)
 	return pod
+}
+
+// stampAgentToken gives a replica its own workspace token: a Revision's
+// template is shared by every replica, so it carries an empty one, which the
+// agent refuses. Only init containers are stamped — the sidecar runs there —
+// so a worker env var of the same name, which the tenant chooses, never
+// receives the token.
+func stampAgentToken(spec *corev1.PodSpec) {
+	for i := range spec.Volumes {
+		csi := spec.Volumes[i].CSI
+		if csi == nil || csi.Driver != mountagent.Driver {
+			continue
+		}
+		token := rand.Text() // 130 random bits
+		csi.VolumeAttributes = map[string]string{mountagent.AttributeToken: token}
+		for j := range spec.InitContainers {
+			for k := range spec.InitContainers[j].Env {
+				if spec.InitContainers[j].Env[k].Name == mountagent.EnvToken {
+					spec.InitContainers[j].Env[k].Value = token
+				}
+			}
+		}
+	}
 }
 
 func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisionapi.Revision, p *pool.Pool, slot int) (_ *corev1.Pod, outcomeErr error) {

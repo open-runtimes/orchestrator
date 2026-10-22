@@ -71,7 +71,7 @@ The worker can write anything in the workspace, including replacing `out` with a
 - Unmount through the parent's descriptor (`/proc/self/fd/<parent>/<name>`, `UMOUNT_NOFOLLOW`). A descriptor on the mount itself is a reference to it, and the kernel calls the mount busy for as long as the caller holds it; teardown first took the full 10-second busy deadline for exactly that reason.
 - Mount images, tmpfs and overlays `nosuid` as well as `nodev`.
 - Open an image path `O_PATH` first and reopen it for reading only if it is a regular file. Opening a FIFO the workload left there would hang the agent; opening a device node it made with `mknod` would act on the host, outside the pod's device cgroup. The workspace bind itself is `nodev,nosuid` too.
-- Only pods in the job namespace may publish a workspace (the chart passes it as the allowlist), a token stays bound to the volume that published it, and per-workspace mounts are capped at 64, which bounds loop devices and mount-table growth.
+- Only pods in the job and workload namespaces may publish a workspace (the chart passes them as the allowlist), a token stays bound to the volume that published it, and per-workspace mounts are capped at 64, which bounds loop devices and mount-table growth.
 
 ### What moves where in the code
 

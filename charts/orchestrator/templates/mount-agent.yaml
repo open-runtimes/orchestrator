@@ -50,7 +50,7 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.mountAgent.tolerations }}
+      {{- with .Values.mountAgent.tolerations | default (concat .Values.jobs.workloadTolerations .Values.deployments.workloadTolerations .Values.sandbox.workloadTolerations | uniq) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -59,7 +59,7 @@ spec:
           image: {{ include "orchestrator.mountAgentImage" . | quote }}
           imagePullPolicy: {{ .Values.mountAgent.image.pullPolicy }}
           # Loop devices, mount(2), and propagation into kubelet's pod
-          # directories: privileged here, so that no job pod has to be.
+          # directories: privileged here, so that no workload pod has to be.
           securityContext:
             privileged: true
             runAsUser: 0
@@ -70,8 +70,6 @@ spec:
               valueFrom: {fieldRef: {fieldPath: status.hostIP}}
             - name: LISTEN_ADDR
               value: "$(NODE_IP):{{ .Values.mountAgent.port }}"
-            # Pods in these namespaces may use the driver: jobs, and the
-            # workload pods of deployments, pools and sandboxes.
             - name: ALLOWED_NAMESPACES
               value: {{ list (include "orchestrator.jobNamespace" .) (include "orchestrator.workloadNamespace" .) | uniq | join "," | quote }}
           ports:
