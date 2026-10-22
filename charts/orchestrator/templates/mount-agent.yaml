@@ -70,8 +70,10 @@ spec:
               valueFrom: {fieldRef: {fieldPath: status.hostIP}}
             - name: LISTEN_ADDR
               value: "$(NODE_IP):{{ .Values.mountAgent.port }}"
+            # Pods in these namespaces may use the driver: jobs, and the
+            # workload pods of deployments, pools and sandboxes.
             - name: ALLOWED_NAMESPACES
-              value: {{ include "orchestrator.jobNamespace" . | quote }}
+              value: {{ list (include "orchestrator.jobNamespace" .) (include "orchestrator.workloadNamespace" .) | uniq | join "," | quote }}
           ports:
             - name: api
               containerPort: {{ .Values.mountAgent.port }}

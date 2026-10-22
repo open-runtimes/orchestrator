@@ -114,6 +114,10 @@ spec:
             - name: KUBE_WORKLOAD_NODE_SELECTOR
               value: {{ toJson . | quote }}
             {{- end }}
+            {{- if .Values.mountAgent.enabled }}
+            - name: KUBE_MOUNT_AGENT_PORT
+              value: {{ .Values.mountAgent.port | quote }}
+            {{- end }}
             {{- if .Values.deployments.pools }}
             - name: POOLS_JSON
               value: {{ .Values.deployments.pools | toJson | quote }}

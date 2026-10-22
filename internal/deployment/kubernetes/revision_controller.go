@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/kube"
 	"orchestrator/internal/pool"
 	revisionapi "orchestrator/internal/revision"
 	"orchestrator/internal/warm"
@@ -581,7 +582,7 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []st
 	annotations := make(map[string]string, len(revision.Spec.Template.Annotations)+1)
 	maps.Copy(annotations, revision.Spec.Template.Annotations)
 	annotations[AnnotationRevisionGeneration] = strconv.FormatInt(revision.Generation, 10)
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        podNameFor(revision.Name, slot, terminating),
 			Namespace:   revision.Namespace,
@@ -594,6 +595,8 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []st
 		},
 		Spec: *revision.Spec.Template.Spec.DeepCopy(),
 	}
+	kube.StampAgentToken(&pod.Spec) // each replica its own workspace token
+	return pod
 }
 
 func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisionapi.Revision, p *pool.Pool, slot int) (_ *corev1.Pod, outcomeErr error) {

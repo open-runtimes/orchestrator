@@ -66,6 +66,10 @@ spec:
             - name: KUBE_WORKLOAD_NODE_SELECTOR
               value: {{ toJson . | quote }}
             {{- end }}
+            {{- if $root.Values.mountAgent.enabled }}
+            - name: KUBE_MOUNT_AGENT_PORT
+              value: {{ $root.Values.mountAgent.port | quote }}
+            {{- end }}
             {{- include "orchestrator.s3Env" (dict "s3" $root.Values.deployments.s3 "secretName" (include "orchestrator.deploymentsS3SecretName" $root)) | nindent 12 }}
             {{- else }}
             - name: SANDBOX_POOLS_JSON
@@ -83,6 +87,10 @@ spec:
             {{- with $root.Values.sandbox.workloadNodeSelector }}
             - name: KUBE_WORKLOAD_NODE_SELECTOR
               value: {{ toJson . | quote }}
+            {{- end }}
+            {{- if $root.Values.mountAgent.enabled }}
+            - name: KUBE_MOUNT_AGENT_PORT
+              value: {{ $root.Values.mountAgent.port | quote }}
             {{- end }}
             {{- include "orchestrator.s3Env" (dict "s3" $root.Values.sandbox.s3 "secretName" (include "orchestrator.sandboxS3SecretName" $root)) | nindent 12 }}
             {{- end }}

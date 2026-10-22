@@ -49,6 +49,12 @@ type Config struct {
 	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
 	// default. Defaults: gvisor→gvisor, kata→kata.
 	RuntimeClasses map[string]string
+	// MountAgentPort, when set, has the node mount agent listening on that port
+	// perform mounts in an agent-served workspace, so no pod that mounts runs a
+	// privileged container (docs/design/node-mount-agent.md). Zero mounts from
+	// a privileged sidecar in the pod. The chart sets it when mountAgent is
+	// enabled.
+	MountAgentPort int
 
 	GatewayEnabled       bool   // reconcile HTTPRoutes + the cold endpoint flip; off for pre-Gateway clusters
 	GatewayName          string // parentRef Gateway name
@@ -100,6 +106,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
+		MountAgentPort:         config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 
 		GatewayEnabled:       config.GetBoolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:          config.GetEnv("KUBE_GATEWAY_NAME", ""),

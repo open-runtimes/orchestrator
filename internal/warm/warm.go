@@ -94,6 +94,7 @@ type Config struct {
 	Tolerations            []corev1.Toleration
 	NodeSelector           map[string]string
 	RuntimeClasses         map[string]string // isolation tier → RuntimeClass (internal/kube)
+	MountAgentPort         int               // node mount agent's port; 0 mounts from a privileged sidecar (internal/kube.AgentWorkspace)
 	OrphanTTL              time.Duration     // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 	Naming                 Naming
 

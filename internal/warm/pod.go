@@ -72,6 +72,10 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 	autoMount := false
 	podVolumes, _ := kube.PersistentVolumes(p.Volumes)
 	cfg := m.cfg
+	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	if agentMounts(p, cfg) {
+		workspaceVolume, _ = kube.AgentWorkspace(cfg.MountAgentPort, "")
+	}
 	warmPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Labels: m.PoolLabels(poolID),
@@ -84,7 +88,7 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 			Tolerations:                   cfg.Tolerations,
 			NodeSelector:                  cfg.NodeSelector,
 			Volumes: append([]corev1.Volume{
-				{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			}, podVolumes...),
 			InitContainers: initContainers(p, cfg, token),
@@ -98,6 +102,7 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 	if rc := kube.RuntimeClassFor(cfg.RuntimeClasses, p.RuntimeClass); rc != "" {
 		warmPod.Spec.RuntimeClassName = &rc
 	}
+	kube.StampAgentToken(&warmPod.Spec)
 	return warmPod
 }
 
@@ -159,6 +164,12 @@ func proxyContainer(p *pool.Spec, cfg Config, token string) corev1.Container {
 	if p.Mounts {
 		env = append(env, corev1.EnvVar{Name: workload.EnvMounts, Value: "true"})
 	}
+	propagation := corev1.MountPropagationBidirectional
+	if agentMounts(p, cfg) {
+		_, agentEnv := kube.AgentWorkspace(cfg.MountAgentPort, "")
+		env = append(env, agentEnv...)
+		propagation = corev1.MountPropagationHostToContainer
+	}
 	// The proxy materializes s3:// artifacts in-process on claim, so it needs
 	// the deployments/pools service's S3 credentials.
 	for _, kv := range config.LoadS3Credentials().ToEnv() {
@@ -185,14 +196,23 @@ func proxyContainer(p *pool.Spec, cfg Config, token string) corev1.Container {
 		},
 		RestartPolicy:   &alwaysRestart,
 		Resources:       kube.SidecarResources(),
-		VolumeMounts:    []corev1.VolumeMount{workspaceMount(p, corev1.MountPropagationBidirectional)},
+		VolumeMounts:    []corev1.VolumeMount{workspaceMount(p, propagation)},
 		SecurityContext: sidecarSecurityContext(p, cfg),
 	}
 }
 
+// agentMounts reports whether the node mount agent performs this shape's
+// mounts, so its sidecar needs no privilege.
+func agentMounts(p *pool.Spec, cfg Config) bool { return p.Mounts && cfg.MountAgentPort > 0 }
+
 // sidecarSecurityContext hardens the sidecar, unless the shape lets a claim
-// mount — then it needs privilege, which is the cost of the capability.
+// mount — then it needs privilege, which is the cost of the capability, or,
+// when the node agent mounts, only file access for the artifacts it still
+// materializes and syncs.
 func sidecarSecurityContext(p *pool.Spec, cfg Config) *corev1.SecurityContext {
+	if agentMounts(p, cfg) {
+		return kube.FileAccessSecurityContext()
+	}
 	if p.Mounts {
 		return kube.MountingSecurityContext()
 	}

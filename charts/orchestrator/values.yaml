@@ -315,11 +315,12 @@ workloadNamespace:
     requestsMemory: 200Gi
 
 # Node mount agent (docs/design/node-mount-agent.md): a DaemonSet that serves
-# each mounting job's workspace as a CSI inline volume and performs its artifact
-# mounts from the node. Enabling it switches jobs that mount to it, so their
-# pods have no privileged container. The agent itself runs privileged on the
-# host network; its API is gated by a per-pod token, and only pods in the job
-# namespace may use its driver.
+# each mounting pod's workspace as a CSI inline volume and performs its artifact
+# mounts from the node. Enabling it switches every workload that mounts (jobs,
+# deployment revisions, pools, sandboxes) to it, so their pods have no
+# privileged container. The agent itself runs privileged on the host network;
+# its API is gated by a per-pod token, and only pods in the job and workload
+# namespaces may use its driver.
 mountAgent:
   enabled: false
   image:

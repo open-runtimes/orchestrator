@@ -100,6 +100,10 @@ spec:
             - name: KUBE_WORKLOAD_NODE_SELECTOR
               value: {{ toJson . | quote }}
             {{- end }}
+            {{- if .Values.mountAgent.enabled }}
+            - name: KUBE_MOUNT_AGENT_PORT
+              value: {{ .Values.mountAgent.port | quote }}
+            {{- end }}
             {{- if .Values.sandbox.leaderElection.enabled }}
             - name: KUBE_LEADER_ELECTION
               value: "true"

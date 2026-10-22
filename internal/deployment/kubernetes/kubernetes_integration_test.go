@@ -3,8 +3,9 @@
 // Package kubernetes — real-cluster integration tests.
 //
 // These tests expect a running kind cluster named "orchestrator-dev" with the
-// ko.local/workload-sidecar image loaded (same setup as the jobs backend's
-// k8s_integration tests, so they share a CI job). Run via:
+// ko.local/workload-sidecar and ko.local/pool-shim images loaded and the mount
+// agent installed (same setup as the jobs backend's k8s_integration tests, so
+// they share a CI job). Run via:
 //
 //	go test -race -tags=k8s_integration -timeout=10m ./internal/deployment/kubernetes/...
 //
@@ -46,8 +47,10 @@ const (
 // setup brings up an Orchestrator wired to the host's default kubeconfig
 // (pinned to kind-orchestrator-dev), creates the test namespace if needed,
 // disables the gateway when the cluster lacks the Gateway API CRDs, and
-// returns teardown.
-func setup(t *testing.T) (*Orchestrator, func()) {
+// returns teardown. Options adjust the Config before the orchestrator is built.
+// With pools configured it also runs the pool controller's inventory loop,
+// as the standalone pool-controller does in a cluster.
+func setup(t *testing.T, opts ...func(*Config)) (*Orchestrator, func()) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -60,6 +63,9 @@ func setup(t *testing.T) (*Orchestrator, func()) {
 		Namespace:              testNamespace,
 		SidecarImagePullPolicy: "Never", // ko-loaded image lives locally in kind
 		GatewayEnabled:         true,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	o, err := NewOrchestrator(ctx, cfg)
 	if err != nil {
@@ -81,7 +87,13 @@ func setup(t *testing.T) (*Orchestrator, func()) {
 		t.Fatalf("get namespace: %v", err)
 	}
 
+	stopPools := func() {}
+	if len(cfg.Pools) > 0 {
+		o.pools, stopPools = startTunnelledPools(t, o)
+	}
+
 	if err := o.Start(ctx); err != nil {
+		stopPools()
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -89,6 +101,7 @@ func setup(t *testing.T) (*Orchestrator, func()) {
 	// (Revisions with their pods, Services, markers, HTTPRoutes),
 	// so successive runs don't pollute each other.
 	teardown := func() {
+		stopPools()
 		_ = o.Close()
 		ctx := context.Background()
 		managed := metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + ManagedByValue}

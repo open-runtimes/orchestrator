@@ -112,7 +112,7 @@ A [`mount`](jobs.md#mount-artifact) works too — a tar archive, squashfs image,
 }
 ```
 
-**Declaring a mount changes the pod**, and only for revisions that declare one: the sidecar runs **privileged as root** (`mount(2)` needs `CAP_SYS_ADMIN`, including tar's final bind mount), the workspace carries mount propagation so the mount reaches the worker, and the worker is held by a startup probe until the mount is in place. That privileged container is in **every replica** of such a revision, so keep it to revisions that need it — and do not lean on container isolation in a revision that also runs code you do not trust. A revision with no mount artifact is unchanged: hardened sidecar, no propagation, no gate.
+**Declaring a mount changes the pod**, and only for revisions that declare one: the sidecar runs **privileged as root** (`mount(2)` needs `CAP_SYS_ADMIN`, including tar's final bind mount), the workspace carries mount propagation so the mount reaches the worker, and the worker is held by a startup probe until the mount is in place. That privileged container is in **every replica** of such a revision, so keep it to revisions that need it — and do not lean on container isolation in a revision that also runs code you do not trust. A revision with no mount artifact is unchanged: hardened sidecar, no propagation, no gate. With the [node mount agent](operations.md) enabled, the node performs the mount instead and no container in the revision is privileged.
 
 The Docker backend cannot mount — sibling containers do not share a mount namespace the way a pod's containers do — and rejects the request rather than serving a revision without it.
 

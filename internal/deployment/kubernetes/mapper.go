@@ -134,6 +134,12 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 	initContainers = append(initContainers, proxyContainer(req, cfg))
 
 	podVolumes, _ := kube.PersistentVolumes(req.Volumes)
+	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	if agentMounts(req, cfg) {
+		// A Revision's template is shared by every replica; each pod gets its
+		// own token when it is created (buildRevisionPod).
+		workspaceVolume, _ = kube.AgentWorkspace(cfg.MountAgentPort, "")
+	}
 
 	spec := corev1.PodSpec{
 		ServiceAccountName:           cfg.ServiceAccount,
@@ -141,7 +147,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 		Tolerations:                  cfg.Tolerations,
 		NodeSelector:                 cfg.NodeSelector,
 		Volumes: append([]corev1.Volume{
-			{Name: VolumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
 			{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		}, podVolumes...),
 		InitContainers: initContainers,
@@ -205,11 +211,18 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	workspace := req.WorkspacePath()
+	env := proxyEnv(req)
+	propagation := corev1.MountPropagationBidirectional
+	if agentMounts(req, cfg) {
+		_, agentEnv := kube.AgentWorkspace(cfg.MountAgentPort, "")
+		env = append(env, agentEnv...)
+		propagation = corev1.MountPropagationHostToContainer
+	}
 	return corev1.Container{
 		Name:            ContainerProxy,
 		Image:           cfg.SidecarImage,
 		ImagePullPolicy: corev1.PullPolicy(cfg.SidecarImagePullPolicy),
-		Env:             proxyEnv(req),
+		Env:             env,
 		Ports: []corev1.ContainerPort{
 			{Name: portNameProxy, ContainerPort: workload.DefaultProxyPort},
 			{Name: portNameAdmin, ContainerPort: workload.DefaultAdminPort},
@@ -227,7 +240,7 @@ func proxyContainer(req *deployment.Request, cfg Config) corev1.Container {
 		StartupProbe:    mountsReadyProbe(req),
 		RestartPolicy:   &alwaysRestart,
 		Resources:       kube.SidecarResources(),
-		VolumeMounts:    []corev1.VolumeMount{workspaceMount(req, workspace, corev1.MountPropagationBidirectional)},
+		VolumeMounts:    []corev1.VolumeMount{workspaceMount(req, workspace, propagation)},
 		SecurityContext: sidecarSecurityContext(req, cfg),
 	}
 }
@@ -252,10 +265,21 @@ func mountsReadyProbe(req *deployment.Request) *corev1.Probe {
 	}
 }
 
+// agentMounts reports whether the node mount agent performs this revision's
+// mounts, so its sidecar needs no privilege.
+func agentMounts(req *deployment.Request, cfg Config) bool {
+	return artifact.HasMount(req.Artifacts) && cfg.MountAgentPort > 0
+}
+
 // sidecarSecurityContext hardens the sidecar, unless this revision mounts — then
 // it needs CAP_SYS_ADMIN and root, which is the cost of the capability and the
 // reason it is per-request rather than always on.
 func sidecarSecurityContext(req *deployment.Request, cfg Config) *corev1.SecurityContext {
+	if agentMounts(req, cfg) {
+		// The agent mounts; the sidecar still materializes artifacts and syncs
+		// a delta, whatever their owners and modes.
+		return kube.FileAccessSecurityContext()
+	}
 	if artifact.HasMount(req.Artifacts) {
 		return kube.MountingSecurityContext()
 	}

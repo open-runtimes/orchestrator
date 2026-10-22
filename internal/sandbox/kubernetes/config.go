@@ -56,6 +56,12 @@ type Config struct {
 	// code is the expected sandbox workload, so gvisor or kata is the right
 	// choice for a sandbox pool even though runc is the platform default.
 	RuntimeClasses map[string]string
+	// MountAgentPort, when set, has the node mount agent listening on that port
+	// perform mounts in an agent-served workspace, so no pod that mounts runs a
+	// privileged container (docs/design/node-mount-agent.md). Zero mounts from
+	// a privileged sidecar in the pod. The chart sets it when mountAgent is
+	// enabled.
+	MountAgentPort int
 
 	// SandboxDomain is the wildcard domain sandboxes are reached at:
 	// s-{token}.{SandboxDomain}. One HTTPRoute for *.{SandboxDomain} backs it
@@ -103,6 +109,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
+		MountAgentPort:         config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 
 		AgentImage:    config.GetEnv("SANDBOX_AGENT_IMAGE", sandbox.AgentImage),
 		SandboxDomain: config.GetEnv("SANDBOX_DOMAIN", defaultSandboxDomain),
@@ -166,6 +173,7 @@ func (c *Config) warmConfig() warm.Config {
 		Tolerations:            c.Tolerations,
 		NodeSelector:           c.NodeSelector,
 		RuntimeClasses:         c.RuntimeClasses,
+		MountAgentPort:         c.MountAgentPort,
 		OrphanTTL:              c.OrphanTTL,
 		Naming:                 naming(),
 		Metrics:                c.Metrics,

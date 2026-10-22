@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/deployment"
+	"orchestrator/internal/mountagent"
 	"orchestrator/internal/volume"
 	"orchestrator/internal/workload"
 	"reflect"
@@ -627,4 +628,49 @@ func envOf(c corev1.Container, name string) string {
 		}
 	}
 	return ""
+}
+
+// With the node agent, a revision that mounts runs nothing privileged, and
+// every replica gets its own workspace token when its pod is created from the
+// shared template.
+func TestBuildRevision_AgentMounts(t *testing.T) {
+	t.Parallel()
+	req := &deployment.Request{ID: "web", Image: "app:v1", Port: 8080, Replicas: 2, Artifacts: []artifact.Artifact{
+		&artifact.Download{ID: "img", In: "https://acme.test/x.erofs", Out: "x.erofs"},
+		&artifact.Mount{ID: "tree", In: "x.erofs", Out: "work", Depends: "img"},
+	}}
+	revision := buildRevision(req, Config{RunAsUser: 65532, MountAgentPort: 9878}, "web-00001")
+	template := revision.Spec.Template.Spec
+
+	for _, c := range append(template.InitContainers, template.Containers...) {
+		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
+			t.Errorf("container %s is privileged with the mount agent", c.Name)
+		}
+	}
+	sidecar := containerNamed(t, template, ContainerProxy)
+	worker := containerNamed(t, template, ContainerWorker)
+	for _, c := range []corev1.Container{sidecar, worker} {
+		if p := workspaceMountOf(t, c).MountPropagation; p == nil || *p != corev1.MountPropagationHostToContainer {
+			t.Errorf("%s propagation = %v, want HostToContainer", c.Name, p)
+		}
+	}
+	if template.Volumes[0].CSI == nil || template.Volumes[0].CSI.Driver != mountagent.Driver {
+		t.Fatalf("workspace = %+v, want the agent's inline volume", template.Volumes[0].VolumeSource)
+	}
+	if tok := template.Volumes[0].CSI.VolumeAttributes[mountagent.AttributeToken]; tok != "" {
+		t.Fatalf("the shared template carries a token %q; each pod must get its own", tok)
+	}
+
+	seen := map[string]bool{}
+	for slot := range 2 {
+		pod := buildRevisionPod(revision, slot, nil)
+		tok := pod.Spec.Volumes[0].CSI.VolumeAttributes[mountagent.AttributeToken]
+		if tok == "" || envOf(containerNamed(t, pod.Spec, ContainerProxy), mountagent.EnvToken) != tok {
+			t.Fatalf("slot %d: volume token %q does not reach its sidecar", slot, tok)
+		}
+		if seen[tok] {
+			t.Fatal("two replicas share a workspace token")
+		}
+		seen[tok] = true
+	}
 }
