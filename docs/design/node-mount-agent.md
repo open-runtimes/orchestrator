@@ -105,9 +105,11 @@ Kind (Kubernetes 1.37, containerd 2.3.4, kernel 7.2 arm64), gVisor `release-2026
 
 ### On a production-shaped node
 
-DOKS, amd64, kernel 6.12.96, containerd 2.2.3, kubelet 1.36.3, plain `emptyDir` workspaces, mounts made from the host mount namespace by a privileged helper. gVisor was not installed, because that means restarting containerd on a shared node.
+DOKS, amd64, kernel 6.12.96, containerd 2.2.3, kubelet 1.36.3, plain `emptyDir` workspaces, mounts made from the host mount namespace by a privileged helper. gVisor (`release-20261012.0`) was installed on a throwaway, tainted node with one containerd drop-in (`/etc/containerd/conf.d/`, which DOKS's containerd already imports) and a containerd restart. No edit to the main config was needed.
 
-- **Propagation is the same as on kind.** Late erofs mounts on fresh and already-listed subdirectories appear in running runc and `hostUsers: false` containers. The control pod without `HostToContainer` sees nothing. `hostUsers: false` pods start with no node changes.
+- **Propagation is the same as on kind, for all three tiers.** Late erofs mounts on fresh and already-listed subdirectories appear in running runc, gVisor and `hostUsers: false` containers. A plain writable overlay works under runc and gVisor. gVisor again does not see a mount stacked on the volume root. The control pod without `HostToContainer` sees nothing. `hostUsers: false` pods start with no node changes.
+- **gVisor with `hostUsers: false` is refused by kubelet** before runsc is involved: `RuntimeClass handler "runsc" does not support user namespaces`.
+- **gVisor holds late mounts busy while the sandbox runs.** The host cannot unmount them (`target is busy`) until the sandbox exits; afterwards they unmount cleanly. Teardown is unaffected, because kubelet only tears volumes down after the containers have stopped. But an agent `Release` while a gVisor pod is still running has to detach lazily (`MNT_DETACH`) and let the sandbox drop its references.
 - **Writable overlays in user-namespaced pods differ from kind, and they are the one case that needs care.** On kernel 6.12 the container gets `Permission denied` writing to an overlay whose layers belong to host root. (On kind's kernel 7.2 the same overlay was writable.) What I tried:
 
   | Overlay setup | Result in the `hostUsers: false` pod |
@@ -148,11 +150,18 @@ Kind (arm64), a Node 22 app with `express` and an SDK (939 files, 8.4 MB) on an 
 | runc + `hostUsers: false` | 575 / 595ms | 46ms | 56ms | 0.09 / 0.47ms |
 | gVisor | 771 / 1072ms | 178ms | 208ms | 0.28 / 2.81ms |
 
-- **User namespaces are free.** The 11ms at p50 is within noise.
-- **gVisor costs about 200ms at p50 and 500ms at p90.** Part of it is a slower sandbox start. The larger part is module loading, about 3.9× slower because every file open and stat goes through gVisor's file proxy. That share grows with the number of files an app loads at startup.
-- **Warm requests are cheap under every tier.** gVisor's network stack adds a fraction of a millisecond.
+The same measurement on the DOKS node (amd64), with the driver running in a pod on that node so every timestamp comes from one clock:
 
-These are relative numbers from an arm64 laptop. The absolute numbers on amd64 nodes will differ.
+| | create → HTTP 200, p50 / p90 | module loading (p50) | Node start → listening (p50) |
+| --- | --- | --- | --- |
+| runc | 1196 / 1335ms | 170ms | 210ms |
+| gVisor | 1544 / 1713ms | 387ms | 468ms |
+| runc, second batch (20 runs) | 1267 / 1373ms | | |
+| runc + `hostUsers: false` (20 runs, same batch) | 1266 / 1321ms | | |
+
+- **User namespaces are free on both.** The first DOKS batch suggested +150ms. A second batch of 20 runs each, alternating order, put `hostUsers: false` and runc within a millisecond at p50.
+- **gVisor costs about 350ms at p50 on DOKS** (about 200ms on the laptop). Part of it is a slower sandbox start. The larger part is module loading, 2.3× slower on DOKS and 3.9× on the laptop, because every file open and stat goes through gVisor's file proxy. That share grows with the number of files an app loads at startup.
+- **Warm requests are cheap under every tier.** gVisor's network stack adds a fraction of a millisecond (measured on the laptop).
 
 ## What it costs
 
@@ -174,4 +183,4 @@ These are relative numbers from an arm64 laptop. The absolute numbers on amd64 n
    - A writable-overlay test in a `hostUsers: false` pod, because that case behaves differently across kernels.
    - A unit suite for the `openat2` path resolution with symlink races.
 3. **Then turn on `hostUsers: false` for mounting pools.** It costs nothing at cold start or per request, and it is most of what gVisor would buy.
-4. **gVisor stays per pool.** It costs about 200ms at p50, more for apps that load many files. Repeat the gVisor half of the spike on the target node image before offering it, since it was only run on kind.
+4. **gVisor stays per pool.** It costs about 350ms at p50 on DOKS, more for apps that load many files. It needs a runsc install per node: one containerd drop-in plus a restart, which a DaemonSet can do, gated by a node label the RuntimeClass selects. An agent `Release` on a running gVisor pod must detach lazily.
