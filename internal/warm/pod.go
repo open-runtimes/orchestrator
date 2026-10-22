@@ -94,7 +94,7 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 				{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
 				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			}, podVolumes...),
-			InitContainers: initContainers(p, cfg, token, mounting),
+			InitContainers: initContainers(cfg, token, mounting),
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
 		},
 	}
@@ -123,12 +123,12 @@ func poolSpecHash(spec *pool.Spec, cfg Config) string {
 // initContainers builds the pod's init containers in order: the shim install,
 // the optional agent install, then the sidecar (a native sidecar, which the
 // kubelet starts and leaves running).
-func initContainers(p *pool.Spec, cfg Config, token string, mounting *kube.Mounting) []corev1.Container {
+func initContainers(cfg Config, token string, mounting *kube.Mounting) []corev1.Container {
 	containers := []corev1.Container{shimInstallContainer(cfg)}
 	if cfg.Agent.Image != "" {
 		containers = append(containers, agentInstallContainer(cfg))
 	}
-	return append(containers, proxyContainer(p, cfg, token, mounting))
+	return append(containers, proxyContainer(cfg, token, mounting))
 }
 
 // agentInstallContainer copies the contract-serving binary out of the image that
@@ -163,7 +163,7 @@ func shimInstallContainer(cfg Config) corev1.Container {
 // listening from pod start, holding the claim endpoints. Its kubelet /ready
 // probe gates the pod's Ready condition — warm-ready while unclaimed. It is
 // hardened unless the shape lets a claim mount.
-func proxyContainer(p *pool.Spec, cfg Config, token string, mounting *kube.Mounting) corev1.Container {
+func proxyContainer(cfg Config, token string, mounting *kube.Mounting) corev1.Container {
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	env := []corev1.EnvVar{
 		{Name: workload.EnvClaimToken, Value: token},
