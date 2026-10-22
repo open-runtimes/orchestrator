@@ -1,6 +1,6 @@
 # Node mount agent
 
-**Status: proposal, spiked.** Nothing here is implemented. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
+**Status: proposal, spiked.** Nothing here is implemented. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node, gVisor included (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
 
 ## The problem
 
