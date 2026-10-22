@@ -50,8 +50,6 @@ func main() {
 	}
 
 	ctx := context.Background()
-	svcCfg := config.LoadServiceConfig()
-	svcCfg.JobSidecarImage = configuredSidecarImage("JOB_SIDECAR_IMAGE", "job-sidecar")
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("service", "orchestrator", "backend", "docker"))
 
@@ -59,6 +57,16 @@ func main() {
 		slog.Error("The all-in-one orchestrator runs the Docker backend only; on Kubernetes run the per-service images from the Helm chart", "backend", backend)
 		os.Exit(1)
 	}
+
+	svcCfg, err := config.LoadServiceConfig()
+	if err == nil {
+		err = svcCfg.RequireAPIKey("docker")
+	}
+	if err != nil {
+		slog.Error("Invalid API authentication configuration", "error", err)
+		os.Exit(1)
+	}
+	svcCfg.JobSidecarImage = configuredSidecarImage("JOB_SIDECAR_IMAGE", "job-sidecar")
 
 	// One listener carries both data planes, so the hostname has to say which
 	// plane a request is for: the domains must differ. Hence the derived

@@ -53,7 +53,7 @@ kubectl -n orchestrator port-forward svc/jobs 8080:8080 &
 curl localhost:8080/readyz
 ```
 
-To require authentication, mount a secret and point `API_KEY_FILE` at it (via `extraEnv` + a volume, or your secrets operator). Requests then need `Authorization: Bearer <key>`. **With no key configured, the API is open** — the services log a warning at startup.
+To require authentication, mount a secret and point `API_KEY_FILE` at it (via `extraEnv` + a volume, or your secrets operator), or set `API_KEY`. Requests then need `Authorization: Bearer <key>`. A key file that cannot be read or is empty stops the service at startup. On Kubernetes, **with no key configured, the API is open** — the services log a warning at startup. The Docker backend refuses to start without a key unless `ALLOW_UNAUTHENTICATED=true` is set (the local `docker-compose.yaml` profile does).
 
 ## Exposing the jobs API
 

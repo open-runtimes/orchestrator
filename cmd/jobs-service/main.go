@@ -16,10 +16,18 @@ import (
 
 func main() {
 	ctx := context.Background()
-	svcCfg := config.LoadServiceConfig()
 	backend := config.GetEnv("ORCHESTRATOR_BACKEND", "docker")
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("backend", backend))
+
+	svcCfg, err := config.LoadServiceConfig()
+	if err == nil {
+		err = svcCfg.RequireAPIKey(backend)
+	}
+	if err != nil {
+		slog.Error("Invalid API authentication configuration", "error", err)
+		os.Exit(1)
+	}
 
 	// Metrics live at the top of main so the same instance is shared by the
 	// backend and server.Run's HTTP and dispatcher recorders.
