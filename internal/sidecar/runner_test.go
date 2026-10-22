@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
+	"orchestrator/internal/mount"
 	"os"
 	"path/filepath"
 	"sync"
@@ -363,14 +364,14 @@ func TestRunner_ReportsArtifact(t *testing.T) {
 type fakeMounter struct {
 	mu         sync.Mutex
 	sources    []string
-	opts       []MountOpts
+	opts       []mount.Opts
 	mounted    []string
 	unmounted  []string
 	active     map[string]bool
 	unmountErr error
 }
 
-func (f *fakeMounter) Mount(image, target string, opts MountOpts) error {
+func (f *fakeMounter) Mount(image, target string, opts mount.Opts) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sources = append(f.sources, image)
@@ -412,7 +413,7 @@ func TestRunner_MountLifecycle(t *testing.T) {
 
 	sigFn, triggerDone := triggerSignal()
 	fake := &fakeMounter{}
-	target := filepath.Join(tmpDir, "mnt", "data")
+	target := filepath.Join("mnt", "data") // the Mounter speaks workspace-relative paths
 
 	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
 	if err != nil {
@@ -445,7 +446,7 @@ func TestRunner_MountLifecycle(t *testing.T) {
 	}
 	fake.mu.Unlock()
 
-	if _, err := os.Stat(target); err != nil {
+	if _, err := os.Stat(filepath.Join(tmpDir, target)); err != nil {
 		t.Fatalf("mount target dir not created: %v", err)
 	}
 
@@ -465,8 +466,8 @@ func TestRunner_MountLifecycle(t *testing.T) {
 func TestRunner_RunPostAdoptsMountAfterSidecarRestart(t *testing.T) {
 	workspace := t.TempDir()
 	createTarFile(t, filepath.Join(workspace, "data.tar.gz"), true, map[string]string{"index.js": "export default {}"})
-	target := filepath.Join(workspace, "runtime")
-	if err := os.MkdirAll(filepath.Join(target, ".lower"), 0o755); err != nil {
+	target := "runtime"
+	if err := os.MkdirAll(filepath.Join(workspace, target, ".lower"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -559,8 +560,8 @@ func TestRunner_TarMountMaterializesDirectoryLower(t *testing.T) {
 
 			fake.mu.Lock()
 			defer fake.mu.Unlock()
-			if len(fake.sources) != 1 || fake.sources[0] != lower {
-				t.Fatalf("mount source = %v, want [%s]", fake.sources, lower)
+			if want := filepath.Join("runtime", ".lower"); len(fake.sources) != 1 || fake.sources[0] != want {
+				t.Fatalf("mount source = %v, want [%s]", fake.sources, want)
 			}
 			if len(fake.opts) != 1 || !fake.opts[0].SourceDir || !fake.opts[0].Writable {
 				t.Fatalf("mount opts = %+v, want directory + writable", fake.opts)
@@ -679,7 +680,7 @@ func TestRunner_HoldUntilShutdownLifecycle(t *testing.T) {
 	sigFn, triggerDone := triggerSignal()
 	fake := &fakeMounter{}
 	captured := &captureReporter{}
-	target := filepath.Join(tmpDir, "mnt", "data")
+	target := filepath.Join("mnt", "data")
 
 	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[
 		{"id":"seed","type":"write","in":"hello","out":"pre.txt"},
@@ -789,7 +790,7 @@ func TestRunner_RestartAdoptsMounts(t *testing.T) {
 	}
 
 	sigFn, triggerDone := triggerSignal()
-	target := filepath.Join(tmpDir, "mnt", "data")
+	target := filepath.Join("mnt", "data")
 	fake := &fakeMounter{active: map[string]bool{target: true}}
 
 	artifacts, err := artifact.UnmarshalArtifacts([]byte(`[{"id":"m","type":"mount","in":"data.sqfs","out":"mnt/data"}]`))
@@ -894,7 +895,7 @@ func TestRunnerCleanupFailureCanBeRetried(t *testing.T) {
 			if !errors.Is(err, failure) {
 				t.Fatalf("shutdown should fail: %v", err)
 			}
-			target := filepath.Join(workspace, "code")
+			target := "code"
 			if !mounter.active[target] {
 				t.Fatal("fixture must still have a mounted volume")
 			}

@@ -21,6 +21,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/dispatcher"
 	"orchestrator/internal/job"
+	"orchestrator/internal/mountagent"
 	"orchestrator/internal/testutil"
 	"strings"
 	"sync"
@@ -909,5 +910,71 @@ func TestIntegration_PreparationFailure(t *testing.T) {
 				return err == nil && status.State == job.StateFailed
 			}, testutil.WithTimeout(10*time.Second))
 		})
+	}
+}
+
+// TestIntegration_AgentMounts runs the same read-only and writable mounts with
+// the node mount agent performing them (MountAgentPort set), and then checks the
+// pod it ran in: no container may be privileged, and the workspace must be the
+// agent's inline volume. Completed proves the agent mounted inside the
+// workspace from the host and propagation reached the worker; the overlay
+// write proves the writable layer works through the agent too. Requires the
+// mount agent DaemonSet (task test-k8s-integration installs it).
+func TestIntegration_AgentMounts(t *testing.T) {
+	o, emitter, teardown := setup(t, func(c *Config) {
+		c.MountAgentPort = mountagent.DefaultPort
+	})
+	defer teardown()
+
+	d := wireDispatcher(t, emitter)
+	defer d.Close(context.Background())
+
+	jobID := fmt.Sprintf("agent-mount-%d", time.Now().UnixNano())
+	req := &job.Request{
+		ID:    jobID,
+		Image: "alpine:3.20",
+		Command: `sleep 1 && grep -q "mounted content" /workspace/ro/hello.txt && ` +
+			`echo written > /workspace/rw/new.txt && grep -q written /workspace/rw/new.txt && ` +
+			`grep -q "mounted content" /workspace/rw/hello.txt`,
+		CPU:            0.1,
+		Memory:         64,
+		TimeoutSeconds: 120,
+		Workspace:      "/workspace",
+		Artifacts: []artifact.Artifact{
+			&artifact.Write{ID: "w", In: "mounted content", Out: "hello.txt"},
+			&artifact.Archive{ID: "a", In: "hello.txt", Out: "data.sqfs", Format: "squashfs", Depends: "w"},
+			&artifact.Mount{ID: "ro", In: "data.sqfs", Out: "ro", Depends: "a"},
+			&artifact.Mount{ID: "rw", In: "data.sqfs", Out: "rw", Writable: true, Size: 16, Depends: "a"},
+		},
+	}
+	if err := o.Run(t.Context(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	testutil.MustWaitFor(t, func() bool {
+		s, err := o.Status(t.Context(), jobID)
+		return err == nil && (s.State == job.StateCompleted || s.State == job.StateFailed)
+	}, testutil.WithTimeout(150*time.Second), testutil.WithInterval(time.Second))
+
+	status, err := o.Status(t.Context(), jobID)
+	if err != nil {
+		t.Fatalf("final Status: %v", err)
+	}
+	if status.State != job.StateCompleted {
+		t.Errorf("final state: want completed (agent mounts + reads + overlay write succeeded), got %s (exit=%v)", status.State, status.ExitCode)
+	}
+
+	pods, err := o.client.CoreV1().Pods(testNamespace).List(t.Context(), metav1.ListOptions{LabelSelector: LabelJobID + "=" + jobID})
+	if err != nil || len(pods.Items) == 0 {
+		t.Fatalf("list job pods: %v (found %d)", err, len(pods.Items))
+	}
+	spec := pods.Items[0].Spec
+	for _, c := range append(spec.InitContainers, spec.Containers...) {
+		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
+			t.Errorf("container %s ran privileged in agent mode", c.Name)
+		}
+	}
+	if spec.Volumes[0].CSI == nil || spec.Volumes[0].CSI.Driver != mountagent.Driver {
+		t.Errorf("workspace volume = %+v, want the agent's inline volume", spec.Volumes[0].VolumeSource)
 	}
 }

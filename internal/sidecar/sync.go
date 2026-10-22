@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/mount"
 	"os"
 	"path/filepath"
 	"sync"
@@ -107,7 +108,7 @@ func (r *Runner) recordPush(id string, p deltaPrint) {
 // first session, not a failure; anything else fails the mount, because starting
 // empty would let the next push overwrite a workspace we simply failed to read.
 func (r *Runner) restoreDelta(ctx context.Context, m *artifact.Mount) error {
-	upper := UpperDir(filepath.Join(r.sharedVolumePath, m.Out))
+	upper := mount.UpperDir(filepath.Join(r.sharedVolumePath, m.Out))
 	if err := os.MkdirAll(upper, 0o755); err != nil {
 		return fmt.Errorf("create upper layer: %w", err)
 	}
@@ -152,7 +153,7 @@ func (r *Runner) restoreDelta(ctx context.Context, m *artifact.Mount) error {
 // that is correct; a long session re-uploads a growing archive, and per-file
 // sync is the answer when that becomes the cost that matters.
 func (r *Runner) pushDelta(ctx context.Context, m *artifact.Mount) error {
-	upper := UpperDir(filepath.Join(r.sharedVolumePath, m.Out))
+	upper := mount.UpperDir(filepath.Join(r.sharedVolumePath, m.Out))
 	if _, err := os.Stat(upper); err != nil {
 		return nil // nothing mounted, nothing to push
 	}

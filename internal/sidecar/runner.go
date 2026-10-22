@@ -12,6 +12,7 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/emitter"
 	"orchestrator/internal/job"
+	"orchestrator/internal/mount"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -94,7 +95,7 @@ func NewRunner(jobID, sharedVolumePath string, timeoutSeconds int, opts ...Optio
 		sharedVolumePath: sharedVolumePath,
 		timeoutSeconds:   timeoutSeconds,
 		waitFn:           waitForSignal,
-		mounter:          defaultMounter(),
+		mounter:          mount.Beneath{Dir: sharedVolumePath},
 		postFileGrace:    defaultPostJobFileGrace,
 	}
 	for _, o := range opts {
@@ -420,7 +421,7 @@ func (r *Runner) phaseTimeout() time.Duration {
 func (r *Runner) adoptExistingMounts(mounts []*artifact.Mount) (bool, error) {
 	var active []string // targets found mounted, in declaration order
 	for _, m := range mounts {
-		target := filepath.Join(r.sharedVolumePath, m.Out)
+		target := filepath.Clean(m.Out)
 		mounted, err := r.mounter.IsMounted(target)
 		if err != nil {
 			return false, fmt.Errorf("inspect mount %s: %w", m.ID, err)
@@ -447,12 +448,12 @@ func (r *Runner) adoptExistingMounts(mounts []*artifact.Mount) (bool, error) {
 func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount) error {
 	for _, m := range mounts {
 		image := filepath.Join(r.sharedVolumePath, m.In)
-		target := filepath.Join(r.sharedVolumePath, m.Out)
+		target := filepath.Clean(m.Out)
 
 		start := time.Now()
 		err := r.waitForPath(ctx, image)
 		if err == nil {
-			err = os.MkdirAll(target, 0o755)
+			err = os.MkdirAll(filepath.Join(r.sharedVolumePath, target), 0o755)
 		}
 
 		format, compression := "", ""
@@ -460,17 +461,17 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount) 
 			format, compression, err = artifact.ClassifyFile(image)
 		}
 
-		source := image
+		// The Mounter speaks workspace-relative paths, whoever performs the
+		// mount (this container, or the node agent).
+		source := filepath.Clean(m.In)
 		sourceDir := false
 		if err == nil && format == "tar" {
-			lowerRel := filepath.Join(m.Out, ".lower")
-			source, err = r.extractTarMountLower(ctx, m, lowerRel)
-			if err == nil {
-				sourceDir = true
-			}
+			source = mount.LowerDir(target)
+			err = r.extractTarMountLower(ctx, m, source)
+			sourceDir = err == nil
 		}
 		if err == nil {
-			err = r.mounter.Mount(source, target, MountOpts{
+			err = r.mounter.Mount(source, target, mount.Opts{
 				Writable: m.Writable, SizeMiB: m.Size,
 				SourceDir: sourceDir,
 				// A synced delta must outlive each write and be readable by the
@@ -478,7 +479,7 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount) 
 				UpperOnDisk: m.Sync != "",
 			})
 			if err != nil && sourceDir {
-				_ = os.RemoveAll(source)
+				_ = os.RemoveAll(filepath.Join(r.sharedVolumePath, source))
 			}
 		}
 		if err != nil {
@@ -498,29 +499,29 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount) 
 // used as a bind or overlay lower. Writable overlays must also be able to copy
 // up existing entries: overlayfs checks each lower inode's permissions first,
 // and extraction made those inodes root-owned because the sidecar runs as root.
-func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lowerRel string) (string, error) {
+func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lowerRel string) error {
 	lower := filepath.Join(r.sharedVolumePath, lowerRel)
 	if err := os.RemoveAll(lower); err != nil {
-		return "", fmt.Errorf("remove stale tar lower directory: %w", err)
+		return fmt.Errorf("remove stale tar lower directory: %w", err)
 	}
 	if err := os.Mkdir(lower, 0o755); err != nil {
-		return "", fmt.Errorf("create tar lower directory: %w", err)
+		return fmt.Errorf("create tar lower directory: %w", err)
 	}
 
 	result := (&artifact.Unarchive{In: m.In, Out: lowerRel}).Apply(ctx, r.sharedVolumePath)
 	if result.Error != nil {
 		_ = os.RemoveAll(lower)
-		return "", result.Error
+		return result.Error
 	}
 	if m.Writable {
 		// Open the extracted tree to the unknown workload uid just like a
 		// restored sync delta and the overlay upper directory.
 		if err := makeWritable(lower); err != nil {
 			_ = os.RemoveAll(lower)
-			return "", fmt.Errorf("make tar lower writable: %w", err)
+			return fmt.Errorf("make tar lower writable: %w", err)
 		}
 	}
-	return lower, nil
+	return nil
 }
 
 // unmountAll tears down mounts in reverse order. Retain failed cleanup so a

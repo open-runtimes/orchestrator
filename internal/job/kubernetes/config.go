@@ -32,6 +32,12 @@ type Config struct {
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every job pod to a node pool (internal/kube).
 	NodeSelector map[string]string
+	// MountAgentPort, when set, has the node mount agent listening on that port
+	// perform jobs' artifact mounts in a CSI workspace, so the pod needs no
+	// privileged container (docs/design/node-mount-agent.md). Zero mounts from
+	// a privileged sidecar in the pod. Jobs without a mount are unaffected.
+	// The chart sets it when mountAgent is enabled.
+	MountAgentPort int
 	// Metrics wires backend-specific recorders (leadership, status cache,
 	// tracker saturation, K8s API latency). Optional — when nil, recording
 	// is skipped.
@@ -72,6 +78,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:                    kube.OvercommitFromEnv(),
 		Tolerations:                   tolerations,
 		NodeSelector:                  nodeSelector,
+		MountAgentPort:                config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", ""),

@@ -1,6 +1,6 @@
 # Node mount agent
 
-**Status: proposal, spiked.** Nothing here is implemented. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node, gVisor included (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
+**Status: implemented for jobs, when `mountAgent.enabled` is set** (`cmd/mount-agent`, `internal/mountagent`, `internal/mountagent/node`, `internal/mount`; services read `KUBE_MOUNT_AGENT_PORT`). Deployments, pools and sandboxes still mount from the privileged sidecar, and the loop-backed workspace and user-namespace ID mapping below are not built yet. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node, gVisor included (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
 
 ## The problem
 
@@ -56,8 +56,8 @@ This also gives the agent the only lifecycle hook it needs. There is no pod info
 The obvious choice is a Unix socket with `SO_PEERCRED`, and it does not survive gVisor. runsc refuses connections from the sandbox to host Unix sockets unless it runs with `--host-uds=open` (the flag's default is `none` in `release-20261012.0`). Even with it, the peer credentials would belong to the sandbox's processes, not the sidecar. So it is a network call:
 
 - The agent listens on the node (host port or host network). The sidecar reaches it at the downward-API `status.hostIP`.
-- The sidecar authenticates with `hex(HMAC-SHA256(agentKey, namespace/podName))`, injected as env at pod creation. That is the scheme warm pods already use for claim tokens (`internal/warm/token.go`), with its own key. The worker container never sees it.
-- The agent re-derives the token and then checks the rest itself: the pod is on this node, it has an agent workspace volume, and the request names only paths inside that volume. A request that passes authentication still cannot reach anything but its own workspace.
+- The sidecar authenticates with a token the mapper mints per pod (`crypto/rand.Text`, 130 bits), placed in the workspace volume's attributes (where only kubelet and the agent read it) and in the sidecar's environment. The worker container sees neither. I first planned an HMAC of the pod name, like warm-pod claim tokens, but a Job's pod name does not exist when the spec is built, and a random token needs no shared key at all.
+- The agent learns the token when kubelet publishes the volume and stores only its hash. A presented token selects exactly one workspace, and every path in the request is then resolved beneath it. A request that passes authentication still cannot reach anything but its own workspace, and the token stops working when the volume is unpublished.
 - A NetworkPolicy keeps the port reachable only from pods that should talk to it. It cannot tell the sidecar from the worker, since they share an IP, which is why the token, not the network, is the boundary.
 
 ### The workspace is attacker-writable, so paths are resolved by fd
@@ -66,25 +66,29 @@ The worker can write anything in the workspace, including replacing `out` with a
 
 - Open both with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS)` relative to the per-volume directory fd.
 - Configure the loop device from the `in` fd (`LOOP_CONFIGURE`, as `setupLoop` does today).
-- Mount onto the `out` fd with `fsopen`/`fsmount`/`move_mount(MOVE_MOUNT_T_EMPTY_PATH)`, so the target is the directory that was checked, not whatever the path names a microsecond later.
-- Mount read-only images with `MS_RDONLY | MS_NODEV | MS_NOSUID`, as `mountImage` does now.
+- Mount onto the `out` directory as `/proc/self/fd/N`, so the target is the directory that was checked, not whatever the path names a microsecond later. Read-only binds of an extracted directory are cloned detached, made read-only while detached, and attached by descriptor (`open_tree` → `mount_setattr` → `move_mount`), so they are never visible writable.
+- Reopen a path after mounting on it: a descriptor taken before a mount still points underneath it. That is the bug the first run of the tests found.
+- Unmount through the parent's descriptor (`/proc/self/fd/<parent>/<name>`, `UMOUNT_NOFOLLOW`). A descriptor on the mount itself is a reference to it, and the kernel calls the mount busy for as long as the caller holds it; teardown first took the full 10-second busy deadline for exactly that reason.
+- Mount images, tmpfs and overlays `nosuid` as well as `nodev`.
+- Open an image path `O_PATH` first and reopen it for reading only if it is a regular file. Opening a FIFO the workload left there would hang the agent; opening a device node it made with `mknod` would act on the host, outside the pod's device cgroup. The workspace bind itself is `nodev,nosuid` too.
+- Only pods in the job namespace may publish a workspace (the chart passes it as the allowlist), a token stays bound to the volume that published it, and per-workspace mounts are capped at 64, which bounds loop devices and mount-table growth.
 
 ### What moves where in the code
 
 | Today | With the agent |
 | --- | --- |
 | `internal/sidecar/mount_linux.go`: loop, image, overlay, unmount | moves to `internal/mount`, shared by the agent and the in-pod fallback |
-| `kube.MountingSecurityContext` on the sidecar | gone in agent mode; the sidecar is hardened like every other container |
+| `kube.MountingSecurityContext` on the sidecar | gone in agent mode; the sidecar keeps file access (root with only `CAP_DAC_OVERRIDE`) for sync and post-job artifacts, and nothing more |
 | workspace `emptyDir`, `Bidirectional` on the sidecar | workspace CSI volume, `HostToContainer` on the worker and the sidecar |
-| sidecar calls the mounter directly | sidecar calls the agent (`Mount`, `Release`) with its token |
+| sidecar calls the mounter directly | the runner is unchanged; its `Mounter` is an agent client (`mountagent.Client`), so restore, sync, adoption and the ready marker all work as before |
 | S3 credentials in the sidecar env | unchanged in this change, and the obvious follow-up: once there is a node component, it can own the credentials, and `s3://` downloads can move to it as well |
 | `HasMount` means "privileged pod" | `HasMount` means "agent workspace"; pools still key on `mounts: true`, because the volume source differs |
 
 New pieces:
 
-- `cmd/mount-agent`: the CSI Identity and Node services, inline volumes only and no controller, plus the `Mount`/`Release` HTTP API. Built with ko like the other binaries.
-- Chart: `mountAgent.enabled`, a DaemonSet (privileged, `/var/lib/kubelet` with `Bidirectional`, `/dev`, `node-driver-registrar`), the `CSIDriver` object, the agent key Secret, and the NetworkPolicy.
-- `KUBE_MOUNT_MODE=sidecar|agent`. `sidecar` is today's behaviour and stays the default until the agent has run in production. The Docker backend is unaffected: Docker jobs keep their privileged sidecar, and Docker deployments and sandboxes keep refusing mounts.
+- `cmd/mount-agent`: the CSI Identity and Node services, inline volumes only and no controller, plus the mount API (`/v1/mount`, `/v1/unmount`, `/v1/mounted`). Built with ko like the other binaries.
+- Chart: `mountAgent.enabled`, a DaemonSet (privileged, host network, `/var/lib/kubelet` with `Bidirectional`, `/dev`, `node-driver-registrar`) and the `CSIDriver` object. No Secret, since tokens are per pod. No NetworkPolicy either: the agent runs on the host network, where pod policies do not apply, and the token is the boundary anyway.
+- One switch: enabling `mountAgent` sets `KUBE_MOUNT_AGENT_PORT` on the services, and jobs that mount then go through the agent; without it they mount from the privileged sidecar as before. The driver name is a constant. Both modes share one mounter (`mount.Beneath`), so the in-pod path gets the same symlink-safe resolution. The Docker backend is unaffected: Docker jobs keep their privileged sidecar, and Docker deployments and sandboxes keep refusing mounts.
 
 ## Spike results
 
@@ -177,10 +181,11 @@ The same measurement on the DOKS node (amd64), with the driver running in a pod 
 
 ## What I would do next
 
-1. **Build it behind `KUBE_MOUNT_MODE=agent`**, jobs first (no warm pods, simplest lifecycle), then revisions and pools. Workspaces are loop-backed ext4.
-2. **Test what the spike found, not what it hoped:**
-   - A `k8s_integration` test on kind that covers propagation into a running container and teardown.
-   - A writable-overlay test in a `hostUsers: false` pod, because that case behaves differently across kernels.
-   - A unit suite for the `openat2` path resolution with symlink races.
-3. **Then turn on `hostUsers: false` for mounting pools.** It costs nothing at cold start or per request, and it is most of what gVisor would buy.
-4. **gVisor stays per pool.** It costs about 350ms at p50 on DOKS, more for apps that load many files. It needs a runsc install per node: one containerd drop-in plus a restart, which a DaemonSet can do, gated by a node label the RuntimeClass selects. An agent `Release` on a running gVisor pod must detach lazily.
+1. ~~**Build it for jobs first.**~~ Done for jobs, with three kinds of test:
+   - a `k8s_integration` test on kind that runs read-only and writable mounts through the agent and asserts no container was privileged
+   - privileged kernel tests that drive kubelet's publish, the sidecar's client and kubelet's unpublish end to end
+   - unprivileged tests for symlink refusal in every `Root` operation
+2. **Revisions and pools next.** The warm-pod claim path already mounts after the pod exists, so it needs no new agent behaviour, only the mapper and pool-shape changes.
+3. **Loop-backed workspaces**, for a hard size limit (measured above).
+4. **User-namespace ID mapping in the agent**, and a writable-overlay test in a `hostUsers: false` pod, because that case behaves differently across kernels. **Then turn on `hostUsers: false` for mounting pools.** It costs nothing at cold start or per request, and it is most of what gVisor would buy.
+5. **gVisor stays per pool.** It costs about 350ms at p50 on DOKS, more for apps that load many files. It needs a runsc install per node: one containerd drop-in plus a restart, which a DaemonSet can do, gated by a node label the RuntimeClass selects. An agent `Release` on a running gVisor pod must detach lazily.

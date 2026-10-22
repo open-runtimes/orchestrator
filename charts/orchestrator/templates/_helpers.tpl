@@ -98,6 +98,14 @@ app.kubernetes.io/component: pool-controller
 {{- end -}}
 {{- end -}}
 
+{{- define "orchestrator.mountAgentImage" -}}
+{{- if .Values.mountAgent.image.ref -}}
+{{- .Values.mountAgent.image.ref -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.mountAgent.image.repository (default .Chart.AppVersion .Values.mountAgent.image.tag) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "orchestrator.poolShimImage" -}}
 {{- if .Values.deployments.shimImage.ref -}}
 {{- .Values.deployments.shimImage.ref -}}

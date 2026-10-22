@@ -3,6 +3,7 @@ package artifact
 import (
 	"fmt"
 	"orchestrator/internal/apperrors"
+	"path"
 )
 
 // The artifact types are a closed set: the wire "type" discriminator, the
@@ -174,6 +175,12 @@ func validateArchiveFormat(field string, a *Archive) error {
 }
 
 func validateMountOptions(field string, a *Mount) error {
+	// A mount stacks on a directory inside the workspace, never on the
+	// workspace itself: that would hide every other artifact, and under gVisor
+	// a mount on a volume's root is not seen after the sandbox has opened it.
+	if path.Clean(a.Out) == "." {
+		return apperrors.Validation(field+".out", "out must be a directory inside the workspace, not the workspace itself")
+	}
 	if a.Size < 0 {
 		return apperrors.Validation(field+".size", "size must not be negative")
 	}

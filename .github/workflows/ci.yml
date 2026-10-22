@@ -54,10 +54,12 @@ jobs:
       - name: Run tests
         run: go test -race -coverprofile=coverage.out ./...
 
-      - name: Test kernel mount cleanup
+      - name: Test kernel mounts
         run: |
-          go test -c ./internal/sidecar -o /tmp/sidecar.test
-          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/sidecar.test -test.run TestKernelMounterBusyCleanup -test.v
+          go test -c ./internal/mount -o /tmp/mount.test
+          go test -c ./internal/mountagent/node -o /tmp/node.test
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/mount.test -test.run 'TestBeneath|TestRoot' -test.v
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/node.test -test.run TestPublishMountUnpublish -test.v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -87,6 +89,7 @@ jobs:
           go build -o /dev/null ./cmd/deployments-activator
           go build -o /dev/null ./cmd/sandbox-proxy
           go build -o /dev/null ./cmd/pool-shim
+          go build -o /dev/null ./cmd/mount-agent
 
   images:
     needs: [lint, helm, test, build]
@@ -216,6 +219,16 @@ jobs:
             --tags=${{ steps.tags.outputs.tags }} \
             --platform=linux/amd64,linux/arm64
 
+      - name: Build and push mount-agent
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/mount-agent
+          RELEASE_VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          ko build ./cmd/mount-agent \
+            --bare \
+            --tags=${{ steps.tags.outputs.tags }} \
+            --platform=linux/amd64,linux/arm64
+
   chart:
     needs: [lint, helm, test, build]
     # Only publish charts on tag pushes — avoids OCI registry churn on every main commit.
@@ -323,7 +336,12 @@ jobs:
           KO_DOCKER_REPO=ko.local/deployments-activator ko build --local --bare ./cmd/deployments-activator
           KO_DOCKER_REPO=ko.local/pool-controller ko build --local --bare ./cmd/pool-controller
           KO_DOCKER_REPO=ko.local/pool-shim ko build --local --bare ./cmd/pool-shim
-          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-controller:latest ko.local/pool-shim:latest --name orchestrator-dev
+          KO_DOCKER_REPO=ko.local/mount-agent RELEASE_VERSION=ci ko build --local --bare ./cmd/mount-agent
+          kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/pool-controller:latest ko.local/pool-shim:latest ko.local/mount-agent:latest --name orchestrator-dev
+
+      - name: Install node mount agent
+        # For the agent-mode mount tests (TestIntegration_AgentMounts).
+        run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-mount-agent.sh
 
       - name: Install Gateway API + Traefik
         run: KUBE_CONTEXT=kind-orchestrator-dev bash hack/install-gateway.sh

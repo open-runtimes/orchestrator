@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/sidecar"
+	"orchestrator/internal/mount"
 	"orchestrator/internal/workload"
 	"os"
 	"path/filepath"
@@ -296,7 +296,7 @@ type fakeMounter struct {
 	err      error
 }
 
-func (f *fakeMounter) Mount(_, target string, _ sidecar.MountOpts) error {
+func (f *fakeMounter) Mount(_, target string, _ mount.Opts) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {

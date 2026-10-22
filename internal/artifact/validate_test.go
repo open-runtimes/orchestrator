@@ -338,6 +338,16 @@ func TestValidate_Mount(t *testing.T) {
 			art:     &Mount{ID: "m1", In: "data.sqfs"},
 			wantErr: true,
 		},
+		{
+			name:    "out is the workspace itself",
+			art:     &Mount{ID: "m1", In: "data.sqfs", Out: "."},
+			wantErr: true,
+		},
+		{
+			name:    "out cleans to the workspace itself",
+			art:     &Mount{ID: "m1", In: "data.sqfs", Out: "mnt/.."},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

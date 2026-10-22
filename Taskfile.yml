@@ -63,6 +63,7 @@ tasks:
       - task: build-deployments-activator
       - task: build-sandbox-proxy
       - task: build-pool-shim
+      - task: build-mount-agent
     silent: true
 
   build-sandbox-proxy:
@@ -164,6 +165,16 @@ tasks:
       - internal/**/*.go
       - go.mod
 
+  build-mount-agent:
+    desc: Build node mount agent image
+    deps: [tools]
+    cmds:
+      - KO_DOCKER_REPO=ko.local/mount-agent RELEASE_VERSION=dev {{.KO}} build --bare --platform=linux/{{.GOARCH}} ./cmd/mount-agent
+    sources:
+      - cmd/mount-agent/**/*.go
+      - internal/**/*.go
+      - go.mod
+
   # === Test ===
 
   test:
@@ -180,7 +191,8 @@ tasks:
     desc: Run real-cluster K8s integration tests (requires kind + built images)
     deps: [build, kind:up]
     cmds:
-      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/pool-controller:latest ko.local/sandbox-service:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/sandbox-proxy:latest ko.local/pool-shim:latest --name {{.KIND_CLUSTER}}
+      - kind load docker-image ko.local/jobs-service:latest ko.local/job-sidecar:latest ko.local/deployments-service:latest ko.local/pool-controller:latest ko.local/sandbox-service:latest ko.local/workload-sidecar:latest ko.local/deployments-activator:latest ko.local/sandbox-proxy:latest ko.local/pool-shim:latest ko.local/mount-agent:latest --name {{.KIND_CLUSTER}}
+      - KUBE_CONTEXT={{.KIND_CONTEXT}} HELM={{.HELM}} bash hack/install-mount-agent.sh
       - bash hack/install-gateway.sh
       - >-
         {{.HELM}} template orchestrator charts/orchestrator

@@ -517,6 +517,37 @@
         }
       }
     },
+    "mountAgent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/$defs/pullableImage"
+        },
+        "port": {
+          "$ref": "#/$defs/port"
+        },
+        "registrarImage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/$defs/tolerations"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        }
+      }
+    },
     "workloadSidecarImage": {
       "$ref": "#/$defs/pullableImage"
     },

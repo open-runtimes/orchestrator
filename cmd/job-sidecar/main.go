@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
+	"orchestrator/internal/mountagent"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/workload"
 	"os"
@@ -85,10 +86,16 @@ func run(mode string) error {
 		meta,
 	)
 
-	runner := sidecar.NewRunner(cfg.JobID, cfg.SharedVolumePath, cfg.TimeoutSeconds,
+	opts := []sidecar.Option{
 		sidecar.WithArtifactListener(reporter),
 		sidecar.WithS3Credentials(cfg.S3),
-	)
+	}
+	// With a workspace token the node agent performs the mounts and this
+	// container holds no privilege; without one it mounts itself.
+	if token := os.Getenv(mountagent.EnvToken); token != "" {
+		opts = append(opts, sidecar.WithMounter(mountagent.NewClient(os.Getenv(mountagent.EnvEndpoint), token)))
+	}
+	runner := sidecar.NewRunner(cfg.JobID, cfg.SharedVolumePath, cfg.TimeoutSeconds, opts...)
 
 	// Cancel the outer context on SIGINT/SIGTERM so pre-artifact processing
 	// can abort cleanly. The Runner's waitFn registers its own SIGUSR1/SIGTERM

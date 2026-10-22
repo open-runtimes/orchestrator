@@ -314,6 +314,34 @@ workloadNamespace:
     requestsCpu: "100"
     requestsMemory: 200Gi
 
+# Node mount agent (docs/design/node-mount-agent.md): a DaemonSet that serves
+# each mounting job's workspace as a CSI inline volume and performs its artifact
+# mounts from the node. Enabling it switches jobs that mount to it, so their
+# pods have no privileged container. The agent itself runs privileged on the
+# host network; its API is gated by a per-pod token, and only pods in the job
+# namespace may use its driver.
+mountAgent:
+  enabled: false
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/mount-agent
+    tag: "" # defaults to the chart's appVersion
+    pullPolicy: IfNotPresent
+  # Port the mount API listens on, on each node's own IP.
+  port: 9878
+  registrarImage: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
+  # Run wherever mounting pods run: match the job pods' node selector and
+  # tolerations.
+  nodeSelector: {}
+  tolerations: []
+  priorityClassName: system-node-critical
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
 # Image for the workload-sidecar: the reverse proxy in front of every serving
 # workload — deployment replicas (created or pool-claimed) and sandboxes. One image for
 # all three, because the pod-local invariants it owns (readiness, drain,
