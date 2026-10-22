@@ -46,10 +46,14 @@ func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
 	}
 	defer root.Close()
 
-	fileInfo, err := root.Stat(a.In)
+	// A regular file: a FIFO or device the workload left at the path would
+	// otherwise hang the upload or stream without end. doUpload reopens it the
+	// same way for each retry.
+	file, fileInfo, err := openRegular(root, a.In)
 	if err != nil {
-		return &Result{Status: "failed", Error: fmt.Errorf("failed to stat file: %w", err)}
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to open file: %w", err)}
 	}
+	file.Close()
 	size := fileInfo.Size()
 
 	timeoutSecs := a.TimeoutSeconds
@@ -98,7 +102,7 @@ func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
 }
 
 func (a *Upload) doUpload(ctx context.Context, client *http.Client, root *os.Root, size int64) error {
-	file, err := root.Open(a.In)
+	file, _, err := openRegular(root, a.In)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

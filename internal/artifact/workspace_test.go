@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // secret is what sits outside the workspace. No artifact may read it, write
@@ -311,5 +313,49 @@ func writeTar(t *testing.T, path string, files map[string]string) {
 	}
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A read, upload or stat over a FIFO the workload left in the workspace must
+// fail promptly, never block the sidecar on an open that no deadline reaches.
+func TestReadAndUploadRejectNonRegularFiles(t *testing.T) {
+	ws := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(ws, "pipe"), 0o644); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if r := (&Read{ID: "r", In: "pipe"}).Apply(context.Background(), ws); r.Status != "failed" {
+			t.Errorf("Read(pipe) status = %q, want failed", r.Status)
+		}
+		if r := (&Upload{ID: "u", In: "pipe", Out: "http://127.0.0.1:1/x", Retries: 1}).Apply(context.Background(), ws); r.Status != "failed" {
+			t.Errorf("Upload(pipe) status = %q, want failed", r.Status)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("an artifact blocked on the FIFO instead of failing")
+	}
+}
+
+// A read is capped: a build-written file larger than the cap fails rather than
+// buffering into the sidecar and the callback.
+func TestReadRejectsOversizeContent(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "big"), make([]byte, maxReadBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := (&Read{ID: "r", In: "big"}).Apply(context.Background(), ws); r.Status != "failed" {
+		t.Errorf("Read(oversize) status = %q, want failed", r.Status)
+	}
+
+	if err := os.WriteFile(filepath.Join(ws, "ok"), make([]byte, 1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := (&Read{ID: "r", In: "ok"}).Apply(context.Background(), ws); r.Status != "success" {
+		t.Errorf("Read(small) status = %q, want success", r.Status)
 	}
 }
