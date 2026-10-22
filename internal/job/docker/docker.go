@@ -43,6 +43,7 @@ type Orchestrator struct {
 	artifactEndpoint    string
 	extraHosts          []string
 	networkName         string
+	pidsLimit           int64
 	ctrl                *job.MemoryStore[dockerHandle]
 	watcher             LifecycleWatcher
 
@@ -66,6 +67,7 @@ func NewOrchestrator(cfg Config, emitter *job.CallbackEmitter) (*Orchestrator, e
 		artifactEndpoint:    cfg.ArtifactEndpoint,
 		extraHosts:          cfg.ExtraHosts,
 		networkName:         cfg.Network,
+		pidsLimit:           cfg.PidsLimit,
 		ctrl:                job.NewMemoryStore[dockerHandle](),
 		watcher:             newDockerLifecycleWatcher(dockerClient),
 	}, nil
@@ -414,13 +416,7 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 		return "", err
 	}
 
-	hostConfig := &container.HostConfig{
-		Mounts: append([]mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)}, volumeMounts...),
-		Resources: container.Resources{
-			NanoCPUs: int64(clampCPU(req.CPU) * 1e9),
-			Memory:   int64(req.Memory) * 1024 * 1024,
-		},
-	}
+	hostConfig := workerHostConfig(req, h, volumeMounts, o.pidsLimit)
 
 	containerName := fmt.Sprintf("job-%s-worker", req.ID)
 	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, moby.NetworkingConfig(o.networkName), nil, containerName)
@@ -458,15 +454,7 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		},
 	}
 
-	hostConfig := &container.HostConfig{
-		Mounts:     []mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRShared)},
-		ExtraHosts: o.extraHosts,
-	}
-	// Mount jobs: the sidecar performs the loop mount and propagates it to the
-	// worker, which needs a privileged container (loop devices + propagation).
-	if h.hostDir != "" {
-		hostConfig.Privileged = true
-	}
+	hostConfig := sidecarHostConfig(req, h, o.extraHosts)
 
 	containerName := fmt.Sprintf("job-%s-sidecar", req.ID)
 	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, moby.NetworkingConfig(o.networkName), nil, containerName)
@@ -475,6 +463,43 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 	}
 
 	return resp.ID, nil
+}
+
+// workerHostConfig is the job worker's host configuration: the shared
+// workspace and requested volumes, the requested CPU and memory, a process
+// cap, and the workload hardening every user command runs under.
+func workerHostConfig(req *job.Request, h dockerHandle, volumeMounts []mount.Mount, pidsLimit int64) *container.HostConfig {
+	hc := &container.HostConfig{
+		Mounts: append([]mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)}, volumeMounts...),
+		Resources: container.Resources{
+			NanoCPUs: int64(clampCPU(req.CPU) * 1e9),
+			Memory:   int64(req.Memory) * 1024 * 1024,
+		},
+	}
+	if pidsLimit > 0 {
+		hc.PidsLimit = &pidsLimit
+	}
+	moby.WorkloadSecurity(hc)
+	return hc
+}
+
+// sidecarHostConfig is the job sidecar's host configuration. It reads and
+// writes what the worker left in the workspace, so it runs with file access
+// only; a mount job's sidecar instead needs a privileged container (loop
+// devices and mount propagation into the worker).
+func sidecarHostConfig(req *job.Request, h dockerHandle, extraHosts []string) *container.HostConfig {
+	pidsLimit := int64(sidecarPidsLimit)
+	hc := &container.HostConfig{
+		Mounts:     []mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRShared)},
+		ExtraHosts: extraHosts,
+		Resources:  container.Resources{PidsLimit: &pidsLimit},
+	}
+	if h.hostDir != "" {
+		hc.Privileged = true
+		return hc
+	}
+	moby.FileAccessSecurity(hc)
+	return hc
 }
 
 func (o *Orchestrator) cleanup(ctx context.Context, h dockerHandle) {

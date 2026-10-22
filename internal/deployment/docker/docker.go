@@ -250,6 +250,20 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 }
 
 // startWorker creates and starts the user container, returning its ID.
+// workerHostConfig is a deployment replica's host configuration: its mounts,
+// CPU and memory, under the workload hardening every user command runs with.
+func workerHostConfig(mounts []mount.Mount, cpu float64, memory int) *container.HostConfig {
+	hc := &container.HostConfig{
+		Mounts: mounts,
+		Resources: container.Resources{
+			NanoCPUs: int64(cpu * 1e9),
+			Memory:   int64(memory) * 1024 * 1024,
+		},
+	}
+	moby.WorkloadSecurity(hc)
+	return hc
+}
+
 func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request) (string, error) {
 	env := make([]string, 0, len(req.Environment))
 	for k, v := range req.Environment {
@@ -274,13 +288,7 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 			WorkingDir: workspace,
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
-		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, volumeMounts...),
-			Resources: container.Resources{
-				NanoCPUs: int64(req.CPU * 1e9),
-				Memory:   int64(req.Memory) * 1024 * 1024,
-			},
-		},
+		workerHostConfig(append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, volumeMounts...), req.CPU, req.Memory),
 		moby.NetworkingConfig(o.cfg.Network), nil, workerName(req.ID))
 	if err != nil {
 		return "", apperrors.Internal("docker.createWorker", err)
