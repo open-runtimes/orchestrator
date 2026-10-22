@@ -8,7 +8,6 @@ import (
 	"orchestrator/internal/config"
 	"orchestrator/internal/job"
 	"orchestrator/internal/kube"
-	"orchestrator/internal/mountagent"
 	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
@@ -81,13 +80,12 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 	}
 
 	hasMounts := artifact.HasMount(req.Artifacts)
-	// The workspace token is minted here, once per pod, and handed to the
-	// agent (as a volume attribute) and to the sidecar (as env) — never to the
-	// worker.
-	agentMounts := hasMounts && cfg.MountAgentPort > 0
-	var agentToken string
-	if agentMounts {
-		agentToken = rand.Text() // 130 random bits: the sidecar's capability for its own workspace
+	// One Job, one pod: its workspace token is minted here.
+	mounting := kube.NewMounting(cfg.MountAgentPort, rand.Text())
+	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	var agentEnv []corev1.EnvVar
+	if hasMounts {
+		workspaceVolume, agentEnv = mounting.Workspace, mounting.SidecarEnv
 	}
 
 	labels := map[string]string{
@@ -135,21 +133,8 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		}
 		hostToContainer := corev1.MountPropagationHostToContainer
 		workerMounts[0].MountPropagation = &hostToContainer
-		if agentMounts {
-			// The node agent mounts inside the workspace from the host. Both
-			// containers only receive: the sidecar to see what it syncs and what
-			// post-job artifacts read, the worker to see its inputs. Neither
-			// needs privilege; the sidecar keeps file access for that same work.
-			sidecarMounts[0].MountPropagation = &hostToContainer
-			sidecarSecurityContext = kube.FileAccessSecurityContext()
-		} else {
-			bidirectional := corev1.MountPropagationBidirectional
-			sidecarMounts[0].MountPropagation = &bidirectional
-			// Root + privileged: the sidecar image is distroless nonroot, but
-			// mounting needs to open /dev/loop-control (root:disk 0660) and call
-			// mount(2).
-			sidecarSecurityContext = kube.MountingSecurityContext()
-		}
+		sidecarMounts[0].MountPropagation = &mounting.SidecarPropagation
+		sidecarSecurityContext = mounting.SidecarSecurity
 	} else if _, postJob := artifact.Partition(req.Artifacts); len(postJob) > 0 {
 		// Post-job artifacts read worker output and write where preparation did,
 		// whatever the owner or mode of either.
@@ -176,7 +161,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		NodeSelector:                  cfg.NodeSelector,
 		TerminationGracePeriodSeconds: &grace,
 		Volumes: append([]corev1.Volume{
-			{Name: VolumeWorkspace, VolumeSource: workspaceSource(agentToken)},
+			{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
 		}, pvVolumes...),
 		InitContainers: []corev1.Container{
 			{
@@ -192,7 +177,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 				Image:           sidecarImage,
 				ImagePullPolicy: sidecarPull,
 				Args:            []string{"-mode=post"},
-				Env:             append(sidecarEnv(req, cfg.ArtifactEndpoint, workspace), agentEnv(cfg, agentToken)...),
+				Env:             append(sidecarEnv(req, cfg.ArtifactEndpoint, workspace), agentEnv...),
 				VolumeMounts:    sidecarMounts,
 				RestartPolicy:   &alwaysRestart,
 				SecurityContext: sidecarSecurityContext,
@@ -238,32 +223,6 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 				Spec: podSpec,
 			},
 		},
-	}
-}
-
-// workspaceSource is the job's shared workspace: an emptyDir, or, when the node
-// agent performs the mounts, an inline volume the agent serves and can mount
-// into from the host.
-func workspaceSource(agentToken string) corev1.VolumeSource {
-	if agentToken == "" {
-		return corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
-	}
-	return corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{
-		Driver:           mountagent.Driver,
-		VolumeAttributes: map[string]string{mountagent.AttributeToken: agentToken},
-	}}
-}
-
-// agentEnv points the sidecar at the agent on its own node. The agent listens
-// on the node's address, which only the downward API knows.
-func agentEnv(cfg Config, agentToken string) []corev1.EnvVar {
-	if agentToken == "" {
-		return nil
-	}
-	return []corev1.EnvVar{
-		{Name: "HOST_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.hostIP"}}},
-		{Name: mountagent.EnvEndpoint, Value: "http://$(HOST_IP):" + strconv.Itoa(cfg.MountAgentPort)},
-		{Name: mountagent.EnvToken, Value: agentToken},
 	}
 }
 

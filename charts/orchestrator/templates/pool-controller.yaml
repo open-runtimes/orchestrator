@@ -51,6 +51,10 @@ spec:
               value: {{ include "orchestrator.workloadSidecarImage" $root | quote }}
             - name: POOL_SHIM_IMAGE
               value: {{ include "orchestrator.poolShimImage" $root | quote }}
+            {{- if $root.Values.mountAgent.enabled }}
+            - name: KUBE_MOUNT_AGENT_PORT
+              value: {{ $root.Values.mountAgent.port | quote }}
+            {{- end }}
             {{- if eq $kind "revision" }}
             - name: POOLS_JSON
               value: {{ $root.Values.deployments.pools | toJson | quote }}

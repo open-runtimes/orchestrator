@@ -1,6 +1,7 @@
 package warm
 
 import (
+	"orchestrator/internal/mountagent"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
 	"testing"
@@ -44,7 +45,7 @@ func TestBuildPod_Shape(t *testing.T) {
 	if pod.Labels[testNaming.Claim] != "" {
 		t.Error("a warm pod must not carry a claim label")
 	}
-	if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(mapperPool()) {
+	if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(mapperPool(), Config{}) {
 		t.Errorf("warm pod must identify its fixed pool spec without storing a token: got %v", pod.Annotations)
 	}
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
@@ -322,4 +323,47 @@ func hasEnv(c corev1.Container, name string) bool {
 		}
 	}
 	return false
+}
+
+// With the node agent, a mounting pool's pods run nothing privileged and each
+// carries its own workspace token.
+func TestBuildPod_AgentMounts(t *testing.T) {
+	t.Parallel()
+	p := pool.Pool{ID: "sqfs", Size: 2, Spec: pool.Spec{Image: "runtime:latest", Port: 3000, Mounts: true}}
+	m := New(nil, []pool.Pool{p}, Config{Namespace: testNS, SidecarImage: "sidecar:latest",
+		ShimImage: "shim:latest", RunAsUser: 65532, Naming: testNaming, MountAgentPort: 9878})
+	first := m.buildPod(&m.pools[0].Spec, p.ID, "pool-sqfs-aaaaa", "tok")
+	second := m.buildPod(&m.pools[0].Spec, p.ID, "pool-sqfs-bbbbb", "tok")
+
+	for _, c := range append(first.Spec.InitContainers, first.Spec.Containers...) {
+		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
+			t.Errorf("container %s is privileged with the mount agent", c.Name)
+		}
+	}
+	sidecar := containerNamed(t, first, ContainerProxy)
+	if p := workspaceMountOf(t, sidecar).MountPropagation; p == nil || *p != corev1.MountPropagationHostToContainer {
+		t.Errorf("sidecar propagation = %v, want HostToContainer", p)
+	}
+	tokenOf := func(pod *corev1.Pod) string {
+		if pod.Spec.Volumes[0].CSI == nil || pod.Spec.Volumes[0].CSI.Driver != mountagent.Driver {
+			t.Fatalf("workspace = %+v, want the agent's inline volume", pod.Spec.Volumes[0].VolumeSource)
+		}
+		return pod.Spec.Volumes[0].CSI.VolumeAttributes[mountagent.AttributeToken]
+	}
+	if a, b := tokenOf(first), tokenOf(second); a == "" || a == b {
+		t.Fatalf("warm pod tokens %q and %q: each pod needs its own", a, b)
+	}
+	var sidecarToken string
+	for _, e := range sidecar.Env {
+		if e.Name == mountagent.EnvToken {
+			sidecarToken = e.Value
+		}
+	}
+	if sidecarToken != tokenOf(first) {
+		t.Errorf("sidecar token %q, want the workspace's %q", sidecarToken, tokenOf(first))
+	}
+	// Turning the agent on or off must replace a mounting pool's warm pods.
+	if first.Annotations[annotationPoolSpecHash] == poolSpecHash(&p.Spec, Config{}) {
+		t.Error("the pool spec hash ignores whether the agent serves the pool")
+	}
 }

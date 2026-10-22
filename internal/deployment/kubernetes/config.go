@@ -49,6 +49,8 @@ type Config struct {
 	// "gvisor=gvisor,kata=kata-qemu"). runc never maps — it is the cluster
 	// default. Defaults: gvisor→gvisor, kata→kata.
 	RuntimeClasses map[string]string
+	// MountAgentPort: see the jobs backend's Config.
+	MountAgentPort int
 
 	GatewayEnabled       bool   // reconcile HTTPRoutes + the cold endpoint flip; off for pre-Gateway clusters
 	GatewayName          string // parentRef Gateway name
@@ -100,6 +102,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
 		RuntimeClasses:         classes,
+		MountAgentPort:         config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 
 		GatewayEnabled:       config.GetBoolEnv("KUBE_GATEWAY_ENABLED", true),
 		GatewayName:          config.GetEnv("KUBE_GATEWAY_NAME", ""),

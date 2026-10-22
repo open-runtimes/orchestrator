@@ -1,5 +1,5 @@
 // Package mountagent is the contract with the node mount agent
-// (docs/design/node-mount-agent.md): the names the job mapper and the agent
+// (docs/design/node-mount-agent.md): the names the mappers and the agent
 // must agree on, the wire types, and the Client the sidecar uses as its
 // Mounter. The agent itself is internal/mountagent/node; this package stays
 // free of it, so the services and the sidecar do not link the CSI server.
@@ -24,8 +24,8 @@ const (
 	// DefaultPort is where the agent's API listens on each node.
 	DefaultPort = 9878
 	// AttributeToken is the workspace volume attribute carrying the pod's
-	// token. The mapper mints one per pod and hands the same value to the
-	// sidecar (EnvToken); presenting it authorizes mounts in that pod's
+	// token. Each pod gets its own (kube.NewMounting), and its sidecar the
+	// same value (EnvToken); presenting it authorizes mounts in that pod's
 	// workspace and nowhere else. The worker sees neither.
 	AttributeToken = "token"
 	// EnvEndpoint and EnvToken are how the sidecar finds and authenticates to

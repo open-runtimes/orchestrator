@@ -239,7 +239,7 @@ func (c *Controller) reconcile(ctx context.Context, p *pool.Pool, seenPods, seen
 			}
 			continue
 		}
-		if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(&p.Spec) {
+		if pod.Annotations[annotationPoolSpecHash] != poolSpecHash(&p.Spec, c.m.cfg) {
 			slog.Info("Discarding stale warm pod after pool spec change", "pod", pod.Name, "poolId", p.ID)
 			if err := c.m.Delete(ctx, pod.Name); err != nil {
 				slog.Warn("Failed to discard stale warm pod", "pod", pod.Name, "error", err)

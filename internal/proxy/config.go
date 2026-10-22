@@ -11,6 +11,7 @@ package proxy
 
 import (
 	"orchestrator/internal/config"
+	"orchestrator/internal/mountagent"
 	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
@@ -58,6 +59,12 @@ type Config struct {
 	// S3 credentials for signing s3:// download artifacts materialized into the
 	// workspace. Forwarded by the deployments/pools orchestrator.
 	S3 config.S3Credentials
+
+	// MountAgentEndpoint and MountAgentToken, when set, have the node mount
+	// agent perform this pod's mounts instead of this container
+	// (docs/design/node-mount-agent.md).
+	MountAgentEndpoint string
+	MountAgentToken    string
 }
 
 // LoadConfigFromEnv loads proxy configuration from the environment.
@@ -85,6 +92,9 @@ func LoadConfigFromEnv() Config {
 		ExtraPorts: parsePorts(config.GetEnv(workload.EnvExtraPorts, "")),
 		Workspace:  config.Workspace(),
 		S3:         config.LoadS3Credentials(),
+
+		MountAgentEndpoint: config.GetEnv(mountagent.EnvEndpoint, ""),
+		MountAgentToken:    config.GetEnv(mountagent.EnvToken, ""),
 	}
 }
 

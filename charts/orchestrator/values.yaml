@@ -315,11 +315,12 @@ workloadNamespace:
     requestsMemory: 200Gi
 
 # Node mount agent (docs/design/node-mount-agent.md): a DaemonSet that serves
-# each mounting job's workspace as a CSI inline volume and performs its artifact
-# mounts from the node. Enabling it switches jobs that mount to it, so their
-# pods have no privileged container. The agent itself runs privileged on the
-# host network; its API is gated by a per-pod token, and only pods in the job
-# namespace may use its driver.
+# each mounting pod's workspace as a CSI inline volume and performs its artifact
+# mounts from the node. Enabling it switches every workload that mounts (jobs,
+# deployment revisions, pools, sandboxes) to it, so their pods have no
+# privileged container. The agent itself runs privileged on the host network;
+# its API is gated by a per-pod token, and only pods in the job and workload
+# namespaces may use its driver.
 mountAgent:
   enabled: false
   image:
@@ -330,8 +331,9 @@ mountAgent:
   # Port the mount API listens on, on each node's own IP.
   port: 9878
   registrarImage: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
-  # Run wherever mounting pods run: match the job pods' node selector and
-  # tolerations.
+  # The agent must run on every node a mounting pod can land on, or that pod
+  # never gets its workspace. Empty tolerations take every workload toleration
+  # (jobs, deployments, sandbox); the empty node selector runs it on every node.
   nodeSelector: {}
   tolerations: []
   priorityClassName: system-node-critical

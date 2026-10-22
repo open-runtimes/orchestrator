@@ -1,6 +1,6 @@
 # Node mount agent
 
-**Status: implemented for jobs, when `mountAgent.enabled` is set** (`cmd/mount-agent`, `internal/mountagent`, `internal/mountagent/node`, `internal/mount`; services read `KUBE_MOUNT_AGENT_PORT`). Deployments, pools and sandboxes still mount from the privileged sidecar, and the loop-backed workspace and user-namespace ID mapping below are not built yet. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node, gVisor included (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
+**Status: implemented for jobs, deployment revisions, pools and sandboxes, when `mountAgent.enabled` is set** (`cmd/mount-agent`, `internal/mountagent`, `internal/mountagent/node`, `internal/mount`; services read `KUBE_MOUNT_AGENT_PORT`). The loop-backed workspace and user-namespace ID mapping below are not built yet. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node, gVisor included (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
 
 ## The problem
 
@@ -71,7 +71,7 @@ The worker can write anything in the workspace, including replacing `out` with a
 - Unmount through the parent's descriptor (`/proc/self/fd/<parent>/<name>`, `UMOUNT_NOFOLLOW`). A descriptor on the mount itself is a reference to it, and the kernel calls the mount busy for as long as the caller holds it; teardown first took the full 10-second busy deadline for exactly that reason.
 - Mount images, tmpfs and overlays `nosuid` as well as `nodev`.
 - Open an image path `O_PATH` first and reopen it for reading only if it is a regular file. Opening a FIFO the workload left there would hang the agent; opening a device node it made with `mknod` would act on the host, outside the pod's device cgroup. The workspace bind itself is `nodev,nosuid` too.
-- Only pods in the job namespace may publish a workspace (the chart passes it as the allowlist), a token stays bound to the volume that published it, and per-workspace mounts are capped at 64, which bounds loop devices and mount-table growth.
+- Only pods in the job and workload namespaces may publish a workspace (the chart passes them as the allowlist), a token stays bound to the volume that published it, and per-workspace mounts are capped at 64, which bounds loop devices and mount-table growth.
 
 ### What moves where in the code
 
@@ -88,7 +88,7 @@ New pieces:
 
 - `cmd/mount-agent`: the CSI Identity and Node services, inline volumes only and no controller, plus the mount API (`/v1/mount`, `/v1/unmount`, `/v1/mounted`). Built with ko like the other binaries.
 - Chart: `mountAgent.enabled`, a DaemonSet (privileged, host network, `/var/lib/kubelet` with `Bidirectional`, `/dev`, `node-driver-registrar`) and the `CSIDriver` object. No Secret, since tokens are per pod. No NetworkPolicy either: the agent runs on the host network, where pod policies do not apply, and the token is the boundary anyway.
-- One switch: enabling `mountAgent` sets `KUBE_MOUNT_AGENT_PORT` on the services, and jobs that mount then go through the agent; without it they mount from the privileged sidecar as before. The driver name is a constant. Both modes share one mounter (`mount.Beneath`), so the in-pod path gets the same symlink-safe resolution. The Docker backend is unaffected: Docker jobs keep their privileged sidecar, and Docker deployments and sandboxes keep refusing mounts.
+- One switch: enabling `mountAgent` sets `KUBE_MOUNT_AGENT_PORT` on the services, and every pod that mounts then goes through the agent; without it they mount from the privileged sidecar as before. The driver name is a constant. Both modes share one mounter (`mount.Beneath`), so the in-pod path gets the same symlink-safe resolution. The Docker backend is unaffected: Docker jobs keep their privileged sidecar, and Docker deployments and sandboxes keep refusing mounts.
 
 ## Spike results
 
@@ -185,7 +185,7 @@ The same measurement on the DOKS node (amd64), with the driver running in a pod 
    - a `k8s_integration` test on kind that runs read-only and writable mounts through the agent and asserts no container was privileged
    - privileged kernel tests that drive kubelet's publish, the sidecar's client and kubelet's unpublish end to end
    - unprivileged tests for symlink refusal in every `Root` operation
-2. **Revisions and pools next.** The warm-pod claim path already mounts after the pod exists, so it needs no new agent behaviour, only the mapper and pool-shape changes.
+2. ~~**Revisions and pools next.**~~ Done. The warm-pod claim path needed no new agent behaviour. A revision's replicas share one pod template, so each pod is stamped with its own token when it is built from it; an unstamped pod carries an empty token, which the agent refuses. Kind tests cover a two-replica revision and a warm-pod claim, whose mount lands in an already running worker, in both modes.
 3. **Loop-backed workspaces**, for a hard size limit (measured above).
 4. **User-namespace ID mapping in the agent**, and a writable-overlay test in a `hostUsers: false` pod, because that case behaves differently across kernels. **Then turn on `hostUsers: false` for mounting pools.** It costs nothing at cold start or per request, and it is most of what gVisor would buy.
 5. **gVisor stays per pool.** It costs about 350ms at p50 on DOKS, more for apps that load many files. It needs a runsc install per node: one containerd drop-in plus a restart, which a DaemonSet can do, gated by a node label the RuntimeClass selects. An agent `Release` on a running gVisor pod must detach lazily.

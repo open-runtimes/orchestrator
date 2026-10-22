@@ -167,13 +167,13 @@ Sandboxes also run on the [Docker development backend](sandboxes.md#the-docker-b
 
 | Workload | Privileged when |
 | --- | --- |
-| [Job](jobs.md#mount-artifact) | the request has a `mount` artifact — that pod only. Never with the node mount agent enabled (below) |
+| [Job](jobs.md#mount-artifact) | the request has a `mount` artifact — that pod only |
 | [Deployment revision](deployments.md#the-request-spec) | the request has a `mount` artifact — every replica of that revision |
 | [Sandbox](sandboxes.md#mounting-a-filesystem-image) / [pooled Revision](pools.md) | the **pool** sets `mounts: true` — every pod in the pool, since warm pods predate the claim |
 
-The last row is the one to watch: standing capacity means the privileged container is there before any request arrives, so treat a mounting pool as trusted infrastructure and keep untrusted workloads on pools without the capability.
+None of them, with the node mount agent enabled (below). Without it, the last row is the one to watch: standing capacity means the privileged container is there before any request arrives, so treat a mounting pool as trusted infrastructure and keep untrusted workloads on pools without the capability.
 
-**The node mount agent moves that privilege out of the pod** ([design](design/node-mount-agent.md)). With `mountAgent.enabled: true`, a DaemonSet serves each mounting job's workspace as a CSI inline volume and performs its mounts from the node; the job's sidecar stays unprivileged and asks the agent over HTTP with a token minted for that pod. Same artifact API, same mount layout, no measurable latency. The agent itself runs privileged on the host network, and its API is reachable on every node's IP: the per-pod token is the boundary, and only pods in the job namespace may use its driver, so treat the agent as node infrastructure. Deployments, pools and sandboxes still mount from a privileged sidecar for now.
+**The node mount agent moves that privilege out of the pod** ([design](design/node-mount-agent.md)). With `mountAgent.enabled: true`, a DaemonSet serves each mounting pod's workspace as a CSI inline volume and performs its mounts from the node; the pod's sidecar stays unprivileged and asks the agent over HTTP with a token minted for that pod. Every replica of a revision and every warm pod gets a token of its own. Same artifact API, same mount layout, no measurable latency. The agent itself runs privileged on the host network, and its API is reachable on every node's IP: the per-pod token is the boundary, and only pods in the job and workload namespaces may use its driver, so treat the agent as node infrastructure. It must run on every node a mounting pod can land on, or that pod sits in `ContainerCreating`: by default it tolerates every workload toleration and runs on every node, so set `mountAgent.nodeSelector`/`tolerations` only to narrow that. Switching the agent on or off replaces mounting pools' warm pods, but a revision keeps the pod template it was minted with, so redeploy revisions that mount afterwards. Docker backends are unaffected.
 
 **A sandbox URL is a credential.** Its hostname carries a 128-bit token, and reaching it is enough to run code inside the sandbox — so terminate TLS at the gateway (`sandbox.scheme: https`), and keep sandbox URLs out of access logs you would not treat as secrets.
 

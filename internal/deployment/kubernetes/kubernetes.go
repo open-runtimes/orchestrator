@@ -89,15 +89,19 @@ func NewRevisionPoolManager(client kubernetes.Interface, cfg Config) (*warm.Mana
 	if err := pool.ValidateTransparent(cfg.Pools, "deployment"); err != nil {
 		return nil, err
 	}
-	return warm.New(client, cfg.Pools, warm.Config{
+	return warm.New(client, cfg.Pools, revisionWarmConfig(cfg)), nil
+}
+
+func revisionWarmConfig(cfg Config) warm.Config {
+	return warm.Config{
 		Namespace: cfg.Namespace, SidecarImage: cfg.SidecarImage, ShimImage: cfg.PoolShimImage,
 		SidecarImagePullPolicy: cfg.SidecarImagePullPolicy, WorkerImagePullPolicy: cfg.WorkerImagePullPolicy,
 		RunAsUser: cfg.RunAsUser, Overcommit: cfg.Overcommit, Tolerations: cfg.Tolerations,
-		NodeSelector: cfg.NodeSelector, RuntimeClasses: cfg.RuntimeClasses, Metrics: cfg.Metrics,
+		NodeSelector: cfg.NodeSelector, RuntimeClasses: cfg.RuntimeClasses, MountAgentPort: cfg.MountAgentPort, Metrics: cfg.Metrics,
 		LeaderElection: cfg.LeaderElection,
 		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
 			Claim: LabelPoolClaim, Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},
-	}), nil
+	}
 }
 
 // Start surveys pre-existing managed deployments (their markers), then

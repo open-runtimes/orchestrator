@@ -210,7 +210,7 @@ If no mount-capable pool matches, the pod is built directly and the capability i
 
 [Pooled deployment revisions](pools.md) follow the same rules over the same machinery, and directly created [deployment revisions](deployments.md#the-request-spec) and [jobs](jobs.md#mount-artifact) mount too.
 
-**What that costs.** A privileged container sits in every mounting pod, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work away from mounts and treat mounting capacity as trusted infrastructure. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
+**What that costs.** A privileged container sits in every mounting pod, beside whatever the sandbox runs. If the sandbox is running code you do not trust, that is a boundary you should not lean on: keep untrusted work away from mounts and treat mounting capacity as trusted infrastructure — or enable the [node mount agent](operations.md), which performs the mount from the node so no container in the pod is privileged. The Docker backend cannot do it at all — sibling containers do not share a mount namespace — and says so rather than failing at claim time. Artifacts keep their own time budget even when the sandbox's requests are unbounded, so `"timeoutSeconds": 0` never means an unbounded download.
 
 If materialization fails, the sandbox is `failed` with the reason and no URL, and its pod is **poisoned** — discarded and replaced, never handed to another sandbox.
 

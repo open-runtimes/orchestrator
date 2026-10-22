@@ -130,7 +130,7 @@ func newTestManager(t *testing.T, pools ...pool.Pool) (*Manager, *fake.Clientset
 func warmPodFixture(m *Manager, poolID, name, ip string) *corev1.Pod {
 	annotations := map[string]string{}
 	if p := m.byID[poolID]; p != nil {
-		annotations[annotationPoolSpecHash] = poolSpecHash(&p.Spec)
+		annotations[annotationPoolSpecHash] = poolSpecHash(&p.Spec, m.cfg)
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

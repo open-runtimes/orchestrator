@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"orchestrator/internal/artifact"
+	"orchestrator/internal/mountagent"
 	"orchestrator/internal/sidecar"
 	"orchestrator/internal/workload"
 	"strconv"
@@ -58,7 +59,8 @@ type Proxy struct {
 	mounts atomic.Pointer[sidecar.Runner]
 
 	deregisterDelay time.Duration // drainDeregisterDelay; shortened in tests
-	// mounter performs the claim's image mounts. Nil uses the real one; unit
+	// mounter performs the claim's image mounts: the node mount agent's client
+	// when the pod has an agent workspace, otherwise nil for the in-pod one; unit
 	// tests inject a fake, since mounting needs a privileged pod.
 	mounter sidecar.Mounter
 
@@ -150,6 +152,9 @@ func New(cfg Config) *Proxy {
 		p.pool = newPool(cfg)
 	} else {
 		p.bind.Store(newBinding(cfg))
+	}
+	if cfg.MountAgentToken != "" {
+		p.mounter = mountagent.NewClient(cfg.MountAgentEndpoint, cfg.MountAgentToken)
 	}
 	p.data = &http.Server{Handler: http.HandlerFunc(p.handleData)}
 	p.admin = &http.Server{Handler: p.adminMux()}

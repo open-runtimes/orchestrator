@@ -48,7 +48,7 @@ func run() error {
 	// The chart binds the API to the node's own IP (the agent runs on the host
 	// network); the per-pod token, not the address, is the boundary.
 	listen := config.GetEnv("LISTEN_ADDR", ":"+strconv.Itoa(mountagent.DefaultPort))
-	// Namespaces whose pods may use the driver: the job namespace. Empty
+	// Namespaces whose pods may use the driver: the job and workload namespaces. Empty
 	// allows any, for development clusters.
 	var namespaces []string
 	if raw := config.GetEnv("ALLOWED_NAMESPACES", ""); raw != "" {
