@@ -3,9 +3,8 @@
 package sidecar
 
 import (
-	"errors"
 	"fmt"
-	"io"
+	"orchestrator/internal/mount"
 	"os"
 	"path/filepath"
 	"time"
@@ -35,13 +34,13 @@ func (kernelMounter) Mount(source, target string, opts MountOpts) error {
 		// remount update. Make the hidden source a read-only mount first, so the
 		// bind cloned onto target is born read-only. The source sits below target
 		// and is hidden as soon as the final bind or overlay is established.
-		if err := mountDirectory(source, source); err != nil {
+		if err := mount.BindDirectory(source, source); err != nil {
 			return fmt.Errorf("protect directory lower: %w", err)
 		}
 	}
 	if !opts.Writable {
 		if opts.SourceDir {
-			if err := mountDirectory(source, target); err != nil {
+			if err := mount.BindDirectory(source, target); err != nil {
 				_ = unix.Unmount(source, 0)
 				return err
 			}
@@ -69,12 +68,12 @@ func (m kernelMounter) Unmount(target string) error {
 	// A previous attempt may already have removed the artifact overlay. Never
 	// unmount the underlying Kubernetes volume when retrying partial cleanup.
 	if mounted {
-		if err := unmountArtifactPath(target, deadline); err != nil {
+		if err := mount.UnmountPath(target, deadline); err != nil {
 			return err
 		}
 	}
 	for _, path := range []string{overlayScratch(target), overlayLower(target)} {
-		if err := unmountArtifactPath(path, deadline); err != nil {
+		if err := mount.UnmountPath(path, deadline); err != nil {
 			return err
 		}
 		if err := os.RemoveAll(path); err != nil {
@@ -82,28 +81,6 @@ func (m kernelMounter) Unmount(target string) error {
 		}
 	}
 	return nil
-}
-
-// Busy references can belong to host processes because artifact mounts propagate
-// out of the sidecar. Detach after a short retry window: existing references
-// remain valid until closed, but cannot pin the mount in kubelet's volume tree.
-func unmountArtifactPath(path string, deadline time.Time) error {
-	for {
-		err := unix.Unmount(path, 0)
-		if err == nil || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOENT) {
-			return nil
-		}
-		if !errors.Is(err, unix.EBUSY) {
-			return fmt.Errorf("unmount %s: %w", path, err)
-		}
-		if time.Until(deadline) <= 0 {
-			if err := unix.Unmount(path, unix.MNT_DETACH); err != nil {
-				return fmt.Errorf("detach busy mount %s: %w", path, err)
-			}
-			return nil
-		}
-		time.Sleep(min(50*time.Millisecond, time.Until(deadline)))
-	}
 }
 
 // IsMounted reports whether an artifact mount is stacked at target. Unlike a
@@ -123,82 +100,20 @@ func (kernelMounter) IsMounted(target string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read mountinfo: %w", err)
 	}
-	return hasArtifactMount(string(data), target), nil
+	return mount.HasArtifactMount(string(data), target), nil
 }
 
-// overlayLower lives inside the directory that is about to become the mount
-// point. Once the bind or overlay is established at target, the implementation
-// lower is hidden from the worker; unmounting target reveals it for cleanup.
-// overlayScratch remains a sibling because a writable overlay must keep its
-// upper and work directories accessible to the sidecar for sync.
-func overlayLower(target string) string   { return filepath.Join(target, ".lower") }
-func overlayScratch(target string) string { return target + ".scratch" }
+func overlayLower(target string) string   { return mount.LowerDir(target) }
+func overlayScratch(target string) string { return mount.ScratchDir(target) }
 
-// mountImage associates image with a free loop device and mounts it read-only
-// at target, picking the kernel filesystem type from the image's magic. The
-// loop device is set to auto-clear, so unmounting releases it.
-//
-// The loop fd is held open across the mount: with auto-clear, the device
-// detaches as soon as it has no holders, so it must stay open until the mount
-// itself becomes the holder — otherwise the backing vanishes and mount fails
-// with EIO.
+// mountImage opens image and mounts it read-only at target (mount.Image).
 func mountImage(image, target string) error {
-	fstype, err := imageFsType(image)
+	img, err := os.Open(image)
 	if err != nil {
-		return err
+		return fmt.Errorf("open image: %w", err)
 	}
-
-	loopPath, loop, err := setupLoop(image)
-	if err != nil {
-		return err
-	}
-	defer loop.Close()
-
-	if err := unix.Mount(loopPath, target, fstype, unix.MS_RDONLY|unix.MS_NODEV, ""); err != nil {
-		_ = unix.IoctlSetInt(int(loop.Fd()), unix.LOOP_CLR_FD, 0)
-		return fmt.Errorf("mount %s on %s: %w", loopPath, target, err)
-	}
-	return nil
-}
-
-// mountDirectory exposes an extracted tar tree with the same read-only
-// contract as a mounted filesystem image. The second mount call remounts the
-// bind read-only; a plain bind inherits the source's writable flags.
-func mountDirectory(source, target string) error {
-	if err := unix.Mount(source, target, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
-		return fmt.Errorf("bind mount %s on %s: %w", source, target, err)
-	}
-	if err := unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NODEV|unix.MS_NOSUID, ""); err != nil {
-		_ = unix.Unmount(target, 0)
-		return fmt.Errorf("remount %s read-only: %w", target, err)
-	}
-	return nil
-}
-
-// imageFsType sniffs the on-disk magic to choose the kernel filesystem type for
-// image: squashfs ("hsqs" at offset 0) or erofs (0xE0F5E1E2, little-endian, at
-// offset 1024). Both are read-only image formats loop-mounted identically
-// apart from the type string.
-func imageFsType(image string) (string, error) {
-	f, err := os.Open(image)
-	if err != nil {
-		return "", fmt.Errorf("open image: %w", err)
-	}
-	defer f.Close()
-
-	// erofs's magic sits at offset 1024, so read past it.
-	buf := make([]byte, 1028)
-	n, _ := io.ReadFull(f, buf)
-	buf = buf[:n]
-
-	switch {
-	case len(buf) >= 4 && string(buf[:4]) == "hsqs":
-		return "squashfs", nil
-	case len(buf) >= 1028 && buf[1024] == 0xe2 && buf[1025] == 0xe1 && buf[1026] == 0xf5 && buf[1027] == 0xe0:
-		return "erofs", nil
-	default:
-		return "", fmt.Errorf("unrecognized filesystem image %s", image)
-	}
+	defer img.Close()
+	return mount.Image(img, target)
 }
 
 // mountOverlay loop-mounts the image read-only as the lower layer, mounts a
@@ -210,8 +125,8 @@ func imageFsType(image string) (string, error) {
 func mountOverlay(source, target string, sizeMiB int, upperOnDisk, sourceDir bool) (err error) {
 	lower := overlayLower(target)
 	scratch := overlayScratch(target)
-	upper := UpperDir(target)
-	work := filepath.Join(scratch, "work")
+	upper := mount.UpperDir(target)
+	work := mount.WorkDir(target)
 
 	// Unwind everything if we bail before the overlay is up; unmounting or
 	// removing what was never created is harmless.
@@ -250,12 +165,8 @@ func mountOverlay(source, target string, sizeMiB int, upperOnDisk, sourceDir boo
 	// counted against the pod's memory limit — a size cap turns an overrun into
 	// ENOSPC instead of an OOM kill.
 	if !upperOnDisk {
-		var tmpfsOpts string
-		if sizeMiB > 0 {
-			tmpfsOpts = fmt.Sprintf("size=%dm", sizeMiB)
-		}
-		if err = unix.Mount("tmpfs", scratch, "tmpfs", unix.MS_NODEV, tmpfsOpts); err != nil {
-			return fmt.Errorf("mount tmpfs on %s: %w", scratch, err)
+		if err = mount.Tmpfs(scratch, sizeMiB); err != nil {
+			return err
 		}
 	}
 	for _, d := range []string{upper, work} {
@@ -275,81 +186,5 @@ func mountOverlay(source, target string, sizeMiB int, upperOnDisk, sourceDir boo
 		return fmt.Errorf("chmod %s: %w", upper, err)
 	}
 
-	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
-	if err = unix.Mount("overlay", target, "overlay", 0, opts); err != nil {
-		return fmt.Errorf("mount overlay on %s: %w", target, err)
-	}
-	return nil
-}
-
-// setupLoop binds image to a free, read-only, auto-clearing loop device and
-// returns its path (e.g. /dev/loop3) and the still-open device file. The caller
-// must keep the file open until the mount holds the device, then close it —
-// with auto-clear the kernel detaches the device once its last reference drops,
-// so an early close would pull the backing out from under the pending mount.
-func setupLoop(image string) (string, *os.File, error) {
-	img, err := os.OpenFile(image, os.O_RDONLY, 0)
-	if err != nil {
-		return "", nil, fmt.Errorf("open image: %w", err)
-	}
-	defer img.Close()
-
-	control, err := os.OpenFile("/dev/loop-control", os.O_RDWR, 0)
-	if err != nil {
-		return "", nil, fmt.Errorf("open /dev/loop-control: %w", err)
-	}
-	defer control.Close()
-
-	cfg := unix.LoopConfig{
-		Fd:   uint32(img.Fd()),
-		Info: unix.LoopInfo64{Flags: unix.LO_FLAGS_READ_ONLY | unix.LO_FLAGS_AUTOCLEAR},
-	}
-	copy(cfg.Info.File_name[:], image) // cosmetic: shows the backing file in losetup
-
-	// There is no atomic "allocate + attach": LOOP_CTL_GET_FREE only reports a
-	// device that was free, and another mounter on the node can claim it before
-	// we configure it. LOOP_CONFIGURE then fails with EBUSY, so we grab a fresh
-	// device and retry (bounded) — the same contention-at-attach contract
-	// losetup relies on. LOOP_CONFIGURE (kernel 5.8+, always present under the
-	// erofs/squashfs floor) sets fd, flags, and geometry in one ioctl, leaving
-	// no half-configured window for a concurrent scanner to observe.
-	for range 100 {
-		num, err := unix.IoctlRetInt(int(control.Fd()), unix.LOOP_CTL_GET_FREE)
-		if err != nil {
-			return "", nil, fmt.Errorf("LOOP_CTL_GET_FREE: %w", err)
-		}
-		loopPath := fmt.Sprintf("/dev/loop%d", num)
-
-		loop, err := os.OpenFile(loopPath, os.O_RDWR, 0)
-		if errors.Is(err, os.ErrNotExist) {
-			// GET_FREE allocated the device, but a container's /dev is a static
-			// snapshot taken when it started: a node the kernel creates later
-			// never appears in it, so waiting cannot help — GET_FREE would keep
-			// naming the same unopenable device until the retries run out.
-			// Create the node ourselves, the way losetup recovers a lost device
-			// node (mknod is covered by the same privilege the mount needs).
-			// Losing the race to another creator (EEXIST) is fine — the node is
-			// there either way. Where mknod is refused, fall back to a brief
-			// wait for udev/devtmpfs, the only remaining way the node can appear.
-			if mkErr := unix.Mknod(loopPath, unix.S_IFBLK|0o660, int(unix.Mkdev(7, uint32(num)))); mkErr != nil && !errors.Is(mkErr, unix.EEXIST) {
-				time.Sleep(10 * time.Millisecond)
-				continue
-			}
-			loop, err = os.OpenFile(loopPath, os.O_RDWR, 0)
-		}
-		if err != nil {
-			return "", nil, fmt.Errorf("open %s: %w", loopPath, err)
-		}
-
-		err = unix.IoctlLoopConfigure(int(loop.Fd()), &cfg)
-		if err == nil {
-			return loopPath, loop, nil
-		}
-		loop.Close()
-		if errors.Is(err, unix.EBUSY) {
-			continue // raced with another mounter; grab a different device
-		}
-		return "", nil, fmt.Errorf("LOOP_CONFIGURE: %w", err)
-	}
-	return "", nil, errors.New("no free loop device after retries")
+	return mount.Overlay(lower, upper, work, target)
 }

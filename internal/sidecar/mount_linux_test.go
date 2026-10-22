@@ -4,6 +4,7 @@ package sidecar
 
 import (
 	"errors"
+	"orchestrator/internal/mount"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +72,7 @@ func TestKernelMounterBusyCleanup(t *testing.T) {
 		if len(fields) < 5 {
 			continue
 		}
-		path := unescapeMountPath(fields[4])
+		path := mount.UnescapeMountPath(fields[4])
 		if path == target {
 			count++
 		}

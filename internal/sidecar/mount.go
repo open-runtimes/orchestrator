@@ -2,32 +2,14 @@ package sidecar
 
 import (
 	"orchestrator/internal/artifact"
-	"path/filepath"
+	"orchestrator/internal/mount"
 )
 
-// MountOpts configures a mount. The zero value is a plain read-only image
-// mount; Writable layers an overlay on top, and SizeMiB caps it (0 = kernel
-// default).
-type MountOpts struct {
-	Writable bool
-	SizeMiB  int
-	// SourceDir says the source is an already-materialized directory rather
-	// than a loop-mountable filesystem image. Tar archives are extracted into
-	// a lower directory inside the future mount point, so the resulting bind or
-	// overlay hides that implementation path from the worker.
-	SourceDir bool
-	// UpperOnDisk puts the overlay's upper layer on the shared workspace instead
-	// of a tmpfs. A tmpfs upper is RAM and dies with the pod, which is the right
-	// default; a synced mount needs the delta to be an ordinary directory that
-	// outlives each write and can be read by the artifact runner. SizeMiB does
-	// not apply — the workspace volume's own limit does.
-	UpperOnDisk bool
-}
+// MountOpts configures a mount (see mount.Opts).
+type MountOpts = mount.Opts
 
-// UpperDir is where an overlay's upper layer lives for a mount at target: the
-// delta, and nothing else. Everything untouched stays in the image, so this is
-// exactly what a sync has to carry.
-func UpperDir(target string) string { return filepath.Join(target+".scratch", "upper") }
+// UpperDir is where an overlay's upper layer lives for a mount at target.
+func UpperDir(target string) string { return mount.UpperDir(target) }
 
 // Mounter mounts a source at a target directory and unmounts it. The source is
 // normally a read-only filesystem image (squashfs or erofs); with SourceDir it

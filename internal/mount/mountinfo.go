@@ -1,4 +1,4 @@
-package sidecar
+package mount
 
 import (
 	"path/filepath"
@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-// hasArtifactMount scans mountinfo for the newest mount entry at target and
-// reports whether it looks like a mount this sidecar establishes.
+// HasArtifactMount scans mountinfo for the newest mount entry at target and
+// reports whether it looks like an artifact mount (one a Mounter establishes).
 //
 // mountinfo fields: id parent major:minor root mountpoint options [optional
 // fields...] - fstype source superopts. Later lines stack over earlier ones,
 // so the last entry for the path is the visible mount.
-func hasArtifactMount(mountinfo, target string) bool {
+func HasArtifactMount(mountinfo, target string) bool {
 	target = filepath.Clean(target)
 	var root, fstype string
 	found := false
@@ -26,11 +26,11 @@ func hasArtifactMount(mountinfo, target string) bool {
 		if len(fields) < 5 || len(postFields) < 1 {
 			continue
 		}
-		if unescapeMountPath(fields[4]) != target {
+		if UnescapeMountPath(fields[4]) != target {
 			continue
 		}
 		found = true
-		root = unescapeMountPath(fields[3])
+		root = UnescapeMountPath(fields[3])
 		fstype = postFields[0]
 	}
 	if !found {
@@ -45,9 +45,32 @@ func hasArtifactMount(mountinfo, target string) bool {
 	return strings.Contains(root, "/.lower")
 }
 
-// unescapeMountPath reverses the octal escaping mountinfo applies to spaces,
+// MountsUnder lists every mount point at or below dir, in mountinfo order (so
+// parents before the mounts stacked inside them). Unmounting in reverse order
+// takes a tree apart innermost first.
+func MountsUnder(mountinfo, dir string) []string {
+	dir = filepath.Clean(dir)
+	var out []string
+	for line := range strings.SplitSeq(mountinfo, "\n") {
+		pre, _, ok := strings.Cut(line, " - ")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(pre)
+		if len(fields) < 5 {
+			continue
+		}
+		p := UnescapeMountPath(fields[4])
+		if p == dir || strings.HasPrefix(p, dir+"/") {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// UnescapeMountPath reverses the octal escaping mountinfo applies to spaces,
 // tabs, newlines, and backslashes in paths.
-func unescapeMountPath(s string) string {
+func UnescapeMountPath(s string) string {
 	if !strings.Contains(s, "\\") {
 		return s
 	}
