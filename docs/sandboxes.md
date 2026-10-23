@@ -502,7 +502,7 @@ publishing image needs to contain nothing but the binary and a `cp`, and the
 destination sits at the workspace root for the same reason.
 
 Distributing it as an image rather than a fetched artifact is the point: the tag
-(or digest, via `sandbox.agentImage.ref`) IS the version pin, the registry
+(or digest, via `images.sandboxAgent.ref`) IS the version pin, the registry
 verifies the bytes, the kubelet caches it per node instead of per pod, and an
 air-gapped install mirrors it like any other image. The alternative we tried —
 vendoring the release tarball into our own image at build time — needed a fetch

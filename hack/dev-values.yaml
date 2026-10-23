@@ -6,18 +6,15 @@ jobs:
     repository: ko.local/jobs-service
     tag: latest
     pullPolicy: Never
-  sidecarImage:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+images:
+  jobSidecar:
     repository: ko.local/job-sidecar
     tag: latest
-
-orchestrator:
-  # Kind loaded the ko.local/job-sidecar image; tell kubelet to use it instead of pulling.
-  # Worker pull policy stays empty so user images (alpine, python, etc.) still pull normally.
-  sidecarImagePullPolicy: Never
-
-replicaCount: 1
-
-resources:
-  requests:
-    cpu: 10m
-    memory: 32Mi
+  # Kind loaded the ko.local images; tell kubelet to use them instead of
+  # pulling. User images (alpine, python, etc.) still pull normally.
+  pullPolicy: Never

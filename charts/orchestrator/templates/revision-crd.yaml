@@ -8,7 +8,7 @@ metadata:
     # disabling the serving plane must not cascade-delete every workload.
     helm.sh/resource-policy: keep
   labels:
-    {{- include "orchestrator.labels" . | nindent 4 }}
+    {{- include "orchestrator.labels" (dict "root" . "component" "deployments") | nindent 4 }}
 spec:
   group: orchestrator.open-runtimes.io
   scope: Namespaced

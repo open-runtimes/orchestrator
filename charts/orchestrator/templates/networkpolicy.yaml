@@ -12,10 +12,10 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "orchestrator.fullname" . }}-{{ $plane }}-isolation
-  namespace: {{ include (printf "orchestrator.%sNamespace" (ternary "job" $plane (eq $plane "jobs"))) . }}
+  name: {{ include "orchestrator.componentName" (dict "root" . "component" $plane) }}-isolation
+  namespace: {{ include "orchestrator.planeNamespace" (dict "root" . "plane" $plane) }}
   labels:
-    {{- include "orchestrator.labels" . | nindent 4 }}
+    {{- include "orchestrator.labels" (dict "root" . "component" $plane) | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
@@ -61,8 +61,7 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: pool-controller
-              orchestrator.open-runtimes.io/pool-kind: {{ ternary "revision" "sandbox" (eq $plane "deployments") }}
+              app.kubernetes.io/component: pool-controller-{{ ternary "revision" "sandbox" (eq $plane "deployments") }}
   {{- end }}
   egress:
     # DNS anywhere in-cluster (kube-dns lives in kube-system).
@@ -88,7 +87,7 @@ spec:
               app.kubernetes.io/component: jobs
       ports:
         - protocol: TCP
-          port: {{ .Values.service.apiPort }}
+          port: {{ .Values.jobs.service.port }}
     {{- end }}
     - to:
         - ipBlock:

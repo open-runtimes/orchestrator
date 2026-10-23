@@ -1,11 +1,16 @@
 {{- if .Values.mountAgent.enabled }}
-{{- $name := printf "%s-mount-agent" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $c := dict "root" . "component" "mount-agent" -}}
+{{- $name := include "orchestrator.componentName" $c -}}
 {{- $driver := "mount.open-runtimes.dev" -}}
 {{- $pluginDir := printf "/var/lib/kubelet/plugins/%s" $driver -}}
 {{- $namespaces := list -}}
-{{- if .Values.jobs.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.jobNamespace" .) }}{{ end -}}
-{{- if .Values.deployments.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.deploymentsNamespace" .) }}{{ end -}}
-{{- if .Values.sandbox.enabled }}{{ $namespaces = append $namespaces (include "orchestrator.sandboxNamespace" .) }}{{ end -}}
+{{- $tolerations := list -}}
+{{- range $plane := list "jobs" "deployments" "sandbox" -}}
+{{- if (index $.Values $plane "enabled") -}}
+{{- $namespaces = append $namespaces (include "orchestrator.planeNamespace" (dict "root" $ "plane" $plane)) -}}
+{{- $tolerations = concat $tolerations (index $.Values $plane "workload" "tolerations") -}}
+{{- end -}}
+{{- end -}}
 {{- if not $namespaces }}{{ fail "mountAgent.enabled needs jobs, deployments or sandbox enabled" }}{{ end -}}
 # Inline ephemeral volumes only: each mounting pod's workspace is created on
 # publish and destroyed on unpublish, so there is no controller to attach.
@@ -14,7 +19,7 @@ kind: CSIDriver
 metadata:
   name: {{ $driver }}
   labels:
-    {{- include "orchestrator.labels" . | nindent 4 }}
+    {{- include "orchestrator.labels" $c | nindent 4 }}
 spec:
   attachRequired: false
   podInfoOnMount: true
@@ -26,9 +31,10 @@ metadata:
   name: {{ $name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.labels" . | nindent 4 }}
-    app.kubernetes.io/component: mount-agent
+    {{- include "orchestrator.labels" $c | nindent 4 }}
 spec:
+  # Kept to instance and component, without the name label the other
+  # selectors carry: a DaemonSet selector is immutable.
   selector:
     matchLabels:
       app.kubernetes.io/instance: {{ .Release.Name }}
@@ -40,6 +46,10 @@ spec:
       labels:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: mount-agent
+      {{- with .Values.mountAgent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       # The mount API listens on the node's own IP, which is where sidecars
       # reach it (status.hostIP); the workspace token is the boundary.
@@ -48,20 +58,25 @@ spec:
       {{- with .Values.mountAgent.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
-      {{- with include "orchestrator.imagePullSecrets" . }}
-      {{- . | nindent 6 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mountAgent.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.mountAgent.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.mountAgent.tolerations | default (concat .Values.jobs.workloadTolerations .Values.deployments.workloadTolerations .Values.sandbox.workloadTolerations | uniq) }}
+      {{- with .Values.mountAgent.tolerations | default ($tolerations | uniq) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: mount-agent
-          image: {{ include "orchestrator.mountAgentImage" . | quote }}
+          image: {{ include "orchestrator.image" (dict "root" . "image" .Values.mountAgent.image) | quote }}
           imagePullPolicy: {{ .Values.mountAgent.image.pullPolicy }}
           # Loop devices, mount(2), and propagation into kubelet's pod
           # directories: privileged here, so that no workload pod has to be.
@@ -97,7 +112,7 @@ spec:
             - name: dev
               mountPath: /dev
         - name: registrar
-          image: {{ .Values.mountAgent.registrarImage | quote }}
+          image: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.csiRegistrar) | quote }}
           args:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path={{ $pluginDir }}/csi.sock

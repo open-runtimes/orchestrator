@@ -35,7 +35,7 @@ All derive their state from the cluster: restarts and replica failovers lose not
 
 - **Kubernetes 1.29+** — jobs rely on native sidecar containers. The chart declares this as `kubeVersion`, so an older cluster fails the install rather than accepting jobs that then never terminate. `helm template` checks the constraint against the Helm CLI's own built-in version — pass `--kube-version` if your CLI is older than your cluster.
 - **Helm 3.8+** — the chart is published as an OCI artifact. Values are validated against `values.schema.json` on template/install/upgrade: unknown keys are rejected rather than silently ignored, so a misspelling fails loudly.
-- For deployments: the **Gateway API CRDs** and a gateway controller with two *Extended* features — per-backendRef `RequestHeaderModifier` filters and `RegularExpression` header matching. Verified on **Traefik** (Gateway API v1.5+); Envoy Gateway and Istio also implement both. Without a gateway, set `deployments.gateway.enabled=false`: deployments still run, but you provide your own routing.
+- For deployments: the **Gateway API CRDs** and a gateway controller with two *Extended* features — per-backendRef `RequestHeaderModifier` filters and `RegularExpression` header matching. Verified on **Traefik** (Gateway API v1.5+); Envoy Gateway and Istio also implement both. Without a gateway, set `deployments.httpRoute.enabled=false`: deployments still run, but you provide your own routing.
 
 ## Installing
 
@@ -49,36 +49,40 @@ helm install orchestrator oci://ghcr.io/open-runtimes/charts/orchestrator \
 This deploys the jobs service alone (components are opt-in; a bare install renders nothing). A complete worked example — serving plane, hardened workload namespace, pools, HA — lives at [`examples/helm-values.yaml`](../examples/helm-values.yaml). Verify with:
 
 ```bash
-kubectl -n orchestrator port-forward svc/jobs 8080:8080 &
+kubectl -n orchestrator port-forward svc/orchestrator-jobs 8080:8080 &
 curl localhost:8080/readyz
 ```
 
 To require authentication, put the key in a Secret and name it in `<plane>.auth.existingSecret` (key `<plane>.auth.secretKey`, default `api-key`); the chart mounts it and points `API_KEY_FILE` at it. Requests then need `Authorization: Bearer <key>`. **With no key configured, the API is open** — the services log a warning at startup.
 
-## Exposing the jobs API
+## The values shape
 
-The jobs `Service` is ClusterIP-only by default — the chart renders no Ingress or Gateway API resources unless asked. To expose it via Gateway API:
+Every plane (`jobs`, `deployments`, `sandbox`) and every component (`deployments.activator`, `sandbox.proxy`, `poolController`, `mountAgent`) takes the same keys for its own pods: `image`, `replicaCount`, `autoscaling`, `leaderElection`, `resources`, `podAnnotations`, `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `serviceAccount` and `service`. A plane adds what the pods it creates get: `namespace`, `networkPolicy`, `workload` (their `nodeSelector`, `tolerations` and overcommit), `httpRoute`, `auth` and `s3`. Shared images live under `images`, the Gateway under `gateway`. Resources are named `<fullname>-<component>`, where the fullname is the release name when it contains `orchestrator`, otherwise `<release>-orchestrator`.
+
+## Exposing the APIs
+
+Every plane's routes attach to one Gateway, `gateway.name` in `gateway.namespace` (by default the chart's fullname, in the release namespace). The chart can create it, or attach to one you manage:
 
 ```yaml
 # values.yaml
+gateway:
+  create: true
+  className: traefik
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces: { from: All }   # required when a plane's namespace differs
 jobs:
   enabled: true
-  gateway:
-    enabled: true
-    gatewayClassName: traefik
-    listeners:
-      - name: web
-        port: 8000
-        protocol: HTTP
-        allowedRoutes:
-          namespaces: { from: Same }
   httpRoute:
     enabled: true
     hostnames:
       - jobs.example.com
 ```
 
-Unlike `deployments.gateway` (a pointer the deployments-service's own reconciler uses against a Gateway you already own), the jobs API has no reconciler — the chart renders both the `Gateway` and `HTTPRoute` directly. Leave `jobs.gateway.enabled: false` and set `jobs.httpRoute.parentRefs` instead if you'd rather attach to a Gateway you manage elsewhere (e.g. one shared across several releases).
+The jobs API gets one route; the deployments service writes one route per deployment (`deployments.httpRoute.enabled`, on by default); sandboxes get one wildcard route to the sandbox proxy (`sandbox.httpRoute.enabled`).
 
 ## Enabling deployments
 
@@ -89,27 +93,6 @@ deployments:
   activator:
     enabled: true # holds cold and async requests
   domain: apps.example.com        # auto-assigned hosts become {id}.apps.example.com
-  gateway:
-    name: orchestrator            # the Gateway resource HTTPRoutes attach to
-    namespace: ""                 # empty = release namespace
-```
-
-You own the `Gateway` resource (listener config, TLS, load balancer); the orchestrator writes one `HTTPRoute` per deployment against it:
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: orchestrator
-  namespace: orchestrator
-spec:
-  gatewayClassName: traefik
-  listeners:
-    - name: http
-      port: 80
-      protocol: HTTP
-      allowedRoutes:
-        namespaces: { from: All }   # required when deployments.namespace differs
 ```
 
 Point a wildcard DNS record (`*.apps.example.com`) at the gateway's address and deployments are reachable the moment they're ready.
@@ -183,37 +166,29 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 
 | Value | Default | Effect |
 | --- | --- | --- |
-| `jobs.image`, `jobs.sidecarImage` | GHCR, the chart's `appVersion` | Jobs service and per-job sidecar images |
-| `jobs.gateway.{enabled,gatewayClassName,listeners}` | disabled | Renders a `Gateway` for the jobs API (above) |
-| `jobs.httpRoute.{enabled,parentRefs,hostnames}` | disabled | Renders an `HTTPRoute` for the jobs API (above) |
-| `deployments.enabled` | `false` | Install the deployments service (the activator is `deployments.activator.enabled`) |
+| `<plane>.enabled` | `false` | Install a plane's service; every component is opt-in |
+| `<plane>.namespace` | `""` | Namespace the plane's pods run in; empty is the release namespace (below) |
+| `<plane>.networkPolicy.enabled` | jobs `false`, others `true` | Per-plane NetworkPolicy (below) |
+| `<plane>.workload.{nodeSelector,tolerations}` | empty | Placement of the pods a plane creates (below) |
+| `<plane>.workload.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for those pods (below) |
+| `<plane>.replicaCount`, `.autoscaling`, `.leaderElection` | `1`, off, off | More than one replica, or an HPA, requires leader election |
+| `<plane>.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss delays work by roughly the lease duration |
+| `<plane>.auth.existingSecret` | `""` | Bearer-token auth for the plane's API (above) |
+| `<plane>.service.port` | `8080` | API port |
+| `gateway.*` | not created | The Gateway every route attaches to (above) |
+| `images.*` | GHCR, the chart's `appVersion` | Images placed in workload pods; `images.pullPolicy` is their pull policy |
+| `jobs.workload.terminationGracePeriodSeconds` | `600` | How long a job pod's sidecar has for its post phase |
+| `deployments.domain` | `localhost` | Base domain for auto-assigned hosts |
 | `deployments.revisionWorkers` | `32` | Concurrent direct-Pod Revision reconciles |
 | `deployments.clientQPS` / `deployments.clientBurst` | `200` / `400` | Client-side K8s API write budget for Revision and Pod bursts |
-| `deployments.domain` | `localhost` | Base domain for auto-assigned hosts |
-| `deployments.gateway.{enabled,name,namespace}` | `true`, `orchestrator`, release ns | The Gateway that HTTPRoutes attach to |
-| `deployments.dataPort` | `8081` | Docker-backend data plane / activator data port |
-| `deployments.pools` | `[]` | Warm pool declarations (above) |
-| `poolController.enabled` | `true` | Run bare warm-pod inventory for every enabled pool kind (also cleans removed pools) |
-| `poolController.replicaCount` | `1` | Replicas of each per-kind pool-controller workload |
-| `sandbox.enabled` | `false` | Install the sandboxes service |
-| `sandbox.domain` | `""` | Wildcard domain sandboxes are addressed at (required when enabled) |
-| `{jobs,deployments,sandbox}.namespace` | `""` | Namespace each plane's pods run in; empty is the release namespace (below) |
-| `{jobs,deployments,sandbox}.networkPolicy.enabled` | `false`, `true`, `true` | Per-plane NetworkPolicy (below) |
-| `deployments.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for workloads (below) |
-| `jobs.{cpu,memory}Overcommit` | `1` | Same, independently for job pods |
-| `deployments.workloadTolerations` | `[]` | Tolerations on workload pods (deployment replicas + warm pools) |
-| `jobs.workloadTolerations` | `[]` | Tolerations on job pods |
-| `deployments.workloadNodeSelector` | `{}` | Node selector pinning workload pods to a node pool |
-| `jobs.workloadNodeSelector` | `{}` | Same, independently for job pods |
-| `deployments.leaderElection.enabled` | `false` | Required when `deployments.replicaCount > 1` |
-| `deployments.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss can delay Pod creation by roughly the lease duration |
-| `poolController.leaderElection.enabled` | `false` | Required above one replica; each pool kind uses a distinct Lease |
+| `deployments.pools`, `sandbox.pools` | `[]` | Warm pool declarations (above) |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
-| `deployments.activator.replicaCount` | `1` | Activator replicas |
-| `service.apiPort` | `8080` | API port |
-| `service.terminationGracePeriodSeconds` | `60` | Pod shutdown budget, including the final OTLP flush |
+| `sandbox.domain` | `""` | Wildcard domain sandboxes are addressed at (required) |
+| `poolController.enabled` | `true` | Run warm-pod inventory for every enabled plane (also cleans removed pools) |
+| `terminationGracePeriodSeconds` | `60` | Control-plane pod shutdown budget, including the final OTLP flush |
+| `rbac.create` | `true` | Every Role, ClusterRole and binding the components need |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
-| `extraEnv` | `[]` | Extra environment for all service/data-plane containers (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `AUTOSCALER_WINDOW`, `API_KEY_FILE`) |
+| `extraEnv` | `[]` | Extra environment for every control-plane container (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `AUTOSCALER_WINDOW`) |
 
 Autoscaler tuning via `extraEnv`: `AUTOSCALER_WINDOW` (sliding window, default 60s) and `AUTOSCALER_TICK` (evaluation period, default 2s). A shorter window scales — in both directions — more aggressively.
 
@@ -221,9 +196,9 @@ Autoscaler tuning via `extraEnv`: `AUTOSCALER_WINDOW` (sliding window, default 6
 
 `imagePullSecrets` supplies pull credentials to every pod the chart renders. Each entry is `{name: <secret>}`.
 
-Workload pods — job pods, deployment replicas, warm pods — are created by the services rather than the chart, so pod-level values cannot reach them; they inherit credentials from the ServiceAccount they run as. The chart stamps `imagePullSecrets` onto the job-pod ServiceAccount it creates (`serviceAccount.jobSidecarCreate`), which covers job pods. Deployment replicas, sandboxes and warm pods currently run under the `default` ServiceAccount of their plane's namespace, so a private *runtime* image there needs the secret attached to that account out of band.
+Workload pods — job pods, deployment replicas, warm pods — are created by the services rather than the chart, so pod-level values cannot reach them; they inherit credentials from the ServiceAccount they run as. The chart stamps `imagePullSecrets` onto the job-pod ServiceAccount it creates (`jobs.workload.serviceAccount`), which covers job pods. Deployment replicas, sandboxes and warm pods currently run under the `default` ServiceAccount of their plane's namespace, so a private *runtime* image there needs the secret attached to that account out of band.
 
-A pull secret is referenced **by name only, and the name resolves in the namespace of the pod using it** — there is no cross-namespace reference. Every pod the chart renders lives in the release namespace, so that is where `imagePullSecrets` must exist. The job-pod ServiceAccount is the exception: the chart creates it in `jobs.namespace`. While that is the release namespace (the default) one secret covers everything, but once they differ the same name has to exist in the job namespace too, and `serviceAccount.jobSidecarImagePullSecrets` overrides the list when the credentials are named differently there.
+A pull secret is referenced **by name only, and the name resolves in the namespace of the pod using it** — there is no cross-namespace reference. Every pod the chart renders lives in the release namespace, so that is where `imagePullSecrets` must exist. The job-pod ServiceAccount is the exception: the chart creates it in `jobs.namespace`. While that is the release namespace (the default) one secret covers everything, but once they differ the same name has to exist in the job namespace too, and `jobs.workload.serviceAccount.imagePullSecrets` overrides the list when the credentials are named differently there.
 
 ## Hardening
 
@@ -265,12 +240,12 @@ The policies need an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
 ## Resource model
 
-The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the platform derives the scheduler request as `limit / overcommit`. The divisors are per-plane operator config — `jobs.{cpu,memory}Overcommit` covers job pods, `deployments.{cpu,memory}Overcommit` deployment replicas and their warm pools, `sandbox.{cpu,memory}Overcommit` sandboxes and theirs — and default to 1 (request = limit).
+The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the platform derives the scheduler request as `limit / overcommit`. The divisors are per-plane operator config — `<plane>.workload.{cpu,memory}Overcommit` covers the pods that plane creates (warm pools included) — and default to 1 (request = limit).
 
 - **CPU**: request = `cpu / cpuOvercommit` and **no CPU limit** — CPU is compressible, and limits cause needless throttling. Raising `cpuOvercommit` packs workloads denser at the cost of contention under load.
 - **Memory**: limit as declared, request = `memory / memoryOvercommit`. Memory is incompressible — overcommitting it trades OOM kills for density, so raise it only with headroom to spare.
-- **Tolerations**: to run workloads on tainted node pools (e.g. `workload=edge-builds:NoSchedule`), set `jobs.workloadTolerations` / `deployments.workloadTolerations` / `sandbox.workloadTolerations` — a list in the standard pod-spec tolerations schema, stamped on every workload pod of that plane.
-- **Node selector**: tolerations only *allow* the tainted pool; to *pin* pods to it, also set `jobs.workloadNodeSelector` / `deployments.workloadNodeSelector` / `sandbox.workloadNodeSelector` (e.g. `{workload: edge-builds}`) — a standard pod-spec nodeSelector stamped on every workload/job pod of that plane.
+- **Tolerations**: to run workloads on tainted node pools (e.g. `workload=edge-builds:NoSchedule`), set `<plane>.workload.tolerations` — a list in the standard pod-spec tolerations schema, stamped on every workload pod of that plane.
+- **Node selector**: tolerations only *allow* the tainted pool; to *pin* pods to it, also set `<plane>.workload.nodeSelector` (e.g. `{workload: edge-builds}`) — a standard pod-spec nodeSelector stamped on every workload/job pod of that plane.
 - Replicas spread across nodes via topology spread constraints, and durably multi-replica deployments get a PodDisruptionBudget automatically.
 - `deployments.limitRange.enabled` adds defaults, in the deployments namespace, for containers that declare nothing, preventing BestEffort pods.
 
@@ -282,7 +257,7 @@ On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.
 
 **Upgrading from the `apps/v1` backend.** There is deliberately no migration: releases before the `Revision` CRD materialised each revision as a Kubernetes `Deployment`, and this backend neither adopts nor deletes those objects (its Role no longer holds any `apps` verbs). Delete existing deployments through the API before upgrading, or remove the leftover `apps/v1` Deployments and their ReplicaSets by hand afterwards; until then the old pods keep serving while the API reports the deployment with no revisions.
 
-Each component can also autoscale on CPU (`autoscaling.enabled` for jobs, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled`, `sandbox.autoscaling.enabled`, `sandbox.proxy.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
+Each component can also autoscale on CPU (`<plane>.autoscaling.enabled`, `deployments.activator.autoscaling.enabled`, `sandbox.proxy.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 
 The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
 

@@ -2,269 +2,92 @@
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/*
+  fullname: the prefix every resource name is built from, by the usual Helm
+  convention: the release name when it already contains the chart name,
+  otherwise "<release>-<chart>".
+*/}}
 {{- define "orchestrator.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
+{{- $name := include "orchestrator.name" . -}}
+{{- if contains $name .Release.Name -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* componentName: "<fullname>-<component>". Call with (dict "root" $ "component" "jobs"). */}}
+{{- define "orchestrator.componentName" -}}
+{{- printf "%s-%s" (include "orchestrator.fullname" .root) .component | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
-  jobsName: resource name for the Deployment, Service, and RBAC that serve the
-  jobs API. Deliberately separate from the release's fullname so other APIs
-  (deployments, statefulsets, …) can coexist in the same chart as distinct
-  Deployments. Defaults to "<release>-jobs" so multiple chart releases in the
-  same namespace don't collide.
+  labels: the recommended label set, for metadata only. Not the selector:
+  version changes every release and selectors are immutable.
 */}}
-{{- define "orchestrator.jobsName" -}}
-{{- if .Values.jobs.fullnameOverride -}}
-{{- .Values.jobs.fullnameOverride | trunc 63 | trimSuffix "-" -}}
-{{- else if eq .Release.Name "orchestrator" -}}
-{{- "jobs" -}}
+{{- define "orchestrator.labels" -}}
+{{ include "orchestrator.selectorLabels" . }}
+app.kubernetes.io/version: {{ .root.Chart.AppVersion | replace "+" "_" | trunc 63 | quote }}
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+helm.sh/chart: {{ .root.Chart.Name }}-{{ .root.Chart.Version | replace "+" "_" }}
+{{- end -}}
+
+{{- define "orchestrator.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "orchestrator.name" .root }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- with .component }}
+app.kubernetes.io/component: {{ . }}
+{{- end }}
+{{- end -}}
+
+{{/* image: ref, or repository:tag with the chart's appVersion as the default tag. */}}
+{{- define "orchestrator.image" -}}
+{{- if .image.ref -}}
+{{- .image.ref -}}
 {{- else -}}
-{{- printf "%s-jobs" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s:%s" .image.repository (default .root.Chart.AppVersion .image.tag) -}}
 {{- end -}}
 {{- end -}}
 
-{{/*
-  deploymentsName: resource name for the serving-plane (deployments) API,
-  following the same per-component convention as jobsName.
-*/}}
-{{- define "orchestrator.deploymentsName" -}}
-{{- if .Values.deployments.fullnameOverride -}}
-{{- .Values.deployments.fullnameOverride | trunc 63 | trimSuffix "-" -}}
-{{- else if eq .Release.Name "orchestrator" -}}
-{{- "deployments" -}}
-{{- else -}}
-{{- printf "%s-deployments" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
+{{/* planeNamespace: where a plane's workload pods run. Call with (dict "root" $ "plane" "jobs"). */}}
+{{- define "orchestrator.planeNamespace" -}}
+{{- default .root.Release.Namespace (index .root.Values .plane "namespace") -}}
 {{- end -}}
 
-{{- define "orchestrator.deploymentsImage" -}}
-{{- if .Values.deployments.image.ref -}}
-{{- .Values.deployments.image.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.deployments.image.repository (default .Chart.AppVersion .Values.deployments.image.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.poolControllerName" -}}
-{{- printf "%s-pool-controller" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-
-{{- define "orchestrator.poolControllerImage" -}}
-{{- if .Values.poolController.image.ref -}}
-{{- .Values.poolController.image.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.poolController.image.repository (default .Chart.AppVersion .Values.poolController.image.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.poolControllerLabels" -}}
-{{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: pool-controller
-{{- end -}}
-
-{{- define "orchestrator.poolControllerSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "orchestrator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: pool-controller
-{{- end -}}
-
-{{/*
-  workloadSidecarImage: one image for every serving workload's sidecar —
-  deployment replicas (created or pool-claimed) and sandboxes.
-*/}}
-{{- define "orchestrator.workloadSidecarImage" -}}
-{{- if .Values.workloadSidecarImage.ref -}}
-{{- .Values.workloadSidecarImage.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.workloadSidecarImage.repository (default .Chart.AppVersion .Values.workloadSidecarImage.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-  deploymentsNamespace / sandboxNamespace: where each plane's workload pods
-  (revisions and their warm pools; sandboxes and theirs), markers, routes and
-  leader leases live: <plane>.namespace, else the release namespace.
-*/}}
-{{- define "orchestrator.deploymentsNamespace" -}}
-{{- default .Release.Namespace .Values.deployments.namespace -}}
-{{- end -}}
-
-{{- define "orchestrator.sandboxNamespace" -}}
-{{- default .Release.Namespace .Values.sandbox.namespace -}}
-{{- end -}}
-
-{{- define "orchestrator.mountAgentImage" -}}
-{{- if .Values.mountAgent.image.ref -}}
-{{- .Values.mountAgent.image.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.mountAgent.image.repository (default .Chart.AppVersion .Values.mountAgent.image.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.poolShimImage" -}}
-{{- if .Values.deployments.shimImage.ref -}}
-{{- .Values.deployments.shimImage.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.deployments.shimImage.repository (default .Chart.AppVersion .Values.deployments.shimImage.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-  imagePullSecrets: pull credentials for every pod this chart renders. Not for
-  workload pods (job pods, deployment replicas, warm pods) — the services
-  create those, so their credentials go on the ServiceAccount they run as.
-*/}}
-{{- define "orchestrator.imagePullSecrets" -}}
-{{- with .Values.imagePullSecrets -}}
-imagePullSecrets:
-{{- toYaml . | nindent 2 }}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.activatorImage" -}}
-{{- if .Values.deployments.activator.image.ref -}}
-{{- .Values.deployments.activator.image.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.deployments.activator.image.repository (default .Chart.AppVersion .Values.deployments.activator.image.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-  sandboxName: resource name for the sandbox API, following the same
-  per-component convention as jobsName.
-*/}}
-{{- define "orchestrator.sandboxName" -}}
-{{- if .Values.sandbox.fullnameOverride -}}
-{{- .Values.sandbox.fullnameOverride | trunc 63 | trimSuffix "-" -}}
-{{- else if eq .Release.Name "orchestrator" -}}
-{{- "sandbox" -}}
-{{- else -}}
-{{- printf "%s-sandbox" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.sandboxImage" -}}
-{{- if .Values.sandbox.image.ref -}}
-{{- .Values.sandbox.image.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.sandbox.image.repository (default .Chart.AppVersion .Values.sandbox.image.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.sandboxLabels" -}}
-{{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: sandbox
-{{- end -}}
-
-{{- define "orchestrator.sandboxSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "orchestrator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: sandbox
-{{- end -}}
-
-{{- define "orchestrator.sandboxS3SecretName" -}}
-{{- default (printf "%s-s3" (include "orchestrator.sandboxName" .)) .Values.sandbox.s3.existingSecret -}}
-{{- end -}}
-
-{{/*
-  sandboxAgentImage: the image the contract-serving binary is copied out of.
-  Tagged, not floating: this is the agent version pin.
-*/}}
-{{- define "orchestrator.sandboxAgentImage" -}}
-{{- if .Values.sandbox.agentImage.ref -}}
-{{- .Values.sandbox.agentImage.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.sandbox.agentImage.repository (required "sandbox.agentImage.tag is required (pin the agent version)" .Values.sandbox.agentImage.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.sandboxProxyImage" -}}
-{{- if .Values.sandbox.proxy.image.ref -}}
-{{- .Values.sandbox.proxy.image.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.sandbox.proxy.image.repository (default .Chart.AppVersion .Values.sandbox.proxy.image.tag) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "orchestrator.activatorLabels" -}}
-{{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: deployments-activator
-{{- end -}}
-
-{{- define "orchestrator.activatorSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "orchestrator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: deployments-activator
-{{- end -}}
-
-{{- define "orchestrator.deploymentsLabels" -}}
-{{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: deployments
-{{- end -}}
-
-{{- define "orchestrator.deploymentsSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "orchestrator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: deployments
-{{- end -}}
-
+{{/* serviceAccountName: a component's account. Call with (dict "root" $ "component" "jobs" "values" .Values.jobs). */}}
 {{- define "orchestrator.serviceAccountName" -}}
-{{- if .Values.serviceAccount.name -}}
-{{- .Values.serviceAccount.name -}}
-{{- else -}}
-{{- include "orchestrator.jobsName" . -}}
-{{- end -}}
+{{- default (include "orchestrator.componentName" .) .values.serviceAccount.name -}}
 {{- end -}}
 
 {{- define "orchestrator.jobSidecarServiceAccountName" -}}
-{{- if .Values.serviceAccount.jobSidecarName -}}
-{{- .Values.serviceAccount.jobSidecarName -}}
-{{- else -}}
-{{- printf "%s-job-sidecar" (include "orchestrator.fullname" .) | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
+{{- default (include "orchestrator.componentName" (dict "root" . "component" "job-sidecar")) .Values.jobs.workload.serviceAccount.name -}}
 {{- end -}}
 
-{{- define "orchestrator.jobsImage" -}}
-{{- if .Values.jobs.image.ref -}}
-{{- .Values.jobs.image.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.jobs.image.repository (default .Chart.AppVersion .Values.jobs.image.tag) -}}
-{{- end -}}
+{{- define "orchestrator.s3SecretName" -}}
+{{- default (printf "%s-s3" (include "orchestrator.componentName" (dict "root" .root "component" .plane))) (index .root.Values .plane "s3" "existingSecret") -}}
 {{- end -}}
 
-{{- define "orchestrator.jobSidecarImage" -}}
-{{- if .Values.jobs.sidecarImage.ref -}}
-{{- .Values.jobs.sidecarImage.ref -}}
-{{- else -}}
-{{- printf "%s:%s" .Values.jobs.sidecarImage.repository (default .Chart.AppVersion .Values.jobs.sidecarImage.tag) -}}
-{{- end -}}
+{{- define "orchestrator.gatewayName" -}}
+{{- default (include "orchestrator.fullname" .) .Values.gateway.name -}}
 {{- end -}}
 
-{{- define "orchestrator.jobNamespace" -}}
-{{- default .Release.Namespace .Values.jobs.namespace -}}
-{{- end -}}
-
-{{- define "orchestrator.artifactEndpoint" -}}
-{{- if .Values.orchestrator.artifactEndpoint -}}
-{{- .Values.orchestrator.artifactEndpoint -}}
-{{- else -}}
-{{- printf "http://%s.%s.svc.cluster.local:%d" (include "orchestrator.jobsName" .) .Release.Namespace (int .Values.service.apiPort) -}}
-{{- end -}}
+{{- define "orchestrator.gatewayNamespace" -}}
+{{- default .Release.Namespace .Values.gateway.namespace -}}
 {{- end -}}
 
 {{/*
-S3 credential env for a service. Call with a dict: {s3: <s3 values>, secretName: <secret>}.
-Renders nothing when s3.enabled is false. Endpoint/region/path-style are plain
-values; the keys come from a Secret (secretKeyRef) so they never rest in the
-pod manifest.
+  s3Env: a plane's S3 credentials. Endpoint, region and path style are plain
+  values; the keys come from a Secret so they never rest in the pod manifest.
+  Call with (dict "root" $ "plane" "jobs").
 */}}
 {{- define "orchestrator.s3Env" -}}
-{{- $s3 := .s3 -}}
+{{- $s3 := index .root.Values .plane "s3" -}}
 {{- if $s3.enabled -}}
+{{- $secret := include "orchestrator.s3SecretName" . -}}
 {{- if $s3.endpoint }}
 - name: S3_ENDPOINT
   value: {{ $s3.endpoint | quote }}
@@ -278,64 +101,85 @@ pod manifest.
 - name: S3_ACCESS_KEY_ID
   valueFrom:
     secretKeyRef:
-      name: {{ .secretName }}
+      name: {{ $secret }}
       key: S3_ACCESS_KEY_ID
 - name: S3_SECRET_ACCESS_KEY
   valueFrom:
     secretKeyRef:
-      name: {{ .secretName }}
+      name: {{ $secret }}
       key: S3_SECRET_ACCESS_KEY
 {{- end -}}
 {{- end -}}
 
-{{/* Resolve the S3 secret name for a service: an existing secret, or the chart-created one. */}}
-{{- define "orchestrator.jobsS3SecretName" -}}
-{{- default (printf "%s-s3" (include "orchestrator.jobsName" .)) .Values.jobs.s3.existingSecret -}}
-{{- end -}}
-
-{{- define "orchestrator.deploymentsS3SecretName" -}}
-{{- default (printf "%s-s3" (include "orchestrator.deploymentsName" .)) .Values.deployments.s3.existingSecret -}}
-{{- end -}}
-
-{{- define "orchestrator.leaseName" -}}
-{{- if .Values.leaderElection.leaseName -}}
-{{- .Values.leaderElection.leaseName -}}
-{{- else -}}
-{{- printf "%s-leader" (include "orchestrator.jobsName" .) -}}
-{{- end -}}
-{{- end -}}
-
 {{/*
-  labels: the recommended label set, for resource metadata only. Deliberately
-  NOT the selector — version changes on every release and selectors are
-  immutable, which is why every component keeps a separate SelectorLabels
-  define.
+  workloadEnv: how a plane's service shapes the pods it creates: their
+  namespace, placement, resource model, mount agent and pull policies. Call
+  with (dict "root" $ "plane" "deployments").
 */}}
-{{- define "orchestrator.labels" -}}
-app.kubernetes.io/name: {{ include "orchestrator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | replace "+" "_" | trunc 63 | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+{{- define "orchestrator.workloadEnv" -}}
+{{- $root := .root -}}
+{{- $workload := index $root.Values .plane "workload" }}
+- name: KUBE_NAMESPACE
+  value: {{ include "orchestrator.planeNamespace" . | quote }}
+- name: KUBE_CPU_OVERCOMMIT
+  value: {{ $workload.cpuOvercommit | quote }}
+- name: KUBE_MEMORY_OVERCOMMIT
+  value: {{ $workload.memoryOvercommit | quote }}
+{{- with $workload.tolerations }}
+- name: KUBE_WORKLOAD_TOLERATIONS
+  value: {{ toJson . | quote }}
+{{- end }}
+{{- with $workload.nodeSelector }}
+- name: KUBE_WORKLOAD_NODE_SELECTOR
+  value: {{ toJson . | quote }}
+{{- end }}
+{{- if $root.Values.mountAgent.enabled }}
+- name: KUBE_MOUNT_AGENT_PORT
+  value: {{ $root.Values.mountAgent.port | quote }}
+{{- end }}
+{{- with $root.Values.workloadImagePullPolicy }}
+- name: KUBE_WORKER_IMAGE_PULL_POLICY
+  value: {{ . | quote }}
+{{- end }}
+{{- with $root.Values.images.pullPolicy }}
+- name: KUBE_SIDECAR_IMAGE_PULL_POLICY
+  value: {{ . | quote }}
+{{- end }}
 {{- end -}}
 
 {{/*
-  podAnnotations: a component's user annotations, plus a checksum of the
-  chart-managed S3 credentials so that `helm upgrade` with rotated keys
-  actually rolls the pods — without it the old credentials stay live in the
-  running ones. Call with {annotations, s3}; renders nothing when there is
-  neither. An existingSecret is not hashed: its contents are not ours to see,
-  so rotating it is the operator's rollout to trigger.
+  leaderEnv: leader election for a component. Call with (dict "values"
+  <leaderElection> "lease" <default lease name> "prefix" "KUBE_").
+*/}}
+{{- define "orchestrator.leaderEnv" -}}
+{{- if .values.enabled }}
+- name: {{ .prefix }}LEADER_ELECTION
+  value: "true"
+- name: {{ .prefix }}LEADER_LEASE_NAME
+  value: {{ .lease | quote }}
+- name: {{ .prefix }}LEADER_IDENTITY
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
+- name: {{ .prefix }}LEADER_LEASE_DURATION
+  value: {{ printf "%ds" (int .values.leaseDurationSeconds) | quote }}
+- name: {{ .prefix }}LEADER_RENEW_DEADLINE
+  value: {{ printf "%ds" (int .values.renewDeadlineSeconds) | quote }}
+- name: {{ .prefix }}LEADER_RETRY_PERIOD
+  value: {{ printf "%ds" (int .values.retryPeriodSeconds) | quote }}
+{{- end }}
+{{- end -}}
 
-  Merged into one dict rather than emitted as two blocks, so a user
-  annotation named checksum/s3 cannot shadow the generated one — as a
-  duplicate YAML key it would win and freeze the marker, quietly defeating
-  the rollout it exists to trigger. deepCopy because .Values is shared across
-  templates and set would otherwise mutate it.
+{{/*
+  podAnnotations: a component's annotations, plus a checksum of the
+  chart-managed S3 credentials so an upgrade with rotated keys rolls the pods.
+  Merged into one dict so a user annotation named checksum/s3 cannot shadow the
+  generated one. An existingSecret is not hashed: rotating it is the
+  operator's rollout to trigger.
 */}}
 {{- define "orchestrator.podAnnotations" -}}
 {{- $annotations := deepCopy (default (dict) .annotations) -}}
-{{- if and .s3.enabled (not .s3.existingSecret) -}}
+{{- if and .s3 .s3.enabled (not .s3.existingSecret) -}}
 {{- $_ := set $annotations "checksum/s3" (.s3 | toJson | sha256sum) -}}
 {{- end -}}
 {{- with $annotations -}}
@@ -345,58 +189,299 @@ annotations:
 {{- end -}}
 
 {{/*
-  jobsLabels: labels on the jobs API resources' metadata; jobsSelectorLabels
-  is the subset used as their selector.
+  component: a control-plane Deployment with its Service, ServiceAccount, PDB
+  and HPA, rendered the same way for every component. Call with a dict:
+    root       $
+    component  name suffix and component label, e.g. "jobs"
+    values     the component's values (image, replicaCount, autoscaling,
+               resources, podAnnotations, nodeSelector, tolerations, affinity,
+               priorityClassName, serviceAccount, service)
+    container  the container name
+    ports      [{name, port}]: container ports; "service" is the one the
+               Service exposes, the rest stay pod-local
+    probe      {port, readiness, liveness}: httpGet paths
+    env        the component's own env (YAML list as a string)
+    auth       the plane's auth values, mounted when existingSecret is set
+    s3         the S3 values whose rotation should roll the pods
+    labels     extra pod labels, e.g. the pool kind
+    leader     whether the component can be leader-elected (replicas > 1 and
+               autoscaling then require leaderElection.enabled)
 */}}
-{{- define "orchestrator.jobsLabels" -}}
-{{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: jobs
-{{- end -}}
-
-{{- define "orchestrator.jobsSelectorLabels" -}}
-app.kubernetes.io/name: {{ include "orchestrator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: jobs
+{{- define "orchestrator.component" -}}
+{{- $root := .root -}}
+{{- $v := .values -}}
+{{- $name := include "orchestrator.componentName" . -}}
+{{- $sel := include "orchestrator.selectorLabels" . -}}
+{{- $labels := include "orchestrator.labels" . -}}
+{{- $autoscaling := $v.autoscaling | default dict -}}
+{{- if and .leader (or (gt (int $v.replicaCount) 1) $autoscaling.enabled) (not $v.leaderElection.enabled) -}}
+{{- fail (printf "%s: replicaCount > 1 and autoscaling require leaderElection.enabled=true" .component) -}}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if not $autoscaling.enabled }}
+  replicas: {{ $v.replicaCount }}
+  {{- end }}
+  # Surge a replacement before taking a replica away; surged replicas of a
+  # leader-elected component are followers.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+      {{- with .labels }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- $sel | nindent 8 }}
+        {{- with .labels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with include "orchestrator.podAnnotations" (dict "annotations" $v.podAnnotations "s3" .s3) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ $root.Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "orchestrator.serviceAccountName" . }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $v.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $v.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- $sel | nindent 14 }}
+      volumes:
+        # Scratch space so readOnlyRootFilesystem never bites a stray temp write.
+        - name: tmp
+          emptyDir: {}
+        {{- if and .auth .auth.existingSecret }}
+        - name: auth
+          secret:
+            secretName: {{ .auth.existingSecret }}
+        {{- end }}
+      containers:
+        - name: {{ .container }}
+          image: {{ include "orchestrator.image" (dict "root" $root "image" $v.image) | quote }}
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if and .auth .auth.existingSecret }}
+            - name: auth
+              mountPath: /var/run/secrets/orchestrator
+              readOnly: true
+            {{- end }}
+          ports:
+            {{- range .ports }}
+            - name: {{ .name }}
+              containerPort: {{ .port }}
+            {{- end }}
+          env:
+            {{- .env | nindent 12 }}
+            - name: SHUTDOWN_DRAIN_WAIT
+              value: "0s"
+            {{- if and .auth .auth.existingSecret }}
+            - name: API_KEY_FILE
+              value: /var/run/secrets/orchestrator/{{ .auth.secretKey }}
+            {{- end }}
+            {{- with $root.Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: {{ .probe.readiness }}
+              port: {{ .probe.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: {{ .probe.liveness }}
+              port: {{ .probe.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+{{- with $v.service }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: {{ .type }}
+  selector:
+    {{- $sel | nindent 4 }}
+  ports:
+    - name: service
+      port: {{ .port }}
+      targetPort: service
+{{- end }}
+{{- if $v.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "orchestrator.serviceAccountName" . }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+{{- end }}
+{{- /* Only when durably multi-replica: a PDB on a possible singleton blocks node drains. */}}
+{{- if or (gt (int $v.replicaCount) 1) (and $autoscaling.enabled (gt (int $autoscaling.minReplicas) 1)) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- $sel | nindent 6 }}
+{{- end }}
+{{- if $autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ $autoscaling.minReplicas }}
+  maxReplicas: {{ $autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
 {{- end -}}
 
 {{/*
-Hardened pod-level security context for control-plane pods — the same floor
-the orchestrator stamps on workload pods.
+  rbac: a Role in a namespace and its binding to a component's account.
+  Call with (dict "root" $ "component" "jobs" "values" <component values>
+  "namespace" <ns> "name" <role name> "rules" <rules YAML>).
 */}}
-{{- define "orchestrator.podSecurityContext" -}}
-runAsNonRoot: true
-seccompProfile:
-  type: RuntimeDefault
+{{- define "orchestrator.rbac" -}}
+{{- if .root.Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+rules:
+  {{- .rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.serviceAccountName" . }}
+    namespace: {{ .root.Release.Namespace }}
 {{- end }}
-
-{{/*
-Hardened container-level security context for control-plane containers.
-*/}}
-{{- define "orchestrator.containerSecurityContext" -}}
-allowPrivilegeEscalation: false
-readOnlyRootFilesystem: true
-capabilities:
-  drop: ["ALL"]
-{{- end }}
-
-{{/*
-Zero-downtime rollout strategy: surge a replacement before taking a replica
-away. Safe for leader-elected components — surged replicas are followers.
-*/}}
-{{- define "orchestrator.rolloutStrategy" -}}
-type: RollingUpdate
-rollingUpdate:
-  maxUnavailable: 0
-  maxSurge: 1
-{{- end }}
-
-{{- define "orchestrator.sandboxProxyLabels" -}}
-{{ include "orchestrator.labels" . }}
-app.kubernetes.io/component: sandbox-proxy
 {{- end -}}
 
-{{- define "orchestrator.sandboxProxySelectorLabels" -}}
-app.kubernetes.io/name: {{ include "orchestrator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/component: sandbox-proxy
+{{/*
+  runtimeClassReader: the one cluster-scoped grant a plane needs: isolation
+  tiers are validated against cluster-scoped RuntimeClasses before workloads
+  are accepted. Call with (dict "root" $ "component" ... "values" ...).
+*/}}
+{{- define "orchestrator.runtimeClassReader" -}}
+{{- if .root.Values.rbac.create }}
+{{- $name := printf "%s-runtimeclasses" (include "orchestrator.componentName" .) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.serviceAccountName" . }}
+    namespace: {{ .root.Release.Namespace }}
+{{- end }}
 {{- end -}}

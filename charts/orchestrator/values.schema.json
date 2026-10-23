@@ -1,14 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "orchestrator chart values",
-  "description": "Every object is closed (additionalProperties: false) so a misspelled key fails the install instead of being silently ignored \u2014 most of this chart's values are consumed inside `with`/`if` blocks, which swallow typos. Free-form maps (node selectors, annotations, environment) stay open on purpose.",
+  "description": "Every object is closed (additionalProperties: false) so a misspelled key fails the install instead of being silently ignored — most of this chart's values are consumed inside `with`/`if` blocks, which swallow typos. Free-form maps (node selectors, annotations, environment) stay open on purpose.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "jobs",
     "deployments",
-    "service",
-    "orchestrator"
+    "sandbox"
   ],
   "properties": {
     "global": {
@@ -24,34 +23,11 @@
     "imagePullSecrets": {
       "$ref": "#/$defs/imagePullSecrets"
     },
-    "poolController": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["enabled"],
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "replicaCount": { "type": "integer", "minimum": 0 },
-        "healthPort": { "$ref": "#/$defs/port" },
-        "image": { "$ref": "#/$defs/pullableImage" },
-        "leaderElection": { "$ref": "#/$defs/leaderElection" },
-        "resources": { "$ref": "#/$defs/resources" }
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object"
       }
-    },
-    "replicaCount": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "autoscaling": {
-      "$ref": "#/$defs/autoscaling"
-    },
-    "leaderElection": {
-      "$ref": "#/$defs/leaderElection"
-    },
-    "resources": {
-      "$ref": "#/$defs/resources"
-    },
-    "podAnnotations": {
-      "$ref": "#/$defs/stringMap"
     },
     "rbac": {
       "type": "object",
@@ -62,98 +38,60 @@
         }
       }
     },
-    "serviceAccount": {
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "gateway": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "create": {
           "type": "boolean"
         },
+        "className": {
+          "type": "string"
+        },
+        "listeners": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
         "name": {
           "type": "string"
         },
-        "jobSidecarCreate": {
-          "type": "boolean"
-        },
-        "jobSidecarName": {
+        "namespace": {
           "type": "string"
-        },
-        "jobSidecarImagePullSecrets": {
-          "$ref": "#/$defs/imagePullSecrets"
         }
       }
     },
-    "service": {
+    "images": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "type": {
-          "enum": [
-            "ClusterIP",
-            "NodePort",
-            "LoadBalancer"
-          ]
+        "jobSidecar": {
+          "$ref": "#/$defs/image"
         },
-        "apiPort": {
-          "$ref": "#/$defs/port"
+        "workloadSidecar": {
+          "$ref": "#/$defs/image"
         },
-        "terminationGracePeriodSeconds": {
-          "type": "integer",
-          "minimum": 1
-        }
-      }
-    },
-    "extraEnv": {
-      "type": "array",
-      "description": "Raw corev1.EnvVar entries.",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1
-          },
-          "value": {
-            "type": [
-              "string",
-              "number",
-              "boolean"
-            ]
-          },
-          "valueFrom": {
-            "type": "object"
-          }
-        }
-      }
-    },
-    "orchestrator": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "artifactEndpoint": {
-          "type": "string"
+        "poolShim": {
+          "$ref": "#/$defs/image"
         },
-        "jobRetention": {
-          "$ref": "#/$defs/duration"
+        "sandboxAgent": {
+          "$ref": "#/$defs/image"
         },
-        "maintenanceInterval": {
-          "$ref": "#/$defs/duration"
+        "csiRegistrar": {
+          "$ref": "#/$defs/image"
         },
-        "terminationGracePeriodSeconds": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "workerImagePullPolicy": {
-          "$ref": "#/$defs/pullPolicy"
-        },
-        "sidecarImagePullPolicy": {
+        "pullPolicy": {
           "$ref": "#/$defs/pullPolicy"
         }
       }
+    },
+    "workloadImagePullPolicy": {
+      "$ref": "#/$defs/pullPolicy"
     },
     "jobs": {
       "type": "object",
@@ -162,106 +100,115 @@
         "enabled"
       ],
       "properties": {
-        "namespace": {
-          "type": "string"
-        },
-        "networkPolicy": {
-          "$ref": "#/$defs/networkPolicy"
-        },
         "enabled": {
           "type": "boolean"
         },
-        "fullnameOverride": {
+        "namespace": {
           "type": "string"
-        },
-        "image": {
-          "$ref": "#/$defs/pullableImage"
-        },
-        "sidecarImage": {
-          "$ref": "#/$defs/image"
-        },
-        "s3": {
-          "$ref": "#/$defs/s3"
         },
         "auth": {
           "$ref": "#/$defs/auth"
         },
-        "cpuOvercommit": {
-          "type": "number"
+        "s3": {
+          "$ref": "#/$defs/s3"
         },
-        "memoryOvercommit": {
-          "type": "number"
+        "httpRoute": {
+          "$ref": "#/$defs/httpRoute"
         },
-        "workloadTolerations": {
+        "image": {
+          "$ref": "#/$defs/pullableImage"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/$defs/autoscaling"
+        },
+        "leaderElection": {
+          "$ref": "#/$defs/leaderElection"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "podAnnotations": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
           "$ref": "#/$defs/tolerations"
         },
-        "workloadNodeSelector": {
-          "$ref": "#/$defs/stringMap"
+        "affinity": {
+          "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "serviceAccount": {
+          "$ref": "#/$defs/serviceAccount"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "networkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "workload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nodeSelector": {
+              "$ref": "#/$defs/stringMap"
+            },
+            "tolerations": {
+              "$ref": "#/$defs/tolerations"
+            },
+            "cpuOvercommit": {
+              "type": "number"
+            },
+            "memoryOvercommit": {
+              "type": "number"
+            },
+            "terminationGracePeriodSeconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "serviceAccount": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "create": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "imagePullSecrets": {
+                  "$ref": "#/$defs/imagePullSecrets"
+                }
+              }
+            }
+          }
+        },
+        "artifactEndpoint": {
+          "type": "string"
+        },
+        "retention": {
+          "$ref": "#/$defs/duration"
+        },
+        "maintenanceInterval": {
+          "$ref": "#/$defs/duration"
         },
         "logFlushInterval": {
           "$ref": "#/$defs/duration"
-        },
-        "gateway": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "gatewayClassName": {
-              "type": "string"
-            },
-            "listeners": {
-              "type": "array",
-              "description": "Gateway API listener entries, passed through verbatim.",
-              "items": {
-                "type": "object"
-              }
-            }
-          }
-        },
-        "httpRoute": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "parentRefs": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "name"
-                ],
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "namespace": {
-                    "type": "string"
-                  },
-                  "sectionName": {
-                    "type": "string"
-                  },
-                  "group": {
-                    "type": "string"
-                  },
-                  "kind": {
-                    "type": "string"
-                  }
-                }
-              }
-            },
-            "hostnames": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
         }
       }
     },
@@ -272,8 +219,63 @@
         "enabled"
       ],
       "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
         "namespace": {
           "type": "string"
+        },
+        "auth": {
+          "$ref": "#/$defs/auth"
+        },
+        "s3": {
+          "$ref": "#/$defs/s3"
+        },
+        "httpRoute": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "image": {
+          "$ref": "#/$defs/pullableImage"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "$ref": "#/$defs/autoscaling"
+        },
+        "leaderElection": {
+          "$ref": "#/$defs/leaderElection"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "podAnnotations": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/$defs/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "serviceAccount": {
+          "$ref": "#/$defs/serviceAccount"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
         },
         "networkPolicy": {
           "type": "object",
@@ -287,15 +289,11 @@
             }
           }
         },
-        "enabled": {
-          "type": "boolean"
+        "workload": {
+          "$ref": "#/$defs/workload"
         },
-        "fullnameOverride": {
+        "domain": {
           "type": "string"
-        },
-        "replicaCount": {
-          "type": "integer",
-          "minimum": 0
         },
         "revisionWorkers": {
           "type": "integer",
@@ -309,49 +307,6 @@
           "type": "integer",
           "minimum": 1
         },
-        "image": {
-          "$ref": "#/$defs/pullableImage"
-        },
-        "shimImage": {
-          "$ref": "#/$defs/image"
-        },
-        "s3": {
-          "$ref": "#/$defs/s3"
-        },
-        "auth": {
-          "$ref": "#/$defs/auth"
-        },
-        "dataPort": {
-          "$ref": "#/$defs/port"
-        },
-        "domain": {
-          "type": "string",
-          "minLength": 1
-        },
-        "podAnnotations": {
-          "$ref": "#/$defs/stringMap"
-        },
-        "cpuOvercommit": {
-          "type": "number"
-        },
-        "memoryOvercommit": {
-          "type": "number"
-        },
-        "workloadTolerations": {
-          "$ref": "#/$defs/tolerations"
-        },
-        "workloadNodeSelector": {
-          "$ref": "#/$defs/stringMap"
-        },
-        "leaderElection": {
-          "$ref": "#/$defs/leaderElection"
-        },
-        "autoscaling": {
-          "$ref": "#/$defs/autoscaling"
-        },
-        "resources": {
-          "$ref": "#/$defs/resources"
-        },
         "limitRange": {
           "type": "object",
           "additionalProperties": false,
@@ -361,54 +316,53 @@
             }
           }
         },
-        "gateway": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "name": {
-              "type": "string"
-            },
-            "namespace": {
-              "type": "string"
-            }
+        "pools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pool"
           }
         },
         "activator": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "enabled"
-          ],
           "properties": {
             "enabled": {
               "type": "boolean"
             },
+            "image": {
+              "$ref": "#/$defs/pullableImage"
+            },
             "replicaCount": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 1
             },
             "autoscaling": {
               "$ref": "#/$defs/autoscaling"
             },
-            "port": {
-              "$ref": "#/$defs/port"
-            },
             "resources": {
               "$ref": "#/$defs/resources"
             },
-            "image": {
-              "$ref": "#/$defs/pullableImage"
+            "podAnnotations": {
+              "$ref": "#/$defs/stringMap"
+            },
+            "nodeSelector": {
+              "$ref": "#/$defs/stringMap"
+            },
+            "tolerations": {
+              "$ref": "#/$defs/tolerations"
+            },
+            "affinity": {
+              "type": "object"
+            },
+            "priorityClassName": {
+              "type": "string"
+            },
+            "serviceAccount": {
+              "$ref": "#/$defs/serviceAccount"
+            },
+            "service": {
+              "$ref": "#/$defs/service"
             }
-          }
-        },
-        "pools": {
-          "type": "array",
-          "description": "Transparent deployment warm shapes. id, image, port, cpu and memory are required; command/environment defaults and duplicate fixed shapes are rejected by the service.",
-          "items": {
-            "$ref": "#/$defs/pool"
           }
         }
       }
@@ -416,75 +370,79 @@
     "sandbox": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Sandboxes (docs/sandboxes.md): a workload kind alongside jobs and deployments, served by its own sandbox-service. Enabled independently of the deployments plane; sandbox.domain is required when enabled.",
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "namespace": {
-          "type": "string"
-        },
-        "networkPolicy": {
-          "$ref": "#/$defs/networkPolicy"
-        },
         "enabled": {
           "type": "boolean"
         },
-        "fullnameOverride": {
+        "namespace": {
           "type": "string"
-        },
-        "replicaCount": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "image": {
-          "$ref": "#/$defs/pullableImage"
-        },
-        "s3": {
-          "$ref": "#/$defs/s3"
         },
         "auth": {
           "$ref": "#/$defs/auth"
         },
-        "podAnnotations": {
-          "$ref": "#/$defs/stringMap"
+        "s3": {
+          "$ref": "#/$defs/s3"
         },
-        "cpuOvercommit": {
-          "type": "number"
+        "httpRoute": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
         },
-        "memoryOvercommit": {
-          "type": "number"
+        "image": {
+          "$ref": "#/$defs/pullableImage"
         },
-        "workloadTolerations": {
-          "$ref": "#/$defs/tolerations"
-        },
-        "workloadNodeSelector": {
-          "$ref": "#/$defs/stringMap"
-        },
-        "leaderElection": {
-          "$ref": "#/$defs/leaderElection"
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
         },
         "autoscaling": {
           "$ref": "#/$defs/autoscaling"
         },
+        "leaderElection": {
+          "$ref": "#/$defs/leaderElection"
+        },
         "resources": {
           "$ref": "#/$defs/resources"
         },
-        "gateway": {
+        "podAnnotations": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/$defs/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "serviceAccount": {
+          "$ref": "#/$defs/serviceAccount"
+        },
+        "service": {
+          "$ref": "#/$defs/service"
+        },
+        "networkPolicy": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "name": {
-              "type": "string"
-            },
-            "namespace": {
-              "type": "string"
+            "enabled": {
+              "type": "boolean"
             }
           }
         },
-        "pools": {
-          "type": "array",
-          "description": "Operator-only warm pod shapes matched transparently against complete sandbox requests. Pool IDs are never part of the sandbox API.",
-          "items": {
-            "$ref": "#/$defs/pool"
-          }
+        "workload": {
+          "$ref": "#/$defs/workload"
         },
         "domain": {
           "type": "string"
@@ -495,6 +453,12 @@
             "https"
           ]
         },
+        "pools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pool"
+          }
+        },
         "proxy": {
           "type": "object",
           "additionalProperties": false,
@@ -502,45 +466,97 @@
             "enabled": {
               "type": "boolean"
             },
+            "image": {
+              "$ref": "#/$defs/pullableImage"
+            },
             "replicaCount": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 1
             },
             "autoscaling": {
               "$ref": "#/$defs/autoscaling"
             },
-            "port": {
-              "$ref": "#/$defs/port"
-            },
-            "holdSeconds": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "route": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                }
-              }
-            },
             "resources": {
               "$ref": "#/$defs/resources"
             },
-            "image": {
-              "$ref": "#/$defs/pullableImage"
+            "podAnnotations": {
+              "$ref": "#/$defs/stringMap"
+            },
+            "nodeSelector": {
+              "$ref": "#/$defs/stringMap"
+            },
+            "tolerations": {
+              "$ref": "#/$defs/tolerations"
+            },
+            "affinity": {
+              "type": "object"
+            },
+            "priorityClassName": {
+              "type": "string"
+            },
+            "serviceAccount": {
+              "$ref": "#/$defs/serviceAccount"
+            },
+            "service": {
+              "$ref": "#/$defs/service"
+            },
+            "holdSeconds": {
+              "type": "integer",
+              "minimum": 0
             }
           }
+        }
+      }
+    },
+    "poolController": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
         },
-        "agentImage": {
+        "image": {
           "$ref": "#/$defs/pullableImage"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "leaderElection": {
+          "$ref": "#/$defs/leaderElection"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "podAnnotations": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/$defs/tolerations"
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "priorityClassName": {
+          "type": "string"
+        },
+        "serviceAccount": {
+          "$ref": "#/$defs/serviceAccount"
         }
       }
     },
     "mountAgent": {
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
       "properties": {
         "enabled": {
           "type": "boolean"
@@ -551,9 +567,11 @@
         "port": {
           "$ref": "#/$defs/port"
         },
-        "registrarImage": {
-          "type": "string",
-          "minLength": 1
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "podAnnotations": {
+          "$ref": "#/$defs/stringMap"
         },
         "nodeSelector": {
           "$ref": "#/$defs/stringMap"
@@ -561,28 +579,16 @@
         "tolerations": {
           "$ref": "#/$defs/tolerations"
         },
+        "affinity": {
+          "type": "object"
+        },
         "priorityClassName": {
           "type": "string"
-        },
-        "resources": {
-          "$ref": "#/$defs/resources"
         }
       }
-    },
-    "workloadSidecarImage": {
-      "$ref": "#/$defs/pullableImage"
     }
   },
   "$defs": {
-    "networkPolicy": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        }
-      }
-    },
     "pool": {
       "type": "object",
       "additionalProperties": false,
@@ -692,7 +698,7 @@
       }
     },
     "quantity": {
-      "description": "Kubernetes quantity \u2014 a string like \"100m\"/\"200Gi\", or a bare number.",
+      "description": "Kubernetes quantity — a string like \"100m\"/\"200Gi\", or a bare number.",
       "type": [
         "string",
         "integer",
@@ -702,7 +708,7 @@
     "duration": {
       "description": "Go duration, e.g. 15m, 1s, 1h30m.",
       "type": "string",
-      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+$"
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
     },
     "pullPolicy": {
       "enum": [
@@ -717,7 +723,7 @@
       "additionalProperties": false,
       "properties": {
         "ref": {
-          "description": "Fully overrides repository+tag when set \u2014 use for digests.",
+          "description": "Fully overrides repository+tag when set — use for digests.",
           "type": "string"
         },
         "repository": {
@@ -888,6 +894,67 @@
           "tolerationSeconds": {
             "type": "integer"
           }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "port": {
+          "$ref": "#/$defs/port"
+        }
+      }
+    },
+    "httpRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "hostnames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
+          "$ref": "#/$defs/tolerations"
+        },
+        "cpuOvercommit": {
+          "type": "number"
+        },
+        "memoryOvercommit": {
+          "type": "number"
         }
       }
     }
