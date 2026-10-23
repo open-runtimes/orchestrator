@@ -122,3 +122,23 @@ func TestOvercommitFromEnv(t *testing.T) {
 		t.Errorf("want {4 1.5}, got %+v", o)
 	}
 }
+
+func TestPodSecurityContextFromEnv(t *testing.T) {
+	t.Setenv("KUBE_WORKLOAD_POD_SECURITY_CONTEXT", `{"fsGroup":2000,"seccompProfile":{"type":"Localhost","localhostProfile":"appwrite/workload.json"}}`)
+	got, err := PodSecurityContextFromEnv()
+	if err != nil || got.FSGroup == nil || *got.FSGroup != 2000 || got.SeccompProfile.LocalhostProfile == nil {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	t.Setenv("KUBE_WORKLOAD_POD_SECURITY_CONTEXT", `{"fsGroup":`)
+	if _, err := PodSecurityContextFromEnv(); err == nil {
+		t.Error("malformed JSON must be an error, not a silently dropped profile")
+	}
+	// A pod-level user reaches every container: root sidecars are refused and
+	// build images lose their own user. Each is refused at startup instead.
+	for _, field := range []string{`"runAsNonRoot":true`, `"runAsUser":1000`, `"runAsGroup":1000`} {
+		t.Setenv("KUBE_WORKLOAD_POD_SECURITY_CONTEXT", "{"+field+"}")
+		if _, err := PodSecurityContextFromEnv(); err == nil {
+			t.Errorf("%s was accepted", field)
+		}
+	}
+}

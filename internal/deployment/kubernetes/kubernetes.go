@@ -97,7 +97,7 @@ func revisionWarmConfig(cfg Config) warm.Config {
 		Namespace: cfg.Namespace, SidecarImage: cfg.SidecarImage, ShimImage: cfg.PoolShimImage,
 		SidecarImagePullPolicy: cfg.SidecarImagePullPolicy, WorkerImagePullPolicy: cfg.WorkerImagePullPolicy,
 		RunAsUser: cfg.RunAsUser, Overcommit: cfg.Overcommit, Tolerations: cfg.Tolerations,
-		NodeSelector: cfg.NodeSelector, RuntimeClasses: cfg.RuntimeClasses, MountAgentPort: cfg.MountAgentPort, Metrics: cfg.Metrics,
+		NodeSelector: cfg.NodeSelector, PodSecurityContext: cfg.PodSecurityContext, RuntimeClasses: cfg.RuntimeClasses, MountAgentPort: cfg.MountAgentPort, Metrics: cfg.Metrics,
 		LeaderElection: cfg.LeaderElection,
 		Naming: warm.Naming{ManagedBy: ManagedByValue, Kind: "revision", Pool: "pool.id",
 			Claim: LabelPoolClaim, Spec: "deployment.pool-claim-spec", NamePrefix: "pool", SecretName: "pool-claim-key"},

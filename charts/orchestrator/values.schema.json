@@ -195,6 +195,9 @@
                   "$ref": "#/$defs/imagePullSecrets"
                 }
               }
+            },
+            "podSecurityContext": {
+              "type": "object"
             }
           }
         },
@@ -209,6 +212,12 @@
         },
         "logFlushInterval": {
           "$ref": "#/$defs/duration"
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
         }
       }
     },
@@ -362,8 +371,20 @@
             },
             "service": {
               "$ref": "#/$defs/service"
+            },
+            "podSecurityContext": {
+              "type": "object"
+            },
+            "securityContext": {
+              "type": "object"
             }
           }
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
         }
       }
     },
@@ -503,8 +524,20 @@
             "holdSeconds": {
               "type": "integer",
               "minimum": 0
+            },
+            "podSecurityContext": {
+              "type": "object"
+            },
+            "securityContext": {
+              "type": "object"
             }
           }
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
         }
       }
     },
@@ -548,6 +581,12 @@
         },
         "serviceAccount": {
           "$ref": "#/$defs/serviceAccount"
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
         }
       }
     },
@@ -586,6 +625,12 @@
           "type": "string"
         }
       }
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
     }
   },
   "$defs": {
@@ -983,6 +1028,9 @@
         },
         "memoryOvercommit": {
           "type": "number"
+        },
+        "podSecurityContext": {
+          "type": "object"
         }
       }
     }

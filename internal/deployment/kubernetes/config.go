@@ -40,9 +40,11 @@ type Config struct {
 	// Tolerations are stamped on every workload pod (internal/kube).
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every workload pod to a node pool (internal/kube).
-	NodeSelector  map[string]string
-	Pools         []pool.Pool
-	PoolShimImage string
+	NodeSelector map[string]string
+	// PodSecurityContext is stamped on every workload pod (kube.PodSecurity).
+	PodSecurityContext corev1.PodSecurityContext
+	Pools              []pool.Pool
+	PoolShimImage      string
 
 	// RuntimeClasses maps isolation tiers (gvisor, kata) to the
 	// RuntimeClass stamped on workload pods (KUBE_RUNTIME_CLASSES,
@@ -89,6 +91,10 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	podSecurity, err := kube.PodSecurityContextFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		JobSidecarImage:        config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
@@ -101,6 +107,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
+		PodSecurityContext:     podSecurity,
 		RuntimeClasses:         classes,
 		MountAgentPort:         config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 

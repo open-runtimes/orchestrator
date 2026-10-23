@@ -87,6 +87,7 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 			AutomountServiceAccountToken:  &autoMount,
 			Tolerations:                   cfg.Tolerations,
 			NodeSelector:                  cfg.NodeSelector,
+			SecurityContext:               kube.PodSecurity(cfg.PodSecurityContext),
 			Volumes: append([]corev1.Volume{
 				{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
 				{Name: VolumeTmp, EmptyDir: &corev1.EmptyDirVolumeSource{}},
@@ -107,9 +108,10 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 
 // poolSpecHash identifies what a warm pod was built from, so a pool whose spec
 // changes is replaced. Turning the node mount agent on or off changes a
-// mounting pool's pods too, and so does any change to the S3 credentials the
-// proxy is given: a new profile or rotated keys reach warm pods only by
-// replacing them. Only the hash is stored, never the credentials.
+// mounting pool's pods too, and so does a change to the operator's pod security
+// context or to the S3 credentials the proxy is given: a new profile or rotated
+// keys reach warm pods only by replacing them. Only the hash is stored, never
+// the credentials.
 func poolSpecHash(spec *pool.Spec, cfg Config) string {
 	encoded, _ := json.Marshal(spec)
 	if spec.Mounts && cfg.MountAgentPort > 0 {
@@ -118,6 +120,9 @@ func poolSpecHash(spec *pool.Spec, cfg Config) string {
 	if s3 := config.LoadS3Profiles().ToEnv(); len(s3) > 0 {
 		forwarded, _ := json.Marshal(s3)
 		encoded = append(encoded, forwarded...)
+	}
+	if security, _ := json.Marshal(cfg.PodSecurityContext); string(security) != "{}" {
+		encoded = append(encoded, security...)
 	}
 	sum := sha256.Sum256(encoded)
 	return fmt.Sprintf("sha256:%x", sum[:])

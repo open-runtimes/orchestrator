@@ -4,8 +4,9 @@
 # the sandbox proxy, the pool controller, the mount agent) takes the same
 # keys: image, replicaCount, autoscaling, leaderElection, resources,
 # podAnnotations, nodeSelector, tolerations, affinity, priorityClassName,
-# serviceAccount and service. A plane adds what its workload pods get
-# (namespace, networkPolicy, workload, httpRoute, auth, s3).
+# podSecurityContext, securityContext, serviceAccount and service (the mount
+# agent only the ones a privileged DaemonSet can use). A plane adds what its
+# workload pods get (namespace, networkPolicy, workload, httpRoute, auth, s3).
 #
 # The chart creates no namespaces: install with `helm install -n <ns>
 # --create-namespace`, and provision each plane's namespace yourself
@@ -31,6 +32,20 @@ extraEnv: []
 rbac:
   # Roles, RoleBindings, ClusterRoles and their bindings for every component.
   create: true
+
+# Security context of every control-plane pod and container (all but the
+# privileged mount agent). A component's own podSecurityContext /
+# securityContext, when set, replaces these rather than merging. Pods the
+# services create take <plane>.workload.podSecurityContext instead.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
 
 # Shutdown budget of every control-plane pod: HTTP shutdown (25s), component
 # cleanup (10s) and the final OTLP flush (10s), with margin.
@@ -180,6 +195,13 @@ jobs:
     # request = limit / overcommit (docs/operations.md "Resource model").
     cpuOvercommit: 1
     memoryOvercommit: 1
+    # podSecurityContext: the pod-level security context of every pod the
+    # service creates (likewise for deployments and sandbox), e.g. a Localhost
+    # seccomp profile, an AppArmor profile or sysctls. Unset keeps RuntimeDefault
+    # seccomp; a profile you name replaces it. runAsUser, runAsGroup and
+    # runAsNonRoot are refused: each container sets its own user.
+    #   podSecurityContext:
+    #     seccompProfile: {type: Localhost, localhostProfile: profiles/builds.json}
     # How long the kubelet waits for the sidecar's post phase after SIGTERM.
     terminationGracePeriodSeconds: 600
     # The account job pods run as. It holds no RBAC; it is where their pull

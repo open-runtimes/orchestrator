@@ -156,6 +156,10 @@ app.kubernetes.io/component: {{ . }}
 - name: KUBE_SIDECAR_IMAGE_PULL_POLICY
   value: {{ . | quote }}
 {{- end }}
+{{- with $workload.podSecurityContext }}
+- name: KUBE_WORKLOAD_POD_SECURITY_CONTEXT
+  value: {{ toJson . | quote }}
+{{- end }}
 {{- end -}}
 
 {{/*
@@ -288,9 +292,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
+        {{- toYaml (default $root.Values.podSecurityContext $v.podSecurityContext) | nindent 8 }}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -312,10 +314,7 @@ spec:
           image: {{ include "orchestrator.image" (dict "root" $root "image" $v.image) | quote }}
           imagePullPolicy: {{ $v.image.pullPolicy }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+            {{- toYaml (default $root.Values.securityContext $v.securityContext) | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

@@ -25,8 +25,8 @@ func TestHardenedSecurityContext(t *testing.T) {
 	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 		t.Errorf("capabilities: got %+v, want all dropped", sc.Capabilities)
 	}
-	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("seccomp: got %+v", sc.SeccompProfile)
+	if sc.SeccompProfile != nil {
+		t.Errorf("seccomp belongs to the pod (PodSecurity), got %+v on the container", sc.SeccompProfile)
 	}
 	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 		t.Error("root filesystem must be read-only")

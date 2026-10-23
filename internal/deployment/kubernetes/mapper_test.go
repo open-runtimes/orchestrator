@@ -470,8 +470,8 @@ func TestBuildRevision_SecurityFloor(t *testing.T) {
 		if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 			t.Errorf("%s: capabilities not dropped: %+v", c.Name, sc.Capabilities)
 		}
-		if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-			t.Errorf("%s: seccompProfile: got %+v", c.Name, sc.SeccompProfile)
+		if sc.SeccompProfile != nil || spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+			t.Errorf("%s: want RuntimeDefault seccomp from the pod, got container %+v", c.Name, sc.SeccompProfile)
 		}
 		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 			t.Errorf("%s: readOnlyRootFilesystem not enforced", c.Name)
@@ -677,5 +677,21 @@ func TestBuildRevision_AgentMounts(t *testing.T) {
 			t.Fatalf("slot %d: the worker's %s = %q; the token must never reach the worker", slot, mountagent.EnvToken, got)
 		}
 		seen[tok] = true
+	}
+}
+
+func TestBuildRevision_OperatorPodSecurity(t *testing.T) {
+	t.Parallel()
+	cfg := Config{SidecarImage: "sidecar:latest", RunAsUser: 65532, PodSecurityContext: corev1.PodSecurityContext{
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeLocalhost, LocalhostProfile: new("appwrite/workload.json")},
+	}}
+	spec := buildRevision(testRequest(), cfg, "web-00001").Spec.Template.Spec
+	if spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeLocalhost {
+		t.Errorf("pod seccomp = %+v, want the operator's Localhost profile", spec.SecurityContext.SeccompProfile)
+	}
+	for _, c := range append(spec.InitContainers, spec.Containers...) {
+		if c.SecurityContext.SeccompProfile != nil {
+			t.Errorf("%s pins its own seccomp, so the operator's profile would not apply", c.Name)
+		}
 	}
 }

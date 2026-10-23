@@ -1,6 +1,9 @@
 package warm
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"orchestrator/internal/mountagent"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
@@ -169,8 +172,8 @@ func TestBuildPod_SecurityFloor(t *testing.T) {
 		if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 			t.Errorf("%s: want all capabilities dropped", c.Name)
 		}
-		if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-			t.Errorf("%s: want RuntimeDefault seccomp", c.Name)
+		if sc.SeccompProfile != nil || pod.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+			t.Errorf("%s: want RuntimeDefault seccomp from the pod", c.Name)
 		}
 		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 			t.Errorf("%s: want read-only rootfs", c.Name)
@@ -388,5 +391,26 @@ func TestPoolSpecHash_FollowsS3Credentials(t *testing.T) {
 	}
 	if strings.Contains(withProfile, "SECRET") {
 		t.Error("the hash annotation must not carry the credentials")
+	}
+}
+
+// The operator's pod security context reaches every warm pod alongside the
+// default seccomp profile, and replaces the pool's warm pods when it changes;
+// with none set, the hash is what it was before pod security existed, so an
+// upgrade replaces nothing.
+func TestBuildPod_OperatorPodSecurity(t *testing.T) {
+	t.Parallel()
+	security := corev1.PodSecurityContext{FSGroup: new(int64(2000))}
+	pod := testBuilder(t, func(c *Config) { c.PodSecurityContext = security }).buildPod(mapperPool(), "std", "pool-std-x", "tok")
+	if got := pod.Spec.SecurityContext; got.FSGroup == nil || *got.FSGroup != 2000 || got.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("pod security = %+v, want fsGroup 2000 and RuntimeDefault seccomp", got)
+	}
+	other := corev1.PodSecurityContext{FSGroup: new(int64(3000))}
+	if poolSpecHash(mapperPool(), Config{PodSecurityContext: security}) == poolSpecHash(mapperPool(), Config{PodSecurityContext: other}) {
+		t.Error("a pod security change must replace warm pods")
+	}
+	encoded, _ := json.Marshal(mapperPool())
+	if want := fmt.Sprintf("sha256:%x", sha256.Sum256(encoded)); poolSpecHash(mapperPool(), Config{}) != want {
+		t.Error("with no pod security set the hash changed, so an upgrade would replace every warm pod")
 	}
 }
