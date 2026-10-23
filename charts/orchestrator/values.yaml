@@ -48,10 +48,8 @@ poolController:
     limits:
       memory: 128Mi
 
-# The chart ships one API today (jobs). Future APIs (deployments, statefulsets, ...)
-# will be added as additional Deployments + Services in the same chart, each
-# with its own component name. Resource naming for the jobs API lives under
-# `jobs.fullnameOverride` so it doesn't collide with the release's fullname.
+# Jobs API: run-to-completion workloads. Each plane (jobs, deployments,
+# sandbox) is its own Deployment + Service with its own component name.
 jobs:
   # Install the jobs service (Deployment + Service + RBAC + PDB/HPA). Opt-in
   # like every component, so a bare `helm install` renders nothing at all.
@@ -161,7 +159,7 @@ jobs:
     # Hostnames the route matches against.
     hostnames: []
 
-# Serving-plane API (deployments, with optional warm Revision pools). Disabled by default —
+# Serving-plane API (deployments, with optional warm Revision pools).
 deployments:
   enabled: false
   # Namespace deployment replicas and their warm pools run in, with their
@@ -247,7 +245,7 @@ deployments:
     leaseDurationSeconds: 15
     renewDeadlineSeconds: 10
     retryPeriodSeconds: 2
-  # Optional LimitRange in the release namespace: default requests for
+  # Optional LimitRange in deployments.namespace: default requests for
   # containers that declare none (no BestEffort creep) and a default memory
   # limit. Deliberately no default cpu limit — see resource-model.md.
   limitRange:
@@ -420,8 +418,10 @@ sandbox:
       memory: 64Mi
     limits:
       memory: 256Mi
-  # Gateway the wildcard sandbox HTTPRoute attaches to (the sandbox service
-  # itself programs no routes). Defaults to the same gateway the chart creates.
+  # Existing Gateway the wildcard sandbox HTTPRoute attaches to (the sandbox
+  # service itself programs no routes). The Gateway the chart can create for
+  # jobs (jobs.gateway) is named after the jobs service, not "orchestrator":
+  # name it here to share it.
   gateway:
     name: orchestrator
     # Empty = release namespace.
@@ -535,7 +535,7 @@ autoscaling:
 # replicaCount == 1 (and cheap — the lone candidate just always wins).
 leaderElection:
   enabled: false
-  # Empty = Helm release-derived "<fullname>-leader". Override only if you run
+  # Empty = "<jobs service name>-leader". Override only if you run
   # multiple releases in the same namespace.
   leaseName: ""
   leaseDurationSeconds: 15
@@ -577,9 +577,10 @@ orchestrator:
   maintenanceInterval: 1m
   # How long kubelet waits for the combined sidecar to finish after sending SIGTERM.
   terminationGracePeriodSeconds: 600
-  # ImagePullPolicy applied to containers inside job pods. Empty = kubelet default.
-  # workerImagePullPolicy applies to the user workload; sidecarImagePullPolicy applies to
-  # artifact-pre + artifact-post (our own image). For local dev with ko-loaded images,
+  # ImagePullPolicy for the containers the services create in workload pods
+  # (jobs, deployment replicas, sandboxes, warm pods). Empty = kubelet default.
+  # workerImagePullPolicy applies to the user workload; sidecarImagePullPolicy to
+  # our own containers beside it (sidecars, init containers). For local dev with ko-loaded images,
   # set sidecarImagePullPolicy=Never and leave workerImagePullPolicy empty so alpine etc.
   # still pulls from upstream.
   workerImagePullPolicy: ""

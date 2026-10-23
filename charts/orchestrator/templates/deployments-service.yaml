@@ -93,7 +93,10 @@ spec:
             - name: KUBE_GATEWAY_NAMESPACE
               value: {{ default .Release.Namespace .Values.deployments.gateway.namespace | quote }}
             - name: ACTIVATOR_SERVICE
-              value: "deployments-activator"
+              value: {{ printf "%s-activator" (include "orchestrator.deploymentsName" .) | quote }}
+            # The autoscaler's cold signal: the activator's queue depth.
+            - name: ACTIVATOR_STATS_URL
+              value: {{ printf "http://%s-activator.%s:%v/stats" (include "orchestrator.deploymentsName" .) .Release.Namespace .Values.deployments.activator.port | quote }}
             - name: ACTIVATOR_PORT
               value: {{ .Values.deployments.activator.port | quote }}
             - name: KUBE_CPU_OVERCOMMIT
@@ -199,6 +202,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
+{{- if .Values.rbac.create }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -301,6 +305,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.deploymentsName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.deployments.limitRange.enabled }}
 ---
 # Default requests/limits for containers that declare none (resource-model.md):
@@ -310,7 +315,7 @@ apiVersion: v1
 kind: LimitRange
 metadata:
   name: {{ include "orchestrator.deploymentsName" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "orchestrator.deploymentsNamespace" . }}
   labels:
     {{- include "orchestrator.deploymentsLabels" . | nindent 4 }}
 spec:
@@ -370,6 +375,7 @@ spec:
 {{- end }}
 {{- end }}
 {{- if and .Values.deployments.enabled (ne (include "orchestrator.deploymentsNamespace" .) .Release.Namespace) }}
+{{- if .Values.rbac.create }}
 ---
 # The cold endpoint flip watches activator pods, which stay with the control
 # plane in the release namespace — the service's Role in the deployments namespace
@@ -401,6 +407,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.deploymentsName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.deployments.gateway.enabled }}
 ---
 # HTTPRoutes in the deployments namespace point their Prefer: respond-async rule
@@ -421,6 +428,6 @@ spec:
   to:
     - group: ""
       kind: Service
-      name: deployments-activator
+      name: {{ include "orchestrator.deploymentsName" . }}-activator
 {{- end }}
 {{- end }}

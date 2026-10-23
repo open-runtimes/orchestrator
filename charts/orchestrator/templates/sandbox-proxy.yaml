@@ -119,6 +119,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxProxyLabels" . | nindent 4 }}
+{{- if .Values.rbac.create }}
 ---
 {{- /*
 Pods, read-only: all it does is resolve a token to the pod carrying it. No
@@ -153,6 +154,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.sandboxName" . }}-proxy
     namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- if .Values.sandbox.proxy.route.enabled }}
 ---
 {{- /*

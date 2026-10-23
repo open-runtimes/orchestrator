@@ -345,8 +345,8 @@ annotations:
 {{- end -}}
 
 {{/*
-  jobsLabels: labels specific to the jobs API resources; used both on the
-  Deployment/Service metadata and as the selector so they match.
+  jobsLabels: labels on the jobs API resources' metadata; jobsSelectorLabels
+  is the subset used as their selector.
 */}}
 {{- define "orchestrator.jobsLabels" -}}
 {{ include "orchestrator.labels" . }}

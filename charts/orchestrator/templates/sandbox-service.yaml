@@ -176,6 +176,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.sandboxLabels" . | nindent 4 }}
+{{- if .Values.rbac.create }}
 ---
 {{- /*
 Far narrower than the deployments Role: sandboxes are pods claimed from warm
@@ -249,6 +250,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "orchestrator.sandboxName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
 
 {{- /*
 Replica-aware PDB — see the jobs PDB note; singletons never get one.
