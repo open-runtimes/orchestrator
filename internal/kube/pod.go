@@ -3,7 +3,6 @@ package kube
 import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/utils/ptr"
 )
 
 // The shape we give the containers we own, and how we read a pod back. Every
@@ -23,13 +22,13 @@ import (
 // legitimately need to be root or to write to its image's filesystem.
 func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
 	return &corev1.SecurityContext{
-		RunAsNonRoot:             ptr.To(true),
-		RunAsUser:                ptr.To(uid),
-		RunAsGroup:               ptr.To(uid),
-		AllowPrivilegeEscalation: ptr.To(false),
+		RunAsNonRoot:             new(true),
+		RunAsUser:                new(uid),
+		RunAsGroup:               new(uid),
+		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		ReadOnlyRootFilesystem:   ptr.To(true),
+		ReadOnlyRootFilesystem:   new(true),
 	}
 }
 
@@ -39,7 +38,7 @@ func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
 // seccomp profile, no new privileges, and no CAP_NET_RAW, which no build needs.
 func WorkloadSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: ptr.To(false),
+		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"NET_RAW"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
@@ -51,7 +50,7 @@ func WorkloadSecurityContext() *corev1.SecurityContext {
 // container — the sidecar performing the mount — and only in pods whose
 // workload asked for one.
 func MountingSecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{Privileged: ptr.To(true), RunAsUser: ptr.To(int64(0))}
+	return &corev1.SecurityContext{Privileged: new(true), RunAsUser: new(int64(0))}
 }
 
 // FileAccessSecurityContext lets a container read and write files of any owner
@@ -59,8 +58,8 @@ func MountingSecurityContext() *corev1.SecurityContext {
 // effect for a non-root user.
 func FileAccessSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
-		RunAsUser:                ptr.To(int64(0)),
-		AllowPrivilegeEscalation: ptr.To(false),
+		RunAsUser:                new(int64(0)),
+		AllowPrivilegeEscalation: new(false),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 			Add:  []corev1.Capability{"DAC_OVERRIDE"},

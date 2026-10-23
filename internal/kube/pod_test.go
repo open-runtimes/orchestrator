@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // The policy, pinned where it lives. Every field matters and none of them fails
@@ -69,8 +68,8 @@ func TestPodReady(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			pod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: "p"},
-				Status:     corev1.PodStatus{Conditions: tt.conditions},
+				Name:   "p",
+				Status: corev1.PodStatus{Conditions: tt.conditions},
 			}
 			if got := PodReady(pod); got != tt.want {
 				t.Errorf("want %v, got %v", tt.want, got)

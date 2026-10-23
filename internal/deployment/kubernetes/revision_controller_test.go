@@ -47,9 +47,8 @@ func (*revisionPoolSidecar) Requests(context.Context, string) (int64, error) { r
 
 func TestRevisionClaimsWarmPoolPod(t *testing.T) {
 	o, cs := newTestOrchestrator(t)
-	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
-		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128,
-	}}
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject,
+		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128}
 	o.cfg.Pools = []pool.Pool{p}
 	sidecar := &revisionPoolSidecar{}
 	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
@@ -62,8 +61,8 @@ func TestRevisionClaimsWarmPoolPod(t *testing.T) {
 		t.Fatalf("verify pools: %v", err)
 	}
 	warmPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pool-node-abc", Namespace: o.namespace,
-			Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"}},
+		Name: "pool-node-abc", Namespace: o.namespace,
+		Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"},
 		Status: corev1.PodStatus{PodIP: "10.0.0.8", Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
 	}
 	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), warmPod, metav1.CreateOptions{}); err != nil {
@@ -102,9 +101,8 @@ func TestRevisionClaimsWarmPoolPod(t *testing.T) {
 // sidecar answers and a later pass stamps the serving gate.
 func TestRevisionClaimDoesNotWaitForServing(t *testing.T) {
 	o, cs := newTestOrchestrator(t)
-	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
-		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128,
-	}}
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject,
+		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128}
 	o.cfg.Pools = []pool.Pool{p}
 	sidecar := &revisionPoolSidecar{notReady: true}
 	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
@@ -117,8 +115,8 @@ func TestRevisionClaimDoesNotWaitForServing(t *testing.T) {
 		t.Fatalf("verify pools: %v", err)
 	}
 	warmPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pool-node-slow", Namespace: o.namespace,
-			Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"}},
+		Name: "pool-node-slow", Namespace: o.namespace,
+		Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"},
 		Status: corev1.PodStatus{PodIP: "10.0.0.7", Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
 	}
 	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), warmPod, metav1.CreateOptions{}); err != nil {
@@ -189,9 +187,8 @@ func TestRevisionQueue_EventSupersedesDeferredPending(t *testing.T) {
 
 func TestRevisionPoolExhaustionFallsBackToDirectPod(t *testing.T) {
 	o, cs := newTestOrchestrator(t)
-	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
-		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128,
-	}}
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject,
+		Image: "nginx:1.27", Port: 8080, CPU: 0.5, Memory: 128}
 	o.cfg.Pools = []pool.Pool{p}
 	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
 		Namespace: o.namespace, SidecarImage: "sidecar", ShimImage: "shim", RunAsUser: 65532,
@@ -231,9 +228,8 @@ func TestExistingRevisionUsesMatchingPoolAddedLater(t *testing.T) {
 		t.Fatalf("initial direct apply: %v", err)
 	}
 
-	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
-		Image: req.Image, Port: req.Port, CPU: req.CPU, Memory: req.Memory,
-	}}
+	p := pool.Pool{ID: "node", Size: 1, Burst: pool.BurstReject,
+		Image: req.Image, Port: req.Port, CPU: req.CPU, Memory: req.Memory}
 	o.cfg.Pools = []pool.Pool{p}
 	sidecar := &revisionPoolSidecar{}
 	o.pools = warm.New(cs, []pool.Pool{p}, warm.Config{
@@ -246,8 +242,8 @@ func TestExistingRevisionUsesMatchingPoolAddedLater(t *testing.T) {
 		t.Fatalf("verify pools: %v", err)
 	}
 	warmPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pool-node-later", Namespace: o.namespace,
-			Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"}},
+		Name: "pool-node-later", Namespace: o.namespace,
+		Labels: map[string]string{warm.LabelManagedBy: ManagedByValue, "pool.id": "node"},
 		Status: corev1.PodStatus{PodIP: "10.0.0.9", Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
 	}
 	if _, err := cs.CoreV1().Pods(o.namespace).Create(t.Context(), warmPod, metav1.CreateOptions{}); err != nil {
@@ -271,9 +267,8 @@ func TestExistingRevisionUsesMatchingPoolAddedLater(t *testing.T) {
 // production does, and judged by the controller's own pool lookup.
 func TestRevisionAcquiresFromPoolOnlyForExactFixedShape(t *testing.T) {
 	base := testRequest()
-	p := pool.Pool{ID: "node", Spec: pool.Spec{
-		Image: base.Image, Port: base.Port, CPU: base.CPU, Memory: base.Memory,
-	}}
+	p := pool.Pool{ID: "node",
+		Image: base.Image, Port: base.Port, CPU: base.CPU, Memory: base.Memory}
 	acquires := func(t *testing.T, req *deployment.Request, p pool.Pool) bool {
 		t.Helper()
 		o, _ := newTestOrchestrator(t)
@@ -325,9 +320,9 @@ func TestValidateDeploymentPoolsRejectsNonMatchableAndDuplicateShapes(t *testing
 		t.Fatalf("valid pool: %v", err)
 	}
 	for name, pools := range map[string][]pool.Pool{
-		"missing resources": {{ID: "node", Spec: pool.Spec{Image: "node:22", Port: 3000}}},
-		"command default":   {{ID: "node", Spec: pool.Spec{Image: "node:22", Port: 3000, CPU: 1, Memory: 512, Command: "node app.js"}}},
-		"environment":       {{ID: "node", Spec: pool.Spec{Image: "node:22", Port: 3000, CPU: 1, Memory: 512, Environment: map[string]string{"A": "1"}}}},
+		"missing resources": {{ID: "node", Image: "node:22", Port: 3000}},
+		"command default":   {{ID: "node", Image: "node:22", Port: 3000, CPU: 1, Memory: 512, Command: "node app.js"}},
+		"environment":       {{ID: "node", Image: "node:22", Port: 3000, CPU: 1, Memory: 512, Environment: map[string]string{"A": "1"}}},
 		"duplicate":         {{ID: "a", Spec: shape}, {ID: "b", Spec: shape}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -813,7 +808,7 @@ func TestRevisionStatus_ReportsImagePullFailure(t *testing.T) {
 	revision.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Minute))
 	revision.Spec.ReadyTimeoutSeconds = 1
 	pod := corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "dep-web-00001-0", Labels: map[string]string{LabelReplicaSlot: "0"}},
+		Name: "dep-web-00001-0", Labels: map[string]string{LabelReplicaSlot: "0"},
 		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
 			Name: "runtime",
 			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{

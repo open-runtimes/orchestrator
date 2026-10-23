@@ -36,7 +36,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/utils/ptr"
 )
 
 const (
@@ -584,16 +583,14 @@ func buildRevisionPod(revision *revisionapi.Revision, slot int, terminating []st
 	maps.Copy(annotations, revision.Spec.Template.Annotations)
 	annotations[AnnotationRevisionGeneration] = strconv.FormatInt(revision.Generation, 10)
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        podNameFor(revision.Name, slot, terminating),
-			Namespace:   revision.Namespace,
-			Labels:      podLabels,
-			Annotations: annotations,
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind,
-				Name: revision.Name, UID: revision.UID, Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
-			}},
-		},
+		Name:        podNameFor(revision.Name, slot, terminating),
+		Namespace:   revision.Namespace,
+		Labels:      podLabels,
+		Annotations: annotations,
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind,
+			Name: revision.Name, UID: revision.UID, Controller: new(true), BlockOwnerDeletion: new(true),
+		}},
 		Spec: *revision.Spec.Template.Spec.DeepCopy(),
 	}
 	stampAgentToken(&pod.Spec)
@@ -635,7 +632,7 @@ func (o *Orchestrator) claimRevisionPod(ctx context.Context, revision *revisiona
 	podLabels[LabelReplicaSlot] = strconv.Itoa(slot)
 	owners := []metav1.OwnerReference{{
 		APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind, Name: revision.Name, UID: revision.UID,
-		Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+		Controller: new(true), BlockOwnerDeletion: new(true),
 	}}
 	pod, err := o.pools.Claim(ctx, p, &claim, warm.Binding{
 		Spec: &claim, Labels: podLabels, Owners: owners,

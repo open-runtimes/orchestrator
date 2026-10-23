@@ -21,11 +21,9 @@ func PersistentVolumes(vols []volume.Volume) ([]corev1.Volume, []corev1.VolumeMo
 		name := fmt.Sprintf("vol-%d", i)
 		podVolumes = append(podVolumes, corev1.Volume{
 			Name: name,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: v.Source,
-					ReadOnly:  v.ReadOnly,
-				},
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: v.Source,
+				ReadOnly:  v.ReadOnly,
 			},
 		})
 		mounts = append(mounts, corev1.VolumeMount{

@@ -54,14 +54,12 @@ func markerFromConfigMap(cm *corev1.ConfigMap) marker {
 
 func (m marker) configMap() *corev1.ConfigMap {
 	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: objectNameFor(m.ID),
-			Labels: map[string]string{
-				LabelManagedBy:    ManagedByValue,
-				LabelDeploymentID: m.ID,
-			},
-			Annotations: map[string]string{AnnotationHost: strings.Join(m.Hosts, ",")},
+		Name: objectNameFor(m.ID),
+		Labels: map[string]string{
+			LabelManagedBy:    ManagedByValue,
+			LabelDeploymentID: m.ID,
 		},
+		Annotations: map[string]string{AnnotationHost: strings.Join(m.Hosts, ",")},
 		Data: map[string]string{
 			markerKeyLatestRevision: m.LatestRevision,
 			markerKeyLastReady:      m.LastReady,
@@ -79,12 +77,10 @@ var errSpecMissing = errors.New("spec secret missing")
 // specSecret builds the dep-{id} Secret holding the head spec JSON.
 func specSecret(id, specJSON string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: objectNameFor(id),
-			Labels: map[string]string{
-				LabelManagedBy:    ManagedByValue,
-				LabelDeploymentID: id,
-			},
+		Name: objectNameFor(id),
+		Labels: map[string]string{
+			LabelManagedBy:    ManagedByValue,
+			LabelDeploymentID: id,
 		},
 		Data: map[string][]byte{specSecretKey: []byte(specJSON)},
 	}
@@ -176,11 +172,11 @@ func revisionName(id string, n int) string {
 // revisionNumber parses the trailing sequence number from a revision name;
 // 0 when the name doesn't carry one.
 func revisionNumber(rev string) int {
-	i := strings.LastIndex(rev, "-")
-	if i < 0 {
+	_, after, ok := strings.CutLast(rev, "-")
+	if !ok {
 		return 0
 	}
-	n, err := strconv.Atoi(rev[i+1:])
+	n, err := strconv.Atoi(after)
 	if err != nil {
 		return 0
 	}

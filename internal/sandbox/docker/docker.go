@@ -38,11 +38,10 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/client"
 )
 
 // Orchestrator implements sandbox.Orchestrator using Docker.
@@ -60,7 +59,7 @@ type Orchestrator struct {
 // NewOrchestrator creates a Docker sandbox orchestrator.
 func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
@@ -102,7 +101,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		return nil, apperrors.Validation("artifacts",
 			"the Docker backend cannot mount: sibling containers do not share a mount namespace (see docs/sandboxes.md#the-docker-backend)")
 	}
-	if _, err := o.client.VolumeInspect(ctx, volumeName(req.ID)); err == nil {
+	if _, err := o.client.VolumeInspect(ctx, volumeName(req.ID), client.VolumeInspectOptions{}); err == nil {
 		return nil, apperrors.Conflict("sandbox " + req.ID + " already exists")
 	} else if !cerrdefs.IsNotFound(err) {
 		return nil, apperrors.Internal("docker.inspectVolume", err)
@@ -112,7 +111,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 	if err != nil {
 		return nil, apperrors.Internal("docker.marshalSpec", err)
 	}
-	if _, err := o.client.VolumeCreate(ctx, volume.CreateOptions{
+	if _, err := o.client.VolumeCreate(ctx, client.VolumeCreateOptions{
 		Name:   volumeName(req.ID),
 		Labels: volumeLabels(req, string(spec)),
 	}); err != nil {
@@ -261,23 +260,25 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *sandbox.Request) e
 		env = append(env, kv[0]+"="+kv[1])
 	}
 
-	resp, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:  o.cfg.JobSidecarImage,
 			Cmd:    []string{"-mode=pre"},
 			Env:    env,
 			User:   "0",
 			Labels: containerLabels(req.ID, typeArtifacts),
 		},
-		&container.HostConfig{
+		HostConfig: &container.HostConfig{
 			Mounts:     []mount.Mount{o.workspaceMount(req.ID)},
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
-		moby.NetworkingConfig(o.cfg.Network), nil, artifactsName(req.ID))
+		NetworkingConfig: moby.NetworkingConfig(o.cfg.Network),
+		Name:             artifactsName(req.ID),
+	})
 	if err != nil {
 		return apperrors.Internal("docker.createArtifactsContainer", err)
 	}
-	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return apperrors.Internal("docker.startArtifactsContainer", err)
 	}
 	exitCode, err := o.waitForExit(ctx, resp.ID)
@@ -299,8 +300,8 @@ func (o *Orchestrator) installAgent(ctx, pullCtx context.Context, id string) err
 	if err := moby.PullImage(pullCtx, o.client, o.cfg.AgentImage); err != nil {
 		return apperrors.Internal("docker.pullAgentImage", err)
 	}
-	resp, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:      o.cfg.AgentImage,
 			Entrypoint: []string{"cp"},
 			Cmd:        []string{sandbox.AgentSource, agentPath},
@@ -313,14 +314,15 @@ func (o *Orchestrator) installAgent(ctx, pullCtx context.Context, id string) err
 			User:   "0",
 			Labels: containerLabels(id, typeAgent),
 		},
-		&container.HostConfig{Mounts: []mount.Mount{o.workspaceMount(id)}},
-		nil, nil, agentName(id))
+		HostConfig: &container.HostConfig{Mounts: []mount.Mount{o.workspaceMount(id)}},
+		Name:       agentName(id),
+	})
 	if err != nil {
 		return apperrors.Internal("docker.createAgentInstaller", err)
 	}
 	defer o.removeContainer(ctx, resp.ID)
 
-	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return apperrors.Internal("docker.startAgentInstaller", err)
 	}
 	code, err := o.waitForExit(ctx, resp.ID)
@@ -357,30 +359,32 @@ func (o *Orchestrator) startWorker(ctx context.Context, p *pool.Spec, req *sandb
 	if command := cmp.Or(req.Command, p.Command); command != "" {
 		cmd = []string{"/bin/sh", "-c", command}
 	}
-	resp, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:      p.Image,
 			Cmd:        cmd,
 			Env:        env,
 			WorkingDir: workspacePath,
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
-		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID)}, moby.Mounts(p.Volumes)...),
-			Resources: container.Resources{
-				NanoCPUs: int64(p.CPU * 1e9),
-				Memory:   int64(p.Memory) * 1024 * 1024,
-			},
+		HostConfig: &container.HostConfig{
+			Mounts:     append([]mount.Mount{o.workspaceMount(req.ID)}, moby.Mounts(p.Volumes)...),
+			NanoCPUs:   int64(p.CPU * 1e9),
+			Memory:     int64(p.Memory) * 1024 * 1024,
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
-		moby.NetworkingConfig(o.cfg.Network), nil, workerName(req.ID))
+		NetworkingConfig: moby.NetworkingConfig(o.cfg.Network),
+		Name:             workerName(req.ID),
+	})
 	if err != nil {
 		return "", apperrors.Internal("docker.createWorker", err)
 	}
-	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return "", apperrors.Internal("docker.startWorker", err)
 	}
-	info, err := o.client.ContainerInspect(ctx, resp.ID)
+	infoResult, err := o.client.ContainerInspect(ctx, resp.ID, client.ContainerInspectOptions{})
+
+	info := infoResult.Container
 	if err != nil {
 		return "", apperrors.Internal("docker.inspectWorker", err)
 	}
@@ -411,8 +415,8 @@ func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Spec, req *sandbo
 		env = append(env, workload.EnvTimeoutSeconds+"="+strconv.Itoa(*req.TimeoutSeconds))
 	}
 
-	resp, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image: o.cfg.SidecarImage,
 			Env:   env,
 			Healthcheck: &container.HealthConfig{
@@ -424,12 +428,14 @@ func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Spec, req *sandbo
 			},
 			Labels: labels,
 		},
-		&container.HostConfig{ExtraHosts: o.cfg.ExtraHosts},
-		moby.NetworkingConfig(o.cfg.Network), nil, proxyName(req.ID))
+		HostConfig:       &container.HostConfig{ExtraHosts: o.cfg.ExtraHosts},
+		NetworkingConfig: moby.NetworkingConfig(o.cfg.Network),
+		Name:             proxyName(req.ID),
+	})
 	if err != nil {
 		return apperrors.Internal("docker.createProxy", err)
 	}
-	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return apperrors.Internal("docker.startProxy", err)
 	}
 	return nil
@@ -437,7 +443,9 @@ func (o *Orchestrator) startProxy(ctx context.Context, p *pool.Spec, req *sandbo
 
 // Status reconstructs one sandbox from its volume and containers.
 func (o *Orchestrator) Status(ctx context.Context, id string) (*sandbox.Status, error) {
-	vol, err := o.client.VolumeInspect(ctx, volumeName(id))
+	volResult, err := o.client.VolumeInspect(ctx, volumeName(id), client.VolumeInspectOptions{})
+
+	vol := volResult.Volume
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return nil, apperrors.NotFound("sandbox", id)
@@ -509,17 +517,14 @@ func (o *Orchestrator) statusFrom(ctx context.Context, labels map[string]string)
 // is what the caller wants instead of an immediate 502. The Kubernetes edge
 // probes for the same reason, one layer down.
 func (o *Orchestrator) Target(ctx context.Context, token string) (*url.URL, error) {
-	list, err := o.client.ContainerList(ctx, container.ListOptions{
-		Filters: filters.NewArgs(
-			filters.Arg("label", labelManagedBy+"="+managedByValue),
-			filters.Arg("label", labelToken+"="+token),
-		),
+	list, err := o.client.ContainerList(ctx, client.ContainerListOptions{
+		Filters: make(client.Filters).Add("label", labelManagedBy+"="+managedByValue).Add("label", labelToken+"="+token),
 	})
 	if err != nil {
 		return nil, apperrors.Internal("docker.listContainers", err)
 	}
-	for i := range list {
-		info, err := o.inspect(ctx, list[i].ID)
+	for i := range list.Items {
+		info, err := o.inspect(ctx, list.Items[i].ID)
 		if err != nil || info == nil || info.State == nil || !info.State.Running {
 			continue
 		}
@@ -556,7 +561,7 @@ func (o *Orchestrator) reachable(ctx context.Context, ip string) bool {
 // Delete tears the sandbox down: its containers and the volume that carries its
 // token, so a leaked URL dies with it.
 func (o *Orchestrator) Delete(ctx context.Context, id string) error {
-	if _, err := o.client.VolumeInspect(ctx, volumeName(id)); err != nil {
+	if _, err := o.client.VolumeInspect(ctx, volumeName(id), client.VolumeInspectOptions{}); err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return apperrors.NotFound("sandbox", id)
 		}
@@ -568,7 +573,7 @@ func (o *Orchestrator) Delete(ctx context.Context, id string) error {
 
 // Ready checks that the daemon is reachable.
 func (o *Orchestrator) Ready(ctx context.Context) error {
-	_, err := o.client.Ping(ctx)
+	_, err := o.client.Ping(ctx, client.PingOptions{})
 	return err
 }
 
@@ -585,19 +590,21 @@ func (o *Orchestrator) Close() error {
 var _ sandbox.Orchestrator = (*Orchestrator)(nil)
 
 // volumes lists the managed sandbox volumes — the sandbox set.
-func (o *Orchestrator) volumes(ctx context.Context) ([]*volume.Volume, error) {
-	list, err := o.client.VolumeList(ctx, volume.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", labelManagedBy+"="+managedByValue), filters.Arg("label", labelID)),
+func (o *Orchestrator) volumes(ctx context.Context) ([]volume.Volume, error) {
+	list, err := o.client.VolumeList(ctx, client.VolumeListOptions{
+		Filters: make(client.Filters).Add("label", labelManagedBy+"="+managedByValue).Add("label", labelID),
 	})
 	if err != nil {
 		return nil, apperrors.Internal("docker.listVolumes", err)
 	}
-	return list.Volumes, nil
+	return list.Items, nil
 }
 
 // inspect returns a container, or (nil, nil) when it does not exist.
 func (o *Orchestrator) inspect(ctx context.Context, name string) (*container.InspectResponse, error) {
-	info, err := o.client.ContainerInspect(ctx, name)
+	infoResult, err := o.client.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
+
+	info := infoResult.Container
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			//nolint:nilnil // absence is not an error here: callers ask "is this
@@ -619,20 +626,21 @@ func (o *Orchestrator) cleanup(ctx context.Context, id string) {
 	for _, name := range []string{proxyName(id), workerName(id), artifactsName(id), agentName(id)} {
 		o.removeContainer(ctx, name)
 	}
-	if err := o.client.VolumeRemove(ctx, volumeName(id), true); err != nil && !cerrdefs.IsNotFound(err) {
+	if _, err := o.client.VolumeRemove(ctx, volumeName(id), client.VolumeRemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 		slog.Warn("Failed to remove sandbox volume", "sandboxId", id, "error", err)
 	}
 }
 
 func (o *Orchestrator) removeContainer(ctx context.Context, idOrName string) {
-	err := o.client.ContainerRemove(ctx, idOrName, container.RemoveOptions{Force: true})
+	_, err := o.client.ContainerRemove(ctx, idOrName, client.ContainerRemoveOptions{Force: true})
 	if err != nil && !cerrdefs.IsNotFound(err) {
 		slog.Warn("Failed to remove container", "container", idOrName, "error", err)
 	}
 }
 
 func (o *Orchestrator) waitForExit(ctx context.Context, containerID string) (int64, error) {
-	statusCh, errCh := o.client.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
+	wait := o.client.ContainerWait(ctx, containerID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	statusCh, errCh := wait.Result, wait.Error
 	select {
 	case err := <-errCh:
 		return 0, err
@@ -657,14 +665,14 @@ func containerIP(settings *container.NetworkSettings, wanted string) string {
 		return ""
 	}
 	if wanted != "" {
-		if endpoint, ok := settings.Networks[wanted]; ok {
-			return endpoint.IPAddress
+		if endpoint, ok := settings.Networks[wanted]; ok && endpoint.IPAddress.IsValid() {
+			return endpoint.IPAddress.String()
 		}
 		return ""
 	}
 	for _, name := range slices.Sorted(maps.Keys(settings.Networks)) {
-		if ip := settings.Networks[name].IPAddress; ip != "" {
-			return ip
+		if ip := settings.Networks[name].IPAddress; ip.IsValid() {
+			return ip.String()
 		}
 	}
 	return ""

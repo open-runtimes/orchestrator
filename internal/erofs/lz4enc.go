@@ -3,6 +3,7 @@ package erofs
 import (
 	"encoding/binary"
 	"math/bits"
+	"slices"
 )
 
 // A high-compression LZ4 block encoder. The vendored pierrec/lz4 decoder (and
@@ -541,10 +542,10 @@ func (e *lz4HCEncoder) CompressBlockOptLimit(src, dst []byte, limit int) (n int,
 			pos -= int(ent.mlen)
 		}
 		e.seqs = seqs
-		for si := len(seqs) - 1; si >= 0; si-- {
-			start := ip + int(seqs[si][0])
-			mlen := int(seqs[si][1])
-			off := int(seqs[si][2])
+		for _, seq := range slices.Backward(seqs) {
+			start := ip + int(seq[0])
+			mlen := int(seq[1])
+			off := int(seq[2])
 			var ok bool
 			if d, ok = emitSequence(dst, d, src[anchor:start], off, mlen); !ok {
 				return 0, false, nil

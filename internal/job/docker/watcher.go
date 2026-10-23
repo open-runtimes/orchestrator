@@ -10,10 +10,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
 )
 
 // LifecycleWatcher watches a sidecar+worker container pair and emits backend-agnostic
@@ -61,12 +59,9 @@ func (w *dockerLifecycleWatcher) Watch(ctx context.Context, sidecarID, workerID 
 
 		// Subscribe to events BEFORE inspecting state to prevent a race where a
 		// health_status event fires between the state check and the subscription.
-		eventFilter := filters.NewArgs(
-			filters.Arg("type", string(events.ContainerEventType)),
-			filters.Arg("container", sidecarID),
-			filters.Arg("container", workerID),
-		)
-		eventCh, errCh := w.client.Events(ctx, events.ListOptions{Filters: eventFilter})
+		eventFilter := make(client.Filters).Add("type", string(events.ContainerEventType)).Add("container", sidecarID).Add("container", workerID)
+		subscription := w.client.Events(ctx, client.EventsListOptions{Filters: eventFilter})
+		eventCh, errCh := subscription.Messages, subscription.Err
 
 		if done := w.reconcile(ctx, logger, sidecarID, workerID, state, out); done {
 			return
@@ -91,7 +86,9 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 	inspectCtx, inspectCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer inspectCancel()
 
-	sidecar, err := w.client.ContainerInspect(inspectCtx, sidecarID)
+	sidecarResult, err := w.client.ContainerInspect(inspectCtx, sidecarID, client.ContainerInspectOptions{})
+
+	sidecar := sidecarResult.Container
 	if err != nil {
 		logger.Error("Failed to inspect sidecar during reconcile", "error", err)
 		return true
@@ -121,9 +118,10 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		ok        bool
 	}
 	var ws workerSnap
-	if info, err := w.client.ContainerInspect(inspectCtx, workerID); err == nil {
+	if res, err := w.client.ContainerInspect(inspectCtx, workerID, client.ContainerInspectOptions{}); err == nil {
+		info := res.Container
 		ws.ok = true
-		ws.status = info.State.Status
+		ws.status = string(info.State.Status)
 		ws.running = info.State.Running
 		ws.exitCode = info.State.ExitCode
 		ws.oomKilled = info.State.OOMKilled
@@ -145,7 +143,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 	if !state.isWorkerStarted && sidecar.State.Health != nil && sidecar.State.Health.Status == "healthy" {
 		logger.Info("Sidecar healthy (reconciled), starting worker")
 		state.startTime = time.Now()
-		if err := w.client.ContainerStart(ctx, workerID, container.StartOptions{}); err != nil {
+		if _, err := w.client.ContainerStart(ctx, workerID, client.ContainerStartOptions{}); err != nil {
 			logger.Error("Failed to start worker", "error", err)
 			out(job.Failed{Reason: "failed to start worker"})
 			return true
@@ -170,7 +168,7 @@ func (w *dockerLifecycleWatcher) reconcile(ctx context.Context, logger *slog.Log
 		reason := exitReason(ws.exitCode, state.isWorkerOOM || ws.oomKilled)
 		logger.Info("Worker exited (reconciled)", "exitCode", ws.exitCode, "reason", reason)
 		w.stopLogStreaming(state)
-		if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
+		if _, err := w.client.ContainerKill(ctx, sidecarID, client.ContainerKillOptions{Signal: "SIGUSR1"}); err != nil {
 			logger.Warn("Failed to signal sidecar", "error", err)
 		}
 		out(job.Exited{ExitCode: ws.exitCode, Reason: reason, Duration: duration})
@@ -202,7 +200,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 			case event.Actor.ID == sidecarID && event.Action == "health_status: healthy" && !state.isWorkerStarted:
 				logger.Info("Sidecar healthy, starting worker")
 				state.startTime = time.Now()
-				if err := w.client.ContainerStart(ctx, workerID, container.StartOptions{}); err != nil {
+				if _, err := w.client.ContainerStart(ctx, workerID, client.ContainerStartOptions{}); err != nil {
 					logger.Error("Failed to start worker", "error", err)
 					out(job.Failed{Reason: "failed to start worker"})
 					return true
@@ -230,7 +228,7 @@ func (w *dockerLifecycleWatcher) process(ctx context.Context, logger *slog.Logge
 				// Give logs a moment to flush before stopping the stream.
 				time.Sleep(500 * time.Millisecond)
 				w.stopLogStreaming(state)
-				if err := w.client.ContainerKill(ctx, sidecarID, "SIGUSR1"); err != nil {
+				if _, err := w.client.ContainerKill(ctx, sidecarID, client.ContainerKillOptions{Signal: "SIGUSR1"}); err != nil {
 					logger.Warn("Failed to signal sidecar", "error", err)
 				}
 				out(job.Exited{ExitCode: exitCode, Reason: reason, Duration: duration})
@@ -273,7 +271,7 @@ func (w *dockerLifecycleWatcher) stopLogStreaming(state *watcherState) {
 }
 
 func (w *dockerLifecycleWatcher) streamLogs(ctx context.Context, logger *slog.Logger, containerID string, out func(job.Signal)) {
-	logs, err := w.client.ContainerLogs(ctx, containerID, container.LogsOptions{
+	logs, err := w.client.ContainerLogs(ctx, containerID, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     true,
@@ -351,7 +349,7 @@ func (w *dockerLifecycleWatcher) lastLogLine(ctx context.Context, containerID st
 	logCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	logs, err := w.client.ContainerLogs(logCtx, containerID, container.LogsOptions{
+	logs, err := w.client.ContainerLogs(logCtx, containerID, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       "10",
@@ -390,7 +388,9 @@ func (w *dockerLifecycleWatcher) lastLogLine(ctx context.Context, containerID st
 func (w *dockerLifecycleWatcher) inspectOOMKilled(ctx context.Context, workerID string) bool {
 	inspectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	info, err := w.client.ContainerInspect(inspectCtx, workerID)
+	infoResult, err := w.client.ContainerInspect(inspectCtx, workerID, client.ContainerInspectOptions{})
+
+	info := infoResult.Container
 	return err == nil && info.State.OOMKilled
 }
 

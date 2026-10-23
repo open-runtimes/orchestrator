@@ -251,7 +251,7 @@ func TestBuildPod_AgentInstall(t *testing.T) {
 // container in every pod of that pool.
 func TestBuildPod_MountCapabilityIsOffUnlessThePoolAsks(t *testing.T) {
 	t.Parallel()
-	plain := podFor(t, pool.Pool{ID: "web", Size: 1, Spec: pool.Spec{Image: "runtime:latest", Port: 3000}})
+	plain := podFor(t, pool.Pool{ID: "web", Size: 1, Image: "runtime:latest", Port: 3000})
 	sidecar := containerNamed(t, plain, ContainerProxy)
 	worker := containerNamed(t, plain, ContainerWorkload)
 
@@ -265,7 +265,7 @@ func TestBuildPod_MountCapabilityIsOffUnlessThePoolAsks(t *testing.T) {
 		t.Error("the sidecar must not be told it can mount")
 	}
 
-	mounting := podFor(t, pool.Pool{ID: "sqfs", Size: 1, Spec: pool.Spec{Image: "runtime:latest", Port: 3000, Mounts: true}})
+	mounting := podFor(t, pool.Pool{ID: "sqfs", Size: 1, Image: "runtime:latest", Port: 3000, Mounts: true})
 	sidecar = containerNamed(t, mounting, ContainerProxy)
 	worker = containerNamed(t, mounting, ContainerWorkload)
 
@@ -330,7 +330,7 @@ func hasEnv(c corev1.Container, name string) bool {
 // carries its own workspace token.
 func TestBuildPod_AgentMounts(t *testing.T) {
 	t.Parallel()
-	p := pool.Pool{ID: "sqfs", Size: 2, Spec: pool.Spec{Image: "runtime:latest", Port: 3000, Mounts: true}}
+	p := pool.Pool{ID: "sqfs", Size: 2, Image: "runtime:latest", Port: 3000, Mounts: true}
 	m := New(nil, []pool.Pool{p}, Config{Namespace: testNS, SidecarImage: "sidecar:latest",
 		ShimImage: "shim:latest", RunAsUser: 65532, Naming: testNaming, MountAgentPort: 9878})
 	first := m.buildPod(&m.pools[0].Spec, p.ID, "pool-sqfs-aaaaa", "tok")

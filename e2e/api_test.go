@@ -23,9 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 type testAPI struct {
@@ -116,26 +114,23 @@ func (a *testAPI) cleanupDockerJob(jobID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return
 	}
 	defer cli.Close()
 
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", "managed-by=jobs-service"),
-			filters.Arg("label", "job.id="+jobID),
-		),
+	containers, err := cli.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: make(client.Filters).Add("label", "managed-by=jobs-service").Add("label", "job.id="+jobID),
 	})
 	if err == nil {
-		for _, c := range containers {
-			_ = cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true})
+		for _, c := range containers.Items {
+			_, _ = cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
 		}
 	}
 
-	_ = cli.VolumeRemove(ctx, "job-"+jobID+"-workspace", true)
+	_, _ = cli.VolumeRemove(ctx, "job-"+jobID+"-workspace", client.VolumeRemoveOptions{Force: true})
 }
 
 // getTestURL returns the base URL for e2e tests.

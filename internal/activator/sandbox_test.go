@@ -47,13 +47,11 @@ func newTestSandboxProxy(t *testing.T, opts sandboxOpts, objs ...runtime.Object)
 
 func sandboxPod(token, name, ip string, ready bool) *corev1.Pod {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: testRevisionNamespace,
-			Labels: map[string]string{
-				revisionLabelManagedBy: revisionManagedByValue,
-				testTokenLabel:         token,
-			},
+		Name:      name,
+		Namespace: testRevisionNamespace,
+		Labels: map[string]string{
+			revisionLabelManagedBy: revisionManagedByValue,
+			testTokenLabel:         token,
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: ip},
 	}

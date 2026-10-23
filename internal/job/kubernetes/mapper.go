@@ -125,9 +125,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 	var startupProbe *corev1.Probe
 	if hasMounts {
 		startupProbe = &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				Exec: &corev1.ExecAction{Command: []string{"/ko-app/job-sidecar", "-check-mounts"}},
-			},
+			Exec:             &corev1.ExecAction{Command: []string{"/ko-app/job-sidecar", "-check-mounts"}},
 			PeriodSeconds:    1,
 			FailureThreshold: int32(deadline),
 		}
@@ -204,11 +202,9 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 	}
 
 	return &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        jobNameFor(req.ID),
-			Labels:      labels,
-			Annotations: annotations,
-		},
+		Name:        jobNameFor(req.ID),
+		Labels:      labels,
+		Annotations: annotations,
 		Spec: batchv1.JobSpec{
 			ActiveDeadlineSeconds:   &deadline,
 			Parallelism:             &parallelism,

@@ -64,8 +64,8 @@ func TestApply_RuntimeClassChecked(t *testing.T) {
 
 	// Installed → Apply proceeds and the revision's pod template stamps it.
 	_, err := cs.NodeV1().RuntimeClasses().Create(ctx, &nodev1.RuntimeClass{
-		ObjectMeta: metav1.ObjectMeta{Name: "gvisor"},
-		Handler:    "runsc",
+		Name:    "gvisor",
+		Handler: "runsc",
 	}, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("create RuntimeClass: %v", err)

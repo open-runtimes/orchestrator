@@ -65,8 +65,7 @@ func (c CodeError) Valid() bool {
 // it travels in its own field, and repeating it reads badly in a message.
 func FailureMessage(err error) string {
 	msg := err.Error()
-	var code CodeError
-	if errors.As(err, &code) {
+	if code, ok := errors.AsType[CodeError](err); ok {
 		msg = strings.TrimPrefix(msg, string(code)+": ")
 	}
 	return msg
@@ -97,8 +96,7 @@ func FailureCode(kind string, err error) CodeError {
 		}
 	}
 	if kind == "read" {
-		var syntax *json.SyntaxError
-		if errors.As(err, &syntax) {
+		if _, ok := errors.AsType[*json.SyntaxError](err); ok {
 			return ErrArtifactJSONInvalid
 		}
 	}

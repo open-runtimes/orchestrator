@@ -10,8 +10,6 @@ import (
 	"orchestrator/internal/volume"
 	"strings"
 	"testing"
-
-	"k8s.io/utils/ptr"
 )
 
 // fakeOrchestrator records what the service asked for and reports ready.
@@ -35,7 +33,7 @@ func (f *fakeOrchestrator) Close() error                           { return nil 
 
 func testService(pools ...pool.Pool) (*Service, *fakeOrchestrator) {
 	if len(pools) == 0 {
-		pools = []pool.Pool{{ID: "py", Size: 1, Spec: pool.Spec{Image: "img", Port: 3000, CPU: 1, Memory: 512}}}
+		pools = []pool.Pool{{ID: "py", Size: 1, Image: "img", Port: 3000, CPU: 1, Memory: 512}}
 	}
 	orch := &fakeOrchestrator{}
 	return NewService(orch, nil, pools), orch
@@ -143,7 +141,7 @@ func TestCreate_LeavesTheCommandToTheBackend(t *testing.T) {
 	// A pool that names no command is the ordinary case, not an error: its image
 	// is just a runtime, and the backend runs the agent it installed into the
 	// workspace.
-	bare, _ := testService(pool.Pool{ID: "py", Spec: pool.Spec{Image: "node:22-slim", Port: 3000}})
+	bare, _ := testService(pool.Pool{ID: "py", Image: "node:22-slim", Port: 3000})
 	if _, err := bare.Create(context.Background(), &Request{Image: "node:22-slim", Port: 3000}); err != nil {
 		t.Fatalf("a matching pool without a command must be accepted: %v", err)
 	}
@@ -166,7 +164,7 @@ func TestCreate_ValidatesID(t *testing.T) {
 // sandbox request whether acquisition is warm or direct.
 func TestCreate_PreservesTheRequestedIdleTimeout(t *testing.T) {
 	t.Parallel()
-	svc, orch := testService(pool.Pool{ID: "py", MaxIdleSeconds: 900, Spec: pool.Spec{Image: "img", Port: 3000}})
+	svc, orch := testService(pool.Pool{ID: "py", MaxIdleSeconds: 900, Image: "img", Port: 3000})
 
 	if _, err := svc.Create(context.Background(), standardRequest()); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -202,12 +200,12 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 		t.Errorf("omitted timeoutSeconds must take the default: got %v", orch.last.TimeoutSeconds)
 	}
 	req := standardRequest()
-	req.TimeoutSeconds = ptr.To(maxTimeoutSecs + 1)
+	req.TimeoutSeconds = new(maxTimeoutSecs + 1)
 	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error over the timeout ceiling")
 	}
 	req = standardRequest()
-	req.TimeoutSeconds = ptr.To(-1)
+	req.TimeoutSeconds = new(-1)
 	if _, err := svc.Create(context.Background(), req); !errors.Is(err, apperrors.ErrValidation) {
 		t.Error("want a validation error for a negative timeout")
 	}
@@ -216,7 +214,7 @@ func TestCreate_DefaultsTheRequestTimeout(t *testing.T) {
 	// (WebSocket terminals, language servers). It must survive validation, or
 	// the connection it was asked for is cut at the default five minutes.
 	req = standardRequest()
-	req.TimeoutSeconds = ptr.To(0)
+	req.TimeoutSeconds = new(0)
 	if _, err := svc.Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -244,7 +242,7 @@ func TestCreate_MountNeedsThePoolCapability(t *testing.T) {
 	}
 
 	// Declared: accepted, and the backend gets the mount to perform.
-	capable, orch := testService(pool.Pool{ID: "sqfs", Size: 1, Spec: pool.Spec{Image: "img", Port: 3000, Mounts: true}})
+	capable, orch := testService(pool.Pool{ID: "sqfs", Size: 1, Image: "img", Port: 3000, Mounts: true})
 	capableReq := &Request{ID: "sbx", Image: "img", Port: 3000, Artifacts: mount()}
 	if _, err := capable.Create(t.Context(), capableReq); err != nil {
 		t.Fatalf("a pool that declares mounts should accept one: %v", err)

@@ -12,10 +12,8 @@ import (
 // surface both warm consumers derive their status from.
 func observedPod(mutate func(*corev1.Pod)) *corev1.Pod {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "pool-web-aaaaa",
-			Labels: map[string]string{testNaming.Pool: "web", testNaming.Claim: "act-1"},
-		},
+		Name:   "pool-web-aaaaa",
+		Labels: map[string]string{testNaming.Pool: "web", testNaming.Claim: "act-1"},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning},
 	}
 	mutate(pod)

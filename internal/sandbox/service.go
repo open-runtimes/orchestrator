@@ -15,8 +15,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"k8s.io/utils/ptr"
 )
 
 // Validation limits, shared scale with the deployments service.
@@ -174,7 +172,7 @@ func (s *Service) validate(req *Request, shape *pool.Spec) error {
 	// (terminals, language servers) that ask for it.
 	switch {
 	case req.TimeoutSeconds == nil:
-		req.TimeoutSeconds = ptr.To(defaultTimeout)
+		req.TimeoutSeconds = new(defaultTimeout)
 	case *req.TimeoutSeconds < 0 || *req.TimeoutSeconds > maxTimeoutSecs:
 		return apperrors.Validation("timeoutSeconds",
 			fmt.Sprintf("timeout must be between 0 (no bound) and %d seconds", maxTimeoutSecs))

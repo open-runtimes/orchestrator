@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
 )
 
 // Labels — the Docker daemon is the deployments store. The workspace volume is
@@ -99,8 +99,8 @@ func containerIP(ns *container.NetworkSettings, networkName string) string {
 	if networkName == "" {
 		networkName = "bridge" // Docker's default network
 	}
-	if ep := ns.Networks[networkName]; ep != nil {
-		return ep.IPAddress
+	if ep := ns.Networks[networkName]; ep != nil && ep.IPAddress.IsValid() {
+		return ep.IPAddress.String()
 	}
 	return ""
 }
@@ -169,7 +169,7 @@ func deriveStatus(id string, s snapshot, now time.Time) *deployment.StatusRespon
 		status.State = deployment.StateFailed
 		status.Error = "not ready within " + s.deadline.String()
 		if s.proxyHealth != "" {
-			status.Error += " (proxy health: " + s.proxyHealth + ")"
+			status.Error += " (proxy health: " + string(s.proxyHealth) + ")"
 		}
 	}
 

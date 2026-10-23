@@ -2,14 +2,15 @@ package docker
 
 import (
 	"encoding/json"
+	"net/netip"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/workload"
 	"slices"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 )
 
 func TestDeriveStatus(t *testing.T) {
@@ -125,8 +126,8 @@ func TestContainerIP(t *testing.T) {
 
 	settings := &container.NetworkSettings{
 		Networks: map[string]*network.EndpointSettings{
-			"bridge":       {IPAddress: "172.17.0.2"},
-			"orchestrator": {IPAddress: "10.5.0.7"},
+			"bridge":       {IPAddress: netip.MustParseAddr("172.17.0.2")},
+			"orchestrator": {IPAddress: netip.MustParseAddr("10.5.0.7")},
 		},
 	}
 

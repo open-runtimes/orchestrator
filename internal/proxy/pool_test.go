@@ -237,7 +237,7 @@ func TestPoolClaimHTTP(t *testing.T) {
 		ClaimID:        "act-http",
 		Command:        "serve",
 		Port:           port,
-		TimeoutSeconds: ptrTo(1),
+		TimeoutSeconds: new(1),
 	})
 	if status != http.StatusOK {
 		t.Fatalf("HTTP claim: got %d, want 200", status)
@@ -468,7 +468,7 @@ func TestPoolClaim_DrainWaitsAsLongAsTheClaimAllows(t *testing.T) {
 		ClaimID:        "act-session",
 		Command:        "serve",
 		Port:           backendPort(t, backend),
-		TimeoutSeconds: ptrTo(2),
+		TimeoutSeconds: new(2),
 	}); status != http.StatusOK {
 		t.Fatalf("claim: got %d, want 200", status)
 	}
@@ -515,8 +515,8 @@ func TestPoolClaim_TimeoutSeconds(t *testing.T) {
 		wantWindow time.Duration
 	}{
 		// MaxDrain is 60s below, so it caps the window without hiding the bound.
-		"stated":    {claim: ptrTo(30), want: 30 * time.Second, wantWindow: 30 * time.Second},
-		"unbounded": {claim: ptrTo(0), want: 0, wantWindow: 60 * time.Second},
+		"stated":    {claim: new(30), want: 30 * time.Second, wantWindow: 30 * time.Second},
+		"unbounded": {claim: new(0), want: 0, wantWindow: 60 * time.Second},
 		"unstated":  {claim: nil, want: 300 * time.Second, wantWindow: 60 * time.Second}, // the pod's own default
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -656,8 +656,6 @@ func getWithPort(t *testing.T, p *Proxy, port string) (int, string) {
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
 }
-
-func ptrTo[T any](v T) *T { return &v }
 
 // A pod being torn down must not accept a claim. Accepting one would hand its
 // caller a workload about to vanish, and a mount established after release has

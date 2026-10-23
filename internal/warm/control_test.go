@@ -182,7 +182,7 @@ func TestOrphanGC_DiscardsAfterTTL(t *testing.T) {
 func TestTick_ReapsClaimsWithNoConfiguredPool(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset()
-	m := New(cs, []pool.Pool{{ID: "declared", Size: 1, Spec: pool.Spec{Image: "img"}}}, Config{
+	m := New(cs, []pool.Pool{{ID: "declared", Size: 1, Image: "img"}}, Config{
 		Namespace: testNS, Naming: testNaming, ReapUnpooled: true, Client: newFakeSidecar(),
 	})
 
@@ -191,15 +191,14 @@ func TestTick_ReapsClaimsWithNoConfiguredPool(t *testing.T) {
 		{"pool-declared-aaaaa", "declared", "act-1"},
 		{"pool-solo-bbbbb", "solo", "sbx-1"},
 	} {
-		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		pod := &corev1.Pod{
 			Name:      tc.name,
 			Namespace: testNS,
 			Labels: map[string]string{
 				LabelManagedBy:   testNaming.ManagedBy,
 				testNaming.Pool:  tc.poolID,
 				testNaming.Claim: tc.claimID,
-			},
-		}}
+			}}
 		if _, err := cs.CoreV1().Pods(testNS).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create pod: %v", err)
 		}
@@ -224,15 +223,14 @@ func TestTick_LeavesUnpooledClaimsAloneWhenNotOptedIn(t *testing.T) {
 	cs := fake.NewClientset()
 	m := New(cs, nil, Config{Namespace: testNS, Naming: testNaming, Client: newFakeSidecar()})
 
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+	pod := &corev1.Pod{
 		Name:      "pool-gone-aaaaa",
 		Namespace: testNS,
 		Labels: map[string]string{
 			LabelManagedBy:   testNaming.ManagedBy,
 			testNaming.Pool:  "removed-from-config",
 			testNaming.Claim: "act-1",
-		},
-	}}
+		}}
 	if _, err := cs.CoreV1().Pods(testNS).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create pod: %v", err)
 	}
@@ -256,10 +254,9 @@ func TestTick_CleansRemovedPoolWarmPodsWithoutReapingClaims(t *testing.T) {
 		ColdWait: time.Second, OrphanTTL: time.Second,
 	})
 	now := time.Now()
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+	pod := &corev1.Pod{
 		Name: "pool-removed-warm", Namespace: testNS,
-		Labels: m.PoolLabels("removed"), CreationTimestamp: metav1.NewTime(now.Add(-time.Minute)),
-	}}
+		Labels: m.PoolLabels("removed"), CreationTimestamp: metav1.NewTime(now.Add(-time.Minute))}
 	if _, err := cs.CoreV1().Pods(testNS).Create(t.Context(), pod, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create pod: %v", err)
 	}
@@ -279,11 +276,10 @@ func TestTick_NeverSweepsDirectWorkloadWithoutPoolLabel(t *testing.T) {
 		Namespace: testNS, Naming: testNaming, Client: newFakeSidecar(),
 		ColdWait: time.Second, OrphanTTL: time.Second,
 	})
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+	pod := &corev1.Pod{
 		Name: "direct-revision-pod", Namespace: testNS,
 		Labels:            map[string]string{LabelManagedBy: testNaming.ManagedBy},
-		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
-	}}
+		CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour))}
 	if _, err := cs.CoreV1().Pods(testNS).Create(t.Context(), pod, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +335,7 @@ func TestTick_ReplacesUnclaimedPodAfterPoolSpecChange(t *testing.T) {
 func TestSweepUnclaimed_DiscardsAbandonedPoollessPods(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset()
-	m := New(cs, []pool.Pool{{ID: "declared", Size: 1, Spec: pool.Spec{Image: "img"}}}, Config{
+	m := New(cs, []pool.Pool{{ID: "declared", Size: 1, Image: "img"}}, Config{
 		Namespace: testNS, Naming: testNaming, ReapUnpooled: true, Client: newFakeSidecar(),
 		ColdWait: 120 * time.Second, OrphanTTL: 60 * time.Second,
 	})
@@ -356,12 +352,11 @@ func TestSweepUnclaimed_DiscardsAbandonedPoollessPods(t *testing.T) {
 		{"pool-fresh-aaaaa", "fresh", 30 * time.Second},
 		{"pool-declared-aaaaa", "declared", 10 * time.Minute},
 	} {
-		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		pod := &corev1.Pod{
 			Name:              tc.name,
 			Namespace:         testNS,
 			Labels:            m.PoolLabels(tc.poolID),
-			CreationTimestamp: metav1.NewTime(now.Add(-tc.age)),
-		}}
+			CreationTimestamp: metav1.NewTime(now.Add(-tc.age))}
 		if _, err := cs.CoreV1().Pods(testNS).Create(t.Context(), pod, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create %s: %v", tc.name, err)
 		}

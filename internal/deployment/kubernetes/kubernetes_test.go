@@ -658,10 +658,8 @@ func TestStart_SurfacesListErrors(t *testing.T) {
 
 func testPod(name, deploymentID, revision, ip string, ready corev1.ConditionStatus) *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: revisionLabels(deploymentID, revision),
-		},
+		Name:   name,
+		Labels: revisionLabels(deploymentID, revision),
 		Status: corev1.PodStatus{
 			PodIP:      ip,
 			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: ready}},

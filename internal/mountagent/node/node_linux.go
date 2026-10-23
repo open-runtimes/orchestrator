@@ -208,11 +208,11 @@ func teardown(target string) error {
 		if err != nil {
 			return err
 		}
-		for i := len(inner) - 1; i >= 0; i-- {
+		for _, i := range slices.Backward(inner) {
 			// A failure here (moved, swapped, still busy) is retried: the next
 			// round re-reads mountinfo.
-			if err := root.Unmount(inner[i], deadline); err != nil {
-				slog.Warn("Unmount during teardown failed", "path", inner[i], "error", err)
+			if err := root.Unmount(i, deadline); err != nil {
+				slog.Warn("Unmount during teardown failed", "path", i, "error", err)
 			}
 		}
 		root.Close()

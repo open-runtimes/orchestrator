@@ -4,7 +4,7 @@ import (
 	"orchestrator/internal/volume"
 	"testing"
 
-	"github.com/docker/docker/api/types/mount"
+	"github.com/moby/moby/api/types/mount"
 )
 
 func TestVolumeMounts(t *testing.T) {

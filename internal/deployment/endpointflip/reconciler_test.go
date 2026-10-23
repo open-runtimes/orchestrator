@@ -38,15 +38,13 @@ func newTestReconciler(objs ...runtime.Object) (*Reconciler, *fake.Clientset) {
 
 func revisionService(rev, depID string) *corev1.Service {
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "dep-" + rev,
-			Namespace: testNS,
-			UID:       types.UID("uid-" + rev),
-			Labels: map[string]string{
-				LabelManagedBy:    ManagedByValue,
-				LabelDeploymentID: depID,
-				LabelRevision:     rev,
-			},
+		Name:      "dep-" + rev,
+		Namespace: testNS,
+		UID:       types.UID("uid-" + rev),
+		Labels: map[string]string{
+			LabelManagedBy:    ManagedByValue,
+			LabelDeploymentID: depID,
+			LabelRevision:     rev,
 		},
 	}
 }
@@ -57,7 +55,7 @@ func podObject(name string, podLabels map[string]string, ip string, ready, termi
 		status = corev1.ConditionTrue
 	}
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS, Labels: podLabels},
+		Name: name, Namespace: testNS, Labels: podLabels,
 		Status: corev1.PodStatus{
 			PodIP:      ip,
 			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: status}},
@@ -305,11 +303,9 @@ func TestSliceOwnershipAndDiscoveryLabels(t *testing.T) {
 
 func TestSkipsUnmanagedAndMissingServices(t *testing.T) {
 	plain := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "plain",
-			Namespace: testNS,
-			Labels:    map[string]string{LabelManagedBy: ManagedByValue, LabelDeploymentID: "web"},
-		},
+		Name:      "plain",
+		Namespace: testNS,
+		Labels:    map[string]string{LabelManagedBy: ManagedByValue, LabelDeploymentID: "web"},
 	}
 	r, client := newTestReconciler(plain)
 	mustReconcile(t, r, "plain")   // managed, but no revision label

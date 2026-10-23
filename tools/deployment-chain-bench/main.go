@@ -327,7 +327,7 @@ func createNamespaces(ctx context.Context, client kubernetes.Interface, names []
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			_, err := client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{labelRun: run}},
+				Name: name, Labels: map[string]string{labelRun: run},
 			}, metav1.CreateOptions{})
 			if err != nil {
 				errs <- err
@@ -345,7 +345,7 @@ func createNamespaces(ctx context.Context, client kubernetes.Interface, names []
 func deploymentWithReplicas(run, id string, replicas int32) *appsv1.Deployment {
 	labels := map[string]string{labelRun: run, labelID: id}
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: id, Labels: labels},
+		Name: id, Labels: labels,
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
@@ -434,11 +434,11 @@ func revision(run, id string, replicas int32) *unstructured.Unstructured {
 		"deployment.revision": id,
 	}
 	revision := &revisionapi.Revision{
-		TypeMeta:   metav1.TypeMeta{APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind},
-		ObjectMeta: metav1.ObjectMeta{Name: "dep-" + id, Labels: labels},
+		APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind,
+		Name: "dep-" + id, Labels: labels,
 		Spec: revisionapi.Spec{
 			Replicas: replicas,
-			Template: ptr(template(labels)),
+			Template: new(template(labels)),
 		},
 	}
 	object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(revision)
@@ -452,7 +452,7 @@ func replicaSet(run, id string) *appsv1.ReplicaSet {
 	replicas := int32(1)
 	labels := map[string]string{labelRun: run, labelID: id}
 	return &appsv1.ReplicaSet{
-		ObjectMeta: metav1.ObjectMeta{Name: id, Labels: labels},
+		Name: id, Labels: labels,
 		Spec: appsv1.ReplicaSetSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
@@ -464,18 +464,18 @@ func replicaSet(run, id string) *appsv1.ReplicaSet {
 func pod(run, id string) *corev1.Pod {
 	labels := map[string]string{labelRun: run, labelID: id}
 	t := template(labels)
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: id, Labels: labels}, Spec: t.Spec}
+	return &corev1.Pod{Name: id, Labels: labels, Spec: t.Spec}
 }
 
 func template(labels map[string]string) corev1.PodTemplateSpec {
 	return corev1.PodTemplateSpec{
-		ObjectMeta: metav1.ObjectMeta{Labels: labels},
+		Labels: labels,
 		Spec: corev1.PodSpec{
-			TerminationGracePeriodSeconds: ptr(int64(0)),
+			TerminationGracePeriodSeconds: new(int64(0)),
 			SecurityContext: &corev1.PodSecurityContext{
-				RunAsNonRoot: ptr(true),
-				RunAsUser:    ptr(int64(65532)),
-				RunAsGroup:   ptr(int64(65532)),
+				RunAsNonRoot: new(true),
+				RunAsUser:    new(int64(65532)),
+				RunAsGroup:   new(int64(65532)),
 				SeccompProfile: &corev1.SeccompProfile{
 					Type: corev1.SeccompProfileTypeRuntimeDefault,
 				},
@@ -485,7 +485,7 @@ func template(labels map[string]string) corev1.PodTemplateSpec {
 				Image:           "registry.k8s.io/pause:3.10",
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				SecurityContext: &corev1.SecurityContext{
-					AllowPrivilegeEscalation: ptr(false),
+					AllowPrivilegeEscalation: new(false),
 					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 				},
 			}},
@@ -598,5 +598,3 @@ func percentile(values []time.Duration, quantile float64) time.Duration {
 	index := int(float64(len(values)-1) * quantile)
 	return values[index].Round(time.Millisecond)
 }
-
-func ptr[T any](value T) *T { return &value }
