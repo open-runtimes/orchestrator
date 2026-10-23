@@ -1,0 +1,190 @@
+{{- if .Values.deployments.activator.enabled }}
+{{- if not .Values.deployments.enabled }}
+{{- fail "deployments.activator.enabled requires deployments.enabled: the activator raises the deployments service's revisions" }}
+{{- end }}
+{{- end }}
+{{- if .Values.deployments.enabled }}
+{{- $c := dict "root" . "component" "deployments" "values" .Values.deployments }}
+{{- $a := dict "root" . "component" "deployments-activator" "values" .Values.deployments.activator }}
+{{- $name := include "orchestrator.componentName" $c }}
+{{- $activator := include "orchestrator.componentName" $a }}
+{{- $ns := include "orchestrator.planeNamespace" (dict "root" . "plane" "deployments") }}
+{{ include "orchestrator.component" (merge (dict
+  "container" "deployments-service"
+  "ports" (list (dict "name" "service" "port" .Values.deployments.service.port))
+  "probe" (dict "port" "service" "readiness" "/readyz" "liveness" "/livez")
+  "env" (include "orchestrator.deploymentsEnv" .)
+  "auth" .Values.deployments.auth
+  "s3" .Values.deployments.s3
+  "leader" true) $c) }}
+{{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" $name "rules" (include "orchestrator.deploymentsRules" .)) $c) }}
+{{- include "orchestrator.runtimeClassReader" $c }}
+{{- if ne $ns .Release.Namespace }}
+{{- /* The cold endpoint flip watches activator pods, which stay with the control plane. */}}
+{{- include "orchestrator.rbac" (merge (dict "namespace" .Release.Namespace "name" (printf "%s-activator-reader" $name) "rules" "- apiGroups: [\"\"]\n  resources: [\"pods\"]\n  verbs: [\"get\", \"list\", \"watch\"]") $c) }}
+{{- if .Values.deployments.httpRoute.enabled }}
+---
+# Each deployment's route sends Prefer: respond-async to the activator here;
+# a cross-namespace backendRef needs this namespace's consent.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ $activator }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.labels" $c | nindent 4 }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ $ns }}
+  to:
+    - group: ""
+      kind: Service
+      name: {{ $activator }}
+{{- end }}
+{{- end }}
+{{- if .Values.deployments.limitRange.enabled }}
+---
+# Defaults for containers that declare none: no BestEffort creep, a memory
+# ceiling, and deliberately no cpu limit. Explicit values always win.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orchestrator.labels" $c | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        memory: 512Mi
+{{- end }}
+{{- if .Values.deployments.activator.enabled }}
+---
+{{ include "orchestrator.component" (merge (dict
+  "container" "deployments-activator"
+  "ports" (list (dict "name" "service" "port" .Values.deployments.activator.service.port))
+  "probe" (dict "port" "service" "readiness" "/healthz" "liveness" "/healthz")
+  "env" (include "orchestrator.activatorEnv" .)) $a) }}
+{{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" $activator "rules" (include "orchestrator.activatorRules" .)) $a) }}
+{{- end }}
+{{- end }}
+
+{{- define "orchestrator.deploymentsEnv" -}}
+{{- $name := include "orchestrator.componentName" (dict "root" . "component" "deployments") -}}
+{{- $activator := include "orchestrator.componentName" (dict "root" . "component" "deployments-activator") -}}
+- name: ORCHESTRATOR_BACKEND
+  value: kubernetes
+- name: PORT
+  value: {{ .Values.deployments.service.port | quote }}
+{{- include "orchestrator.workloadEnv" (dict "root" . "plane" "deployments") }}
+- name: DEPLOYMENTS_DOMAIN
+  value: {{ .Values.deployments.domain | quote }}
+- name: WORKLOAD_SIDECAR_IMAGE
+  value: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.workloadSidecar) | quote }}
+- name: JOB_SIDECAR_IMAGE
+  value: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.jobSidecar) | quote }}
+- name: KUBE_ACTIVATOR_NAMESPACE
+  value: {{ .Release.Namespace | quote }}
+- name: KUBE_GATEWAY_ENABLED
+  value: {{ .Values.deployments.httpRoute.enabled | quote }}
+- name: KUBE_GATEWAY_NAME
+  value: {{ include "orchestrator.gatewayName" . | quote }}
+- name: KUBE_GATEWAY_NAMESPACE
+  value: {{ include "orchestrator.gatewayNamespace" . | quote }}
+- name: ACTIVATOR_SERVICE
+  value: {{ $activator | quote }}
+- name: ACTIVATOR_PORT
+  value: {{ .Values.deployments.activator.service.port | quote }}
+# The autoscaler's cold signal: the activator's queue depth.
+- name: ACTIVATOR_STATS_URL
+  value: {{ printf "http://%s.%s:%v/stats" $activator .Release.Namespace .Values.deployments.activator.service.port | quote }}
+- name: KUBE_REVISION_WORKERS
+  value: {{ .Values.deployments.revisionWorkers | quote }}
+- name: KUBE_CLIENT_QPS
+  value: {{ .Values.deployments.clientQPS | quote }}
+- name: KUBE_CLIENT_BURST
+  value: {{ .Values.deployments.clientBurst | quote }}
+{{- with .Values.deployments.pools }}
+- name: POOLS_JSON
+  value: {{ toJson . | quote }}
+- name: POOL_SHIM_IMAGE
+  value: {{ include "orchestrator.image" (dict "root" $ "image" $.Values.images.poolShim) | quote }}
+{{- end }}
+{{- include "orchestrator.leaderEnv" (dict "values" .Values.deployments.leaderElection "lease" (default (printf "%s-leader" $name) .Values.deployments.leaderElection.leaseName) "prefix" "KUBE_") }}
+{{- include "orchestrator.s3Env" (dict "root" . "plane" "deployments") }}
+{{- end -}}
+
+{{- define "orchestrator.activatorEnv" -}}
+- name: ACTIVATOR_PORT
+  value: {{ .Values.deployments.activator.service.port | quote }}
+- name: KUBE_NAMESPACE
+  value: {{ include "orchestrator.planeNamespace" (dict "root" . "plane" "deployments") | quote }}
+- name: KUBE_CLIENT_QPS
+  value: {{ .Values.deployments.clientQPS | quote }}
+- name: KUBE_CLIENT_BURST
+  value: {{ .Values.deployments.clientBurst | quote }}
+{{- end -}}
+
+{{- define "orchestrator.deploymentsRules" -}}
+- apiGroups: ["orchestrator.open-runtimes.io"]
+  resources: ["revisions"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["orchestrator.open-runtimes.io"]
+  resources: ["revisions/status", "revisions/scale"]
+  verbs: ["get", "update", "patch"]
+# Replica pods set blockOwnerDeletion on their Revision; the
+# OwnerReferencesPermissionEnforcement admission plugin (on by default on
+# OpenShift) rejects that unless the creator may update the owner's finalizers.
+- apiGroups: ["orchestrator.open-runtimes.io"]
+  resources: ["revisions/finalizers"]
+  verbs: ["update"]
+- apiGroups: [""]
+  resources: ["services", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Direct replica pods, and warm pods claimed or discarded.
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+# Per-deployment spec Secrets (callback signing keys) and the pool-claim-key
+# install key claim tokens derive from.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create", "update", "delete"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Replica-aware PDBs per revision.
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- if .Values.deployments.leaderElection.enabled }}
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+{{- end }}
+{{- end -}}
+
+{{- define "orchestrator.activatorRules" -}}
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["orchestrator.open-runtimes.io"]
+  resources: ["revisions"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["orchestrator.open-runtimes.io"]
+  resources: ["revisions/scale"]
+  verbs: ["get", "update", "patch"]
+# Async requests read the deployment's callback config off its spec Secret.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get"]
+{{- end -}}

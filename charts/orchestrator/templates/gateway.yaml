@@ -1,16 +1,36 @@
-{{- if and .Values.jobs.enabled .Values.jobs.gateway.enabled -}}
+{{- if .Values.gateway.create }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: {{ include "orchestrator.jobsName" . }}
+  name: {{ include "orchestrator.gatewayName" . }}
+  namespace: {{ include "orchestrator.gatewayNamespace" . }}
+  labels:
+    {{- include "orchestrator.labels" (dict "root" .) | nindent 4 }}
+spec:
+  gatewayClassName: {{ required "gateway.className is required with gateway.create" .Values.gateway.className }}
+  listeners:
+    {{- required "gateway.listeners is required with gateway.create" .Values.gateway.listeners | toYaml | nindent 4 }}
+{{- end }}
+{{- if and .Values.jobs.enabled .Values.jobs.httpRoute.enabled }}
+{{- $c := dict "root" . "component" "jobs" }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "orchestrator.componentName" $c }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "orchestrator.jobsLabels" . | nindent 4 }}
+    {{- include "orchestrator.labels" $c | nindent 4 }}
 spec:
-  gatewayClassName: {{ required "jobs.gateway.gatewayClassName is required when jobs.gateway.enabled is true" .Values.jobs.gateway.gatewayClassName }}
-  {{- if not .Values.jobs.gateway.listeners }}
-  {{- fail "jobs.gateway.listeners must be a non-empty list when jobs.gateway.enabled is true" }}
+  parentRefs:
+    - name: {{ include "orchestrator.gatewayName" . }}
+      namespace: {{ include "orchestrator.gatewayNamespace" . }}
+  {{- with .Values.jobs.httpRoute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
   {{- end }}
-  listeners:
-    {{- toYaml .Values.jobs.gateway.listeners | nindent 4 }}
+  rules:
+    - backendRefs:
+        - name: {{ include "orchestrator.componentName" $c }}
+          port: {{ .Values.jobs.service.port }}
 {{- end }}

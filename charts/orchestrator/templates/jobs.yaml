@@ -1,0 +1,75 @@
+{{- if .Values.jobs.enabled }}
+{{- $c := dict "root" . "component" "jobs" "values" .Values.jobs }}
+{{- $ns := include "orchestrator.planeNamespace" (dict "root" . "plane" "jobs") }}
+{{ include "orchestrator.component" (merge (dict
+  "container" "jobs-service"
+  "ports" (list (dict "name" "service" "port" .Values.jobs.service.port))
+  "probe" (dict "port" "service" "readiness" "/readyz" "liveness" "/livez")
+  "env" (include "orchestrator.jobsEnv" .)
+  "auth" .Values.jobs.auth
+  "s3" .Values.jobs.s3
+  "leader" true) $c) }}
+{{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" (include "orchestrator.componentName" $c) "rules" (include "orchestrator.jobsRules" .)) $c) }}
+{{- with .Values.jobs.workload.serviceAccount }}
+{{- if .create }}
+---
+# The account job pods run as. No RoleBindings: the sidecar never calls the
+# Kubernetes API. Job pods are created by the service, so they take their pull
+# credentials from here; the names resolve in jobs.namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "orchestrator.jobSidecarServiceAccountName" $ }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orchestrator.labels" (dict "root" $ "component" "job-sidecar") | nindent 4 }}
+{{- with (default $.Values.imagePullSecrets .imagePullSecrets) }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "orchestrator.jobsEnv" -}}
+{{- $name := include "orchestrator.componentName" (dict "root" . "component" "jobs") -}}
+{{- $port := .Values.jobs.service.port -}}
+- name: ORCHESTRATOR_BACKEND
+  value: kubernetes
+- name: PORT
+  value: {{ $port | quote }}
+{{- include "orchestrator.workloadEnv" (dict "root" . "plane" "jobs") }}
+- name: KUBE_JOB_SERVICE_ACCOUNT
+  value: {{ include "orchestrator.jobSidecarServiceAccountName" . | quote }}
+- name: JOB_SIDECAR_IMAGE
+  value: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.jobSidecar) | quote }}
+- name: ARTIFACT_ENDPOINT
+  value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" $name .Release.Namespace $port) .Values.jobs.artifactEndpoint | quote }}
+- name: JOB_RETENTION
+  value: {{ .Values.jobs.retention | quote }}
+- name: MAINTENANCE_INTERVAL
+  value: {{ .Values.jobs.maintenanceInterval | quote }}
+- name: KUBE_LOG_FLUSH_INTERVAL
+  value: {{ .Values.jobs.logFlushInterval | quote }}
+- name: KUBE_TERMINATION_GRACE_SECONDS
+  value: {{ .Values.jobs.workload.terminationGracePeriodSeconds | quote }}
+{{- include "orchestrator.leaderEnv" (dict "values" .Values.jobs.leaderElection "lease" (default (printf "%s-leader" $name) .Values.jobs.leaderElection.leaseName) "prefix" "KUBE_") }}
+{{- include "orchestrator.s3Env" (dict "root" . "plane" "jobs") }}
+{{- end -}}
+
+{{- define "orchestrator.jobsRules" -}}
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+{{- if .Values.jobs.leaderElection.enabled }}
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+{{- end }}
+{{- end -}}

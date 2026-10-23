@@ -1,42 +1,443 @@
 # Default values for the orchestrator chart.
-# The chart does NOT create a namespace — install with `helm install -n <ns> --create-namespace`
-# or apply a Namespace manifest separately.
+#
+# Every plane (jobs, deployments, sandbox) and every component (the activator,
+# the sandbox proxy, the pool controller, the mount agent) takes the same
+# keys: image, replicaCount, autoscaling, leaderElection, resources,
+# podAnnotations, nodeSelector, tolerations, affinity, priorityClassName,
+# serviceAccount and service. A plane adds what its workload pods get
+# (namespace, networkPolicy, workload, httpRoute, auth, s3).
+#
+# The chart creates no namespaces: install with `helm install -n <ns>
+# --create-namespace`, and provision each plane's namespace yourself
+# (docs/operations.md "A namespace per plane").
 
-# Override the app name in the recommended labels, and the release-derived
-# prefix every resource name is built from. Both empty by default.
+# Override the app name in the recommended labels, and the prefix every
+# resource name is built from: "<release>" when the release name contains the
+# chart name, otherwise "<release>-orchestrator". Components append their own
+# name ("<fullname>-jobs", "<fullname>-pool-controller-revision", ...).
 nameOverride: ""
 fullnameOverride: ""
 
-# Pull credentials for every pod this chart renders — the control-plane
-# Deployments — for a private registry or mirror.
-# Each entry is {name: <secret>}, e.g.:
-#   imagePullSecrets:
-#     - name: ghcr-creds
-# A pull secret is referenced by name only, and that name always resolves in
-# the namespace of the pod using it. Every pod the chart renders lives in the
-# release namespace, so that is where these must exist. The one exception is
-# the job-pod ServiceAccount, which the chart creates in jobs.namespace and
-# which inherits this list — see
-# serviceAccount.jobSidecarImagePullSecrets when that namespace differs.
-# Deployment replicas and warm pods are created by the service rather than the
-# chart; their credentials go on the account they run as (docs/operations.md).
+# Pull credentials for every pod this chart renders, which all live in the
+# release namespace. Workload pods are created by the services, so their
+# credentials go on the ServiceAccount they run as (jobs.workload.serviceAccount
+# for job pods; docs/operations.md).
 imagePullSecrets: []
 
-# Bare warm-pod inventory for every enabled workload plane. The chart runs the
-# same small pool-controller binary once per enabled consumer so each retains
-# its own placement, credentials, metrics, and failure domain.
+# Arbitrary extra env vars on every control-plane container. Each entry is a
+# raw corev1.EnvVar (supports .value, .valueFrom, etc.).
+extraEnv: []
+
+rbac:
+  # Roles, RoleBindings, ClusterRoles and their bindings for every component.
+  create: true
+
+# Shutdown budget of every control-plane pod: HTTP shutdown (25s), component
+# cleanup (10s) and the final OTLP flush (10s), with margin.
+terminationGracePeriodSeconds: 60
+
+# The Gateway API Gateway every plane's HTTPRoutes attach to: the jobs API
+# route, the deployments service's per-deployment routes, and the sandbox
+# wildcard route.
+gateway:
+  # Render the Gateway. Leave off to attach to one managed elsewhere.
+  create: false
+  # Required with create.
+  className: ""
+  # spec.listeners, verbatim. Required with create. When planes run in their
+  # own namespaces, allowedRoutes.namespaces must admit them.
+  listeners: []
+  # Empty = the chart's fullname.
+  name: ""
+  # Empty = the release namespace.
+  namespace: ""
+
+# Images the services place in workload pods, beside the user's container.
+images:
+  # Job pods' sidecar, and the artifact-pre init container of deployment pods.
+  jobSidecar:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
+    tag: "" # defaults to the chart's appVersion
+  # The reverse proxy in front of every deployment replica and sandbox.
+  workloadSidecar:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/workload-sidecar
+    tag: ""
+  # The warm-pod entrypoint, for deployment and sandbox pools.
+  poolShim:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/pool-shim
+    tag: ""
+  # The agent serving the sandbox contract, copied into every sandbox's
+  # workspace. The tag is the agent version pin and matches the in-code
+  # default (internal/sandbox.AgentImage): bump both together.
+  sandboxAgent:
+    ref: ""
+    repository: ghcr.io/open-runtimes/sandbox
+    tag: "0.1.0"
+  # The node mount agent's CSI registration sidecar.
+  csiRegistrar:
+    ref: ""
+    repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
+    tag: v2.13.0
+  # Pull policy for the images above in workload pods. Empty = kubelet default.
+  pullPolicy: ""
+
+# Pull policy for the user's own image in workload pods. Empty = kubelet
+# default. For local dev with ko-loaded images, set images.pullPolicy=Never and
+# leave this empty so upstream images still pull.
+workloadImagePullPolicy: ""
+
+# Jobs API: run-to-completion workloads (batch/v1 Job + a native sidecar each).
+jobs:
+  # Opt-in like every component: a bare `helm install` renders nothing.
+  enabled: false
+  # Namespace job pods run in; "" = the release namespace. Provision it with
+  # its Pod Security labels (baseline, or privileged for in-pod mounting
+  # without the mount agent).
+  namespace: ""
+  # Job pods: no ingress, egress anywhere but the cloud metadata endpoint. Off
+  # by default, since what a build may reach is a platform decision.
+  networkPolicy:
+    enabled: false
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/jobs-service
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  # Requires leaderElection.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # Coordinates watcher ownership; required above one replica.
+  leaderElection:
+    enabled: false
+    # Empty = "<jobs name>-leader".
+    leaseName: ""
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  # No CPU limit by design: CPU is compressible and limits only throttle.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+  serviceAccount:
+    create: true
+    # Empty = the component name.
+    name: ""
+  service:
+    type: ClusterIP
+    port: 8080
+  # Bearer-token auth for the API: name a Secret in the release namespace.
+  # Empty leaves the API open. The key also derives the tokens job sidecars
+  # post artifact results with.
+  auth:
+    existingSecret: ""
+    secretKey: api-key
+  # Credentials for s3:// artifacts, forwarded into every job sidecar.
+  s3:
+    enabled: false
+    endpoint: ""          # empty = AWS (region-derived host)
+    region: us-east-1
+    forcePathStyle: false  # true for MinIO/path-style endpoints
+    accessKeyId: ""
+    secretAccessKey: ""
+    # A Secret with keys S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY instead.
+    existingSecret: ""
+  # An HTTPRoute for the jobs API on the gateway above.
+  httpRoute:
+    enabled: false
+    hostnames: []
+  # The pods the service creates.
+  workload:
+    # Pin job pods to a node pool, and tolerate its taints.
+    nodeSelector: {}
+    tolerations: []
+    # request = limit / overcommit (docs/operations.md "Resource model").
+    cpuOvercommit: 1
+    memoryOvercommit: 1
+    # How long the kubelet waits for the sidecar's post phase after SIGTERM.
+    terminationGracePeriodSeconds: 600
+    # The account job pods run as. It holds no RBAC; it is where their pull
+    # credentials go.
+    serviceAccount:
+      create: true
+      # Empty = "<fullname>-job-sidecar".
+      name: ""
+      # Names resolve in jobs.namespace. Empty = imagePullSecrets.
+      imagePullSecrets: []
+  # URL job sidecars post artifact reports to. Empty = the jobs Service.
+  artifactEndpoint: ""
+  # How long finished jobs are kept, and how often they are swept.
+  retention: 15m
+  maintenanceInterval: 1m
+  # Max time buffered log lines wait before a callback flush (they also flush
+  # at 32 lines).
+  logFlushInterval: 1s
+
+# Serving plane: long-lived HTTP workloads, optionally on warm Revision pools.
+deployments:
+  enabled: false
+  # Namespace replicas and their warm pools run in; "" = the release
+  # namespace. Provision it with its Pod Security labels (restricted admits
+  # every pod the service creates).
+  namespace: ""
+  # Ingress only from the gateway, the activator and this plane's control
+  # plane; egress anywhere but the cloud metadata endpoint.
+  networkPolicy:
+    enabled: true
+    # Namespace the gateway controller pods run in.
+    gatewayNamespace: traefik-system
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/deployments-service
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  # Requires leaderElection.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # Gates the reconcilers (rollout, endpoint flip, autoscaler) to one replica;
+  # required above one replica.
+  leaderElection:
+    enabled: false
+    leaseName: ""
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+  serviceAccount:
+    create: true
+    name: ""
+  service:
+    type: ClusterIP
+    port: 8080
+  auth:
+    existingSecret: ""
+    secretKey: api-key
+  # Credentials for s3:// artifacts, forwarded into the artifact-pre init
+  # container and warm-pool pods.
+  s3:
+    enabled: false
+    endpoint: ""
+    region: us-east-1
+    forcePathStyle: false
+    accessKeyId: ""
+    secretAccessKey: ""
+    existingSecret: ""
+  # The service reconciles an HTTPRoute per deployment on the gateway above
+  # (Traefik, Envoy Gateway, Istio with backendRef-filter support).
+  httpRoute:
+    enabled: true
+  workload:
+    nodeSelector: {}
+    tolerations: []
+    cpuOvercommit: 1
+    memoryOvercommit: 1
+  # Base domain for auto-assigned hosts: {id}.{domain}.
+  domain: localhost
+  # Concurrent Revision reconciles, and the client-side API budget for them.
+  revisionWorkers: 32
+  clientQPS: 200
+  clientBurst: 400
+  # A LimitRange in deployments.namespace: default requests for containers
+  # that declare none, and a default memory limit (no cpu limit).
+  limitRange:
+    enabled: false
+  # Warm Revision pools (docs/pools.md), matched transparently against
+  # complete deployment requests: {id, image, size, cpu, memory, port,
+  # burst (cold|reject), volumes: [{source, path, subPath, readonly}]}.
+  # Shapes must be unique; command and environment come from the request.
+  pools: []
+  # Holds cold-start and async requests in front of deployments and raises
+  # cold revisions from zero. Without it, scale-to-zero deployments 503 when
+  # cold and async requests have nowhere to buffer.
+  activator:
+    enabled: false
+    image:
+      ref: ""
+      repository: ghcr.io/open-runtimes/orchestrator/deployments-activator
+      tag: ""
+      pullPolicy: IfNotPresent
+    replicaCount: 1
+    # Stateless: no leader election needed.
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+    podAnnotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    priorityClassName: ""
+    serviceAccount:
+      create: true
+      name: ""
+    # The data port cold and async requests arrive on.
+    service:
+      type: ClusterIP
+      port: 8081
+
+# Sandboxes (docs/sandboxes.md): live, isolated workspaces at their own
+# hostnames, served by /v1/sandbox.
+sandbox:
+  enabled: false
+  # Namespace sandboxes and their warm pools run in; "" = the release
+  # namespace. Sandboxes run untrusted code: give them one apart from
+  # deployments, with Pod Security restricted.
+  namespace: ""
+  # Ingress only from the sandbox proxy and this plane's control plane.
+  networkPolicy:
+    enabled: true
+  image:
+    ref: ""
+    repository: ghcr.io/open-runtimes/orchestrator/sandbox-service
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  # Gates claimed-sandbox lifecycle (including idle expiry) to one replica.
+  leaderElection:
+    enabled: false
+    leaseName: ""
+    leaseDurationSeconds: 15
+    renewDeadlineSeconds: 10
+    retryPeriodSeconds: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+  serviceAccount:
+    create: true
+    name: ""
+  service:
+    type: ClusterIP
+    port: 8080
+  auth:
+    existingSecret: ""
+    secretKey: api-key
+  s3:
+    enabled: false
+    endpoint: ""
+    region: us-east-1
+    forcePathStyle: false
+    accessKeyId: ""
+    secretAccessKey: ""
+    existingSecret: ""
+  # One wildcard HTTPRoute for *.{domain}, backed by the sandbox proxy. Per
+  # sandbox routes are deliberately not used: gateway programming takes
+  # seconds, which would negate the sub-second claim a create is built on.
+  httpRoute:
+    enabled: true
+  workload:
+    nodeSelector: {}
+    tolerations: []
+    cpuOvercommit: 1
+    memoryOvercommit: 1
+  # Wildcard domain sandboxes are addressed at: s-{token}.{domain}, and
+  # s-{token}-{port}.{domain} for extra ports. Required. The hostname carries
+  # a 128-bit capability token: reaching it is enough to run code there.
+  domain: ""
+  # Scheme handed back in sandbox URLs (https where the gateway terminates TLS).
+  scheme: http
+  # Operator-only warm sandbox shapes, matched transparently against complete
+  # requests: {id, image, port, cpu, memory, size, runtimeClass, mounts}.
+  # Untrusted code is the expected workload, so set runtimeClass: gvisor (or
+  # kata). mounts lets a pool's sandboxes use the `mount` artifact; without the
+  # mount agent that puts a privileged sidecar in every pod of the pool.
+  pools: []
+  # The data plane every sandbox request passes through.
+  proxy:
+    enabled: false
+    image:
+      ref: ""
+      repository: ghcr.io/open-runtimes/orchestrator/sandbox-proxy
+      tag: ""
+      pullPolicy: IfNotPresent
+    replicaCount: 1
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 80
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+    podAnnotations: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    priorityClassName: ""
+    serviceAccount:
+      create: true
+      name: ""
+    # The data port sandbox requests arrive on.
+    service:
+      type: ClusterIP
+      port: 8081
+    # How long a request waits for a still-creating sandbox to answer.
+    holdSeconds: 5
+
+# Warm-pod inventory: one Deployment per enabled plane with pools, each with
+# its own ServiceAccount allowed only in that plane's namespace.
 poolController:
   enabled: true
-  replicaCount: 1
-  healthPort: 8080
   image:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/pool-controller
-    tag: "" # defaults to the chart's appVersion
+    tag: ""
     pullPolicy: IfNotPresent
+  replicaCount: 1
+  # Required above one replica; each pool kind gets its own Lease.
   leaderElection:
     enabled: false
-    # Empty derives a distinct Lease for each pool kind.
+    # Empty = "<pool-controller name>", suffixed with the kind.
     leaseName: ""
     leaseDurationSeconds: 15
     renewDeadlineSeconds: 10
@@ -47,556 +448,41 @@ poolController:
       memory: 32Mi
     limits:
       memory: 128Mi
-
-# Jobs API: run-to-completion workloads. Each plane (jobs, deployments,
-# sandbox) is its own Deployment + Service with its own component name.
-jobs:
-  # Install the jobs service (Deployment + Service + RBAC + PDB/HPA). Opt-in
-  # like every component, so a bare `helm install` renders nothing at all.
-  enabled: false
-  # Namespace job pods run in; "" = the release namespace. The chart does not
-  # create it: provision it with its Pod Security labels (baseline or
-  # privileged: job workers often run as root, and without the mount agent a
-  # mounting job's sidecar is privileged). The chart creates the job-pod
-  # ServiceAccount and the jobs service's Role in it.
-  namespace: ""
-  # NetworkPolicy for job pods: no ingress, egress anywhere but the cloud
-  # metadata endpoint. Off by default, since what a build may reach is a
-  # platform decision (enable it, or ship your own policy). Requires an
-  # enforcing CNI.
-  networkPolicy:
-    enabled: false
-  # Empty uses "jobs" when the release is named "orchestrator", otherwise
-  # "<release>-jobs" to keep resources scoped to the release.
-  fullnameOverride: ""
-  # Image for the jobs-service Deployment.
-  # CI publishes ghcr.io/open-runtimes/orchestrator/jobs-service on every main push,
-  # tagged with both :latest and the commit SHA (plus the semver on release tags).
-  image:
-    # ref fully overrides repository+tag when set (useful for digests, e.g. ko.local/... in dev).
-    ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/jobs-service
-    tag: "" # defaults to the chart's appVersion
-    pullPolicy: IfNotPresent
-  # Image used by job pods (combined native sidecar), and by
-  # deployment pods' artifact-pre init container. Passed via JOB_SIDECAR_IMAGE.
-  sidecarImage:
-    ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/job-sidecar
-    tag: "" # defaults to the chart's appVersion
-  # Credentials for s3:// download/upload artifacts, scoped to the jobs service.
-  # When enabled, the jobs-service forwards these into every job sidecar.
-  s3:
-    enabled: false
-    endpoint: ""          # empty = AWS (region-derived host); set for MinIO/custom
-    region: us-east-1
-    forcePathStyle: false  # true for MinIO/path-style endpoints
-    accessKeyId: ""
-    secretAccessKey: ""
-    # Reference an existing Secret with keys S3_ACCESS_KEY_ID and
-    # S3_SECRET_ACCESS_KEY instead of the inline values above.
-    existingSecret: ""
-  # Bearer-token auth for the jobs API (internal/api.AuthMiddleware). The key
-  # also derives the per-job tokens sidecars use to post artifact results to
-  # the internal endpoint. Empty existingSecret leaves both unauthenticated.
-  # The referenced Secret must exist in the release namespace; its value is
-  # mounted read-only and passed via API_KEY_FILE.
-  auth:
-    existingSecret: ""
-    secretKey: api-key
-  # Optional Gateway API `Gateway` + `HTTPRoute` exposing the jobs API
-  # publicly. Unrelated to `deployments.gateway` below, which instead points
-  # the deployments-service's own in-process reconciler at an
-  # already-existing Gateway — the jobs API has no such reconciler, so the
-  # chart renders both resources directly, matching the shape of a
-  # hand-rolled Gateway/HTTPRoute pair.
-  gateway:
-    # Render a Gateway API `Gateway` resource that the HTTPRoute below
-    # attaches to. Leave disabled when the Gateway is managed elsewhere and
-    # `httpRoute.parentRefs` points at that external Gateway by name.
-    enabled: false
-    # `gatewayClassName` the controller selects on. Required when enabled.
-    gatewayClassName: ""
-    # Listener entries passed verbatim into `spec.listeners`. Required when
-    # enabled. Example:
-    #   listeners:
-    #     - name: web
-    #       port: 8000
-    #       protocol: HTTP
-    #       allowedRoutes:
-    #         namespaces:
-    #           from: Same
-    listeners: []
-  # Divisors deriving a job's requests from its declared cpu/memory limits:
-  # request = limit / overcommit (docs/operations.md "Resource model").
-  # Independent from deployments.{cpu,memory}Overcommit. Values <= 0 mean 1.
-  cpuOvercommit: 1
-  memoryOvercommit: 1
-  # Tolerations stamped on every job pod (standard pod-spec schema), for
-  # tainted node pools, e.g.:
-  #   workloadTolerations:
-  #     - key: workload
-  #       value: edge-builds
-  #       effect: NoSchedule
-  workloadTolerations: []
-  # Node selector stamped on every job pod, pinning jobs to a dedicated node
-  # pool (standard pod-spec schema). Pair with workloadTolerations when the
-  # pool is tainted, e.g.:
-  #   workloadNodeSelector:
-  #     workload: edge-builds
-  workloadNodeSelector: {}
-  # Max time buffered job log lines wait before a callback flush (they also
-  # flush at 32 lines) — keeps low-volume build logs streaming in near real time.
-  logFlushInterval: 1s
-  httpRoute:
-    # Render a Gateway API `HTTPRoute` for the jobs API. Use this instead of
-    # an Ingress when running on a Gateway API-compatible controller/mesh.
-    enabled: false
-    # Gateway parents this route should attach to. Each entry follows the
-    # Gateway API `parentRefs` schema (`{ name, namespace?, sectionName? }`).
-    # Defaults to the Gateway above when it's enabled and this is empty.
-    parentRefs: []
-    # Hostnames the route matches against.
-    hostnames: []
-
-# Serving-plane API (deployments, with optional warm Revision pools).
-deployments:
-  enabled: false
-  # Namespace deployment replicas and their warm pools run in, with their
-  # markers, routes and leases; "" = the release namespace. The chart does not
-  # create it: provision it with its Pod Security labels (restricted admits
-  # every pod the service creates). The Gateway must allow routes from it
-  # (allowedRoutes.namespaces != Same). The chart creates the services' Roles in
-  # it.
-  namespace: ""
-  # NetworkPolicy for deployment pods: ingress only from the gateway, the
-  # activator and this plane's control plane; egress anywhere but the cloud
-  # metadata endpoint. Requires an enforcing CNI.
-  networkPolicy:
-    enabled: true
-    # Namespace the gateway controller pods run in (ingress allow rule).
-    gatewayNamespace: traefik-system
-  # Empty uses "deployments" when the release is named "orchestrator",
-  # otherwise "<release>-deployments".
-  fullnameOverride: ""
-  replicaCount: 1
-  # Concurrent Revision reconciles. Bursty clusters benefit from enough
-  # workers to issue direct Pod creates in parallel.
-  revisionWorkers: 32
-  # Client-side API rate budget for Revision status and direct Pod writes.
-  clientQPS: 200
-  clientBurst: 400
-  image:
-    ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/deployments-service
-    tag: "" # defaults to the chart's appVersion
-    pullPolicy: IfNotPresent
-  # Credentials for s3:// download artifacts, scoped to the deployments/pools
-  # service. Forwarded into the artifact-pre init container and warm-pool pods.
-  s3:
-    enabled: false
-    endpoint: ""
-    region: us-east-1
-    forcePathStyle: false
-    accessKeyId: ""
-    secretAccessKey: ""
-    existingSecret: ""
-  # Data-plane port the in-process activator listens on (Host-based routing).
-  dataPort: 8081
-  # Base domain for auto-assigned hosts: {id}.{domain}.
-  domain: localhost
-  # Annotations on the deployments-service pod (the chart-level podAnnotations
-  # applies only to the jobs component).
   podAnnotations: {}
-  # Gateway API integration: the deployments-service reconciles an HTTPRoute
-  # per deployment against this Gateway (Traefik / Envoy Gateway / Istio with
-  # Extended backendRef-filter support).
-  gateway:
-    enabled: true
-    name: orchestrator
-    # Empty = release namespace.
-    namespace: ""
-  # Bearer-token auth for the deployments API, same mechanism as jobs.auth.
-  auth:
-    existingSecret: ""
-    secretKey: api-key
-  # Divisors deriving a workload's requests from its declared limits:
-  # request = limit / overcommit (docs/operations.md "Resource model"). CPU is
-  # compressible, so raising cpuOvercommit packs workloads denser; memory is
-  # not — raising memoryOvercommit trades OOM risk for density. Applies to
-  # deployment replicas and warm-pool pods. Values <= 0 mean 1.
-  cpuOvercommit: 1
-  memoryOvercommit: 1
-  # Tolerations stamped on every workload pod — deployment replicas and
-  # warm-pool pods (standard pod-spec schema), for tainted node pools.
-  # Independent from jobs.workloadTolerations.
-  workloadTolerations: []
-  # Node selector stamped on every workload pod — deployment replicas and
-  # warm-pool pods — pinning them to a dedicated node pool. Pair with
-  # workloadTolerations when the pool is tainted. Independent from
-  # jobs.workloadNodeSelector.
-  workloadNodeSelector: {}
-  # Leader election gates the background reconcilers (rollout auto-cut, cold
-  # endpoint flip, autoscaler) to one replica. Required when replicaCount > 1.
-  leaderElection:
-    enabled: false
-    # Empty = "<deployments name>-leader".
-    leaseName: ""
-    leaseDurationSeconds: 15
-    renewDeadlineSeconds: 10
-    retryPeriodSeconds: 2
-  # Optional LimitRange in deployments.namespace: default requests for
-  # containers that declare none (no BestEffort creep) and a default memory
-  # limit. Deliberately no default cpu limit — see resource-model.md.
-  limitRange:
-    enabled: false
-  # Warm Revision pools (docs/pools.md): config-declared shapes matched
-  # transparently against complete deployment requests. Each entry is an
-  # internal/pool.Pool: {id, image, size, cpu (required), memory (required),
-  # port (required), burst (cold|reject; default cold),
-  # volumes: [{source (PVC name), path, subPath, readonly}] mounted into every pod}.
-  # Command/environment defaults are intentionally unsupported here: both are
-  # late-bound from the deployment request. Fixed shapes must be unique.
-  # Adding/resizing/removing a pool is a values change + rollout, not an API call.
-  pools: []
-  # Image for the pool-shim (warm-pod entrypoint; installed into workload
-  # containers by the shim-install init container). Shared by deployment pools
-  # and sandbox pools.
-  shimImage:
-    ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/pool-shim
-    tag: "" # defaults to the chart's appVersion
-  # The activator: holds cold-start and async requests in front of deployments
-  # and raises cold revisions from zero. Opt-in like every component; without
-  # it, scale-to-zero deployments 503 when cold and async requests have nowhere
-  # to buffer. Sandboxes have their own data plane — see sandbox.proxy.
-  activator:
-    enabled: false
-    replicaCount: 1
-    # HPA for the buffering edge (stateless; no leader election needed).
-    autoscaling:
-      enabled: false
-      minReplicas: 2
-      maxReplicas: 10
-      targetCPUUtilizationPercentage: 80
-    image:
-      ref: ""
-      repository: ghcr.io/open-runtimes/orchestrator/deployments-activator
-      tag: "" # defaults to the chart's appVersion
-      pullPolicy: IfNotPresent
-    port: 8081
-    # No CPU limit by design (same rule as workloads — CFS throttling hurts
-    # a latency-critical proxy most of all); memory request = limit.
-    resources:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        memory: 256Mi
-  # HPA for the deployments service. Requires deployments.leaderElection.
-  autoscaling:
-    enabled: false
-    minReplicas: 2
-    maxReplicas: 5
-    targetCPUUtilizationPercentage: 80
-  # No CPU limit by design — see the activator note.
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: ""
+  serviceAccount:
+    create: true
+    # Empty = the component name; a set name is suffixed with the kind.
+    name: ""
 
-# Node mount agent (docs/design/node-mount-agent.md): a DaemonSet that serves
-# each mounting pod's workspace as a CSI inline volume and performs its artifact
-# mounts from the node. Enabling it switches every workload that mounts (jobs,
-# deployment revisions, pools, sandboxes) to it, so their pods have no
-# privileged container. The agent itself runs privileged on the host network;
-# its API is gated by a per-pod token, and only pods in the namespaces of the
-# enabled planes may use its driver.
+# Node mount agent (docs/design/node-mount-agent.md): a privileged DaemonSet
+# on the host network that serves each mounting pod's workspace as a CSI
+# inline volume and performs its mounts from the node, so no workload pod is
+# privileged. Its API is gated by a per-pod token, and only pods in the
+# enabled planes' namespaces may use its driver.
 mountAgent:
   enabled: false
   image:
     ref: ""
     repository: ghcr.io/open-runtimes/orchestrator/mount-agent
-    tag: "" # defaults to the chart's appVersion
+    tag: ""
     pullPolicy: IfNotPresent
   # Port the mount API listens on, on each node's own IP.
   port: 9878
-  registrarImage: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
-  # The agent must run on every node a mounting pod can land on, or that pod
-  # never gets its workspace. Empty tolerations take every workload toleration
-  # (jobs, deployments, sandbox); the empty node selector runs it on every node.
-  nodeSelector: {}
-  tolerations: []
-  priorityClassName: system-node-critical
   resources:
     requests:
       cpu: 10m
       memory: 32Mi
     limits:
       memory: 128Mi
-
-# Image for the workload-sidecar: the reverse proxy in front of every serving
-# workload — deployment replicas (created or pool-claimed) and sandboxes. One image for
-# all three, because the pod-local invariants it owns (readiness, drain,
-# per-request timeout, concurrency cap, request counting, and the claim protocol)
-# are the same wherever it runs. Jobs have their own, at jobs.sidecarImage.
-workloadSidecarImage:
-  ref: ""
-  repository: ghcr.io/open-runtimes/orchestrator/workload-sidecar
-  tag: "" # defaults to the chart's appVersion
-
-# Sandboxes (docs/sandboxes.md): live, isolated workspaces driven over HTTP at
-# their own hostnames — a workload kind alongside jobs and deployments, with
-# its own service (sandbox-service) serving /v1/sandbox. Runs with or
-# without the deployments plane.
-sandbox:
-  enabled: false
-  # Namespace sandboxes and their warm pools run in; "" = the release
-  # namespace. Sandboxes run untrusted code: give them a namespace of their
-  # own, apart from deployments. The chart does not create it: provision it
-  # with its Pod Security labels (restricted admits every pod the service
-  # creates). The chart creates the services' Roles in it.
-  namespace: ""
-  # NetworkPolicy for sandbox pods: ingress only from the sandbox proxy and
-  # this plane's control plane; egress anywhere but the cloud metadata
-  # endpoint. Requires an enforcing CNI.
-  networkPolicy:
-    enabled: true
-  # Empty uses "sandbox" when the release is named "orchestrator",
-  # otherwise "<release>-sandbox".
-  fullnameOverride: ""
-  replicaCount: 1
-  image:
-    ref: ""
-    repository: ghcr.io/open-runtimes/orchestrator/sandbox-service
-    tag: "" # defaults to the chart's appVersion
-    pullPolicy: IfNotPresent
-  # Credentials for s3:// download artifacts, scoped to the sandbox service.
-  s3:
-    enabled: false
-    endpoint: ""
-    region: us-east-1
-    forcePathStyle: false
-    accessKeyId: ""
-    secretAccessKey: ""
-    existingSecret: ""
-  # Bearer-token auth for the sandbox API, same mechanism as jobs.auth.
-  auth:
-    existingSecret: ""
-    secretKey: api-key
-  # Annotations on the sandbox-service pod.
   podAnnotations: {}
-  # Same resource model as deployments.cpuOvercommit/memoryOvercommit,
-  # applied to matched-pool and directly created sandbox pods.
-  cpuOvercommit: 1
-  memoryOvercommit: 1
-  # Tolerations / node selector stamped on every sandbox pod, independent
-  # from the deployments and jobs equivalents.
-  workloadTolerations: []
-  workloadNodeSelector: {}
-  # Leader election gates claimed-sandbox lifecycle (including idle expiry) to
-  # one replica. Bare inventory uses poolController.leaderElection instead.
-  leaderElection:
-    enabled: false
-    # Empty = "<sandbox name>-leader".
-    leaseName: ""
-    leaseDurationSeconds: 15
-    renewDeadlineSeconds: 10
-    retryPeriodSeconds: 2
-  # HPA for the sandbox service. Requires sandbox.leaderElection.
-  autoscaling:
-    enabled: false
-    minReplicas: 2
-    maxReplicas: 5
-    targetCPUUtilizationPercentage: 80
-  # No CPU limit by design — see the activator note.
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      memory: 256Mi
-  # Existing Gateway the wildcard sandbox HTTPRoute attaches to (the sandbox
-  # service itself programs no routes). The Gateway the chart can create for
-  # jobs (jobs.gateway) is named after the jobs service, not "orchestrator":
-  # name it here to share it.
-  gateway:
-    name: orchestrator
-    # Empty = release namespace.
-    namespace: ""
-  # Operator-only warm sandbox shapes. Callers always submit the complete pod
-  # shape and never name a pool; an exact match is claimed transparently, while
-  # no match or exhausted reject capacity creates that same bare pod directly.
-  # CPU and memory are required and shapes must be unique. Command and
-  # environment remain request-time fields and cannot be declared here.
-  # The open-runtimes/sandbox agent is copied into every sandbox's workspace,
-  # so any runtime image works and `port` is where the agent listens.
-  # Untrusted, model-generated code is the expected workload here, so set
-  # runtimeClass: gvisor (or kata) and map it with KUBE_RUNTIME_CLASSES.
-  #
-  # Pools are optional and affect startup latency only. The sandbox API and
-  # requested runtime semantics are identical with or without a matching pool.
-  #
-  # mounts lets this pool's sandboxes use the `mount` artifact (a tar archive,
-  # squashfs image, or erofs image, optionally with a tmpfs overlay).
-  # It is a pool dimension because it changes the pod: the sidecar performing
-  # the mount runs PRIVILEGED as root, and the workspace carries mount
-  # propagation. That privileged container then sits in every pod of the pool,
-  # beside whatever the sandbox runs — so leave it off unless the pool needs it,
-  # and do not combine it with untrusted code you are relying on isolation for.
-  #
-  #   - id: py
-  #     image: python:3.12-slim
-  #     port: 3000
-  #     cpu: 1
-  #     memory: 512
-  #     size: 4
-  #     runtimeClass: gvisor
-  #
-  #   - id: restore          # a pool that mounts filesystem images
-  #     image: python:3.12-slim
-  #     port: 3000
-  #     cpu: 1
-  #     memory: 512
-  #     size: 2
-  #     mounts: true
-  pools: []
-  # Sandboxes may also declare extra ports per create call; each is addressed
-  # at s-{token}-{port}.{domain} — the same label, so one wildcard cert covers
-  # every port of every sandbox.
-  #
-  # Image publishing the agent that serves the sandbox contract. It is used as an
-  # init container whose command is replaced by a copy of the binary into the
-  # sandbox's workspace — so pool images stay ordinary runtime images, and this
-  # tag (or a digest in `ref`) is the agent version pin, and it matches the
-  # in-code default (internal/sandbox.AgentImage) — bump both together.
-  agentImage:
-    ref: ""
-    repository: ghcr.io/open-runtimes/sandbox
-    tag: "0.1.0"
-  # Wildcard domain sandboxes are addressed at: s-{token}.{domain}. Required
-  # when enabled. Requires a wildcard DNS record (*.{domain}) pointing at the
-  # gateway. Each sandbox's hostname carries a 128-bit capability token, so
-  # treat the URL as a secret: reaching it is enough to run code in the
-  # sandbox. Pools are optional operator-only warm capacity; callers always
-  # submit complete image-backed shapes to /v1/sandbox.
-  domain: ""
-  # Scheme handed back in sandbox URLs (https where the gateway terminates TLS).
-  scheme: http
-  # The sandbox proxy: the data plane every sandbox request passes through.
-  # Its own component rather than a mode of the activator — it is permanently
-  # on the request path (so it scales with sandbox traffic, not with cold
-  # starts), it reads pods only, and it has nothing to raise.
-  proxy:
-    enabled: false
-    replicaCount: 1
-    autoscaling:
-      enabled: false
-      minReplicas: 2
-      maxReplicas: 10
-      targetCPUUtilizationPercentage: 80
-    image:
-      ref: ""
-      repository: ghcr.io/open-runtimes/orchestrator/sandbox-proxy
-      tag: "" # defaults to the chart's appVersion
-      pullPolicy: IfNotPresent
-    port: 8081
-    # How long a request waits for a still-creating sandbox to answer. Seconds,
-    # not the deployments start timeout: a sandbox has no scale-from-zero, so
-    # if its pod is gone, waiting cannot help.
-    holdSeconds: 5
-    # A wildcard HTTPRoute for *.{domain} backed by the sandbox proxy — the
-    # whole routing story for every sandbox. Per-sandbox routes are
-    # deliberately not used: gateway programming takes seconds, which would
-    # negate the sub-second claim a create is built on.
-    route:
-      enabled: true
-    # No CPU limit by design (same rule as the activator).
-    resources:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        memory: 256Mi
-
-replicaCount: 1
-
-# HPA for the jobs service. Requires leaderElection.enabled.
-autoscaling:
-  enabled: false
-  minReplicas: 2
-  maxReplicas: 5
-  targetCPUUtilizationPercentage: 80
-
-# Leader election coordinates watcher ownership across replicas. Required when
-# replicaCount > 1 to avoid duplicate lifecycle callbacks; optional at
-# replicaCount == 1 (and cheap — the lone candidate just always wins).
-leaderElection:
-  enabled: false
-  # Empty = "<jobs service name>-leader". Override only if you run
-  # multiple releases in the same namespace.
-  leaseName: ""
-  leaseDurationSeconds: 15
-  renewDeadlineSeconds: 10
-  retryPeriodSeconds: 2
-
-serviceAccount:
-  # ServiceAccount for the jobs-service Deployment itself — needs RBAC to manage Jobs+Pods.
-  create: true
-  name: ""
-  # ServiceAccount used by every job pod. Intentionally has no RoleBindings; the sidecar
-  # does not call the K8s API (it catches SIGTERM from kubelet).
-  jobSidecarCreate: true
-  # Empty defaults to "<release>-job-sidecar" so releases sharing a namespace don't collide.
-  jobSidecarName: ""
-  # Pull secrets for the job-pod ServiceAccount, which lives in
-  # jobs.namespace. Empty inherits the top-level imagePullSecrets, which is
-  # right while jobs share the release namespace. Set this when jobs.namespace
-  # differs and the credentials are named
-  # differently there — a name that does not exist in the job namespace leaves
-  # private-image job pods in ImagePullBackOff, whatever the top-level list says.
-  jobSidecarImagePullSecrets: []
-
-rbac:
-  create: true
-
-service:
-  type: ClusterIP
-  apiPort: 8080
-  # Covers HTTP shutdown (25s), component cleanup (10s), and the final OTLP
-  # flush (10s), with margin for process and kubelet scheduling overhead.
-  terminationGracePeriodSeconds: 60
-
-# Orchestrator runtime config.
-orchestrator:
-  # Full URL the sidecar POSTs artifact reports to. Empty auto-derives from release+namespace.
-  artifactEndpoint: ""
-  jobRetention: 15m
-  maintenanceInterval: 1m
-  # How long kubelet waits for the combined sidecar to finish after sending SIGTERM.
-  terminationGracePeriodSeconds: 600
-  # ImagePullPolicy for the containers the services create in workload pods
-  # (jobs, deployment replicas, sandboxes, warm pods). Empty = kubelet default.
-  # workerImagePullPolicy applies to the user workload; sidecarImagePullPolicy to
-  # our own containers beside it (sidecars, init containers). For local dev with ko-loaded images,
-  # set sidecarImagePullPolicy=Never and leave workerImagePullPolicy empty so alpine etc.
-  # still pulls from upstream.
-  workerImagePullPolicy: ""
-  sidecarImagePullPolicy: ""
-
-# No CPU limit by design (same rule as workloads — CPU is compressible and
-# limits cause needless throttling); memory is capped.
-resources:
-  requests:
-    cpu: 50m
-    memory: 64Mi
-  limits:
-    memory: 256Mi
-
-podAnnotations: {}
-
-# Arbitrary extra env vars on all service and data-plane containers.
-# Each entry is a raw corev1.EnvVar (supports .value, .valueFrom, etc.).
-extraEnv: []
+  # It must run on every node a mounting pod can land on. Empty tolerations
+  # take every plane's workload.tolerations; the empty node selector runs it
+  # on every node.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  priorityClassName: system-node-critical

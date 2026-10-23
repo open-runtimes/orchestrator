@@ -58,8 +58,8 @@ if DEPLOYMENTS_ENABLED or SANDBOXES_ENABLED:
     ko_build(POOL_SHIM_IMAGE, './cmd/pool-shim', ['cmd/pool-shim', 'internal'])
     ko_build(POOL_CONTROLLER_IMAGE, './cmd/pool-controller', ['cmd/pool-controller', 'internal'])
     helm_set += [
-        'workloadSidecarImage.repository=' + WORKLOAD_SIDECAR_IMAGE,
-        'deployments.shimImage.repository=' + POOL_SHIM_IMAGE,
+        'images.workloadSidecar.repository=' + WORKLOAD_SIDECAR_IMAGE,
+        'images.poolShim.repository=' + POOL_SHIM_IMAGE,
         'poolController.image.repository=' + POOL_CONTROLLER_IMAGE,
         'poolController.image.pullPolicy=Never',
     ]
@@ -98,17 +98,17 @@ k8s_yaml(helm(
 ))
 
 k8s_resource(
-    'jobs',
+    'orchestrator-jobs',
     port_forwards=[
         port_forward(8080, 8080, name='api'),
     ],
     labels=['orchestrator'],
     objects=[
         'orchestrator:namespace',
-        'jobs:serviceaccount',
-        'job-sidecar:serviceaccount',
-        'jobs:role',
-        'jobs:rolebinding',
+        'orchestrator-jobs:serviceaccount',
+        'orchestrator-job-sidecar:serviceaccount',
+        'orchestrator-jobs:role',
+        'orchestrator-jobs:rolebinding',
     ],
     links=[
         link('http://localhost:8080/readyz', 'readyz'),
@@ -117,7 +117,7 @@ k8s_resource(
 
 if DEPLOYMENTS_ENABLED:
     k8s_resource(
-        'deployments',
+        'orchestrator-deployments',
         port_forwards=[
             port_forward(8081, 8080, name='api'),
         ],
@@ -129,7 +129,7 @@ if DEPLOYMENTS_ENABLED:
 
 if SANDBOXES_ENABLED:
     k8s_resource(
-        'sandbox',
+        'orchestrator-sandbox',
         port_forwards=[
             port_forward(8082, 8080, name='api'),
         ],

@@ -1,0 +1,112 @@
+{{- if .Values.sandbox.proxy.enabled }}
+{{- if not .Values.sandbox.enabled }}
+{{- fail "sandbox.proxy.enabled requires sandbox.enabled: the sandboxes service is what serves /v1/sandbox" }}
+{{- end }}
+{{- end }}
+{{- if .Values.sandbox.enabled }}
+{{- $c := dict "root" . "component" "sandbox" "values" .Values.sandbox }}
+{{- $p := dict "root" . "component" "sandbox-proxy" "values" .Values.sandbox.proxy }}
+{{- $ns := include "orchestrator.planeNamespace" (dict "root" . "plane" "sandbox") }}
+{{- $domain := required "sandbox.domain is required (the wildcard domain sandboxes are addressed at)" .Values.sandbox.domain }}
+{{ include "orchestrator.component" (merge (dict
+  "container" "sandbox-service"
+  "ports" (list (dict "name" "service" "port" .Values.sandbox.service.port))
+  "probe" (dict "port" "service" "readiness" "/readyz" "liveness" "/livez")
+  "env" (include "orchestrator.sandboxEnv" .)
+  "auth" .Values.sandbox.auth
+  "s3" .Values.sandbox.s3
+  "leader" true) $c) }}
+{{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" (include "orchestrator.componentName" $c) "rules" (include "orchestrator.sandboxRules" .)) $c) }}
+{{- include "orchestrator.runtimeClassReader" $c }}
+{{- if .Values.sandbox.proxy.enabled }}
+{{- /*
+The sandbox proxy resolves a sandbox from the capability token in the Host.
+Its own component rather than a mode of the activator: permanently on the data
+path, pods read-only, nothing to raise. Its probes use the management port:
+every path on the data port belongs to the sandbox.
+*/}}
+---
+{{ include "orchestrator.component" (merge (dict
+  "container" "sandbox-proxy"
+  "ports" (list (dict "name" "service" "port" .Values.sandbox.proxy.service.port) (dict "name" "mgmt" "port" 8080))
+  "probe" (dict "port" "mgmt" "readiness" "/healthz" "liveness" "/healthz")
+  "env" (include "orchestrator.sandboxProxyEnv" .)) $p) }}
+{{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" (include "orchestrator.componentName" $p) "rules" "- apiGroups: [\"\"]\n  resources: [\"pods\"]\n  verbs: [\"get\", \"list\", \"watch\"]") $p) }}
+{{- if .Values.sandbox.httpRoute.enabled }}
+---
+# One wildcard route for every sandbox that will ever exist: nothing is
+# programmed per create, so creates stay as fast as the claim.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "orchestrator.componentName" $c }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.labels" $p | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "orchestrator.gatewayName" . }}
+      namespace: {{ include "orchestrator.gatewayNamespace" . }}
+  hostnames:
+    - {{ printf "*.%s" $domain | quote }}
+  rules:
+    - backendRefs:
+        - name: {{ include "orchestrator.componentName" $p }}
+          port: {{ .Values.sandbox.proxy.service.port }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "orchestrator.sandboxEnv" -}}
+- name: ORCHESTRATOR_BACKEND
+  value: kubernetes
+- name: PORT
+  value: {{ .Values.sandbox.service.port | quote }}
+{{- include "orchestrator.workloadEnv" (dict "root" . "plane" "sandbox") }}
+- name: SANDBOX_DOMAIN
+  value: {{ .Values.sandbox.domain | quote }}
+- name: SANDBOX_SCHEME
+  value: {{ .Values.sandbox.scheme | quote }}
+{{- with .Values.sandbox.pools }}
+- name: SANDBOX_POOLS_JSON
+  value: {{ toJson . | quote }}
+{{- end }}
+- name: SANDBOX_AGENT_IMAGE
+  value: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.sandboxAgent) | quote }}
+- name: WORKLOAD_SIDECAR_IMAGE
+  value: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.workloadSidecar) | quote }}
+- name: POOL_SHIM_IMAGE
+  value: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.poolShim) | quote }}
+{{- include "orchestrator.leaderEnv" (dict "values" .Values.sandbox.leaderElection "lease" (default (printf "%s-leader" (include "orchestrator.componentName" (dict "root" . "component" "sandbox"))) .Values.sandbox.leaderElection.leaseName) "prefix" "KUBE_") }}
+{{- include "orchestrator.s3Env" (dict "root" . "plane" "sandbox") }}
+{{- end -}}
+
+{{- define "orchestrator.sandboxProxyEnv" -}}
+- name: ACTIVATOR_PORT
+  value: {{ .Values.sandbox.proxy.service.port | quote }}
+- name: PORT
+  value: "8080"
+- name: KUBE_NAMESPACE
+  value: {{ include "orchestrator.planeNamespace" (dict "root" . "plane" "sandbox") | quote }}
+- name: SANDBOX_DOMAIN
+  value: {{ .Values.sandbox.domain | quote }}
+- name: SANDBOX_HOLD_SECONDS
+  value: {{ .Values.sandbox.proxy.holdSeconds | quote }}
+{{- end -}}
+
+{{- define "orchestrator.sandboxRules" -}}
+# Claim and discard matched pods, and create direct or burst-cold ones.
+# Standing inventory belongs to the pool controller.
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# The sandbox-claim-key install key claim tokens derive from.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create", "update", "delete"]
+{{- if .Values.sandbox.leaderElection.enabled }}
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+{{- end }}
+{{- end -}}

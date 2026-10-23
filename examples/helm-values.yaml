@@ -10,23 +10,21 @@
 # controller with Extended features (Traefik, Envoy Gateway, Istio) — see
 # docs/operations.md.
 
-# Every component is opt-in; this example enables both planes.
+# The Gateway every plane's routes attach to. Leave create off to attach to
+# one you already manage (gateway.name / gateway.namespace).
+gateway:
+  create: true
+  className: traefik
+  listeners:
+    - name: web
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces: { from: All } # deployments route from their own namespace
+
+# Every component is opt-in; this example enables the jobs and serving planes.
 jobs:
   enabled: true
-
-  # Publicly expose the jobs API via Gateway API. You own the Gateway
-  # (listener config, TLS, load balancer) as with deployments.gateway below —
-  # omit jobs.gateway and set jobs.httpRoute.parentRefs instead to attach to
-  # one you already manage.
-  gateway:
-    enabled: true
-    gatewayClassName: traefik
-    listeners:
-      - name: web
-        port: 8000
-        protocol: HTTP
-        allowedRoutes:
-          namespaces: { from: Same }
   httpRoute:
     enabled: true
     hostnames:
@@ -44,13 +42,6 @@ deployments:
   # Deployments get hosts like {id}.apps.example.com; point a wildcard DNS
   # record for this domain at your gateway's address.
   domain: apps.example.com
-
-  # The Gateway resource HTTPRoutes attach to. You create and own it
-  # (listeners, TLS, load balancer) — see docs/operations.md for an example.
-  gateway:
-    enabled: true
-    name: orchestrator
-    namespace: "" # empty = release namespace
 
   # Warm pools: standing capacity automatically matched to complete deployment
   # specs by fixed image/port/resources/shape (docs/pools.md). Resize with a
@@ -72,7 +63,8 @@ deployments:
 
   # CPU is compressible: request = limit / overcommit, no CPU limit.
   # 2 packs workloads twice as dense at the cost of contention under load.
-  cpuOvercommit: 2
+  workload:
+    cpuOvercommit: 2
 
   # Default requests for workload containers that declare none.
   limitRange:
@@ -104,7 +96,7 @@ poolController:
   leaderElection:
     enabled: true
 
-# ── Autoscaler tuning + API auth (both services) ─────────────────────────────
+# ── Autoscaler tuning (every service) ────────────────────────────────────────
 extraEnv:
   # Push metrics to an OTLP/HTTP collector. OTLP export stays disabled when no
   # exporter or endpoint is configured.
@@ -113,13 +105,5 @@ extraEnv:
   # Concurrency window: shorter reacts faster, both up and down.
   - name: AUTOSCALER_WINDOW
     value: 60s
-  # Require `Authorization: Bearer <key>` on the APIs. Mount the secret via
-  # your pod-level tooling (extraEnv + CSI/operator of choice); with no key
-  # configured the API is open and the services log a warning.
-  # - name: API_KEY_FILE
-  #   value: /run/secrets/orchestrator/api-key
-
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
+# Require `Authorization: Bearer <key>` on an API with <plane>.auth.existingSecret;
+# with no key configured the API is open and the service logs a warning.
