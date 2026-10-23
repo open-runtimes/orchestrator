@@ -325,6 +325,8 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@v1
         with:
+          # The node image in hack/kind-config.yaml needs kind v0.33+.
+          version: v0.33.0
           cluster_name: orchestrator-dev
           config: hack/kind-config.yaml
 
