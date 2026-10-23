@@ -40,7 +40,7 @@ func (a *Download) ArtifactID() string   { return a.ID }
 func (a *Download) ArtifactType() string { return "download" }
 func (a *Download) DependsOn() string    { return a.Depends }
 
-// SetS3Profiles satisfies S3Configurable.
+// SetS3Profiles satisfies s3Configurable.
 func (a *Download) SetS3Profiles(p config.S3Profiles) { a.s3 = p }
 
 // Apply downloads a file from a URL.

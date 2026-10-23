@@ -1,7 +1,9 @@
 package config
 
 import (
+	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -28,6 +30,13 @@ const (
 
 const defaultS3Region = "us-east-1"
 
+// s3ProfileName is what a profile may be called: lower case, so the URL, the
+// env var prefix and the chart all name it the same way.
+var s3ProfileName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// ValidS3ProfileName reports whether name can name an S3 profile.
+func ValidS3ProfileName(name string) bool { return s3ProfileName.MatchString(name) }
+
 // s3Env returns the environment variable holding key for a profile; "" is the
 // default profile.
 func s3Env(profile, key string) string {
@@ -50,16 +59,27 @@ type S3Credentials struct {
 // S3Profiles maps a profile name to its credentials. The default profile is
 // "", used by s3://bucket/key; s3://name@bucket/key selects a named one. It is
 // loaded per service (jobs vs deployments) from that service's environment and
-// forwarded verbatim into the sidecar containers via ToEnv.
+// forwarded into the sidecar containers via ToEnv.
 type S3Profiles map[string]S3Credentials
 
 // LoadS3Profiles reads the default profile and every profile named in
-// EnvS3Profiles from the environment.
+// EnvS3Profiles from the environment. A name that is not a valid profile name
+// is skipped, and a listed profile without keys is kept disabled; both log a
+// warning, since an artifact naming either fails at apply time.
 func LoadS3Profiles() S3Profiles {
 	profiles := S3Profiles{"": loadS3Credentials("")}
 	for name := range strings.SplitSeq(GetEnv(EnvS3Profiles, ""), ",") {
-		if name = strings.TrimSpace(name); name != "" {
-			profiles[name] = loadS3Credentials(name)
+		name = strings.TrimSpace(name)
+		switch {
+		case name == "":
+			continue
+		case !ValidS3ProfileName(name):
+			slog.Warn("Ignoring invalid S3 profile name", "profile", name, "want", s3ProfileName.String())
+			continue
+		}
+		profiles[name] = loadS3Credentials(name)
+		if !profiles[name].Enabled() {
+			slog.Warn("S3 profile has no access key or secret", "profile", name)
 		}
 	}
 	return profiles
@@ -97,7 +117,7 @@ func (c S3Credentials) Enabled() bool {
 // forwarding into a sidecar container. Profiles without keys are dropped, so
 // the sidecar sees nothing unless the service is set up for S3.
 func (p S3Profiles) ToEnv() [][2]string {
-	var env, named [][2]string
+	var env [][2]string
 	var names []string
 	for _, name := range slices.Sorted(maps.Keys(p)) {
 		c := p[name]
@@ -107,28 +127,22 @@ func (p S3Profiles) ToEnv() [][2]string {
 		if name != "" {
 			names = append(names, name)
 		}
-		named = append(named, c.toEnv(name)...)
+		set := func(key, value string) {
+			if value != "" {
+				env = append(env, [2]string{s3Env(name, key), value})
+			}
+		}
+		set(s3AccessKeyID, c.AccessKeyID)
+		set(s3SecretAccessKey, c.SecretAccessKey)
+		set(s3Region, c.Region)
+		set(s3SessionToken, c.SessionToken)
+		set(s3Endpoint, c.Endpoint)
+		if c.ForcePathStyle {
+			set(s3ForcePathStyle, "true")
+		}
 	}
 	if len(names) > 0 {
 		env = append(env, [2]string{EnvS3Profiles, strings.Join(names, ",")})
-	}
-	return append(env, named...)
-}
-
-func (c S3Credentials) toEnv(profile string) [][2]string {
-	env := [][2]string{
-		{s3Env(profile, s3AccessKeyID), c.AccessKeyID},
-		{s3Env(profile, s3SecretAccessKey), c.SecretAccessKey},
-		{s3Env(profile, s3Region), c.Region},
-	}
-	if c.SessionToken != "" {
-		env = append(env, [2]string{s3Env(profile, s3SessionToken), c.SessionToken})
-	}
-	if c.Endpoint != "" {
-		env = append(env, [2]string{s3Env(profile, s3Endpoint), c.Endpoint})
-	}
-	if c.ForcePathStyle {
-		env = append(env, [2]string{s3Env(profile, s3ForcePathStyle), "true"})
 	}
 	return env
 }

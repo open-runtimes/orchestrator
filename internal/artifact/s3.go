@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -42,10 +43,7 @@ func newSignedS3Request(ctx context.Context, method, rawURL string, body io.Read
 	profile := u.User.Username()
 	creds := profiles[profile]
 	if !creds.Enabled() {
-		if profile != "" {
-			return nil, fmt.Errorf("s3 URL %q uses S3 profile %q, but it is not configured", rawURL, profile)
-		}
-		return nil, fmt.Errorf("s3 URL %q requires S3 credentials, but none are configured", rawURL)
+		return nil, fmt.Errorf("s3 URL %q: S3 profile %q is not configured", rawURL, cmp.Or(profile, "default"))
 	}
 	bucket := u.Host
 	key := strings.TrimPrefix(u.Path, "/")

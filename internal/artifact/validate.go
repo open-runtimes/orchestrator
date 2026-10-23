@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"orchestrator/internal/config"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -29,8 +30,13 @@ func validateURL(rawURL string) error {
 	}
 	// s3://profile@bucket/key names a configured credential profile; the
 	// credentials themselves never ride the URL.
-	if _, hasPassword := parsed.User.Password(); scheme == s3Scheme && hasPassword {
-		return errors.New("s3 URL must not carry credentials; name a profile as s3://profile@bucket/key")
+	if scheme == s3Scheme && parsed.User != nil {
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			return errors.New("s3 URL must not carry credentials; name a profile as s3://profile@bucket/key")
+		}
+		if !config.ValidS3ProfileName(parsed.User.Username()) {
+			return errors.New("s3 profile must be lower case letters, digits and underscores, starting with a letter")
+		}
 	}
 	return nil
 }

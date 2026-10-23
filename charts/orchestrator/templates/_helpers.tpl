@@ -105,8 +105,10 @@ app.kubernetes.io/component: {{ . }}
 - name: {{ .prefix }}ENDPOINT
   value: {{ .p.endpoint | quote }}
 {{- end }}
-- name: {{ .prefix }}REGION
-  value: {{ default "us-east-1" .p.region | quote }}
+{{- with .p.region }}
+- name: {{ $.prefix }}REGION
+  value: {{ . | quote }}
+{{- end }}
 {{- if .p.forcePathStyle }}
 - name: {{ .prefix }}FORCE_PATH_STYLE
   value: "true"

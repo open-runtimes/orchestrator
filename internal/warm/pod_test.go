@@ -4,6 +4,7 @@ import (
 	"orchestrator/internal/mountagent"
 	"orchestrator/internal/pool"
 	"orchestrator/internal/workload"
+	"strings"
 	"testing"
 
 	"orchestrator/internal/deployment"
@@ -365,5 +366,27 @@ func TestBuildPod_AgentMounts(t *testing.T) {
 	// Turning the agent on or off must replace a mounting pool's warm pods.
 	if first.Annotations[annotationPoolSpecHash] == poolSpecHash(&p.Spec, Config{}) {
 		t.Error("the pool spec hash ignores whether the agent serves the pool")
+	}
+}
+
+// Warm pods carry the S3 credentials they were built with, so adding a
+// profile or rotating keys must replace them: the pool hash follows both.
+func TestPoolSpecHash_FollowsS3Credentials(t *testing.T) {
+	spec := mapperPool()
+	none := poolSpecHash(spec, Config{})
+	t.Setenv("S3_ACCESS_KEY_ID", "AKID")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "SECRET")
+	withDefault := poolSpecHash(spec, Config{})
+	t.Setenv("S3_PROFILES", "archive")
+	t.Setenv("S3_ARCHIVE_ACCESS_KEY_ID", "AKIDARCHIVE")
+	t.Setenv("S3_ARCHIVE_SECRET_ACCESS_KEY", "SECRETARCHIVE")
+	withProfile := poolSpecHash(spec, Config{})
+	t.Setenv("S3_ARCHIVE_SECRET_ACCESS_KEY", "ROTATED")
+	rotated := poolSpecHash(spec, Config{})
+	if none == withDefault || withDefault == withProfile || withProfile == rotated {
+		t.Errorf("hash did not change: none=%s default=%s profile=%s rotated=%s", none, withDefault, withProfile, rotated)
+	}
+	if strings.Contains(withProfile, "SECRET") {
+		t.Error("the hash annotation must not carry the credentials")
 	}
 }

@@ -36,7 +36,7 @@ func (a *Upload) ArtifactID() string   { return a.ID }
 func (a *Upload) ArtifactType() string { return "upload" }
 func (a *Upload) DependsOn() string    { return a.Depends }
 
-// SetS3Profiles satisfies S3Configurable.
+// SetS3Profiles satisfies s3Configurable.
 func (a *Upload) SetS3Profiles(p config.S3Profiles) { a.s3 = p }
 
 // Apply uploads a file to a URL with retry.
