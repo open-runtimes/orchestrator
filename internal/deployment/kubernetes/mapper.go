@@ -51,13 +51,11 @@ const (
 func buildRevision(req *deployment.Request, cfg Config, revision string) *revisionapi.Revision {
 	labels := revisionLabels(req.ID, revision)
 	return &revisionapi.Revision{
-		TypeMeta: metav1.TypeMeta{APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      objectNameFor(revision),
-			Namespace: cfg.Namespace,
-			Labels:    labels,
-		},
-		Spec: revisionSpec(req, cfg, revision, labels),
+		APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind,
+		Name:      objectNameFor(revision),
+		Namespace: cfg.Namespace,
+		Labels:    labels,
+		Spec:      revisionSpec(req, cfg, revision, labels),
 	}
 }
 
@@ -67,8 +65,8 @@ func revisionSpec(req *deployment.Request, cfg Config, revision string, labels m
 		Replicas:            max(int32(req.Replicas), 0),
 		ReadyTimeoutSeconds: int32(req.ReadyTimeoutSeconds),
 		Template: &corev1.PodTemplateSpec{
-			ObjectMeta: metav1.ObjectMeta{Labels: labels},
-			Spec:       buildPodSpec(req, cfg, revision),
+			Labels: labels,
+			Spec:   buildPodSpec(req, cfg, revision),
 		},
 		Claim: &workload.ClaimRequest{
 			ClaimID: revision,
@@ -110,10 +108,8 @@ func revisionLabels(id, revision string) map[string]string {
 // are no pods behind a selector to resolve a named port against.
 func buildService(id, revision string) *corev1.Service {
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   objectNameFor(revision),
-			Labels: revisionLabels(id, revision),
-		},
+		Name:   objectNameFor(revision),
+		Labels: revisionLabels(id, revision),
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
 			Ports: []corev1.ServicePort{{
@@ -133,7 +129,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 	if artifact.HasMount(req.Artifacts) {
 		// A Revision's template is shared by every replica; each pod gets its
 		// own token when it is created (buildRevisionPod).
-		mounting = ptr.To(kube.NewMounting(cfg.MountAgentPort, ""))
+		mounting = new(kube.NewMounting(cfg.MountAgentPort, ""))
 		workspaceVolume = mounting.Workspace
 	}
 
@@ -152,7 +148,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 		NodeSelector:                 cfg.NodeSelector,
 		Volumes: append([]corev1.Volume{
 			{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
-			{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: VolumeTmp, EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		}, podVolumes...),
 		InitContainers: initContainers,
 		Containers:     []corev1.Container{workerContainer(req, cfg)},
@@ -233,11 +229,9 @@ func proxyContainer(req *deployment.Request, cfg Config, mounting *kube.Mounting
 			{Name: portNameAdmin, ContainerPort: workload.DefaultAdminPort},
 		},
 		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/ready",
-					Port: intstr.FromInt32(workload.DefaultAdminPort),
-				},
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/ready",
+				Port: intstr.FromInt32(workload.DefaultAdminPort),
 			},
 			PeriodSeconds:    1,
 			FailureThreshold: 3,
@@ -259,11 +253,9 @@ func mountsReadyProbe(req *deployment.Request) *corev1.Probe {
 		return nil
 	}
 	return &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{
-				Path: workload.MountsReadyPath,
-				Port: intstr.FromInt32(workload.DefaultAdminPort),
-			},
+		HTTPGet: &corev1.HTTPGetAction{
+			Path: workload.MountsReadyPath,
+			Port: intstr.FromInt32(workload.DefaultAdminPort),
 		},
 		PeriodSeconds:    1,
 		FailureThreshold: 300, // mounting waits for its image; the phase before it produced one
@@ -373,10 +365,8 @@ func buildPDB(req *deployment.Request, revision string) *policyv1.PodDisruptionB
 	minAvailable := intstr.FromInt32(1)
 	alwaysAllow := policyv1.AlwaysAllow
 	return &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   objectNameFor(revision),
-			Labels: revisionLabels(req.ID, revision),
-		},
+		Name:   objectNameFor(revision),
+		Labels: revisionLabels(req.ID, revision),
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			MinAvailable: &minAvailable,
 			Selector: &metav1.LabelSelector{

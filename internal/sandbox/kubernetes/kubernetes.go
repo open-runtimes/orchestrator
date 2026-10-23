@@ -144,8 +144,7 @@ func (o *Orchestrator) Create(ctx context.Context, req *sandbox.Request) (*sandb
 		}
 	}
 	if err != nil {
-		var poison *claim.Poison
-		if errors.As(err, &poison) {
+		if poison, ok := errors.AsType[*claim.Poison](err); ok {
 			// Artifact materialization failed: the pod is poisoned and this
 			// sandbox has failed. No URL — nothing is serving. The pod is
 			// discarded either way: a declared pool's control loop drops it, and

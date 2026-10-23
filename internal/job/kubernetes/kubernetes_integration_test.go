@@ -85,7 +85,7 @@ func setup(t *testing.T, opts ...func(*Config)) (*Orchestrator, *job.CallbackEmi
 	// it made by hand.
 	_, err = o.client.CoreV1().ServiceAccounts(testNamespace).Get(ctx, "job-sidecar", metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "job-sidecar", Namespace: testNamespace}}
+		sa := &corev1.ServiceAccount{Name: "job-sidecar", Namespace: testNamespace}
 		if _, err := o.client.CoreV1().ServiceAccounts(testNamespace).Create(ctx, sa, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create service account: %v", err)
 		}
@@ -130,7 +130,7 @@ func setupNoCleanup(t *testing.T) (*Orchestrator, *job.CallbackEmitter, func()) 
 
 func nsObject(name string) *corev1.Namespace {
 	return &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 	}
 }
 
@@ -585,7 +585,7 @@ func TestIntegration_LeaderFailoverMidJob(t *testing.T) {
 	_, err = o1.client.CoreV1().ServiceAccounts(testNamespace).Get(ctx, "job-sidecar", metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		_, _ = o1.client.CoreV1().ServiceAccounts(testNamespace).Create(ctx, &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{Name: "job-sidecar", Namespace: testNamespace},
+			Name: "job-sidecar", Namespace: testNamespace,
 		}, metav1.CreateOptions{})
 	}
 
@@ -821,7 +821,7 @@ func sidecarArtifactStatuses(t *testing.T, o *Orchestrator, pod *corev1.Pod) map
 		t.Fatal(err)
 	}
 	statuses := map[string]string{}
-	for _, line := range strings.Split(string(logs), "\n") {
+	for line := range strings.SplitSeq(string(logs), "\n") {
 		var entry struct {
 			ArtifactID string `json:"artifactId"`
 			Status     string `json:"status"`

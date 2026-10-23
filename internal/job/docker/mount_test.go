@@ -3,7 +3,7 @@ package docker
 import (
 	"testing"
 
-	"github.com/docker/docker/api/types/mount"
+	"github.com/moby/moby/api/types/mount"
 )
 
 func TestWorkspaceMount_Volume(t *testing.T) {

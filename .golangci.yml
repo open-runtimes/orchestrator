@@ -28,7 +28,7 @@ linters:
     - forbidigo
     - gochecknoglobals
     - gocheckcompilerdirectives
-    - gomodguard
+    - gomodguard_v2
     - gomoddirectives
     - goprintffuncname
     - iface
@@ -67,8 +67,11 @@ linters:
     exhaustive:
       check:
         - switch
-        - map
+        - mapliteral
       default-signifies-exhaustive: true
+      # A ResourceList names the resources it sets, never all of them.
+      ignore-types:
+        - "^k8s.io/api/core/v1.ResourceName$"
     loggercheck:
       logr: true
     tagliatelle:
@@ -126,11 +129,10 @@ linters:
       min-complexity: 6
     maintidx:
       under: 20
-    gomodguard:
+    gomodguard_v2:
       blocked:
-        modules:
-          - github.com/pkg/errors:
-              reason: Use stdlib errors.Join and fmt.Errorf with %w.
+        - module: github.com/pkg/errors
+          reason: Use stdlib errors.Join and fmt.Errorf with %w.
     revive:
       rules:
         # Naming & style

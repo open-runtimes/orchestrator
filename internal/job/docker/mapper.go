@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 // clampCPU limits a CPU request to the host's core count. Docker rejects a
@@ -48,7 +48,9 @@ func inspectContainers(ctx context.Context, cli *client.Client, jobID, workerID 
 	if workerID == "" {
 		return cs, nil
 	}
-	info, err := cli.ContainerInspect(ctx, workerID)
+	infoResult, err := cli.ContainerInspect(ctx, workerID, client.ContainerInspectOptions{})
+
+	info := infoResult.Container
 	if err != nil {
 		return cs, err
 	}

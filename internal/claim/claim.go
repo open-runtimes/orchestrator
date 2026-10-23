@@ -159,8 +159,7 @@ func tryWarm(ctx context.Context, inv Inventory, post Poster, rec Recorder, pool
 			}
 			continue
 		default:
-			var poison *Poison
-			if errors.As(err, &poison) {
+			if poison, ok := errors.AsType[*Poison](err); ok {
 				poison.Unit = u.ID
 				return nil, true, poison
 			}
@@ -206,8 +205,7 @@ func exhausted(poolID string) error {
 // nothing standing there is no warm pass to fall back to, so the POST's result
 // is the whole outcome.
 func Outcome(err error, unitID string) error {
-	var poison *Poison
-	if errors.As(err, &poison) {
+	if poison, ok := errors.AsType[*Poison](err); ok {
 		poison.Unit = unitID
 		return poison
 	}

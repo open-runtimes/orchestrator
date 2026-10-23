@@ -69,8 +69,8 @@ func (c *Client) List(ctx context.Context, namespace string, opts metav1.ListOpt
 		return nil, err
 	}
 	out := &List{
-		TypeMeta: metav1.TypeMeta{APIVersion: APIVersion(), Kind: Kind + "List"},
-		ListMeta: metav1.ListMeta{ResourceVersion: obj.GetResourceVersion(), Continue: obj.GetContinue()},
+		APIVersion: APIVersion(), Kind: Kind + "List",
+		ResourceVersion: obj.GetResourceVersion(), Continue: obj.GetContinue(),
 	}
 	out.Items = make([]Revision, 0, len(obj.Items))
 	for i := range obj.Items {
@@ -104,9 +104,9 @@ func (c *Client) UpdateStatus(ctx context.Context, namespace string, rev *Revisi
 // independent from status writes.
 func (c *Client) Scale(ctx context.Context, namespace, name string, replicas int32) error {
 	scale := &autoscalingv1.Scale{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "autoscaling/v1", Kind: "Scale"},
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       autoscalingv1.ScaleSpec{Replicas: replicas},
+		APIVersion: "autoscaling/v1", Kind: "Scale",
+		Name: name, Namespace: namespace,
+		Spec: autoscalingv1.ScaleSpec{Replicas: replicas},
 	}
 	obj, err := toUnstructured(scale)
 	if err != nil {

@@ -49,8 +49,8 @@ func registerScaleSubresource(cs *fake.Clientset) {
 			replicas = *dep.Spec.Replicas
 		}
 		return true, &autoscalingv1.Scale{
-			ObjectMeta: metav1.ObjectMeta{Name: dep.Name, Namespace: dep.Namespace},
-			Spec:       autoscalingv1.ScaleSpec{Replicas: replicas},
+			Name: dep.Name, Namespace: dep.Namespace,
+			Spec: autoscalingv1.ScaleSpec{Replicas: replicas},
 		}, nil
 	})
 	cs.PrependReactor("update", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -89,9 +89,9 @@ func newTestRevisionActivator(t *testing.T, cfg RevisionConfig, objs ...runtime.
 			replicas = *dep.Spec.Replicas
 		}
 		revisionValue := &revisionapi.Revision{
-			TypeMeta:   metav1.TypeMeta{APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind},
-			ObjectMeta: metav1.ObjectMeta{Name: dep.Name, Namespace: dep.Namespace, Labels: dep.Labels},
-			Spec:       revisionapi.Spec{Replicas: replicas},
+			APIVersion: revisionapi.APIVersion(), Kind: revisionapi.Kind,
+			Name: dep.Name, Namespace: dep.Namespace, Labels: dep.Labels,
+			Spec: revisionapi.Spec{Replicas: replicas},
 		}
 		revisionMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(revisionValue)
 		if err != nil {
@@ -159,13 +159,11 @@ func revisionBackend(t *testing.T, handler http.Handler) (ip string, port int32)
 
 func revisionPod(rev, name, ip string, ready bool) *corev1.Pod {
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: testRevisionNamespace,
-			Labels: map[string]string{
-				revisionLabelManagedBy: revisionManagedByValue,
-				revisionLabel:          rev,
-			},
+		Name:      name,
+		Namespace: testRevisionNamespace,
+		Labels: map[string]string{
+			revisionLabelManagedBy: revisionManagedByValue,
+			revisionLabel:          rev,
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: ip},
 	}
@@ -178,12 +176,10 @@ func revisionPod(rev, name, ip string, ready bool) *corev1.Pod {
 func revisionResource(t *testing.T, rev string, replicas int32, spec *deployment.Request) *appsv1.Deployment {
 	t.Helper()
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      revisionObjectName(rev),
-			Namespace: testRevisionNamespace,
-			Labels:    map[string]string{revisionLabelManagedBy: revisionManagedByValue},
-		},
-		Spec: appsv1.DeploymentSpec{Replicas: &replicas},
+		Name:      revisionObjectName(rev),
+		Namespace: testRevisionNamespace,
+		Labels:    map[string]string{revisionLabelManagedBy: revisionManagedByValue},
+		Spec:      appsv1.DeploymentSpec{Replicas: &replicas},
 	}
 	if spec != nil {
 		t.Fatal("seed the spec via revisionSpecSecret, not the Deployment (the spec lives on the dep-{id} Secret)")
@@ -200,12 +196,10 @@ func revisionSpecSecret(t *testing.T, rev string, spec *deployment.Request) *cor
 		t.Fatalf("marshal spec: %v", err)
 	}
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      revisionObjectName(deploymentIDOf(rev)),
-			Namespace: testRevisionNamespace,
-			Labels:    map[string]string{revisionLabelManagedBy: revisionManagedByValue},
-		},
-		Data: map[string][]byte{specSecretKey: specJSON},
+		Name:      revisionObjectName(deploymentIDOf(rev)),
+		Namespace: testRevisionNamespace,
+		Labels:    map[string]string{revisionLabelManagedBy: revisionManagedByValue},
+		Data:      map[string][]byte{specSecretKey: specJSON},
 	}
 }
 

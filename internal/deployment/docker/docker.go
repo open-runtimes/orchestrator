@@ -26,11 +26,10 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/volume"
+	"github.com/moby/moby/client"
 )
 
 // Orchestrator implements deployment.Orchestrator using Docker.
@@ -41,7 +40,7 @@ type Orchestrator struct {
 
 // NewOrchestrator creates a Docker deployment orchestrator.
 func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create docker client: %w", err)
 	}
@@ -81,7 +80,9 @@ func (o *Orchestrator) Apply(ctx context.Context, req *deployment.Request) (bool
 	}
 
 	created := false
-	vol, err := o.client.VolumeInspect(ctx, volumeName(req.ID))
+	volResult, err := o.client.VolumeInspect(ctx, volumeName(req.ID), client.VolumeInspectOptions{})
+
+	vol := volResult.Volume
 	switch {
 	case err == nil && vol.Labels[labelSpec] == string(spec):
 		return false, nil
@@ -133,7 +134,9 @@ func (o *Orchestrator) Scale(ctx context.Context, id string, replicas int) error
 // serving reports whether both the worker and proxy containers are running.
 func (o *Orchestrator) serving(ctx context.Context, id string) bool {
 	for _, name := range []string{workerName(id), proxyName(id)} {
-		info, err := o.client.ContainerInspect(ctx, name)
+		infoResult, err := o.client.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
+
+		info := infoResult.Container
 		if err != nil || info.State == nil || !info.State.Running {
 			return false
 		}
@@ -144,7 +147,7 @@ func (o *Orchestrator) serving(ctx context.Context, id string) bool {
 // create provisions the labeled workspace volume — the deployment's identity
 // anchor — materializes artifacts, and starts the serving containers.
 func (o *Orchestrator) create(ctx context.Context, req *deployment.Request, spec string) error {
-	_, err := o.client.VolumeCreate(ctx, volume.CreateOptions{
+	_, err := o.client.VolumeCreate(ctx, client.VolumeCreateOptions{
 		Name:   volumeName(req.ID),
 		Labels: volumeLabels(req, spec),
 	})
@@ -183,7 +186,9 @@ func (o *Orchestrator) createContainers(ctx context.Context, req *deployment.Req
 		return err
 	}
 
-	info, err := o.client.ContainerInspect(ctx, workerID)
+	infoResult, err := o.client.ContainerInspect(ctx, workerID, client.ContainerInspectOptions{})
+
+	info := infoResult.Container
 	if err != nil {
 		return apperrors.Internal("docker.inspectWorker", err)
 	}
@@ -216,24 +221,26 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 		env = append(env, kv[0]+"="+kv[1])
 	}
 
-	resp, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:  o.cfg.JobSidecarImage,
 			Cmd:    []string{"-mode=pre"},
 			Env:    env,
 			User:   "0",
 			Labels: containerLabels(req.ID, typeArtifacts),
 		},
-		&container.HostConfig{
+		HostConfig: &container.HostConfig{
 			Mounts:     []mount.Mount{o.workspaceMount(req.ID, workspace)},
 			ExtraHosts: o.cfg.ExtraHosts,
 		},
-		moby.NetworkingConfig(o.cfg.Network), nil, artifactsName(req.ID))
+		NetworkingConfig: moby.NetworkingConfig(o.cfg.Network),
+		Name:             artifactsName(req.ID),
+	})
 	if err != nil {
 		return apperrors.Internal("docker.createArtifactsContainer", err)
 	}
 
-	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return apperrors.Internal("docker.startArtifactsContainer", err)
 	}
 
@@ -262,26 +269,26 @@ func (o *Orchestrator) startWorker(ctx context.Context, req *deployment.Request)
 	}
 
 	workspace := req.WorkspacePath()
-	resp, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:      req.Image,
 			Cmd:        cmd,
 			Env:        env,
 			WorkingDir: workspace,
 			Labels:     containerLabels(req.ID, typeWorker),
 		},
-		&container.HostConfig{
-			Mounts: append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, moby.Mounts(req.Volumes)...),
-			Resources: container.Resources{
-				NanoCPUs: int64(req.CPU * 1e9),
-				Memory:   int64(req.Memory) * 1024 * 1024,
-			},
+		HostConfig: &container.HostConfig{
+			Mounts:   append([]mount.Mount{o.workspaceMount(req.ID, workspace)}, moby.Mounts(req.Volumes)...),
+			NanoCPUs: int64(req.CPU * 1e9),
+			Memory:   int64(req.Memory) * 1024 * 1024,
 		},
-		moby.NetworkingConfig(o.cfg.Network), nil, workerName(req.ID))
+		NetworkingConfig: moby.NetworkingConfig(o.cfg.Network),
+		Name:             workerName(req.ID),
+	})
 	if err != nil {
 		return "", apperrors.Internal("docker.createWorker", err)
 	}
-	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return "", apperrors.Internal("docker.startWorker", err)
 	}
 	return resp.ID, nil
@@ -303,19 +310,21 @@ func (o *Orchestrator) startProxy(ctx context.Context, req *deployment.Request, 
 		StartInterval: 500 * time.Millisecond,
 	}
 
-	resp, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:       o.cfg.SidecarImage,
 			Env:         proxyEnv(req, workerIP),
 			Healthcheck: healthCheck,
 			Labels:      labels,
 		},
-		&container.HostConfig{ExtraHosts: o.cfg.ExtraHosts},
-		moby.NetworkingConfig(o.cfg.Network), nil, proxyName(req.ID))
+		HostConfig:       &container.HostConfig{ExtraHosts: o.cfg.ExtraHosts},
+		NetworkingConfig: moby.NetworkingConfig(o.cfg.Network),
+		Name:             proxyName(req.ID),
+	})
 	if err != nil {
 		return apperrors.Internal("docker.createProxy", err)
 	}
-	if err := o.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		return apperrors.Internal("docker.startProxy", err)
 	}
 	return nil
@@ -363,7 +372,9 @@ func (o *Orchestrator) Endpoints(ctx context.Context, id string) ([]*url.URL, er
 	if _, err := o.volumeFor(ctx, id); err != nil {
 		return nil, err
 	}
-	info, err := o.client.ContainerInspect(ctx, proxyName(id))
+	infoResult, err := o.client.ContainerInspect(ctx, proxyName(id), client.ContainerInspectOptions{})
+
+	info := infoResult.Container
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return []*url.URL{}, nil
@@ -402,8 +413,8 @@ func (o *Orchestrator) Status(ctx context.Context, id string) (*deployment.Statu
 // List returns the statuses of all deployments known to the daemon — one per
 // managed workspace volume.
 func (o *Orchestrator) List(ctx context.Context) ([]deployment.StatusResponse, error) {
-	vols, err := o.client.VolumeList(ctx, volume.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("label", labelManagedBy+"="+managedByValue)),
+	vols, err := o.client.VolumeList(ctx, client.VolumeListOptions{
+		Filters: make(client.Filters).Add("label", labelManagedBy+"="+managedByValue),
 	})
 	if err != nil {
 		return nil, apperrors.Internal("docker.listVolumes", err)
@@ -420,9 +431,9 @@ func (o *Orchestrator) List(ctx context.Context) ([]deployment.StatusResponse, e
 		}
 	}
 
-	statuses := make([]deployment.StatusResponse, 0, len(vols.Volumes))
+	statuses := make([]deployment.StatusResponse, 0, len(vols.Items))
 	now := time.Now()
-	for _, vol := range vols.Volumes {
+	for _, vol := range vols.Items {
 		id := vol.Labels[labelID]
 		if id == "" {
 			continue
@@ -435,7 +446,7 @@ func (o *Orchestrator) List(ctx context.Context) ([]deployment.StatusResponse, e
 
 // Ready checks if the Docker daemon is reachable and responsive.
 func (o *Orchestrator) Ready(ctx context.Context) error {
-	_, err := o.client.Ping(ctx)
+	_, err := o.client.Ping(ctx, client.PingOptions{})
 	return err
 }
 
@@ -447,7 +458,9 @@ func (o *Orchestrator) Close() error {
 // volumeFor inspects a deployment's workspace volume — the identity anchor. A
 // missing volume means the deployment does not exist.
 func (o *Orchestrator) volumeFor(ctx context.Context, id string) (volume.Volume, error) {
-	vol, err := o.client.VolumeInspect(ctx, volumeName(id))
+	volResult, err := o.client.VolumeInspect(ctx, volumeName(id), client.VolumeInspectOptions{})
+
+	vol := volResult.Volume
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return vol, apperrors.NotFound("deployment", id)
@@ -463,7 +476,9 @@ func (o *Orchestrator) snapshotFor(ctx context.Context, summaries []container.Su
 
 	var workerCreated time.Time
 	for _, c := range summaries {
-		info, err := o.client.ContainerInspect(ctx, c.ID)
+		infoResult, err := o.client.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
+
+		info := infoResult.Container
 		if err != nil || info.State == nil {
 			continue
 		}
@@ -490,20 +505,18 @@ func (o *Orchestrator) snapshotFor(ctx context.Context, summaries []container.Su
 }
 
 // listManaged lists all containers carrying the deployments-service label,
-// optionally narrowed by extra filters.
-func (o *Orchestrator) listManaged(ctx context.Context, extra ...filters.KeyValuePair) ([]container.Summary, error) {
-	pairs := append([]filters.KeyValuePair{
-		filters.Arg("label", labelManagedBy+"="+managedByValue),
-	}, extra...)
-	return o.client.ContainerList(ctx, container.ListOptions{
+// optionally narrowed by extra labels.
+func (o *Orchestrator) listManaged(ctx context.Context, labels ...string) ([]container.Summary, error) {
+	list, err := o.client.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: filters.NewArgs(pairs...),
+		Filters: make(client.Filters).Add("label", append([]string{labelManagedBy + "=" + managedByValue}, labels...)...),
 	})
+	return list.Items, err
 }
 
 // containersFor lists all of a deployment's containers.
 func (o *Orchestrator) containersFor(ctx context.Context, id string) ([]container.Summary, error) {
-	return o.listManaged(ctx, filters.Arg("label", labelID+"="+id))
+	return o.listManaged(ctx, labelID+"="+id)
 }
 
 // workspaceMount returns the shared workspace volume mount for a deployment,
@@ -514,7 +527,8 @@ func (o *Orchestrator) workspaceMount(id, path string) mount.Mount {
 
 // waitForExit blocks until the container stops and returns its exit code.
 func (o *Orchestrator) waitForExit(ctx context.Context, containerID string) (int64, error) {
-	waitCh, errCh := o.client.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
+	wait := o.client.ContainerWait(ctx, containerID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	waitCh, errCh := wait.Result, wait.Error
 	select {
 	case res := <-waitCh:
 		if res.Error != nil {
@@ -539,13 +553,13 @@ func (o *Orchestrator) removeContainers(ctx context.Context, id string) {
 // cleanup fully tears down a deployment: its containers and its volume.
 func (o *Orchestrator) cleanup(ctx context.Context, id string) {
 	o.removeContainers(ctx, id)
-	_ = o.client.VolumeRemove(ctx, volumeName(id), true)
+	_, _ = o.client.VolumeRemove(ctx, volumeName(id), client.VolumeRemoveOptions{Force: true})
 }
 
 func (o *Orchestrator) removeContainer(ctx context.Context, ref string) {
 	stopTimeout := 10
-	_ = o.client.ContainerStop(ctx, ref, container.StopOptions{Timeout: &stopTimeout})
-	_ = o.client.ContainerRemove(ctx, ref, container.RemoveOptions{Force: true})
+	_, _ = o.client.ContainerStop(ctx, ref, client.ContainerStopOptions{Timeout: &stopTimeout})
+	_, _ = o.client.ContainerRemove(ctx, ref, client.ContainerRemoveOptions{Force: true})
 }
 
 // Verify Orchestrator implements deployment.Orchestrator.

@@ -241,7 +241,7 @@ func newTrackerFixture(t *testing.T) (*eventCapture, *k8sLifecycleWatcher) {
 
 func podWithWorkerRunning() *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "test"},
+		Name: "pod-1", Namespace: "test",
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			ContainerStatuses: []corev1.ContainerStatus{
@@ -258,7 +258,7 @@ func podWithWorkerRunning() *corev1.Pod {
 
 func podWithWorkerTerminated(exitCode int32, phase corev1.PodPhase) *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "test"},
+		Name: "pod-1", Namespace: "test",
 		Status: corev1.PodStatus{
 			Phase: phase,
 			ContainerStatuses: []corev1.ContainerStatus{
@@ -282,7 +282,7 @@ func podWithWorkerTerminated(exitCode int32, phase corev1.PodPhase) *corev1.Pod 
 // status still shows Running because kubelet didn't get a chance to update it.
 func podNodeLostWithStaleRunning() *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "test"},
+		Name: "pod-1", Namespace: "test",
 		Status: corev1.PodStatus{
 			Phase:  corev1.PodFailed,
 			Reason: "NodeLost",
@@ -337,12 +337,10 @@ func TestWatcher_Counts_PodFailedBeforeWorkerStarted(t *testing.T) {
 	capture, w := newTrackerFixture(t)
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pod-1",
-			Namespace: "test",
-			Labels:    map[string]string{LabelJobID: "never-started-job"},
-		},
-		Status: corev1.PodStatus{Phase: corev1.PodFailed, Reason: "ImagePullBackOff"},
+		Name:      "pod-1",
+		Namespace: "test",
+		Labels:    map[string]string{LabelJobID: "never-started-job"},
+		Status:    corev1.PodStatus{Phase: corev1.PodFailed, Reason: "ImagePullBackOff"},
 	}
 	w.handle(t.Context(), pod, false)
 	capture.assertHasType(t, job.CallbackTypeExit)
@@ -360,7 +358,7 @@ func TestWatcher_Counts_PodFailedBeforeWorkerStarted(t *testing.T) {
 // that shape, which is how the untracked-job bug survived its coverage.)
 func podInitFailedWorkerWaiting() *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod-1", Namespace: "test"},
+		Name: "pod-1", Namespace: "test",
 		Status: corev1.PodStatus{
 			Phase: corev1.PodFailed,
 			InitContainerStatuses: []corev1.ContainerStatus{

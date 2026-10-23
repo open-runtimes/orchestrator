@@ -32,10 +32,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 // sandboxTestImage is deliberately a PLAIN runtime image: it implements no
@@ -84,7 +83,7 @@ func agentTestImage() string {
 // testPool mirrors what an operator declares for an ordinary runtime image: an
 // image and a port, no command — the agent supplies the contract.
 func testPool() pool.Pool {
-	return pool.Pool{ID: "py", Size: 1, Spec: pool.Spec{Image: sandboxTestImage(), Port: 3000}}
+	return pool.Pool{ID: "py", Size: 1, Image: sandboxTestImage(), Port: 3000}
 }
 
 func newTestOrchestrator(t *testing.T, networkName string) *Orchestrator {
@@ -115,19 +114,19 @@ func newTestOrchestrator(t *testing.T, networkName string) *Orchestrator {
 func testNetwork(t *testing.T) string {
 	t.Helper()
 	name := "sbx-it-" + strings.ToLower(t.Name())
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close()
 
-	_ = cli.NetworkRemove(context.WithoutCancel(t.Context()), name) // leftovers from a killed run
-	if _, err := cli.NetworkCreate(t.Context(), name, network.CreateOptions{Driver: "bridge"}); err != nil {
+	_, _ = cli.NetworkRemove(context.WithoutCancel(t.Context()), name, client.NetworkRemoveOptions{}) // leftovers from a killed run
+	if _, err := cli.NetworkCreate(t.Context(), name, client.NetworkCreateOptions{Driver: "bridge"}); err != nil {
 		t.Fatalf("create network %s: %v", name, err)
 	}
 	t.Cleanup(func() {
 		cleanupCtx := context.WithoutCancel(t.Context())
-		if err := cli.NetworkRemove(cleanupCtx, name); err != nil {
+		if _, err := cli.NetworkRemove(cleanupCtx, name, client.NetworkRemoveOptions{}); err != nil {
 			t.Logf("network %s not removed: %v", name, err)
 		}
 	})
@@ -282,25 +281,28 @@ func runClient(t *testing.T, o *Orchestrator, command string) string {
 	if err := moby.PullImage(ctx, o.client, clientImage()); err != nil {
 		t.Fatalf("pull client image: %v", err)
 	}
-	created, err := o.client.ContainerCreate(ctx,
-		&container.Config{
+	created, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:      clientImage(),
 			Entrypoint: []string{"/bin/sh", "-c"},
 			Cmd:        []string{command},
 		},
-		&container.HostConfig{}, moby.NetworkingConfig(o.cfg.Network), nil, "")
+		HostConfig:       &container.HostConfig{},
+		NetworkingConfig: moby.NetworkingConfig(o.cfg.Network),
+		Name:             "",
+	})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
 	defer o.removeContainer(context.WithoutCancel(ctx), created.ID)
 
-	if err := o.client.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatalf("start client: %v", err)
 	}
 	if _, err := o.waitForExit(ctx, created.ID); err != nil {
 		t.Fatalf("wait client: %v", err)
 	}
-	logs, err := o.client.ContainerLogs(ctx, created.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+	logs, err := o.client.ContainerLogs(ctx, created.ID, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true})
 	if err != nil {
 		t.Fatalf("client logs: %v", err)
 	}

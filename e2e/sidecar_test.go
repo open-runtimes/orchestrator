@@ -21,9 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 )
 
 // mockOrchestratorServer returns a test server that captures ArtifactReports posted
@@ -53,7 +52,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
@@ -67,7 +66,7 @@ func TestSidecar_FullFlow(t *testing.T) {
 	orchestratorServer := mockOrchestratorServer(t, &reportCount, &mu, &receivedReports)
 	defer orchestratorServer.Close()
 
-	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", image.PullOptions{})
+	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", client.ImagePullOptions{})
 	if err != nil {
 		t.Fatalf("Failed to pull image: %v", err)
 	}
@@ -77,22 +76,26 @@ func TestSidecar_FullFlow(t *testing.T) {
 	jobID := fmt.Sprintf("sidecar-test-%d", time.Now().UnixNano())
 	containerName := fmt.Sprintf("job-%s-worker", jobID)
 
-	resp, err := dockerClient.ContainerCreate(ctx, &container.Config{
-		Image: "alpine:latest",
-		Cmd:   []string{"/bin/sh", "-c", "echo 'hello from job' > /workspace/output.txt && sleep 1"},
-	}, &container.HostConfig{
-		Binds: []string{sharedDir + ":/workspace"},
-	}, nil, nil, containerName)
+	resp, err := dockerClient.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: "alpine:latest",
+			Cmd:   []string{"/bin/sh", "-c", "echo 'hello from job' > /workspace/output.txt && sleep 1"},
+		},
+		HostConfig: &container.HostConfig{
+			Binds: []string{sharedDir + ":/workspace"},
+		},
+		Name: containerName,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
 	}
 	defer func() {
 		timeout := 5
-		_ = dockerClient.ContainerStop(ctx, resp.ID, container.StopOptions{Timeout: &timeout})
-		_ = dockerClient.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		_, _ = dockerClient.ContainerStop(ctx, resp.ID, client.ContainerStopOptions{Timeout: &timeout})
+		_, _ = dockerClient.ContainerRemove(ctx, resp.ID, client.ContainerRemoveOptions{Force: true})
 	}()
 
-	if err := dockerClient.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := dockerClient.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
@@ -111,7 +114,8 @@ func TestSidecar_FullFlow(t *testing.T) {
 	sidecarDone := make(chan error, 1)
 	go func() { sidecarDone <- runner.Run(ctx, artifacts) }()
 
-	statusCh, errCh := dockerClient.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	wait := dockerClient.ContainerWait(ctx, resp.ID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	statusCh, errCh := wait.Result, wait.Error
 	select {
 	case <-statusCh:
 	case err := <-errCh:
@@ -153,7 +157,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
@@ -173,7 +177,7 @@ func TestSidecar_InputDownload(t *testing.T) {
 	orchestratorServer := mockOrchestratorServer(t, &reportCount, &mu, &receivedReports)
 	defer orchestratorServer.Close()
 
-	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", image.PullOptions{})
+	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", client.ImagePullOptions{})
 	if err != nil {
 		t.Fatalf("Failed to pull image: %v", err)
 	}
@@ -183,22 +187,26 @@ func TestSidecar_InputDownload(t *testing.T) {
 	jobID := fmt.Sprintf("sidecar-input-%d", time.Now().UnixNano())
 	containerName := fmt.Sprintf("job-%s-worker", jobID)
 
-	resp, err := dockerClient.ContainerCreate(ctx, &container.Config{
-		Image: "alpine:latest",
-		Cmd:   []string{"/bin/sh", "-c", "sleep 2 && cat /workspace/input.txt"},
-	}, &container.HostConfig{
-		Binds: []string{sharedDir + ":/workspace"},
-	}, nil, nil, containerName)
+	resp, err := dockerClient.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: "alpine:latest",
+			Cmd:   []string{"/bin/sh", "-c", "sleep 2 && cat /workspace/input.txt"},
+		},
+		HostConfig: &container.HostConfig{
+			Binds: []string{sharedDir + ":/workspace"},
+		},
+		Name: containerName,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
 	}
 	defer func() {
 		timeout := 5
-		_ = dockerClient.ContainerStop(ctx, resp.ID, container.StopOptions{Timeout: &timeout})
-		_ = dockerClient.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		_, _ = dockerClient.ContainerStop(ctx, resp.ID, client.ContainerStopOptions{Timeout: &timeout})
+		_, _ = dockerClient.ContainerRemove(ctx, resp.ID, client.ContainerRemoveOptions{Force: true})
 	}()
 
-	if err := dockerClient.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := dockerClient.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
@@ -261,7 +269,7 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		t.Fatalf("Failed to create Docker client: %v", err)
 	}
@@ -289,7 +297,7 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	orchestratorServer := mockOrchestratorServer(t, &reportCount, &mu, &receivedReports)
 	defer orchestratorServer.Close()
 
-	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", image.PullOptions{})
+	reader, err := dockerClient.ImagePull(ctx, "alpine:latest", client.ImagePullOptions{})
 	if err != nil {
 		t.Fatalf("Failed to pull image: %v", err)
 	}
@@ -300,22 +308,26 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	containerName := fmt.Sprintf("job-%s-worker", jobID)
 
 	outputContent := "this is the job output"
-	resp, err := dockerClient.ContainerCreate(ctx, &container.Config{
-		Image: "alpine:latest",
-		Cmd:   []string{"/bin/sh", "-c", fmt.Sprintf("echo -n '%s' > /workspace/result.txt", outputContent)},
-	}, &container.HostConfig{
-		Binds: []string{sharedDir + ":/workspace"},
-	}, nil, nil, containerName)
+	resp, err := dockerClient.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: "alpine:latest",
+			Cmd:   []string{"/bin/sh", "-c", fmt.Sprintf("echo -n '%s' > /workspace/result.txt", outputContent)},
+		},
+		HostConfig: &container.HostConfig{
+			Binds: []string{sharedDir + ":/workspace"},
+		},
+		Name: containerName,
+	})
 	if err != nil {
 		t.Fatalf("Failed to create container: %v", err)
 	}
 	defer func() {
 		timeout := 5
-		_ = dockerClient.ContainerStop(ctx, resp.ID, container.StopOptions{Timeout: &timeout})
-		_ = dockerClient.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		_, _ = dockerClient.ContainerStop(ctx, resp.ID, client.ContainerStopOptions{Timeout: &timeout})
+		_, _ = dockerClient.ContainerRemove(ctx, resp.ID, client.ContainerRemoveOptions{Force: true})
 	}()
 
-	if err := dockerClient.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if _, err := dockerClient.ContainerStart(ctx, resp.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
 
@@ -333,7 +345,8 @@ func TestSidecar_OutputUpload(t *testing.T) {
 	sidecarDone := make(chan error, 1)
 	go func() { sidecarDone <- runner.Run(ctx, artifacts) }()
 
-	statusCh, errCh := dockerClient.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	wait := dockerClient.ContainerWait(ctx, resp.ID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	statusCh, errCh := wait.Result, wait.Error
 	select {
 	case <-statusCh:
 	case err := <-errCh:

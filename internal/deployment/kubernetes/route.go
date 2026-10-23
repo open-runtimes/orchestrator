@@ -217,18 +217,16 @@ func (o *Orchestrator) deleteRoute(ctx context.Context, id string) error {
 // parentRef to the operator's Gateway, and the two traffic rules.
 func (o *Orchestrator) buildHTTPRoute(m marker, targets []deployment.Target) *gatewayv1.HTTPRoute {
 	return &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: objectNameFor(m.ID),
-			Labels: map[string]string{
-				LabelManagedBy:    ManagedByValue,
-				LabelDeploymentID: m.ID,
-			},
+		Name: objectNameFor(m.ID),
+		Labels: map[string]string{
+			LabelManagedBy:    ManagedByValue,
+			LabelDeploymentID: m.ID,
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{{
 					Name:      gatewayv1.ObjectName(o.cfg.GatewayName),
-					Namespace: ptr.To(gatewayv1.Namespace(o.cfg.GatewayNamespace)),
+					Namespace: new(gatewayv1.Namespace(o.cfg.GatewayNamespace)),
 				}},
 			},
 			Hostnames: routeHostnames(m.Hosts),
@@ -258,7 +256,7 @@ func (o *Orchestrator) buildRouteRules(targets []deployment.Target) []gatewayv1.
 		// different namespace than the route, the ref must say so (and a
 		// ReferenceGrant there must allow it — the Helm chart renders one).
 		if o.cfg.ActivatorNamespace != "" && o.cfg.ActivatorNamespace != o.namespace {
-			ref.Namespace = ptr.To(gatewayv1.Namespace(o.cfg.ActivatorNamespace))
+			ref.Namespace = new(gatewayv1.Namespace(o.cfg.ActivatorNamespace))
 		}
 		async = append(async, ref)
 		dflt = append(dflt, backendRef(objectNameFor(t.RevisionName), servicePort, t))
@@ -285,13 +283,9 @@ func (o *Orchestrator) buildRouteRules(targets []deployment.Target) []gatewayv1.
 // backendRef renders one weighted backendRef tagged with its revision.
 func backendRef(service string, port int32, t deployment.Target) gatewayv1.HTTPBackendRef {
 	return gatewayv1.HTTPBackendRef{
-		BackendRef: gatewayv1.BackendRef{
-			BackendObjectReference: gatewayv1.BackendObjectReference{
-				Name: gatewayv1.ObjectName(service),
-				Port: ptr.To(port),
-			},
-			Weight: ptr.To(int32(t.Percent)),
-		},
+		Name:   gatewayv1.ObjectName(service),
+		Port:   new(port),
+		Weight: new(int32(t.Percent)),
 		Filters: []gatewayv1.HTTPRouteFilter{{
 			Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
 			RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{

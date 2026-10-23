@@ -84,9 +84,8 @@ func TestIntegration_PooledMounts(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			id := fmt.Sprintf("pmnt-%s-%d", mode.name, time.Now().UnixNano()%1_000_000_000)
 			req := mountRequest(id)
-			p := pool.Pool{ID: "mounts", Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{
-				Image: req.Image, Port: req.Port, CPU: req.CPU, Memory: req.Memory, Mounts: true,
-			}}
+			p := pool.Pool{ID: "mounts", Size: 1, Burst: pool.BurstReject,
+				Image: req.Image, Port: req.Port, CPU: req.CPU, Memory: req.Memory, Mounts: true}
 			o, teardown := setup(t, func(c *Config) {
 				c.MountAgentPort = mode.port
 				c.Pools = []pool.Pool{p}

@@ -135,13 +135,11 @@ func TestStop_UnknownJob(t *testing.T) {
 func TestStatus_DerivesCompleted(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset(&batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "job-done",
-			Namespace: "orchestrator",
-			Labels: map[string]string{
-				LabelManagedBy: ManagedByValue,
-				LabelJobID:     "done",
-			},
+		Name:      "job-done",
+		Namespace: "orchestrator",
+		Labels: map[string]string{
+			LabelManagedBy: ManagedByValue,
+			LabelJobID:     "done",
 		},
 		Status: batchv1.JobStatus{Succeeded: 1},
 	})
@@ -164,23 +162,19 @@ func TestStatus_DerivesFailedWithPodReason(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset(
 		&batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "job-bad",
-				Namespace: "orchestrator",
-				Labels: map[string]string{
-					LabelManagedBy: ManagedByValue,
-					LabelJobID:     "bad",
-				},
+			Name:      "job-bad",
+			Namespace: "orchestrator",
+			Labels: map[string]string{
+				LabelManagedBy: ManagedByValue,
+				LabelJobID:     "bad",
 			},
 			Status: batchv1.JobStatus{Failed: 1},
 		},
 		&corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "job-bad-xyz",
-				Namespace: "orchestrator",
-				Labels: map[string]string{
-					LabelJobID: "bad",
-				},
+			Name:      "job-bad-xyz",
+			Namespace: "orchestrator",
+			Labels: map[string]string{
+				LabelJobID: "bad",
 			},
 			Status: corev1.PodStatus{
 				ContainerStatuses: []corev1.ContainerStatus{
@@ -237,23 +231,19 @@ func TestStatus_ReportsTheWorkerExitWhileTheSidecarFinishes(t *testing.T) {
 			t.Parallel()
 			cs := fake.NewClientset(
 				&batchv1.Job{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "job-mid",
-						Namespace: "orchestrator",
-						Labels: map[string]string{
-							LabelManagedBy: ManagedByValue,
-							LabelJobID:     "mid",
-						},
+					Name:      "job-mid",
+					Namespace: "orchestrator",
+					Labels: map[string]string{
+						LabelManagedBy: ManagedByValue,
+						LabelJobID:     "mid",
 					},
 					// The sidecar is still going: nothing succeeded or failed yet.
 					Status: batchv1.JobStatus{Active: 1},
 				},
 				&corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "job-mid-xyz",
-						Namespace: "orchestrator",
-						Labels:    map[string]string{LabelJobID: "mid"},
-					},
+					Name:      "job-mid-xyz",
+					Namespace: "orchestrator",
+					Labels:    map[string]string{LabelJobID: "mid"},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
 						ContainerStatuses: []corev1.ContainerStatus{{
@@ -293,13 +283,11 @@ func TestStatus_ReportsTheWorkerExitWhileTheSidecarFinishes(t *testing.T) {
 func TestStatus_CacheHit(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset(&batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "job-cached",
-			Namespace: "orchestrator",
-			Labels: map[string]string{
-				LabelManagedBy: ManagedByValue,
-				LabelJobID:     "cached",
-			},
+		Name:      "job-cached",
+		Namespace: "orchestrator",
+		Labels: map[string]string{
+			LabelManagedBy: ManagedByValue,
+			LabelJobID:     "cached",
 		},
 		Status: batchv1.JobStatus{Succeeded: 1},
 	})
@@ -363,16 +351,14 @@ func TestReady_ContactsAPIServer(t *testing.T) {
 func TestWatcher_ResumesExistingPodOnStart(t *testing.T) {
 	t.Parallel()
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "job-resume-worker",
-			Namespace: "orchestrator",
-			Labels: map[string]string{
-				LabelManagedBy: ManagedByValue,
-				LabelJobID:     "resume-me",
-			},
-			Annotations: map[string]string{
-				AnnotationCallbackURL: "https://cb.example",
-			},
+		Name:      "job-resume-worker",
+		Namespace: "orchestrator",
+		Labels: map[string]string{
+			LabelManagedBy: ManagedByValue,
+			LabelJobID:     "resume-me",
+		},
+		Annotations: map[string]string{
+			AnnotationCallbackURL: "https://cb.example",
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
@@ -532,7 +518,7 @@ func TestStatus_DeadlineWithoutPod(t *testing.T) {
 	t.Parallel()
 	cs := fake.NewClientset()
 	j := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{LabelJobID: "deadline"}},
+		Labels: map[string]string{LabelJobID: "deadline"},
 		Status: batchv1.JobStatus{Conditions: []batchv1.JobCondition{{
 			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "DeadlineExceeded",
 		}}},

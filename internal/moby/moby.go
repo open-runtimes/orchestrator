@@ -11,13 +11,11 @@ package moby
 
 import (
 	"context"
-	"io"
 	"orchestrator/internal/volume"
 
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 )
 
 // Mounts translates declared volumes into Docker mounts. The Kubernetes
@@ -41,14 +39,12 @@ func PullImage(ctx context.Context, cli *client.Client, ref string) error {
 	if _, err := cli.ImageInspect(ctx, ref); err == nil {
 		return nil
 	}
-	reader, err := cli.ImagePull(ctx, ref, image.PullOptions{})
+	pull, err := cli.ImagePull(ctx, ref, client.ImagePullOptions{})
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
-	// The pull only completes once its progress stream is drained.
-	_, err = io.Copy(io.Discard, reader)
-	return err
+	defer pull.Close()
+	return pull.Wait(ctx)
 }
 
 // NetworkingConfig attaches a container to the configured network, or returns

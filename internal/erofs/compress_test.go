@@ -823,8 +823,8 @@ func TestStreamPackerCloseReleasesQueuedResults(t *testing.T) {
 	segment := make([]byte, 128, zSegmentSize)
 	result := make(chan zStreamResult, 1)
 	result <- zStreamResult{
-		packedSegment: packedSegment{spans: []packedSpan{{comp: comp}}},
-		buf:           segment,
+		spans: []packedSpan{{comp: comp}},
+		buf:   segment,
 	}
 	p := &zStreamPacker{
 		z:       z,

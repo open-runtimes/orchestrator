@@ -80,7 +80,7 @@ func (f *fakeSidecar) Requests(_ context.Context, podIP string) (int64, error) {
 // testPool is a pool over a plain runtime image: it names no command, so the
 // sandbox runs the agent the shim installs — the ordinary case.
 func testPool(id string) pool.Pool {
-	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "node:22-slim", Port: 3000}}
+	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Image: "node:22-slim", Port: 3000}
 }
 
 func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake.Clientset, *fakeSidecar) {
@@ -109,12 +109,10 @@ func newTestOrchestrator(t *testing.T, pools ...pool.Pool) (*Orchestrator, *fake
 // would have produced it.
 func warmPodFixture(o *Orchestrator, poolID, name, ip string) *corev1.Pod {
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   testNS,
-			Labels:      map[string]string{warm.LabelManagedBy: ManagedByValue, LabelPoolID: poolID},
-			Annotations: map[string]string{},
-		},
+		Name:        name,
+		Namespace:   testNS,
+		Labels:      map[string]string{warm.LabelManagedBy: ManagedByValue, LabelPoolID: poolID},
+		Annotations: map[string]string{},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			PodIP: ip,
@@ -151,11 +149,9 @@ func podGone(t *testing.T, cs *fake.Clientset, name string) bool {
 	return apierrors.IsNotFound(err)
 }
 
-func ptrTo[T any](v T) *T { return &v }
-
 func request(id string) *sandbox.Request {
 	return &sandbox.Request{ID: id, Pool: "py", Image: "node:22-slim", Port: 3000,
-		Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300)}
+		Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: new(300)}
 }
 
 func TestCreate_ClaimsAndStampsTheToken(t *testing.T) {
@@ -309,7 +305,7 @@ func TestShape_CreateMatchesReadAndSurvivesThePool(t *testing.T) {
 	// neither may its reported shape.
 	repooled, _, _ := newTestOrchestrator(t, pool.Pool{
 		ID: "py", Size: 1, Burst: pool.BurstReject,
-		Spec: pool.Spec{Image: "node:24-slim", Port: 3000},
+		Image: "node:24-slim", Port: 3000,
 	})
 	repooled.warm = o.warm
 	after, err := repooled.Status(t.Context(), "agent")
@@ -529,7 +525,7 @@ func TestCreate_PoollessTakesItsShapeFromTheRequest(t *testing.T) {
 	readyOnCreate(cs, "10.0.0.9")
 
 	req := &sandbox.Request{
-		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300),
+		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: new(300),
 		Image: "python:3.12-slim", Port: 8000, CPU: 0.5, Memory: 256,
 		Volumes: []volume.Volume{{Source: "tenant-pvc", Path: "/data", ReadOnly: true}},
 	}
@@ -596,7 +592,7 @@ func TestCreate_PoollessDoesNotScanForWarmCapacity(t *testing.T) {
 	readyOnCreate(cs, "10.0.0.9")
 
 	if _, err := o.Create(t.Context(), &sandbox.Request{
-		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300),
+		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: new(300),
 		Image: "python:3.12-slim", Port: 8000,
 	}); err != nil {
 		t.Fatalf("poolless create: %v", err)
@@ -627,7 +623,7 @@ func TestCreate_DiscardsThePodWhenTheCallerGoesAwayMidReadiness(t *testing.T) {
 	sidecar.onReady = cancel            // ...and the client gives up while we wait
 
 	if _, err := o.Create(ctx, &sandbox.Request{
-		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: ptrTo(300),
+		ID: "solo", Token: "9f3c1a04b7e28d65f1024c8ba3e7d95f", TimeoutSeconds: new(300),
 		Image: "python:3.12-slim", Port: 8000,
 	}); err == nil {
 		t.Fatal("a cancelled create must fail")

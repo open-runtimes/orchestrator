@@ -17,11 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/client"
 )
 
 // dockerHandle carries the Docker infrastructure identifiers for a running job.
@@ -52,7 +50,7 @@ type Orchestrator struct {
 // NewOrchestrator creates a Docker orchestrator. Register listeners on the
 // emitter before calling Start.
 func NewOrchestrator(cfg Config, emitter *job.CallbackEmitter) (*Orchestrator, error) {
-	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
@@ -88,15 +86,14 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 func (o *Orchestrator) reconcile(ctx context.Context) error {
 	logger := slog.With("component", "reconcile")
 
-	containers, err := o.client.ContainerList(ctx, container.ListOptions{
-		All: true,
-		Filters: filters.NewArgs(
-			filters.Arg("label", "managed-by=jobs-service"),
-		),
+	list, err := o.client.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: make(client.Filters).Add("label", "managed-by=jobs-service"),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
 	}
+	containers := list.Items
 
 	// Group containers by job ID
 	type jobContainers struct {
@@ -215,7 +212,7 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 		h.hostDir = hostDir
 	} else {
 		h.volumeName = fmt.Sprintf("job-%s-workspace", req.ID)
-		if _, err := o.client.VolumeCreate(ctx, volume.CreateOptions{Name: h.volumeName}); err != nil {
+		if _, err := o.client.VolumeCreate(ctx, client.VolumeCreateOptions{Name: h.volumeName}); err != nil {
 			return apperrors.Internal("docker.createVolume", err)
 		}
 	}
@@ -244,7 +241,7 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	}
 
 	// Start sidecar (will process inputs and write marker file)
-	if err := o.client.ContainerStart(ctx, h.sidecarContainerID, container.StartOptions{}); err != nil {
+	if _, err := o.client.ContainerStart(ctx, h.sidecarContainerID, client.ContainerStartOptions{}); err != nil {
 		return apperrors.Internal("docker.startSidecarContainer", err)
 	}
 
@@ -330,7 +327,7 @@ func (o *Orchestrator) Close() error {
 
 // Ready checks if the Docker daemon is reachable and responsive.
 func (o *Orchestrator) Ready(ctx context.Context) error {
-	_, err := o.client.Ping(ctx)
+	_, err := o.client.Ping(ctx, client.PingOptions{})
 	return err
 }
 
@@ -392,15 +389,13 @@ func (o *Orchestrator) createJobContainer(ctx context.Context, req *job.Request,
 	}
 
 	hostConfig := &container.HostConfig{
-		Mounts: append([]mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)}, moby.Mounts(req.Volumes)...),
-		Resources: container.Resources{
-			NanoCPUs: int64(clampCPU(req.CPU) * 1e9),
-			Memory:   int64(req.Memory) * 1024 * 1024,
-		},
+		Mounts:   append([]mount.Mount{workspaceMount(h, req.Workspace, mount.PropagationRSlave)}, moby.Mounts(req.Volumes)...),
+		NanoCPUs: int64(clampCPU(req.CPU) * 1e9),
+		Memory:   int64(req.Memory) * 1024 * 1024,
 	}
 
 	containerName := fmt.Sprintf("job-%s-worker", req.ID)
-	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, moby.NetworkingConfig(o.networkName), nil, containerName)
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{Config: containerConfig, HostConfig: hostConfig, NetworkingConfig: moby.NetworkingConfig(o.networkName), Name: containerName})
 	if err != nil {
 		return "", err
 	}
@@ -484,7 +479,7 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 	}
 
 	containerName := fmt.Sprintf("job-%s-sidecar", req.ID)
-	resp, err := o.client.ContainerCreate(ctx, containerConfig, hostConfig, moby.NetworkingConfig(o.networkName), nil, containerName)
+	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{Config: containerConfig, HostConfig: hostConfig, NetworkingConfig: moby.NetworkingConfig(o.networkName), Name: containerName})
 	if err != nil {
 		return "", err
 	}
@@ -499,7 +494,7 @@ func (o *Orchestrator) cleanup(ctx context.Context, h dockerHandle) {
 	o.removeContainer(ctx, h.jobContainerID, stopTimeout)
 
 	if h.volumeName != "" {
-		_ = o.client.VolumeRemove(ctx, h.volumeName, true)
+		_, _ = o.client.VolumeRemove(ctx, h.volumeName, client.VolumeRemoveOptions{Force: true})
 	}
 	if h.hostDir != "" {
 		_ = os.RemoveAll(h.hostDir)
@@ -510,8 +505,8 @@ func (o *Orchestrator) removeContainer(ctx context.Context, containerID string, 
 	if containerID == "" {
 		return
 	}
-	_ = o.client.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &stopTimeout})
-	_ = o.client.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	_, _ = o.client.ContainerStop(ctx, containerID, client.ContainerStopOptions{Timeout: &stopTimeout})
+	_, _ = o.client.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
 }
 
 // runMaintenance periodically cleans up expired completed jobs.

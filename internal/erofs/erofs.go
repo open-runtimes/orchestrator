@@ -756,12 +756,10 @@ func (img *image) resolve(op, name string, follow bool) (nid uint64, ftype fs.Fi
 			return 0, 0, "", &fs.PathError{Op: op, Path: original, Err: ErrNotDirectory}
 		}
 		d := &dir{
-			file: file{
-				img:   img,
-				name:  basename,
-				nid:   nid,
-				ftype: ftype,
-			},
+			img:   img,
+			name:  basename,
+			nid:   nid,
+			ftype: ftype,
 		}
 		entNid, entFtype, err := d.lookup(basename)
 		if err != nil {
@@ -877,7 +875,7 @@ func (img *image) ReadDir(name string) ([]fs.DirEntry, error) {
 	if !ftype.IsDir() {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: ErrNotDirectory}
 	}
-	d := &dir{file: file{img: img, name: basename, nid: nid, ftype: ftype}}
+	d := &dir{img: img, name: basename, nid: nid, ftype: ftype}
 	entries, err := d.ReadDir(-1)
 	if err != nil {
 		return nil, err

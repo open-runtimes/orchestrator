@@ -47,7 +47,7 @@ func newZStreamPacker(z *zState, profile zProfile) *zStreamPacker {
 				worker := z.getPackWorker(profile)
 				spans, err := z.packStreamSegment(job.buf, profile, worker.compress, worker.finalize, &worker.probe, &worker.kept, job.final)
 				z.putPackWorker(profile, worker)
-				job.res <- zStreamResult{packedSegment: packedSegment{spans: spans, err: err}, buf: job.buf}
+				job.res <- zStreamResult{spans: spans, err: err, buf: job.buf}
 			}
 		})
 	}

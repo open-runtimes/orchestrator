@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 )
@@ -435,9 +436,9 @@ func (r *Runner) adoptExistingMounts(mounts []*artifact.Mount) (bool, error) {
 		r.mounted = append(r.mounted, active...)
 		return true, nil
 	}
-	for i := len(active) - 1; i >= 0; i-- {
-		if err := r.mounter.Unmount(active[i]); err != nil {
-			return false, fmt.Errorf("remove partial mount %s: %w", active[i], err)
+	for _, a := range slices.Backward(active) {
+		if err := r.mounter.Unmount(a); err != nil {
+			return false, fmt.Errorf("remove partial mount %s: %w", a, err)
 		}
 	}
 	return false, nil
@@ -528,9 +529,9 @@ func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lo
 // caller can retry, and never report a successful shutdown when mounts remain.
 func (r *Runner) unmountAll() error {
 	var errs []error
-	for i := len(r.mounted) - 1; i >= 0; i-- {
-		if err := r.mounter.Unmount(r.mounted[i]); err != nil {
-			slog.With("target", r.mounted[i], "error", err).Warn("Failed to unmount")
+	for i, v := range slices.Backward(r.mounted) {
+		if err := r.mounter.Unmount(v); err != nil {
+			slog.With("target", v, "error", err).Warn("Failed to unmount")
 			errs = append(errs, err)
 			continue
 		}

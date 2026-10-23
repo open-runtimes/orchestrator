@@ -101,7 +101,7 @@ func (f *fakeSidecar) Requests(_ context.Context, podIP string) (int64, error) {
 }
 
 func testPool(id string) pool.Pool {
-	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Spec: pool.Spec{Image: "runtime:latest", Port: 8080}}
+	return pool.Pool{ID: id, Size: 1, Burst: pool.BurstReject, Image: "runtime:latest", Port: 8080}
 }
 
 func newTestManager(t *testing.T, pools ...pool.Pool) (*Manager, *fake.Clientset, *fakeSidecar) {
@@ -133,12 +133,10 @@ func warmPodFixture(m *Manager, poolID, name, ip string) *corev1.Pod {
 		annotations[annotationPoolSpecHash] = poolSpecHash(&p.Spec, m.cfg)
 	}
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   testNS,
-			Labels:      m.PoolLabels(poolID),
-			Annotations: annotations,
-		},
+		Name:        name,
+		Namespace:   testNS,
+		Labels:      m.PoolLabels(poolID),
+		Annotations: annotations,
 		Status: corev1.PodStatus{
 			Phase: corev1.PodRunning,
 			PodIP: ip,

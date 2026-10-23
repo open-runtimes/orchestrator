@@ -48,11 +48,9 @@ func (m *Manager) claimKey(ctx context.Context) ([]byte, error) {
 			return nil, apperrors.Internal("kubernetes.claimKey", err)
 		}
 		s, err = secrets.Create(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   name,
-				Labels: map[string]string{LabelManagedBy: m.cfg.Naming.ManagedBy},
-			},
-			Data: map[string][]byte{claimKeySecretKey: fresh},
+			Name:   name,
+			Labels: map[string]string{LabelManagedBy: m.cfg.Naming.ManagedBy},
+			Data:   map[string][]byte{claimKeySecretKey: fresh},
 		}, metav1.CreateOptions{})
 		if apierrors.IsAlreadyExists(err) {
 			// A racing replica created it first — use theirs.

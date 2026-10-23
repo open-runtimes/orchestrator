@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Install Gateway API CRDs + Traefik into the kind dev cluster.
-# Versions proven by hack/gateway-poc/ (see its README for the verification).
+# Gateway API CRDs track sigs.k8s.io/gateway-api in go.mod; the CI k8s-integration
+# job proves the pair (hack/gateway-poc/ has the original verification).
 set -euo pipefail
 
 CONTEXT="${KUBE_CONTEXT:-kind-orchestrator-dev}"
-GATEWAY_API_VERSION="v1.5.1"
-TRAEFIK_CHART_VERSION="41.0.1"
+GATEWAY_API_VERSION="v1.6.3"
+TRAEFIK_CHART_VERSION="42.1.3"
 
 kubectl --context "$CONTEXT" apply -f \
   "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"

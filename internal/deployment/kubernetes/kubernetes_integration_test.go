@@ -79,7 +79,7 @@ func setup(t *testing.T, opts ...func(*Config)) (*Orchestrator, func()) {
 	// Create the namespace if not present. Cluster-scoped Create; idempotent-ish.
 	_, err = o.client.CoreV1().Namespaces().Get(ctx, testNamespace, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNamespace}}
+		ns := &corev1.Namespace{Name: testNamespace}
 		if _, err := o.client.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create namespace: %v", err)
 		}

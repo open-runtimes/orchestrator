@@ -99,33 +99,31 @@ func desiredSlice(svc *corev1.Service, ips []string, port int32) *discoveryv1.En
 	for _, ip := range ips {
 		endpoints = append(endpoints, discoveryv1.Endpoint{
 			Addresses:  []string{ip},
-			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
+			Conditions: discoveryv1.EndpointConditions{Ready: new(true)},
 		})
 	}
 	return &discoveryv1.EndpointSlice{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      svc.Name + sliceSuffix,
-			Namespace: svc.Namespace,
-			Labels: map[string]string{
-				discoveryv1.LabelServiceName: svc.Name,
-				discoveryv1.LabelManagedBy:   ManagedByValue,
-				LabelManagedBy:               ManagedByValue,
-				LabelDeploymentID:            svc.Labels[LabelDeploymentID],
-				LabelRevision:                svc.Labels[LabelRevision],
-			},
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: "v1",
-				Kind:       "Service",
-				Name:       svc.Name,
-				UID:        svc.UID,
-				Controller: ptr.To(true),
-			}},
+		Name:      svc.Name + sliceSuffix,
+		Namespace: svc.Namespace,
+		Labels: map[string]string{
+			discoveryv1.LabelServiceName: svc.Name,
+			discoveryv1.LabelManagedBy:   ManagedByValue,
+			LabelManagedBy:               ManagedByValue,
+			LabelDeploymentID:            svc.Labels[LabelDeploymentID],
+			LabelRevision:                svc.Labels[LabelRevision],
 		},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: "v1",
+			Kind:       "Service",
+			Name:       svc.Name,
+			UID:        svc.UID,
+			Controller: new(true),
+		}},
 		AddressType: discoveryv1.AddressTypeIPv4,
 		Endpoints:   endpoints,
 		Ports: []discoveryv1.EndpointPort{{
-			Name:     ptr.To(portName),
-			Port:     ptr.To(port),
+			Name:     new(portName),
+			Port:     new(port),
 			Protocol: ptr.To(corev1.ProtocolTCP),
 		}},
 	}

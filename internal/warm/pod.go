@@ -14,7 +14,6 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 )
@@ -76,14 +75,12 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 	workspaceVolume := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
 	var mounting *kube.Mounting
 	if p.Mounts {
-		mounting = ptr.To(kube.NewMounting(cfg.MountAgentPort, rand.Text()))
+		mounting = new(kube.NewMounting(cfg.MountAgentPort, rand.Text()))
 		workspaceVolume = mounting.Workspace
 	}
 	warmPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name, Labels: m.PoolLabels(poolID),
-			Annotations: map[string]string{annotationPoolSpecHash: poolSpecHash(p, cfg)},
-		},
+		Name: name, Labels: m.PoolLabels(poolID),
+		Annotations: map[string]string{annotationPoolSpecHash: poolSpecHash(p, cfg)},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                 corev1.RestartPolicyNever,
 			TerminationGracePeriodSeconds: gracePeriod(p),
@@ -92,7 +89,7 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 			NodeSelector:                  cfg.NodeSelector,
 			Volumes: append([]corev1.Volume{
 				{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
-				{Name: VolumeTmp, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				{Name: VolumeTmp, EmptyDir: &corev1.EmptyDirVolumeSource{}},
 			}, podVolumes...),
 			InitContainers: initContainers(cfg, token, mounting),
 			Containers:     []corev1.Container{workloadContainer(p, cfg)},
@@ -199,11 +196,9 @@ func proxyContainer(cfg Config, token string, mounting *kube.Mounting) corev1.Co
 			{Name: portNameAdmin, ContainerPort: workload.DefaultAdminPort},
 		},
 		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/ready",
-					Port: intstr.FromInt32(workload.DefaultAdminPort),
-				},
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: "/ready",
+				Port: intstr.FromInt32(workload.DefaultAdminPort),
 			},
 			PeriodSeconds:    1,
 			FailureThreshold: 3,

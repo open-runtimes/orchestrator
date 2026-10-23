@@ -1173,8 +1173,7 @@ func (fsys *Writer) ensureParent(name string) {
 		missing = append(missing, d)
 	}
 	// Create in top-down order.
-	for i := len(missing) - 1; i >= 0; i-- {
-		d := missing[i]
+	for _, d := range slices.Backward(missing) {
 		e := &fsEntry{
 			path: d,
 			mode: disk.StatTypeDir | 0o755,

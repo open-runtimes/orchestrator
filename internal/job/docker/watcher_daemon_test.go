@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/events"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
 )
 
 // fakeDaemon fakes the subset of the Docker Engine API the lifecycle watcher
@@ -116,10 +116,10 @@ func newFakeDaemonWatcher(t *testing.T, d *fakeDaemon) (*dockerLifecycleWatcher,
 
 	srv := httptest.NewServer(d)
 	t.Cleanup(srv.Close)
-	cli, err := client.NewClientWithOpts(
+	cli, err := client.New(
 		client.WithHost("tcp://"+strings.TrimPrefix(srv.URL, "http://")),
 		client.WithHTTPClient(srv.Client()),
-		client.WithVersion("1.47"),
+		client.WithAPIVersion("1.47"),
 	)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
