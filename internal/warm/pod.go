@@ -14,7 +14,6 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 )
@@ -110,8 +109,9 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 // poolSpecHash identifies what a warm pod was built from, so a pool whose spec
 // changes is replaced. Turning the node mount agent on or off changes a
 // mounting pool's pods too, and so does a change to the operator's pod security
-// context or to the S3 credentials the proxy is given: a new profile or rotated keys reach warm pods only by
-// replacing them. Only the hash is stored, never the credentials.
+// context or to the S3 credentials the proxy is given: a new profile or rotated
+// keys reach warm pods only by replacing them. Only the hash is stored, never
+// the credentials.
 func poolSpecHash(spec *pool.Spec, cfg Config) string {
 	encoded, _ := json.Marshal(spec)
 	if spec.Mounts && cfg.MountAgentPort > 0 {
@@ -121,8 +121,7 @@ func poolSpecHash(spec *pool.Spec, cfg Config) string {
 		forwarded, _ := json.Marshal(s3)
 		encoded = append(encoded, forwarded...)
 	}
-	if !apiequality.Semantic.DeepEqual(cfg.PodSecurityContext, corev1.PodSecurityContext{}) {
-		security, _ := json.Marshal(cfg.PodSecurityContext)
+	if security, _ := json.Marshal(cfg.PodSecurityContext); string(security) != "{}" {
 		encoded = append(encoded, security...)
 	}
 	sum := sha256.Sum256(encoded)

@@ -58,10 +58,6 @@ spec:
       {{- with .Values.mountAgent.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
-      {{- with .Values.mountAgent.podSecurityContext }}
-      securityContext:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

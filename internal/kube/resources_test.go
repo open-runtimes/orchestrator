@@ -133,4 +133,12 @@ func TestPodSecurityContextFromEnv(t *testing.T) {
 	if _, err := PodSecurityContextFromEnv(); err == nil {
 		t.Error("malformed JSON must be an error, not a silently dropped profile")
 	}
+	// A pod-level user reaches every container: root sidecars are refused and
+	// build images lose their own user. Each is refused at startup instead.
+	for _, field := range []string{`"runAsNonRoot":true`, `"runAsUser":1000`, `"runAsGroup":1000`} {
+		t.Setenv("KUBE_WORKLOAD_POD_SECURITY_CONTEXT", "{"+field+"}")
+		if _, err := PodSecurityContextFromEnv(); err == nil {
+			t.Errorf("%s was accepted", field)
+		}
+	}
 }

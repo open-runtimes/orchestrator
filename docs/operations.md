@@ -57,7 +57,7 @@ To require authentication, put the key in a Secret and name it in `<plane>.auth.
 
 ## The values shape
 
-Every plane (`jobs`, `deployments`, `sandbox`) and every component (`deployments.activator`, `sandbox.proxy`, `poolController`, `mountAgent`) takes the same keys for its own pods: `image`, `replicaCount`, `autoscaling`, `leaderElection`, `resources`, `podAnnotations`, `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `serviceAccount` and `service`. A plane adds what the pods it creates get: `namespace`, `networkPolicy`, `workload` (their `nodeSelector`, `tolerations` and overcommit), `httpRoute`, `auth` and `s3`. Shared images live under `images`, the Gateway under `gateway`. Resources are named `<fullname>-<component>`, where the fullname is the release name when it contains `orchestrator`, otherwise `<release>-orchestrator`.
+Every plane (`jobs`, `deployments`, `sandbox`) and every component (`deployments.activator`, `sandbox.proxy`, `poolController`, `mountAgent`) takes the same keys for its own pods: `image`, `replicaCount`, `autoscaling`, `leaderElection`, `resources`, `podAnnotations`, `nodeSelector`, `tolerations`, `affinity`, `priorityClassName`, `podSecurityContext`, `securityContext`, `serviceAccount` and `service` (the privileged mount agent only those it can use). A plane adds what the pods it creates get: `namespace`, `networkPolicy`, `workload` (their `nodeSelector`, `tolerations`, `podSecurityContext` and overcommit), `httpRoute`, `auth` and `s3`. Shared images live under `images`, the Gateway under `gateway`. Resources are named `<fullname>-<component>`, where the fullname is the release name when it contains `orchestrator`, otherwise `<release>-orchestrator`.
 
 ## Exposing the APIs
 
@@ -169,7 +169,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `<plane>.enabled` | `false` | Install a plane's service; every component is opt-in |
 | `<plane>.namespace` | `""` | Namespace the plane's pods run in; empty is the release namespace (below) |
 | `<plane>.networkPolicy.enabled` | jobs `false`, others `true` | Per-plane NetworkPolicy (below) |
-| `<plane>.workload.{nodeSelector,tolerations}` | empty | Placement of the pods a plane creates (below) |
+| `<plane>.workload.{nodeSelector,tolerations,podSecurityContext}` | empty (`RuntimeDefault` seccomp) | Placement and pod security of the pods a plane creates (below) |
 | `<plane>.workload.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for those pods (below) |
 | `<plane>.replicaCount`, `.autoscaling`, `.leaderElection` | `1`, off, off | More than one replica, or an HPA, requires leader election |
 | `<plane>.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss delays work by roughly the lease duration |
@@ -187,7 +187,6 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `poolController.enabled` | `true` | Run warm-pod inventory for every enabled plane (also cleans removed pools) |
 | `terminationGracePeriodSeconds` | `60` | Control-plane pod shutdown budget, including the final OTLP flush |
 | `podSecurityContext`, `securityContext` | non-root, `RuntimeDefault`, read-only, no capabilities | Every control-plane pod and container; `<component>.podSecurityContext` / `.securityContext` replace them |
-| `<plane>.workload.podSecurityContext` | `{}` (`RuntimeDefault` seccomp) | Pod security of every pod a plane creates (below) |
 | `rbac.create` | `true` | Every Role, ClusterRole and binding the components need |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
 | `extraEnv` | `[]` | Extra environment for every control-plane container (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `AUTOSCALER_WINDOW`) |
@@ -208,7 +207,10 @@ Defense in depth, each layer independently optional:
 
 **Pod security floor (always on).** Every container the services run themselves (sidecars, init containers) runs as non-root (uid 65532) with all capabilities dropped and a read-only root filesystem, and no workload pod gets a ServiceAccount token — admissible under Pod Security Standards `restricted`. A user's own container keeps its image's user, without new privileges.
 
-**Workload pod security** (`<plane>.workload.podSecurityContext`). The pod-level security context of every pod a plane's service creates, in the standard schema: seccomp and AppArmor profiles, SELinux options, `fsGroup`, supplemental groups, sysctls. Empty keeps `RuntimeDefault` seccomp; a profile you name replaces it, for every container in the pod, since containers set only the user, capabilities and privilege each needs. Changing it replaces warm pods.
+**Workload pod security** (`<plane>.workload.podSecurityContext`). The pod-level security context of every pod a plane's service creates, in the standard schema: seccomp and AppArmor profiles, SELinux options, `fsGroup`, supplemental groups, sysctls. Unset keeps `RuntimeDefault` seccomp; a profile you name replaces it for every container in the pod, since no container sets its own. `runAsUser`, `runAsGroup` and `runAsNonRoot` are refused at startup: on the pod they would reach every container, refusing the sidecars that run as root and replacing a build image's user. Changing it replaces warm pods; running revisions keep theirs until the next deploy mints a new one.
+
+- `fsGroup` makes the kubelet re-own a deployment's persistent volumes on every pod start; pair it with `fsGroupChangePolicy: OnRootMismatch`.
+- Container runtimes skip seccomp and `RuntimeDefault` AppArmor for privileged containers, but not a `Localhost` AppArmor profile or SELinux options: without the node mount agent, those must still allow the mounting sidecar's loop mounts.
 
 ```yaml
 jobs:
@@ -274,7 +276,7 @@ On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.
 
 Each component can also autoscale on CPU (`<plane>.autoscaling.enabled`, `deployments.activator.autoscaling.enabled`, `sandbox.proxy.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 
-The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems (`podSecurityContext` and `securityContext` at the top level, which a component's own replace), zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
+The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
 
 ## Local development backend
 

@@ -623,19 +623,14 @@
         },
         "priorityClassName": {
           "type": "string"
-        },
-        "podSecurityContext": {
-          "type": "object"
         }
       }
     },
     "podSecurityContext": {
-      "type": "object",
-      "description": "Standard Kubernetes securityContext schema."
+      "type": "object"
     },
     "securityContext": {
-      "type": "object",
-      "description": "Standard Kubernetes securityContext schema."
+      "type": "object"
     }
   },
   "$defs": {

@@ -66,17 +66,13 @@ func FileAccessSecurityContext() *corev1.SecurityContext {
 }
 
 // PodSecurity is a workload pod's security context: the operator's
-// (KUBE_WORKLOAD_POD_SECURITY_CONTEXT, empty for none), with the runtime's
-// default seccomp profile unless it names another. Containers set only what
-// each needs to work (user, capabilities, privilege), so the pod's seccomp and
-// AppArmor profiles, SELinux options, fsGroup, supplemental groups and sysctls
-// apply to all of them.
+// (KUBE_WORKLOAD_POD_SECURITY_CONTEXT), with RuntimeDefault seccomp unless it
+// names a profile. Containers set no seccomp, so the pod's applies to all.
 func PodSecurity(operator corev1.PodSecurityContext) *corev1.PodSecurityContext {
-	security := operator.DeepCopy()
-	if security.SeccompProfile == nil {
-		security.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
+	if operator.SeccompProfile == nil {
+		operator.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
 	}
-	return security
+	return &operator
 }
 
 // SidecarResources is what a workload sidecar asks for: a small CPU request and

@@ -2,6 +2,7 @@ package kube
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -31,14 +32,22 @@ func TolerationsFromEnv() ([]corev1.Toleration, error) {
 
 // PodSecurityContextFromEnv reads KUBE_WORKLOAD_POD_SECURITY_CONTEXT, a JSON
 // object in the pod spec's securityContext schema, for every workload pod
-// (PodSecurity). Empty means none; malformed JSON is an error — a typo must
-// not silently drop a seccomp or AppArmor profile.
+// (PodSecurity). Empty means none. Malformed JSON is an error — a typo must not
+// silently drop a seccomp or AppArmor profile — and so is a user setting:
+// runAsUser, runAsGroup or runAsNonRoot on the pod would reach every
+// container, refusing the sidecars that run as root and replacing a build
+// image's own user, so containers keep choosing their own.
 func PodSecurityContextFromEnv() (corev1.PodSecurityContext, error) {
 	var security corev1.PodSecurityContext
-	if raw := config.GetEnv("KUBE_WORKLOAD_POD_SECURITY_CONTEXT", ""); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &security); err != nil {
-			return corev1.PodSecurityContext{}, fmt.Errorf("parse KUBE_WORKLOAD_POD_SECURITY_CONTEXT: %w", err)
-		}
+	raw := config.GetEnv("KUBE_WORKLOAD_POD_SECURITY_CONTEXT", "")
+	if raw == "" {
+		return security, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &security); err != nil {
+		return corev1.PodSecurityContext{}, fmt.Errorf("parse KUBE_WORKLOAD_POD_SECURITY_CONTEXT: %w", err)
+	}
+	if security.RunAsUser != nil || security.RunAsGroup != nil || security.RunAsNonRoot != nil {
+		return corev1.PodSecurityContext{}, errors.New("KUBE_WORKLOAD_POD_SECURITY_CONTEXT must not set runAsUser, runAsGroup or runAsNonRoot: each container sets its own user")
 	}
 	return security, nil
 }

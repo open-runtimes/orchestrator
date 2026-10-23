@@ -470,8 +470,8 @@ func TestBuildRevision_SecurityFloor(t *testing.T) {
 		if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 			t.Errorf("%s: capabilities not dropped: %+v", c.Name, sc.Capabilities)
 		}
-		if p := effectiveSeccomp(spec, sc); p == nil || p.Type != corev1.SeccompProfileTypeRuntimeDefault {
-			t.Errorf("%s: seccompProfile: got %+v", c.Name, p)
+		if sc.SeccompProfile != nil || spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+			t.Errorf("%s: want RuntimeDefault seccomp from the pod, got container %+v", c.Name, sc.SeccompProfile)
 		}
 		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
 			t.Errorf("%s: readOnlyRootFilesystem not enforced", c.Name)
@@ -680,26 +680,18 @@ func TestBuildRevision_AgentMounts(t *testing.T) {
 	}
 }
 
-// effectiveSeccomp is the profile a container runs under: its own, else the pod's.
-func effectiveSeccomp(spec corev1.PodSpec, sc *corev1.SecurityContext) *corev1.SeccompProfile {
-	if sc != nil && sc.SeccompProfile != nil {
-		return sc.SeccompProfile
-	}
-	if spec.SecurityContext != nil {
-		return spec.SecurityContext.SeccompProfile
-	}
-	return nil
-}
-
 func TestBuildRevision_OperatorPodSecurity(t *testing.T) {
 	t.Parallel()
 	cfg := Config{SidecarImage: "sidecar:latest", RunAsUser: 65532, PodSecurityContext: corev1.PodSecurityContext{
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeLocalhost, LocalhostProfile: new("appwrite/workload.json")},
 	}}
 	spec := buildRevision(testRequest(), cfg, "web-00001").Spec.Template.Spec
+	if spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeLocalhost {
+		t.Errorf("pod seccomp = %+v, want the operator's Localhost profile", spec.SecurityContext.SeccompProfile)
+	}
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
-		if p := effectiveSeccomp(spec, c.SecurityContext); p == nil || p.Type != corev1.SeccompProfileTypeLocalhost {
-			t.Errorf("%s runs under seccomp %+v, want the operator's Localhost profile", c.Name, p)
+		if c.SecurityContext.SeccompProfile != nil {
+			t.Errorf("%s pins its own seccomp, so the operator's profile would not apply", c.Name)
 		}
 	}
 }
