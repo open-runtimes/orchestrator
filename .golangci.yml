@@ -70,7 +70,8 @@ linters:
         - mapliteral
       default-signifies-exhaustive: true
       # A ResourceList names the resources it sets, never all of them.
-      ignore-types: "^k8s.io/api/core/v1.ResourceName$"
+      ignore-types:
+        - "^k8s.io/api/core/v1.ResourceName$"
     loggercheck:
       logr: true
     tagliatelle:
