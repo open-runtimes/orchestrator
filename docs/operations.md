@@ -16,7 +16,7 @@ How to deploy and configure the orchestrator. Consumers of the API want the [job
 
 ## What gets deployed
 
-The Helm chart (`charts/orchestrator/`) installs up to two stateless services:
+The Helm chart (`charts/orchestrator/`) installs up to six stateless components, plus the optional node mount agent DaemonSet:
 
 Every component is opt-in — a default install renders nothing.
 
@@ -53,7 +53,7 @@ kubectl -n orchestrator port-forward svc/jobs 8080:8080 &
 curl localhost:8080/readyz
 ```
 
-To require authentication, mount a secret and point `API_KEY_FILE` at it (via `extraEnv` + a volume, or your secrets operator). Requests then need `Authorization: Bearer <key>`. **With no key configured, the API is open** — the services log a warning at startup.
+To require authentication, put the key in a Secret and name it in `<plane>.auth.existingSecret` (key `<plane>.auth.secretKey`, default `api-key`); the chart mounts it and points `API_KEY_FILE` at it. Requests then need `Authorization: Bearer <key>`. **With no key configured, the API is open** — the services log a warning at startup.
 
 ## Exposing the jobs API
 
@@ -183,10 +183,10 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 
 | Value | Default | Effect |
 | --- | --- | --- |
-| `jobs.image`, `jobs.sidecarImage` | GHCR latest | Jobs service and per-job sidecar images |
+| `jobs.image`, `jobs.sidecarImage` | GHCR, the chart's `appVersion` | Jobs service and per-job sidecar images |
 | `jobs.gateway.{enabled,gatewayClassName,listeners}` | disabled | Renders a `Gateway` for the jobs API (above) |
 | `jobs.httpRoute.{enabled,parentRefs,hostnames}` | disabled | Renders an `HTTPRoute` for the jobs API (above) |
-| `deployments.enabled` | `false` | Install the deployments service + activator |
+| `deployments.enabled` | `false` | Install the deployments service (the activator is `deployments.activator.enabled`) |
 | `deployments.revisionWorkers` | `32` | Concurrent direct-Pod Revision reconciles |
 | `deployments.clientQPS` / `deployments.clientBurst` | `200` / `400` | Client-side K8s API write budget for Revision and Pod bursts |
 | `deployments.domain` | `localhost` | Base domain for auto-assigned hosts |
@@ -209,7 +209,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `deployments.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss can delay Pod creation by roughly the lease duration |
 | `poolController.leaderElection.enabled` | `false` | Required above one replica; each pool kind uses a distinct Lease |
 | `deployments.limitRange.enabled` | `false` | Default requests for unspecified containers |
-| `deployments.activator.replicaCount` | `1` | Activator replicas (deployment mode) |
+| `deployments.activator.replicaCount` | `1` | Activator replicas |
 | `service.apiPort` | `8080` | API port |
 | `service.terminationGracePeriodSeconds` | `60` | Pod shutdown budget, including the final OTLP flush |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
@@ -265,14 +265,14 @@ The policies need an enforcing CNI (Cilium, Calico; kindnet does not enforce).
 
 ## Resource model
 
-The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the platform derives the scheduler request as `limit / overcommit`. The divisors are per-plane operator config — `deployments.{cpu,memory}Overcommit` covers deployment replicas and warm-pool pods, `jobs.{cpu,memory}Overcommit` covers job pods — and default to 1 (request = limit).
+The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the platform derives the scheduler request as `limit / overcommit`. The divisors are per-plane operator config — `jobs.{cpu,memory}Overcommit` covers job pods, `deployments.{cpu,memory}Overcommit` deployment replicas and their warm pools, `sandbox.{cpu,memory}Overcommit` sandboxes and theirs — and default to 1 (request = limit).
 
 - **CPU**: request = `cpu / cpuOvercommit` and **no CPU limit** — CPU is compressible, and limits cause needless throttling. Raising `cpuOvercommit` packs workloads denser at the cost of contention under load.
 - **Memory**: limit as declared, request = `memory / memoryOvercommit`. Memory is incompressible — overcommitting it trades OOM kills for density, so raise it only with headroom to spare.
-- **Tolerations**: to run workloads on tainted node pools (e.g. `workload=edge-builds:NoSchedule`), set `deployments.workloadTolerations` / `jobs.workloadTolerations` — a list in the standard pod-spec tolerations schema, stamped on every workload/job pod of that plane.
-- **Node selector**: tolerations only *allow* the tainted pool; to *pin* pods to it, also set `deployments.workloadNodeSelector` / `jobs.workloadNodeSelector` (e.g. `{workload: edge-builds}`) — a standard pod-spec nodeSelector stamped on every workload/job pod of that plane.
+- **Tolerations**: to run workloads on tainted node pools (e.g. `workload=edge-builds:NoSchedule`), set `jobs.workloadTolerations` / `deployments.workloadTolerations` / `sandbox.workloadTolerations` — a list in the standard pod-spec tolerations schema, stamped on every workload pod of that plane.
+- **Node selector**: tolerations only *allow* the tainted pool; to *pin* pods to it, also set `jobs.workloadNodeSelector` / `deployments.workloadNodeSelector` / `sandbox.workloadNodeSelector` (e.g. `{workload: edge-builds}`) — a standard pod-spec nodeSelector stamped on every workload/job pod of that plane.
 - Replicas spread across nodes via topology spread constraints, and durably multi-replica deployments get a PodDisruptionBudget automatically.
-- `limitRange.enabled` adds defaults for containers that declare nothing, preventing BestEffort pods.
+- `deployments.limitRange.enabled` adds defaults, in the deployments namespace, for containers that declare nothing, preventing BestEffort pods.
 
 ## Scaling the control plane
 
@@ -282,7 +282,7 @@ On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.
 
 **Upgrading from the `apps/v1` backend.** There is deliberately no migration: releases before the `Revision` CRD materialised each revision as a Kubernetes `Deployment`, and this backend neither adopts nor deletes those objects (its Role no longer holds any `apps` verbs). Delete existing deployments through the API before upgrading, or remove the leftover `apps/v1` Deployments and their ReplicaSets by hand afterwards; until then the old pods keep serving while the API reports the deployment with no revisions.
 
-Each component can also autoscale on CPU (`autoscaling.enabled`, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
+Each component can also autoscale on CPU (`autoscaling.enabled` for jobs, `deployments.autoscaling.enabled`, `deployments.activator.autoscaling.enabled`, `sandbox.autoscaling.enabled`, `sandbox.proxy.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 
 The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
 

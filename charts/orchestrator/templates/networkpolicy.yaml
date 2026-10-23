@@ -36,6 +36,7 @@ spec:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: deployments-activator
         {{- else }}
         - namespaceSelector:
@@ -43,6 +44,7 @@ spec:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: sandbox-proxy
         {{- end }}
         # The plane's control plane: claim POSTs, /stats scrapes, direct probes.
@@ -51,12 +53,14 @@ spec:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: {{ $plane }}
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: pool-controller
               orchestrator.open-runtimes.io/pool-kind: {{ ternary "revision" "sandbox" (eq $plane "deployments") }}
   {{- end }}
@@ -80,6 +84,7 @@ spec:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
           podSelector:
             matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: jobs
       ports:
         - protocol: TCP

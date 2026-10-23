@@ -24,6 +24,10 @@ spec:
       labels:
         {{- include "orchestrator.poolControllerSelectorLabels" $root | nindent 8 }}
         orchestrator.open-runtimes.io/pool-kind: {{ $kind }}
+      {{- /* Rolls with the S3 keys its warm pods are given, like the services. */}}
+      {{- with include "orchestrator.podAnnotations" (dict "s3" (ternary $root.Values.deployments.s3 $root.Values.sandbox.s3 (eq $kind "revision"))) }}
+      {{- . | nindent 6 }}
+      {{- end }}
     spec:
       terminationGracePeriodSeconds: {{ $root.Values.service.terminationGracePeriodSeconds }}
       serviceAccountName: {{ $name }}
@@ -157,6 +161,7 @@ metadata:
   namespace: {{ $root.Release.Namespace }}
   labels:
     {{- include "orchestrator.poolControllerLabels" $root | nindent 4 }}
+{{- if $root.Values.rbac.create }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -193,6 +198,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ $root.Release.Namespace }}
+{{- end }}
 {{- end -}}
 
 {{- if and .Values.poolController.enabled (or .Values.deployments.enabled .Values.sandbox.enabled) }}
@@ -208,6 +214,7 @@ subjects:
 {{- if .Values.sandbox.enabled }}
 {{ include "orchestrator.poolControllerDeployment" (dict "root" . "kind" "sandbox") }}
 {{- end }}
+{{- if .Values.rbac.create }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -238,4 +245,5 @@ subjects:
     namespace: {{ $.Release.Namespace }}
   {{- end }}
   {{- end }}
+{{- end }}
 {{- end }}

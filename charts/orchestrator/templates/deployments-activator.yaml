@@ -1,4 +1,7 @@
-{{- if and .Values.deployments.enabled .Values.deployments.activator.enabled }}
+{{- if .Values.deployments.activator.enabled }}
+{{- if not .Values.deployments.enabled }}
+{{- fail "deployments.activator.enabled requires deployments.enabled: the activator raises the deployments service's revisions" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -83,7 +86,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: deployments-activator
+  name: {{ include "orchestrator.deploymentsName" . }}-activator
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
@@ -103,6 +106,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "orchestrator.activatorLabels" . | nindent 4 }}
+{{- if .Values.rbac.create }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -146,6 +150,7 @@ subjects:
 {{- /*
 Replica-aware PDB — see the jobs PDB note; singletons never get one.
 */}}
+{{- end }}
 {{- if or (gt (int .Values.deployments.activator.replicaCount) 1) (and .Values.deployments.activator.autoscaling.enabled (gt (int .Values.deployments.activator.autoscaling.minReplicas) 1)) }}
 ---
 apiVersion: policy/v1
