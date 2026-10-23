@@ -332,6 +332,23 @@ Upload a file to a presigned URL:
 - `in` - Path to read from (required)
 - `out` - URL to upload to (required)
 
+### S3 URLs
+
+`download` and `upload` also take `s3://bucket/key` URLs. The sidecar signs them with the service's S3 credentials (`jobs.s3` in the chart), which the worker never sees. To use a second store, configure a named profile (`jobs.s3.profiles.<name>`) and put its name in the URL:
+
+```json
+[
+  {"id": "in",  "type": "download", "in": "s3://inputs/data.tar", "out": "data.tar"},
+  {"id": "out", "type": "upload", "in": "result.tar", "out": "s3://archive@results/result.tar", "depends": "job"}
+]
+```
+
+Outside the chart, the default profile reads `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_ENDPOINT` and `S3_FORCE_PATH_STYLE`. `S3_PROFILES=archive` adds a profile that reads the same variables as `S3_ARCHIVE_*`.
+
+Profile names are lower-case letters, digits and underscores, starting with a letter; a URL naming anything else fails validation.
+
+**A profile is not an access boundary.** Whoever can call the API can name any configured profile, against any bucket its keys reach, and every sidecar the service starts receives every profile's keys. The service's API key is the only boundary. Give a store that only some callers may use its own service, never just a profile, and keep profile names out of anything a tenant can influence.
+
 ### Read Artifact
 
 Include file contents in the callback event:
