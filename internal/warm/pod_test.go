@@ -169,7 +169,7 @@ func TestBuildPod_SecurityFloor(t *testing.T) {
 		if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 			t.Errorf("%s: want all capabilities dropped", c.Name)
 		}
-		if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		if sc.SeccompProfile == nil && pod.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 			t.Errorf("%s: want RuntimeDefault seccomp", c.Name)
 		}
 		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
@@ -388,5 +388,31 @@ func TestPoolSpecHash_FollowsS3Credentials(t *testing.T) {
 	}
 	if strings.Contains(withProfile, "SECRET") {
 		t.Error("the hash annotation must not carry the credentials")
+	}
+}
+
+// The operator's pod security context reaches every warm pod, keeps the
+// default seccomp profile unless it names another, and replaces the pool's
+// warm pods when it changes.
+func TestBuildPod_OperatorPodSecurity(t *testing.T) {
+	t.Parallel()
+	security := corev1.PodSecurityContext{
+		FSGroup:         new(int64(2000)),
+		AppArmorProfile: &corev1.AppArmorProfile{Type: corev1.AppArmorProfileTypeRuntimeDefault},
+	}
+	b := testBuilder(t)
+	b.cfg.PodSecurityContext = security
+	pod := b.buildPod(mapperPool(), "std", "pool-std-x", "tok")
+	got := pod.Spec.SecurityContext
+	if got.FSGroup == nil || *got.FSGroup != 2000 || got.AppArmorProfile == nil || got.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("pod security = %+v, want the operator's plus RuntimeDefault seccomp", got)
+	}
+	localhost := corev1.PodSecurityContext{SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeLocalhost, LocalhostProfile: new("appwrite/workload.json")}}
+	b.cfg.PodSecurityContext = localhost
+	if p := b.buildPod(mapperPool(), "std", "pool-std-y", "tok").Spec.SecurityContext.SeccompProfile; p.Type != corev1.SeccompProfileTypeLocalhost {
+		t.Errorf("seccomp = %+v, want the operator's Localhost profile", p)
+	}
+	if poolSpecHash(mapperPool(), Config{}) == poolSpecHash(mapperPool(), Config{PodSecurityContext: security}) {
+		t.Error("a pod security change must replace warm pods")
 	}
 }

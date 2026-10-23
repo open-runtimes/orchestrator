@@ -157,6 +157,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		AutomountServiceAccountToken:  &automount,
 		Tolerations:                   cfg.Tolerations,
 		NodeSelector:                  cfg.NodeSelector,
+		SecurityContext:               kube.PodSecurity(cfg.PodSecurityContext),
 		TerminationGracePeriodSeconds: &grace,
 		Volumes: append([]corev1.Volume{
 			{Name: VolumeWorkspace, VolumeSource: workspaceVolume},

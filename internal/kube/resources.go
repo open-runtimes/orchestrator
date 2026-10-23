@@ -29,6 +29,20 @@ func TolerationsFromEnv() ([]corev1.Toleration, error) {
 	return tolerations, nil
 }
 
+// PodSecurityContextFromEnv reads KUBE_WORKLOAD_POD_SECURITY_CONTEXT, a JSON
+// object in the pod spec's securityContext schema, for every workload pod
+// (PodSecurity). Empty means none; malformed JSON is an error — a typo must
+// not silently drop a seccomp or AppArmor profile.
+func PodSecurityContextFromEnv() (corev1.PodSecurityContext, error) {
+	var security corev1.PodSecurityContext
+	if raw := config.GetEnv("KUBE_WORKLOAD_POD_SECURITY_CONTEXT", ""); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &security); err != nil {
+			return corev1.PodSecurityContext{}, fmt.Errorf("parse KUBE_WORKLOAD_POD_SECURITY_CONTEXT: %w", err)
+		}
+	}
+	return security, nil
+}
+
 // NodeSelectorFromEnv reads KUBE_WORKLOAD_NODE_SELECTOR, a JSON object in the
 // pod spec's nodeSelector schema, stamped on every workload pod to pin it to a
 // dedicated node pool (e.g. {"workload":"edge-builds"}). Pair it with

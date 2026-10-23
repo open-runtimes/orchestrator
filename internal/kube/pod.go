@@ -15,8 +15,8 @@ import (
 
 // HardenedSecurityContext is the container security context for anything we run
 // ourselves: no root, no new privileges, no capabilities, no writable root
-// filesystem, and the runtime's default seccomp profile. uid is both the user
-// and the group.
+// filesystem. uid is both the user and the group. Seccomp comes from the pod
+// (PodSecurity).
 //
 // It is deliberately NOT applied to a user's own workload container, which may
 // legitimately need to be root or to write to its image's filesystem.
@@ -27,20 +27,18 @@ func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
 		RunAsGroup:               new(uid),
 		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		ReadOnlyRootFilesystem:   new(true),
 	}
 }
 
 // WorkloadSecurityContext is for a container running the user's own command,
 // such as a build: it keeps the image's user and a writable filesystem, since
-// installers run as root and write everywhere, but takes the runtime's default
-// seccomp profile, no new privileges, and no CAP_NET_RAW, which no build needs.
+// installers run as root and write everywhere, but takes no new privileges and
+// no CAP_NET_RAW, which no build needs. Seccomp comes from the pod.
 func WorkloadSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: new(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"NET_RAW"}},
-		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 }
 
@@ -64,8 +62,21 @@ func FileAccessSecurityContext() *corev1.SecurityContext {
 			Drop: []corev1.Capability{"ALL"},
 			Add:  []corev1.Capability{"DAC_OVERRIDE"},
 		},
-		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
+}
+
+// PodSecurity is a workload pod's security context: the operator's
+// (KUBE_WORKLOAD_POD_SECURITY_CONTEXT, empty for none), with the runtime's
+// default seccomp profile unless it names another. Containers set only what
+// each needs to work (user, capabilities, privilege), so the pod's seccomp and
+// AppArmor profiles, SELinux options, fsGroup, supplemental groups and sysctls
+// apply to all of them.
+func PodSecurity(operator corev1.PodSecurityContext) *corev1.PodSecurityContext {
+	security := operator.DeepCopy()
+	if security.SeccompProfile == nil {
+		security.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
+	}
+	return security
 }
 
 // SidecarResources is what a workload sidecar asks for: a small CPU request and

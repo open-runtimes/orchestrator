@@ -146,6 +146,7 @@ func buildPodSpec(req *deployment.Request, cfg Config, revision string) corev1.P
 		AutomountServiceAccountToken: &autoMount,
 		Tolerations:                  cfg.Tolerations,
 		NodeSelector:                 cfg.NodeSelector,
+		SecurityContext:              kube.PodSecurity(cfg.PodSecurityContext),
 		Volumes: append([]corev1.Volume{
 			{Name: VolumeWorkspace, VolumeSource: workspaceVolume},
 			{Name: VolumeTmp, EmptyDir: &corev1.EmptyDirVolumeSource{}},

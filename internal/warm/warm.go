@@ -93,9 +93,10 @@ type Config struct {
 	Overcommit             kube.Overcommit
 	Tolerations            []corev1.Toleration
 	NodeSelector           map[string]string
-	RuntimeClasses         map[string]string // isolation tier → RuntimeClass (internal/kube)
-	MountAgentPort         int               // node mount agent's port; 0 mounts from a privileged sidecar (kube.NewMounting)
-	OrphanTTL              time.Duration     // discard claimed-but-unlabeled pods (crashed mid-claim) after this
+	PodSecurityContext     corev1.PodSecurityContext // operator's pod security (kube.PodSecurity)
+	RuntimeClasses         map[string]string         // isolation tier → RuntimeClass (internal/kube)
+	MountAgentPort         int                       // node mount agent's port; 0 mounts from a privileged sidecar (kube.NewMounting)
+	OrphanTTL              time.Duration             // discard claimed-but-unlabeled pods (crashed mid-claim) after this
 	Naming                 Naming
 
 	// ReapUnpooled extends the control loop's end-of-life rule to claims whose

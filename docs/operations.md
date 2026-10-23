@@ -186,6 +186,8 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `sandbox.domain` | `""` | Wildcard domain sandboxes are addressed at (required) |
 | `poolController.enabled` | `true` | Run warm-pod inventory for every enabled plane (also cleans removed pools) |
 | `terminationGracePeriodSeconds` | `60` | Control-plane pod shutdown budget, including the final OTLP flush |
+| `podSecurityContext`, `securityContext` | non-root, `RuntimeDefault`, read-only, no capabilities | Every control-plane pod and container; `<component>.podSecurityContext` / `.securityContext` replace them |
+| `<plane>.workload.podSecurityContext` | `{}` (`RuntimeDefault` seccomp) | Pod security of every pod a plane creates (below) |
 | `rbac.create` | `true` | Every Role, ClusterRole and binding the components need |
 | `imagePullSecrets` | `[]` | Pull credentials for every pod the chart renders, plus the job-pod ServiceAccount (below) |
 | `extraEnv` | `[]` | Extra environment for every control-plane container (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, `AUTOSCALER_WINDOW`) |
@@ -204,7 +206,20 @@ A pull secret is referenced **by name only, and the name resolves in the namespa
 
 Defense in depth, each layer independently optional:
 
-**Pod security floor (always on).** Every workload pod runs as non-root (uid 65532) with all capabilities dropped, `RuntimeDefault` seccomp, a read-only root filesystem, and no ServiceAccount token — admissible under Pod Security Standards `restricted`.
+**Pod security floor (always on).** Every container the services run themselves (sidecars, init containers) runs as non-root (uid 65532) with all capabilities dropped and a read-only root filesystem, and no workload pod gets a ServiceAccount token — admissible under Pod Security Standards `restricted`. A user's own container keeps its image's user, without new privileges.
+
+**Workload pod security** (`<plane>.workload.podSecurityContext`). The pod-level security context of every pod a plane's service creates, in the standard schema: seccomp and AppArmor profiles, SELinux options, `fsGroup`, supplemental groups, sysctls. Empty keeps `RuntimeDefault` seccomp; a profile you name replaces it, for every container in the pod, since containers set only the user, capabilities and privilege each needs. Changing it replaces warm pods.
+
+```yaml
+jobs:
+  workload:
+    podSecurityContext:
+      seccompProfile:
+        type: Localhost
+        localhostProfile: profiles/builds.json   # under the kubelet's seccomp directory on every node
+      appArmorProfile:
+        type: RuntimeDefault
+```
 
 **A namespace per plane.** Each plane names the namespace its pods run in: `jobs.namespace`, `deployments.namespace` (revisions and their warm pools) and `sandbox.namespace` (sandboxes and theirs). Empty means the release namespace. Give each one its own, apart from the control plane. Sandboxes run untrusted code, so never put them in the same namespace as deployments. The chart creates what its components need in each namespace: the Roles and RoleBindings for that plane's control plane, a ServiceAccount per pool-controller kind that is allowed only in its own plane's namespace, and the job-pod ServiceAccount.
 
@@ -259,7 +274,7 @@ On Kubernetes, each domain revision is stored as an `orchestrator.open-runtimes.
 
 Each component can also autoscale on CPU (`<plane>.autoscaling.enabled`, `deployments.activator.autoscaling.enabled`, `sandbox.proxy.autoscaling.enabled` — min/max replicas and a target utilization); the services require leader election, the activator doesn't. Any component that is durably multi-replica (fixed count > 1, or an HPA) automatically gets a **PodDisruptionBudget** (`maxUnavailable: 1`) — never on singletons, where a PDB would block node drains.
 
-The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems, zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
+The control-plane pods ship hardened by default: non-root with all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystems (`podSecurityContext` and `securityContext` at the top level, which a component's own replace), zero-downtime surge rollouts, soft topology spread across nodes, and the same no-CPU-limit resource shape as workloads (memory capped, CPU uncapped).
 
 ## Local development backend
 

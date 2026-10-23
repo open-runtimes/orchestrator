@@ -51,6 +51,8 @@ type Config struct {
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every warm pod to a node pool (internal/kube).
 	NodeSelector map[string]string
+	// PodSecurityContext is stamped on every warm pod (kube.PodSecurity).
+	PodSecurityContext corev1.PodSecurityContext
 	// RuntimeClasses maps isolation tiers (gvisor, kata) to the RuntimeClass
 	// stamped on warm pods (KUBE_RUNTIME_CLASSES). Untrusted, model-generated
 	// code is the expected sandbox workload, so gvisor or kata is the right
@@ -94,6 +96,10 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	podSecurity, err := kube.PodSecurityContextFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
 		Context:                config.GetEnv("KUBE_CONTEXT", ""),
@@ -104,6 +110,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
+		PodSecurityContext:     podSecurity,
 		RuntimeClasses:         classes,
 		MountAgentPort:         config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 
@@ -168,6 +175,7 @@ func (c *Config) warmConfig() warm.Config {
 		Overcommit:             c.Overcommit,
 		Tolerations:            c.Tolerations,
 		NodeSelector:           c.NodeSelector,
+		PodSecurityContext:     c.PodSecurityContext,
 		RuntimeClasses:         c.RuntimeClasses,
 		MountAgentPort:         c.MountAgentPort,
 		OrphanTTL:              c.OrphanTTL,

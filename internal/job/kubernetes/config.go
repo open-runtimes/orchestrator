@@ -32,6 +32,8 @@ type Config struct {
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every job pod to a node pool (internal/kube).
 	NodeSelector map[string]string
+	// PodSecurityContext is stamped on every job pod (kube.PodSecurity).
+	PodSecurityContext corev1.PodSecurityContext
 	// MountAgentPort, when set, has the node mount agent listening on that port
 	// perform jobs' artifact mounts in a CSI workspace, so the pod needs no
 	// privileged container (docs/design/node-mount-agent.md). Zero mounts from
@@ -63,6 +65,10 @@ func LoadConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	podSecurity, err := kube.PodSecurityContextFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		Kubeconfig:                    config.GetEnv("KUBECONFIG", ""),
 		Context:                       config.GetEnv("KUBE_CONTEXT", ""),
@@ -78,6 +84,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:                    kube.OvercommitFromEnv(),
 		Tolerations:                   tolerations,
 		NodeSelector:                  nodeSelector,
+		PodSecurityContext:            podSecurity,
 		MountAgentPort:                config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),

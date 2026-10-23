@@ -110,12 +110,13 @@ func TestBuildJob_Tolerations(t *testing.T) {
 func TestBuildJob_WorkerSecurityContext(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-7", Image: "alpine:latest", Command: "npm install"}
-	sc := buildJob(req, Config{}, "sidecar:latest").Spec.Template.Spec.Containers[0].SecurityContext
+	spec := buildJob(req, Config{}, "sidecar:latest").Spec.Template.Spec
+	sc := spec.Containers[0].SecurityContext
 	if sc == nil {
 		t.Fatal("worker: missing SecurityContext")
 	}
-	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Errorf("seccomp: want RuntimeDefault, got %+v", sc.SeccompProfile)
+	if sc.SeccompProfile != nil || spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("seccomp: want RuntimeDefault from the pod, got container %+v, pod %+v", sc.SeccompProfile, spec.SecurityContext.SeccompProfile)
 	}
 	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
 		t.Errorf("allowPrivilegeEscalation: want false, got %v", sc.AllowPrivilegeEscalation)
@@ -268,5 +269,15 @@ func TestBuildJob_AgentModeWithoutMounts(t *testing.T) {
 	}
 	if _, ok := envValue(containerByName(spec, ContainerSidecar), mountagent.EnvToken); ok {
 		t.Error("a job without mounts was handed a workspace token")
+	}
+}
+
+func TestBuildJob_OperatorPodSecurity(t *testing.T) {
+	t.Parallel()
+	req := &job.Request{ID: "job-8", Image: "alpine:latest"}
+	cfg := Config{PodSecurityContext: corev1.PodSecurityContext{FSGroup: new(int64(2000))}}
+	got := buildJob(req, cfg, "sidecar:latest").Spec.Template.Spec.SecurityContext
+	if got.FSGroup == nil || *got.FSGroup != 2000 || got.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("job pod security = %+v, want fsGroup 2000 and RuntimeDefault seccomp", got)
 	}
 }

@@ -4,8 +4,9 @@
 # the sandbox proxy, the pool controller, the mount agent) takes the same
 # keys: image, replicaCount, autoscaling, leaderElection, resources,
 # podAnnotations, nodeSelector, tolerations, affinity, priorityClassName,
-# serviceAccount and service. A plane adds what its workload pods get
-# (namespace, networkPolicy, workload, httpRoute, auth, s3).
+# podSecurityContext, securityContext, serviceAccount and service. A plane adds
+# what its workload pods get (namespace, networkPolicy, workload, httpRoute,
+# auth, s3).
 #
 # The chart creates no namespaces: install with `helm install -n <ns>
 # --create-namespace`, and provision each plane's namespace yourself
@@ -31,6 +32,19 @@ extraEnv: []
 rbac:
   # Roles, RoleBindings, ClusterRoles and their bindings for every component.
   create: true
+
+# Security context of every pod and container the chart renders, unless a
+# component sets its own podSecurityContext / securityContext (which replace
+# these, not merge). Pods the services create take <plane>.workload instead.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
 
 # Shutdown budget of every control-plane pod: HTTP shutdown (25s), component
 # cleanup (10s) and the final OTLP flush (10s), with margin.
@@ -133,6 +147,8 @@ jobs:
   tolerations: []
   affinity: {}
   priorityClassName: ""
+  podSecurityContext: {}
+  securityContext: {}
   serviceAccount:
     create: true
     # Empty = the component name.
@@ -180,6 +196,11 @@ jobs:
     # request = limit / overcommit (docs/operations.md "Resource model").
     cpuOvercommit: 1
     memoryOvercommit: 1
+    # Security context of every pod the service creates, e.g. a Localhost
+    # seccomp profile, an AppArmor profile, fsGroup or sysctls. Empty keeps
+    # RuntimeDefault seccomp; a profile you name replaces it. Containers keep
+    # the user, capabilities and privilege each needs.
+    podSecurityContext: {}
     # How long the kubelet waits for the sidecar's post phase after SIGTERM.
     terminationGracePeriodSeconds: 600
     # The account job pods run as. It holds no RBAC; it is where their pull
@@ -243,6 +264,8 @@ deployments:
   tolerations: []
   affinity: {}
   priorityClassName: ""
+  podSecurityContext: {}
+  securityContext: {}
   serviceAccount:
     create: true
     name: ""
@@ -272,6 +295,7 @@ deployments:
     tolerations: []
     cpuOvercommit: 1
     memoryOvercommit: 1
+    podSecurityContext: {} # see jobs.workload.podSecurityContext
   # Base domain for auto-assigned hosts: {id}.{domain}.
   domain: localhost
   # Concurrent Revision reconciles, and the client-side API budget for them.
@@ -315,6 +339,8 @@ deployments:
     tolerations: []
     affinity: {}
     priorityClassName: ""
+    podSecurityContext: {}
+    securityContext: {}
     serviceAccount:
       create: true
       name: ""
@@ -363,6 +389,8 @@ sandbox:
   tolerations: []
   affinity: {}
   priorityClassName: ""
+  podSecurityContext: {}
+  securityContext: {}
   serviceAccount:
     create: true
     name: ""
@@ -391,6 +419,7 @@ sandbox:
     tolerations: []
     cpuOvercommit: 1
     memoryOvercommit: 1
+    podSecurityContext: {} # see jobs.workload.podSecurityContext
   # Wildcard domain sandboxes are addressed at: s-{token}.{domain}, and
   # s-{token}-{port}.{domain} for extra ports. Required. The hostname carries
   # a 128-bit capability token: reaching it is enough to run code there.
@@ -428,6 +457,8 @@ sandbox:
     tolerations: []
     affinity: {}
     priorityClassName: ""
+    podSecurityContext: {}
+    securityContext: {}
     serviceAccount:
       create: true
       name: ""
@@ -467,6 +498,8 @@ poolController:
   tolerations: []
   affinity: {}
   priorityClassName: ""
+  podSecurityContext: {}
+  securityContext: {}
   serviceAccount:
     create: true
     # Empty = the component name; a set name is suffixed with the kind.
@@ -500,3 +533,6 @@ mountAgent:
   tolerations: []
   affinity: {}
   priorityClassName: system-node-critical
+  # Its container stays privileged (loop devices, mount(2)); the pod's
+  # security context is yours.
+  podSecurityContext: {}
