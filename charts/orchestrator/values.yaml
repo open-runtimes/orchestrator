@@ -161,7 +161,8 @@ jobs:
   auth:
     existingSecret: ""
     secretKey: api-key
-  # Credentials for s3:// artifacts, forwarded into every job sidecar.
+  # Credentials for s3:// artifacts. They stay in the jobs service: a job's
+  # sidecar gets a grant per transfer and redeems it there for a pre-signed URL.
   s3:
     enabled: false
     endpoint: ""          # empty = AWS (region-derived host)
@@ -212,7 +213,8 @@ jobs:
       name: ""
       # Names resolve in jobs.namespace. Empty = imagePullSecrets.
       imagePullSecrets: []
-  # URL job sidecars post artifact reports to. Empty = the jobs Service.
+  # URL job sidecars post artifact reports to and redeem S3 grants at.
+  # Empty = the jobs Service.
   artifactEndpoint: ""
   # How long finished jobs are kept, and how often they are swept.
   retention: 15m
@@ -274,8 +276,8 @@ deployments:
   auth:
     existingSecret: ""
     secretKey: api-key
-  # Credentials for s3:// artifacts, forwarded into the artifact-pre init
-  # container and warm-pool pods.
+  # Credentials for s3:// artifacts, held by the deployments service and pool
+  # controller. Pods get grants and redeem them at presignEndpoint.
   s3:
     enabled: false
     endpoint: ""
@@ -285,6 +287,8 @@ deployments:
     secretAccessKey: ""
     existingSecret: ""
     profiles: {} # see jobs.s3.profiles
+  # Where pods redeem S3 grants. Empty = this plane's Service.
+  presignEndpoint: ""
   # The service reconciles an HTTPRoute per deployment on the gateway above
   # (Traefik, Envoy Gateway, Istio with backendRef-filter support).
   httpRoute:
@@ -394,6 +398,8 @@ sandbox:
   auth:
     existingSecret: ""
     secretKey: api-key
+  # Credentials for s3:// artifacts, held by the sandbox service and pool
+  # controller. Pods get grants and redeem them at presignEndpoint.
   s3:
     enabled: false
     endpoint: ""
@@ -403,6 +409,8 @@ sandbox:
     secretAccessKey: ""
     existingSecret: ""
     profiles: {} # see jobs.s3.profiles
+  # Where pods redeem S3 grants. Empty = this plane's Service.
+  presignEndpoint: ""
   # One wildcard HTTPRoute for *.{domain}, backed by the sandbox proxy. Per
   # sandbox routes are deliberately not used: gateway programming takes
   # seconds, which would negate the sub-second claim a create is built on.

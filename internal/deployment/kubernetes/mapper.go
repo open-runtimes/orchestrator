@@ -191,9 +191,7 @@ func artifactPreContainer(req *deployment.Request, cfg Config) corev1.Container 
 	if artifactsJSON, err := artifact.MarshalArtifacts(req.Artifacts); err == nil {
 		env = append(env, corev1.EnvVar{Name: workload.EnvArtifacts, Value: string(artifactsJSON)})
 	}
-	for _, kv := range config.LoadS3Profiles().ToEnv() {
-		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
-	}
+	env = append(env, grantEnv(req, cfg)...)
 	return corev1.Container{
 		Name:            ContainerArtifactPre,
 		Image:           cfg.JobSidecarImage,
@@ -214,6 +212,9 @@ func proxyContainer(req *deployment.Request, cfg Config, mounting *kube.Mounting
 	alwaysRestart := corev1.ContainerRestartPolicyAlways
 	workspace := corev1.VolumeMount{Name: VolumeWorkspace, MountPath: req.WorkspacePath()}
 	env := proxyEnv(req)
+	if artifact.HasMount(req.Artifacts) {
+		env = append(env, grantEnv(req, cfg)...) // a synced mount pushes its delta
+	}
 	security := kube.HardenedSecurityContext(cfg.RunAsUser)
 	if mounting != nil {
 		env = append(env, mounting.SidecarEnv...)
@@ -409,4 +410,17 @@ func kubeletProbe(p *deployment.Probe, port int) *corev1.Probe {
 // ceilSeconds converts milliseconds to whole seconds, rounding up (min 1s).
 func ceilSeconds(millis int) int32 {
 	return int32((millis + 999) / 1000)
+}
+
+// grantEnv lets a container have its artifacts' s3:// URLs pre-signed: their
+// grants, and the service that redeems them. Keys never enter the pod.
+func grantEnv(req *deployment.Request, cfg Config) []corev1.EnvVar {
+	grants := artifact.GrantsFor(req.Artifacts, config.LoadS3Profiles()).JSON()
+	if grants == "" {
+		return nil
+	}
+	return []corev1.EnvVar{
+		{Name: artifact.EnvS3Grants, Value: grants},
+		{Name: artifact.EnvPresignEndpoint, Value: cfg.PresignEndpoint},
+	}
 }

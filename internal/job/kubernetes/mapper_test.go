@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"encoding/json"
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
 	"orchestrator/internal/mountagent"
@@ -279,5 +280,39 @@ func TestBuildJob_OperatorPodSecurity(t *testing.T) {
 	got := buildJob(req, cfg, "sidecar:latest").Spec.Template.Spec.SecurityContext
 	if got.FSGroup == nil || *got.FSGroup != 2000 || got.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Errorf("job pod security = %+v, want fsGroup 2000 and RuntimeDefault seccomp", got)
+	}
+}
+
+// With S3 configured, the job's sidecar gets a grant per transfer and no key:
+// nothing in the Job object can sign a request on its own.
+func TestBuildJob_S3GrantsNotKeys(t *testing.T) {
+	t.Setenv("S3_ACCESS_KEY_ID", "AKIDNEVERINPOD")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "secret-never-in-pod")
+	req := &job.Request{ID: "build", Image: "alpine:latest", Artifacts: artifact.Set{
+		&artifact.Download{ID: "src", In: "s3://bucket/src.tar", Out: "src.tar"},
+		&artifact.Upload{ID: "out", In: "out.tar", Out: "s3://bucket/out.tar", Depends: "job"},
+	}}
+	j := buildJob(req, Config{Namespace: "orchestrator", ArtifactEndpoint: "http://jobs:8080"}, "sidecar:latest")
+
+	encoded, _ := json.Marshal(j)
+	for _, key := range []string{"AKIDNEVERINPOD", "secret-never-in-pod", "S3_SECRET_ACCESS_KEY"} {
+		if strings.Contains(string(encoded), key) {
+			t.Errorf("the Job carries %q", key)
+		}
+	}
+	anyEnv := func(name string) string {
+		for _, c := range append(j.Spec.Template.Spec.InitContainers, j.Spec.Template.Spec.Containers...) {
+			if e, ok := envValue(c, name); ok {
+				return e.Value
+			}
+		}
+		return ""
+	}
+	grants := artifact.ParseGrants(anyEnv(artifact.EnvS3Grants))
+	if grants["GET s3://bucket/src.tar"] == "" || grants["PUT s3://bucket/out.tar"] == "" || len(grants) != 2 {
+		t.Errorf("grants = %v, want one per s3 transfer", grants)
+	}
+	if got := anyEnv(artifact.EnvPresignEndpoint); got != "http://jobs:8080" {
+		t.Errorf("PRESIGN_ENDPOINT = %q", got)
 	}
 }

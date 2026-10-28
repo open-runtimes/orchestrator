@@ -372,25 +372,26 @@ func TestBuildPod_AgentMounts(t *testing.T) {
 	}
 }
 
-// Warm pods carry the S3 credentials they were built with, so adding a
-// profile or rotating keys must replace them: the pool hash follows both.
-func TestPoolSpecHash_FollowsS3Credentials(t *testing.T) {
-	spec := mapperPool()
-	none := poolSpecHash(spec, Config{})
-	t.Setenv("S3_ACCESS_KEY_ID", "AKID")
-	t.Setenv("S3_SECRET_ACCESS_KEY", "SECRET")
-	withDefault := poolSpecHash(spec, Config{})
-	t.Setenv("S3_PROFILES", "archive")
-	t.Setenv("S3_ARCHIVE_ACCESS_KEY_ID", "AKIDARCHIVE")
-	t.Setenv("S3_ARCHIVE_SECRET_ACCESS_KEY", "SECRETARCHIVE")
-	withProfile := poolSpecHash(spec, Config{})
-	t.Setenv("S3_ARCHIVE_SECRET_ACCESS_KEY", "ROTATED")
-	rotated := poolSpecHash(spec, Config{})
-	if none == withDefault || withDefault == withProfile || withProfile == rotated {
-		t.Errorf("hash did not change: none=%s default=%s profile=%s rotated=%s", none, withDefault, withProfile, rotated)
+// A warm pod holds no S3 key: claims bring grants, which its proxy redeems at
+// the endpoint it was built with, so moving the endpoint replaces the pods.
+func TestBuildPod_NoS3Keys(t *testing.T) {
+	t.Setenv("S3_ACCESS_KEY_ID", "AKIDNEVERINPOD")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "secret-never-in-pod")
+	withEndpoint := func(c *Config) { c.PresignEndpoint = "http://deployments:8080" }
+	pod := testBuilder(t, withEndpoint).buildPod(mapperPool(), "std", "pool-std-x", "tok")
+
+	encoded, _ := json.Marshal(pod)
+	for _, key := range []string{"AKIDNEVERINPOD", "secret-never-in-pod", "S3_SECRET_ACCESS_KEY"} {
+		if strings.Contains(string(encoded), key) {
+			t.Errorf("the warm pod carries %q", key)
+		}
 	}
-	if strings.Contains(withProfile, "SECRET") {
-		t.Error("the hash annotation must not carry the credentials")
+	if !strings.Contains(string(encoded), `"name":"PRESIGN_ENDPOINT","value":"http://deployments:8080"`) {
+		t.Error("the proxy is not told where to redeem grants")
+	}
+	spec := mapperPool()
+	if poolSpecHash(spec, Config{}) == poolSpecHash(spec, Config{PresignEndpoint: "http://deployments:8080"}) {
+		t.Error("the pool spec hash ignores the grant endpoint")
 	}
 }
 

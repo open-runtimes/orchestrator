@@ -1,6 +1,7 @@
 package sidecar
 
 import (
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"time"
 )
@@ -16,8 +17,9 @@ type Config struct {
 	Meta             string
 	CallbackURL      string
 	CallbackKey      string
-	CallbackEvents   string // comma-separated event type filter
-	S3               config.S3Profiles
+	CallbackEvents   string          // comma-separated event type filter
+	S3Grants         artifact.Grants // redeemed at PresignEndpoint for pre-signed s3:// URLs
+	PresignEndpoint  string
 }
 
 // LoadConfigFromEnv loads sidecar configuration from environment variables.
@@ -33,6 +35,7 @@ func LoadConfigFromEnv() *Config {
 		CallbackURL:      config.GetEnv("CALLBACK_URL", ""),
 		CallbackKey:      config.GetEnv("CALLBACK_KEY", ""),
 		CallbackEvents:   config.GetEnv("CALLBACK_EVENTS", ""),
-		S3:               config.LoadS3Profiles(),
+		PresignEndpoint:  config.GetEnv(artifact.EnvPresignEndpoint, ""),
+		S3Grants:         artifact.ParseGrants(config.GetEnv(artifact.EnvS3Grants, "")),
 	}
 }

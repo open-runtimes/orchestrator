@@ -425,8 +425,10 @@ func (o *Orchestrator) createSidecarContainer(ctx context.Context, req *job.Requ
 		env = append(env, "ARTIFACT_TOKEN="+req.ArtifactToken)
 	}
 
-	for _, kv := range config.LoadS3Profiles().ToEnv() {
-		env = append(env, kv[0]+"="+kv[1])
+	// Grants, never keys: the sidecar redeems them at the orchestrator.
+	if grants := artifact.GrantsFor(req.Artifacts, config.LoadS3Profiles()).JSON(); grants != "" {
+		env = append(env, artifact.EnvS3Grants+"="+grants)
+		env = append(env, artifact.EnvPresignEndpoint+"="+o.artifactEndpoint)
 	}
 
 	if req.Callback != nil && req.Callback.URL != "" {

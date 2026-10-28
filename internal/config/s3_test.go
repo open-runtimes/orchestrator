@@ -28,44 +28,6 @@ func TestLoadS3Profiles_Defaults(t *testing.T) {
 	if c := p[""]; c.Region != defaultS3Region || c.Enabled() {
 		t.Errorf("default profile = %+v, want disabled with region %q", c, defaultS3Region)
 	}
-	if env := p.ToEnv(); env != nil {
-		t.Errorf("ToEnv() = %v, want nil when disabled", env)
-	}
-}
-
-// A sidecar that loads what ToEnv forwards sees exactly the configured
-// profiles, session token and path style included, and none without keys.
-func TestS3Profiles_RoundTrip(t *testing.T) {
-	t.Setenv("S3_ENDPOINT", "http://minio:9000")
-	t.Setenv("S3_ACCESS_KEY_ID", "AKID")
-	t.Setenv("S3_SECRET_ACCESS_KEY", "SECRET")
-	t.Setenv("S3_SESSION_TOKEN", "SESSION")
-	t.Setenv("S3_FORCE_PATH_STYLE", "true")
-	t.Setenv("S3_PROFILES", "archive, backup")
-	t.Setenv("S3_ARCHIVE_ACCESS_KEY_ID", "AKIDARCHIVE")
-	t.Setenv("S3_ARCHIVE_SECRET_ACCESS_KEY", "SECRETARCHIVE")
-	t.Setenv("S3_ARCHIVE_REGION", "eu-west-1")
-
-	p := LoadS3Profiles()
-	if p["backup"].Enabled() {
-		t.Fatal("a listed profile without keys must stay disabled")
-	}
-	forwarded := p.ToEnv()
-	for _, key := range []string{"S3_ENDPOINT", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_SESSION_TOKEN", "S3_FORCE_PATH_STYLE", "S3_PROFILES", "S3_ARCHIVE_ACCESS_KEY_ID", "S3_ARCHIVE_SECRET_ACCESS_KEY", "S3_ARCHIVE_REGION"} {
-		os.Unsetenv(key)
-	}
-	for _, kv := range forwarded {
-		t.Setenv(kv[0], kv[1])
-	}
-	got := LoadS3Profiles()
-	if os.Getenv("S3_PROFILES") != "archive" {
-		t.Errorf("forwarded S3_PROFILES = %q, want only the configured archive", os.Getenv("S3_PROFILES"))
-	}
-	for _, name := range []string{"", "archive"} {
-		if got[name] != p[name] {
-			t.Errorf("profile %q round-trip = %+v, want %+v", name, got[name], p[name])
-		}
-	}
 }
 
 // Names the chart would refuse are refused here too, so a URL, an env var
