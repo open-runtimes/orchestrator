@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
@@ -30,8 +31,9 @@ const (
 
 // Config holds configuration for the Kubernetes sandbox orchestrator.
 type Config struct {
-	SidecarImage string // workload-sidecar (proxy) image (set by the caller)
-	ShimImage    string // pool-shim image for the shim-install init container (set by the caller)
+	SidecarImage    string // workload-sidecar (proxy) image (set by the caller)
+	ShimImage       string // pool-shim image for the shim-install init container (set by the caller)
+	PresignEndpoint string // service that redeems claims' S3 grants (PRESIGN_ENDPOINT)
 	// AgentImage publishes the binary that serves the sandbox contract. It is
 	// copied out of this image into every warm pod's workspace, which is what
 	// lets a pool run an ordinary runtime image.
@@ -102,6 +104,7 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 	return Config{
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
+		PresignEndpoint:        config.GetEnv(artifact.EnvPresignEndpoint, ""),
 		Context:                config.GetEnv("KUBE_CONTEXT", ""),
 		Namespace:              config.GetEnv("KUBE_NAMESPACE", defaultNamespace),
 		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
@@ -169,6 +172,7 @@ func (c *Config) warmConfig() warm.Config {
 		Namespace:              c.Namespace,
 		SidecarImage:           c.SidecarImage,
 		ShimImage:              c.ShimImage,
+		PresignEndpoint:        c.PresignEndpoint,
 		SidecarImagePullPolicy: c.SidecarImagePullPolicy,
 		WorkerImagePullPolicy:  c.WorkerImagePullPolicy,
 		RunAsUser:              c.RunAsUser,

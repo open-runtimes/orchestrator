@@ -87,6 +87,7 @@ type Config struct {
 	Namespace              string
 	SidecarImage           string // workload-sidecar (proxy) image
 	ShimImage              string // pool-shim image for the shim-install init container
+	PresignEndpoint        string // service that redeems claims' S3 grants (PRESIGN_ENDPOINT)
 	SidecarImagePullPolicy string
 	WorkerImagePullPolicy  string
 	RunAsUser              int64

@@ -221,10 +221,10 @@ func (p *Proxy) Start(ctx context.Context) error {
 }
 
 // newRunner builds the artifact runner for a phase of this workload's life. The
-// S3 credentials are the sidecar's, never the workload's — which is the reason a
+// S3 grants are the sidecar's, never the workload's — which is the reason a
 // snapshot upload belongs here rather than in a command the workload runs.
-func (p *Proxy) newRunner(id, workspace string, timeoutSeconds int) *sidecar.Runner {
-	opts := []sidecar.Option{sidecar.WithS3Profiles(p.cfg.S3)}
+func (p *Proxy) newRunner(id, workspace string, timeoutSeconds int, grants artifact.Grants) *sidecar.Runner {
+	opts := []sidecar.Option{sidecar.WithSigner(&artifact.GrantSigner{Endpoint: p.cfg.PresignEndpoint, Grants: grants})}
 	if p.mounter != nil {
 		opts = append(opts, sidecar.WithMounter(p.mounter))
 	}
@@ -256,7 +256,7 @@ func (p *Proxy) mount(ctx context.Context) error {
 		p.mountsReady.Store(true)
 		return nil
 	}
-	runner := p.newRunner("direct", p.cfg.Workspace, p.phaseTimeoutSeconds())
+	runner := p.newRunner("direct", p.cfg.Workspace, p.phaseTimeoutSeconds(), p.cfg.S3Grants)
 	if err := runner.Mount(ctx, artifacts); err != nil {
 		return err
 	}

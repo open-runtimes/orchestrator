@@ -72,11 +72,11 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    {{- if eq $plane "jobs" }}
-    # The sidecar's artifact reports. Some CNIs never match pod IPs with an
-    # ipBlock, so the jobs service gets its own rule. The node mount agent is
-    # on the host network, which NetworkPolicy cannot name: with it enabled,
-    # allow the node on mountAgent.port in a CNI policy.
+    # The plane's service: S3 grants are redeemed there, and job sidecars
+    # report artifacts. Some CNIs never match pod IPs with an ipBlock, so it
+    # gets its own rule. The node mount agent is on the host network, which
+    # NetworkPolicy cannot name: with it enabled, allow the node on
+    # mountAgent.port in a CNI policy.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -84,11 +84,10 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}
-              app.kubernetes.io/component: jobs
+              app.kubernetes.io/component: {{ $plane }}
       ports:
         - protocol: TCP
-          port: {{ .Values.jobs.service.port }}
-    {{- end }}
+          port: {{ $values.service.port }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

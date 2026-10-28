@@ -240,6 +240,9 @@
         "s3": {
           "$ref": "#/$defs/s3"
         },
+        "presignEndpoint": {
+          "type": "string"
+        },
         "httpRoute": {
           "type": "object",
           "additionalProperties": false,
@@ -406,6 +409,9 @@
         },
         "s3": {
           "$ref": "#/$defs/s3"
+        },
+        "presignEndpoint": {
+          "type": "string"
         },
         "httpRoute": {
           "type": "object",

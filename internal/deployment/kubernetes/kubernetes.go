@@ -94,7 +94,7 @@ func NewRevisionPoolManager(client kubernetes.Interface, cfg Config) (*warm.Mana
 
 func revisionWarmConfig(cfg Config) warm.Config {
 	return warm.Config{
-		Namespace: cfg.Namespace, SidecarImage: cfg.SidecarImage, ShimImage: cfg.PoolShimImage,
+		Namespace: cfg.Namespace, SidecarImage: cfg.SidecarImage, ShimImage: cfg.PoolShimImage, PresignEndpoint: cfg.PresignEndpoint,
 		SidecarImagePullPolicy: cfg.SidecarImagePullPolicy, WorkerImagePullPolicy: cfg.WorkerImagePullPolicy,
 		RunAsUser: cfg.RunAsUser, Overcommit: cfg.Overcommit, Tolerations: cfg.Tolerations,
 		NodeSelector: cfg.NodeSelector, PodSecurityContext: cfg.PodSecurityContext, RuntimeClasses: cfg.RuntimeClasses, MountAgentPort: cfg.MountAgentPort, Metrics: cfg.Metrics,
