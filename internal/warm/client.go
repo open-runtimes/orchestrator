@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/claim"
+	"orchestrator/internal/config"
 	"orchestrator/internal/workload"
 	"strconv"
 	"time"
@@ -35,12 +37,14 @@ type Client interface {
 type httpClient struct {
 	client *http.Client
 	poster claim.Poster
+	s3     config.S3Profiles // mints each claim's S3 grants; the pod never sees them
 }
 
 func newHTTPClient() *httpClient {
 	return &httpClient{
 		client: &http.Client{Timeout: 10 * time.Second},
 		poster: claim.NewPoster(),
+		s3:     config.LoadS3Profiles(),
 	}
 }
 
@@ -50,7 +54,9 @@ func adminURL(podIP, path string) string {
 }
 
 func (c *httpClient) Claim(ctx context.Context, podIP, token string, req *workload.ClaimRequest) error {
-	return c.poster.Post(ctx, claim.Unit{Addr: podIP, Token: token}, req)
+	granted := *req
+	granted.S3Grants = artifact.GrantsFor(req.Artifacts, c.s3)
+	return c.poster.Post(ctx, claim.Unit{Addr: podIP, Token: token}, &granted)
 }
 
 func (c *httpClient) State(ctx context.Context, podIP string) (*workload.ClaimState, error) {

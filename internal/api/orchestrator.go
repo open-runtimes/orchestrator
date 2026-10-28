@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
@@ -31,6 +33,9 @@ type OrchestratorRouterConfig struct {
 func NewOrchestratorRouter(cfg OrchestratorRouterConfig) http.Handler {
 	mux := http.NewServeMux()
 	registerHealthRoutes(mux, cfg.HealthChecker)
+	// Pods redeem S3 grants here; the grant is the credential, minted from the
+	// same keys this service holds.
+	mux.Handle("POST "+artifact.PresignPath, artifact.PresignHandler(config.LoadS3Profiles()))
 
 	auth := authMiddleware(cfg.APIKey)
 	if cfg.JobService != nil {

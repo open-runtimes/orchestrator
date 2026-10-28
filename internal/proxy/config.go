@@ -10,6 +10,7 @@
 package proxy
 
 import (
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/mountagent"
 	"orchestrator/internal/workload"
@@ -56,9 +57,10 @@ type Config struct {
 	TargetHost string // host the claimed workload serves on, joined with the claim's Port
 	Workspace  string // shared volume: artifact root + shim FIFO directory
 
-	// S3 credentials for signing s3:// download artifacts materialized into the
-	// workspace. Forwarded by the deployments/pools orchestrator.
-	S3 config.S3Profiles
+	// PresignEndpoint is the service that redeems S3Grants for pre-signed
+	// s3:// URLs; a claim brings grants of its own.
+	PresignEndpoint string
+	S3Grants        artifact.Grants
 
 	// MountAgentEndpoint and MountAgentToken, when set, have the node mount
 	// agent perform this pod's mounts instead of this container
@@ -91,7 +93,9 @@ func LoadConfigFromEnv() Config {
 		TargetHost: config.GetEnv(workload.EnvTargetHost, "127.0.0.1"),
 		ExtraPorts: parsePorts(config.GetEnv(workload.EnvExtraPorts, "")),
 		Workspace:  config.Workspace(),
-		S3:         config.LoadS3Profiles(),
+
+		PresignEndpoint: config.GetEnv(artifact.EnvPresignEndpoint, ""),
+		S3Grants:        artifact.ParseGrants(config.GetEnv(artifact.EnvS3Grants, "")),
 
 		MountAgentEndpoint: config.GetEnv(mountagent.EnvEndpoint, ""),
 		MountAgentToken:    config.GetEnv(mountagent.EnvToken, ""),

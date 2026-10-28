@@ -313,8 +313,10 @@ func sidecarEnv(req *job.Request, artifactEndpoint, workspace string) []corev1.E
 	if req.ArtifactToken != "" {
 		env = append(env, corev1.EnvVar{Name: "ARTIFACT_TOKEN", Value: req.ArtifactToken})
 	}
-	for _, kv := range artifact.S3ProfilesFor(req.Artifacts, config.LoadS3Profiles()).ToEnv() {
-		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
+	// Grants, never keys: the sidecar redeems them at the jobs service, where it also reports.
+	if grants := artifact.GrantsFor(req.Artifacts, config.LoadS3Profiles()).JSON(); grants != "" {
+		env = append(env, corev1.EnvVar{Name: artifact.EnvS3Grants, Value: grants})
+		env = append(env, corev1.EnvVar{Name: artifact.EnvPresignEndpoint, Value: artifactEndpoint})
 	}
 	// No callback URL, key or meta: the service delivers the sidecar's reports
 	// to the destination recorded on the Job, so the sidecar never holds the

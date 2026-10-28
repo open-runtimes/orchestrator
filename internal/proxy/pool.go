@@ -128,7 +128,7 @@ func (p *Proxy) claim(ctx context.Context, req workload.ClaimRequest) error {
 	// Same materialization path as the job sidecar's pre phase: pre-job
 	// artifacts in dependency order against the shared workspace. No report
 	// sink — the claim response is the result.
-	runner := p.newRunner(req.ClaimID, p.pool.workspace, timeoutSeconds)
+	runner := p.newRunner(req.ClaimID, p.pool.workspace, timeoutSeconds, req.S3Grants)
 	if err := runner.RunPre(ctx, req.Artifacts); err != nil {
 		return err
 	}
