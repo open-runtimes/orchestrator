@@ -334,17 +334,15 @@ jobs:
         # On x86 kind binds files over /sys/class/dmi/id/product_{name,uuid}. The
         # kernel refuses a fresh sysfs mount in a user namespace while any of
         # /sys is covered, so every `hostUsers: false` sandbox fails with EPERM.
-        # One node needs no unique product_uuid.
+        # One node needs no unique product_uuid. kind binds product_uuid twice, so
+        # unmount until nothing is left, then check the kernel allows sysfs.
         run: |
-          uname -r
-          docker exec orchestrator-dev-control-plane sh -c '
-            set -x
-            grep -E " /sys( |/)" /proc/self/mountinfo
-            umount /sys/class/dmi/id/product_name /sys/class/dmi/id/product_uuid
-            grep -E " /sys( |/)" /proc/self/mountinfo
+          docker exec orchestrator-dev-control-plane sh -ec '
+            for f in product_name product_uuid; do
+              while umount /sys/class/dmi/id/$f 2>/dev/null; do :; done
+            done
             mkdir -p /tmp/sysfs-probe
-            unshare --user --map-root-user --net --mount mount -t sysfs -o ro,nosuid,nodev,noexec sysfs /tmp/sysfs-probe && echo SYSFS-OK
-            true'
+            unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe'
 
       - name: Build and load images into kind
         run: |
