@@ -83,12 +83,13 @@ func SetupLoop(img *os.File) (string, *os.File, error) {
 // Image associates the open image with a loop device and mounts it
 // read-only at target, picking the kernel filesystem type from the image's
 // magic. The loop device is set to auto-clear, so unmounting releases it.
+// The filesystem is created detached and attached by descriptor, so with an
+// IDMap it is never visible unmapped.
 //
-// The loop fd is held open across the mount: with auto-clear, the device
-// detaches as soon as it has no holders, so it must stay open until the mount
-// itself becomes the holder — otherwise the backing vanishes and mount fails
-// with EIO.
-func Image(img *os.File, target string) error {
+// The loop fd is held open until the superblock holds the device: with
+// auto-clear, the device detaches as soon as it has no holders, so closing it
+// first would pull the backing out from under the mount.
+func Image(img, target *os.File, idmap *IDMap) error {
 	fstype, err := FsType(img)
 	if err != nil {
 		return err
@@ -100,9 +101,39 @@ func Image(img *os.File, target string) error {
 	}
 	defer loop.Close()
 
-	if err := unix.Mount(loopPath, target, fstype, unix.MS_RDONLY|unix.MS_NODEV|unix.MS_NOSUID, ""); err != nil {
+	if err := attachImage(loopPath, fstype, target, idmap); err != nil {
 		_ = unix.IoctlSetInt(int(loop.Fd()), unix.LOOP_CLR_FD, 0)
-		return fmt.Errorf("mount %s on %s: %w", loopPath, target, err)
+		return fmt.Errorf("mount %s on %s: %w", loopPath, target.Name(), err)
 	}
 	return nil
+}
+
+func attachImage(source, fstype string, target *os.File, idmap *IDMap) error {
+	fs, err := unix.Fsopen(fstype, unix.FSOPEN_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("fsopen %s: %w", fstype, err)
+	}
+	defer unix.Close(fs)
+	if err := unix.FsconfigSetString(fs, "source", source); err != nil {
+		return err
+	}
+	if err := unix.FsconfigSetFlag(fs, "ro"); err != nil {
+		return err
+	}
+	if err := unix.FsconfigCreate(fs); err != nil {
+		return err
+	}
+	mnt, err := unix.Fsmount(fs, unix.FSMOUNT_CLOEXEC, unix.MOUNT_ATTR_RDONLY|unix.MOUNT_ATTR_NODEV|unix.MOUNT_ATTR_NOSUID)
+	if err != nil {
+		return fmt.Errorf("fsmount: %w", err)
+	}
+	defer unix.Close(mnt)
+	if idmap != nil {
+		var attr unix.MountAttr
+		idmap.attr(&attr)
+		if err := unix.MountSetattr(mnt, "", unix.AT_EMPTY_PATH, &attr); err != nil {
+			return fmt.Errorf("ID-map %s: %w", fstype, err)
+		}
+	}
+	return unix.MoveMount(mnt, "", int(target.Fd()), "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH)
 }

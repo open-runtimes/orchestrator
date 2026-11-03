@@ -508,6 +508,10 @@ mountAgent:
     pullPolicy: IfNotPresent
   # Port the mount API listens on, on each node's own IP.
   port: 9878
+  # Namespaces outside the orchestrator's planes whose pods may use the
+  # driver, for another platform's mounting pods on the same nodes. An entry
+  # ending in * matches a prefix (r-* for one namespace per workload).
+  extraAllowedNamespaces: []
   resources:
     requests:
       cpu: 10m

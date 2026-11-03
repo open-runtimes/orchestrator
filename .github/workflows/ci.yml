@@ -59,7 +59,7 @@ jobs:
           go test -c ./internal/mount -o /tmp/mount.test
           go test -c ./internal/mountagent/node -o /tmp/node.test
           sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/mount.test -test.run 'TestBeneath|TestRoot' -test.v
-          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/node.test -test.run TestPublishMountUnpublish -test.v
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/node.test -test.run 'TestPublishMount' -test.v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7

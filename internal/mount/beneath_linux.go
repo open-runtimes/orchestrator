@@ -21,6 +21,9 @@ import (
 // descriptor taken before a mount still points underneath it.
 type Beneath struct {
 	Dir string
+	// IDMap, when the workload runs in a user namespace, is applied to every
+	// mount made for it. Nil leaves ids as they are.
+	IDMap *IDMap
 }
 
 // MaxMounts bounds the mounts one workspace may hold. Each image mount takes a
@@ -47,6 +50,11 @@ func (b Beneath) Mount(source, target string, opts Opts) error {
 	if target, err = Local(target); err != nil {
 		return err
 	}
+	if opts.UpperOnDisk && b.IDMap != nil {
+		// The upper would be written with host ids the sidecar, reading the
+		// workspace through its own ID-mapped volume, cannot map back.
+		return errors.New("a synced mount is not supported in a user-namespaced pod")
+	}
 	if n, err := countMountsUnder(root.Path()); err != nil {
 		return err
 	} else if n >= MaxMounts {
@@ -66,19 +74,19 @@ func (b Beneath) Mount(source, target string, opts Opts) error {
 		if err != nil {
 			return err
 		}
-		err = BindReadOnly(dir, dir)
+		err = BindReadOnly(dir, dir, b.IDMap)
 		dir.Close()
 		if err != nil {
 			return fmt.Errorf("protect directory lower: %w", err)
 		}
 	}
 	if opts.Writable {
-		return mountOverlay(root, source, target, t, opts)
+		return mountOverlay(root, source, target, t, opts, b.IDMap)
 	}
 	if opts.SourceDir {
 		dir, err := root.OpenDir(source) // the read-only bind just stacked
 		if err == nil {
-			err = BindReadOnly(dir, t)
+			err = BindReadOnly(dir, t, nil) // inherits the mapping
 			dir.Close()
 		}
 		if err != nil {
@@ -91,10 +99,10 @@ func (b Beneath) Mount(source, target string, opts Opts) error {
 		return fmt.Errorf("open image: %w", err)
 	}
 	defer img.Close()
-	return Image(img, ProcPath(t))
+	return Image(img, t, b.IDMap)
 }
 
-func mountOverlay(root *Root, source, target string, t *os.File, opts Opts) (err error) {
+func mountOverlay(root *Root, source, target string, t *os.File, opts Opts, idmap *IDMap) (err error) {
 	lower, scratch := LowerDir(target), ScratchDir(target)
 	defer func() {
 		if err != nil {
@@ -121,7 +129,7 @@ func mountOverlay(root *Root, source, target string, t *os.File, opts Opts) (err
 			l.Close()
 			return fmt.Errorf("open image: %w", err)
 		}
-		err = Image(img, ProcPath(l))
+		err = Image(img, l, idmap)
 		img.Close()
 		l.Close()
 		if err != nil {
@@ -171,6 +179,13 @@ func mountOverlay(root *Root, source, target string, t *os.File, opts Opts) (err
 	// running as anyone else. World-writable, like the volume it lives in.
 	if err := unix.Fchmod(int(upper.Fd()), 0o777); err != nil {
 		return fmt.Errorf("chmod upper: %w", err)
+	}
+	// In a user namespace, host root is nobody to the workload: upper and
+	// work belong to the namespace's root instead.
+	for _, d := range []*os.File{upper, work} {
+		if err := idmap.chown(d); err != nil {
+			return fmt.Errorf("chown %s: %w", d.Name(), err)
+		}
 	}
 	return Overlay(ProcPath(l), ProcPath(upper), ProcPath(work), ProcPath(t))
 }

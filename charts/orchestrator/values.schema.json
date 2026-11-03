@@ -606,6 +606,13 @@
         "port": {
           "$ref": "#/$defs/port"
         },
+        "extraAllowedNamespaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "resources": {
           "$ref": "#/$defs/resources"
         },
