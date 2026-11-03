@@ -330,6 +330,13 @@ jobs:
           cluster_name: orchestrator-dev
           config: hack/kind-config.yaml
 
+      - name: Let the kind node run user-namespaced pods
+        # On x86 kind binds files over /sys/class/dmi/id/product_{name,uuid}. The
+        # kernel refuses a fresh sysfs mount in a user namespace while any of
+        # /sys is covered, so every `hostUsers: false` sandbox fails with EPERM.
+        # One node needs no unique product_uuid.
+        run: docker exec orchestrator-dev-control-plane sh -c 'umount /sys/class/dmi/id/product_name /sys/class/dmi/id/product_uuid || true'
+
       - name: Build and load images into kind
         run: |
           KO_DOCKER_REPO=ko.local/jobs-service ko build --local --bare ./cmd/jobs-service
