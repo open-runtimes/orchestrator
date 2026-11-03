@@ -171,6 +171,17 @@ func waitForExit(t *testing.T, o *Orchestrator, pod string, timeout time.Duratio
 			return exited
 		}
 	}
-	t.Fatalf("no container in %s finished within %s", pod, timeout)
+	// What kubelet tried, so a pod stuck before its containers start says why.
+	var why strings.Builder
+	if p, err := o.client.CoreV1().Pods(testNamespace).Get(t.Context(), pod, metav1.GetOptions{}); err == nil {
+		for _, s := range p.Status.ContainerStatuses {
+			fmt.Fprintf(&why, "%s: %+v\n", s.Name, s.State)
+		}
+	}
+	events, _ := o.client.CoreV1().Events(testNamespace).List(t.Context(), metav1.ListOptions{FieldSelector: "involvedObject.name=" + pod})
+	for _, e := range events.Items {
+		fmt.Fprintf(&why, "%s %s: %s\n", e.Type, e.Reason, e.Message)
+	}
+	t.Fatalf("no container in %s finished within %s:\n%s", pod, timeout, why.String())
 	return nil
 }
