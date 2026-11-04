@@ -342,7 +342,8 @@ jobs:
               while umount /sys/class/dmi/id/$f 2>/dev/null; do :; done
             done
             mkdir -p /tmp/sysfs-probe
-            unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe'
+            unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe || {
+              grep -E " /sys( |/)" /proc/self/mountinfo; dmesg 2>/dev/null | tail -5; exit 1; }'
 
       - name: Build and load images into kind
         run: |
