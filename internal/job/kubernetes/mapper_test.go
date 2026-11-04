@@ -4,6 +4,7 @@ import (
 	"orchestrator/internal/artifact"
 	"orchestrator/internal/job"
 	"orchestrator/internal/mountagent"
+	"orchestrator/internal/volume"
 	"reflect"
 	"strings"
 	"testing"
@@ -279,5 +280,34 @@ func TestBuildJob_OperatorPodSecurity(t *testing.T) {
 	got := buildJob(req, cfg, "sidecar:latest").Spec.Template.Spec.SecurityContext
 	if got.FSGroup == nil || *got.FSGroup != 2000 || got.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Errorf("job pod security = %+v, want fsGroup 2000 and RuntimeDefault seccomp", got)
+	}
+}
+
+// A job pod gets its own user namespace unless the operator keeps the node's or
+// the pod could not start in one.
+func TestBuildJob_HostUsers(t *testing.T) {
+	t.Parallel()
+	synced := mountRequest()
+	synced.Artifacts[1] = &artifact.Mount{ID: "code", In: "code.erofs", Out: "code", Depends: "img", Writable: true, Sync: "s3://bucket/delta"}
+	withVolume := &job.Request{ID: "pv", Image: "alpine", Volumes: []volume.Volume{{Source: "data", Path: "/data"}}}
+	plain := &job.Request{ID: "plain", Image: "alpine"}
+
+	for _, tc := range []struct {
+		name string
+		req  *job.Request
+		cfg  Config
+		own  bool
+	}{
+		{"no mounts", plain, Config{}, true},
+		{"agent mounts", mountRequest(), Config{MountAgentPort: 9999}, true},
+		{"operator keeps the node's", plain, Config{HostUsers: true}, false},
+		{"privileged sidecar mounts", mountRequest(), Config{}, false},
+		{"synced mount", synced, Config{MountAgentPort: 9999}, false},
+		{"persistent volume", withVolume, Config{}, false},
+	} {
+		spec := buildJob(tc.req, tc.cfg, "sidecar:latest").Spec.Template.Spec
+		if got := spec.HostUsers != nil && !*spec.HostUsers; got != tc.own {
+			t.Errorf("%s: own user namespace = %v, want %v", tc.name, got, tc.own)
+		}
 	}
 }

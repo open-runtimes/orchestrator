@@ -181,6 +181,9 @@
               "type": "integer",
               "minimum": 0
             },
+            "hostUsers": {
+              "type": "boolean"
+            },
             "serviceAccount": {
               "type": "object",
               "additionalProperties": false,

@@ -26,6 +26,16 @@ spec:
   podInfoOnMount: true
   volumeLifecycleModes: [Ephemeral]
 ---
+# Its own account, with no token: the agent never calls the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orchestrator.labels" $c | nindent 4 }}
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -56,6 +66,8 @@ spec:
       # reach it (status.hostIP); the workspace token is the boundary.
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
       {{- with .Values.mountAgent.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
@@ -117,6 +129,12 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path={{ $pluginDir }}/csi.sock
+          # Root to write its socket into kubelet's root-owned registry, and
+          # nothing else.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
           resources:
             requests: {cpu: 5m, memory: 16Mi}
             limits: {memory: 32Mi}

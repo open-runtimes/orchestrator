@@ -23,6 +23,7 @@ metadata:
   namespace: {{ $ns }}
   labels:
     {{- include "orchestrator.labels" (dict "root" $ "component" "job-sidecar") | nindent 4 }}
+automountServiceAccountToken: false
 {{- with (default $.Values.imagePullSecrets .imagePullSecrets) }}
 imagePullSecrets:
   {{- toYaml . | nindent 2 }}
@@ -53,6 +54,8 @@ imagePullSecrets:
   value: {{ .Values.jobs.logFlushInterval | quote }}
 - name: KUBE_TERMINATION_GRACE_SECONDS
   value: {{ .Values.jobs.workload.terminationGracePeriodSeconds | quote }}
+- name: KUBE_WORKLOAD_HOST_USERS
+  value: {{ .Values.jobs.workload.hostUsers | quote }}
 {{- include "orchestrator.leaderEnv" (dict "values" .Values.jobs.leaderElection "lease" (default (printf "%s-leader" $name) .Values.jobs.leaderElection.leaseName) "prefix" "KUBE_") }}
 {{- include "orchestrator.s3Env" (dict "root" . "plane" "jobs") }}
 {{- end -}}
