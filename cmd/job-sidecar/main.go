@@ -88,7 +88,7 @@ func run(mode string) error {
 
 	opts := []sidecar.Option{
 		sidecar.WithArtifactListener(reporter),
-		sidecar.WithS3Profiles(cfg.S3),
+		sidecar.WithSigner(&artifact.GrantSigner{Endpoint: cfg.PresignEndpoint, Grants: cfg.S3Grants}),
 	}
 	// With a workspace token the node agent performs the mounts and this
 	// container holds no privilege; without one it mounts itself.

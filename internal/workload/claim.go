@@ -68,6 +68,9 @@ type ClaimRequest struct {
 	// did not say" from "the caller said unbounded"; artifact materialization
 	// keeps the sidecar's budget either way.
 	TimeoutSeconds *int `json:"timeoutSeconds,omitempty"`
+	// S3Grants let the claimed pod have its artifacts' s3:// URLs pre-signed:
+	// the claimant mints them as the claim is sent, so a warm pod holds no key.
+	S3Grants artifact.Grants `json:"s3Grants,omitempty"`
 }
 
 // ClaimState is the sidecar's authoritative claim record.

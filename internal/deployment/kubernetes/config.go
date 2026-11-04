@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
@@ -27,6 +28,7 @@ const (
 type Config struct {
 	SidecarImage           string // workload-sidecar (proxy) image (set by the caller, e.g. from WORKLOAD_SIDECAR_IMAGE)
 	JobSidecarImage        string // job-sidecar image for the artifact-pre init container
+	PresignEndpoint        string // service that redeems the pods' S3 grants (PRESIGN_ENDPOINT)
 	Kubeconfig             string
 	Context                string // kubeconfig context to pin; empty uses current-context
 	Namespace              string
@@ -97,6 +99,7 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 	cfg := Config{
 		JobSidecarImage:        config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
+		PresignEndpoint:        config.GetEnv(artifact.EnvPresignEndpoint, ""),
 		Kubeconfig:             config.GetEnv("KUBECONFIG", ""),
 		Context:                config.GetEnv("KUBE_CONTEXT", ""),
 		Namespace:              config.GetEnv("KUBE_NAMESPACE", ""),

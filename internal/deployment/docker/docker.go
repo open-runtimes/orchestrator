@@ -217,8 +217,10 @@ func (o *Orchestrator) runArtifacts(ctx context.Context, req *deployment.Request
 	if o.cfg.ArtifactEndpoint != "" {
 		env = append(env, "ARTIFACT_ENDPOINT="+o.cfg.ArtifactEndpoint)
 	}
-	for _, kv := range config.LoadS3Profiles().ToEnv() {
-		env = append(env, kv[0]+"="+kv[1])
+	// Grants, never keys: the sidecar redeems them at the orchestrator.
+	if grants := artifact.GrantsFor(req.Artifacts, config.LoadS3Profiles()).JSON(); grants != "" {
+		env = append(env, artifact.EnvS3Grants+"="+grants)
+		env = append(env, artifact.EnvPresignEndpoint+"="+o.cfg.ArtifactEndpoint)
 	}
 
 	resp, err := o.client.ContainerCreate(ctx, client.ContainerCreateOptions{

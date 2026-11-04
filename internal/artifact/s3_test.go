@@ -1,12 +1,9 @@
 package artifact
 
 import (
-	"io"
 	"net/http"
-	"net/http/httptest"
+	"net/url"
 	"orchestrator/internal/config"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,274 +22,123 @@ var testCreds = config.S3Credentials{
 	SecretAccessKey: "secret",
 }
 
-func TestNewSignedS3Request_VirtualHosted(t *testing.T) {
-	fixedClock(t)
-	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://mybucket/path/to/obj.txt", nil, 0, config.S3Profiles{"": testCreds})
-	if err != nil {
-		t.Fatal(err)
+// The query-string signing example from the AWS SigV4 documentation
+// ("Authenticating Requests: Using Query Parameters"), signature included.
+func TestPresignQuery_AWSExample(t *testing.T) {
+	creds := config.S3Credentials{
+		Region:          "us-east-1",
+		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 	}
-	if got, want := req.URL.String(), "https://mybucket.s3.us-east-1.amazonaws.com/path/to/obj.txt"; got != want {
-		t.Errorf("URL = %q, want %q", got, want)
-	}
-	if req.Host != "mybucket.s3.us-east-1.amazonaws.com" {
-		t.Errorf("Host = %q", req.Host)
-	}
-	auth := req.Header.Get("Authorization")
-	if !strings.Contains(auth, "Credential=AKIDEXAMPLE/20230102/us-east-1/s3/aws4_request") {
-		t.Errorf("Authorization missing/incorrect credential scope: %q", auth)
-	}
-	if !strings.Contains(auth, "SignedHeaders=host;x-amz-content-sha256;x-amz-date") {
-		t.Errorf("Authorization signed headers wrong: %q", auth)
+	got := presignQuery(creds, http.MethodGet, "examplebucket.s3.amazonaws.com", "/test.txt",
+		24*time.Hour, time.Date(2013, 5, 24, 0, 0, 0, 0, time.UTC))
+	want := "X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+		"&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request" +
+		"&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host" +
+		"&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404"
+	if got != want {
+		t.Errorf("presignQuery =\n%s\nwant\n%s", got, want)
 	}
 }
 
-func TestNewSignedS3Request_PathStyleEndpoint(t *testing.T) {
+func TestPresign_Addressing(t *testing.T) {
+	fixedClock(t)
+	withEndpoint := func(ep string) config.S3Credentials { c := testCreds; c.Endpoint = ep; return c }
+	pathStyle := testCreds
+	pathStyle.ForcePathStyle = true
+
+	for _, tc := range []struct {
+		name  string
+		creds config.S3Credentials
+		url   string
+		want  string // scheme://host/path, before the query
+	}{
+		{"virtual-hosted", testCreds, "s3://mybucket/path/to/obj.txt", "https://mybucket.s3.us-east-1.amazonaws.com/path/to/obj.txt"},
+		{"forced path style", pathStyle, "s3://mybucket/obj", "https://s3.us-east-1.amazonaws.com/mybucket/obj"},
+		{"endpoint", withEndpoint("http://minio:9000"), "s3://mybucket/obj", "http://minio:9000/mybucket/obj"},
+		{"endpoint prefix", withEndpoint("http://gw:9000/s3/"), "s3://b/k", "http://gw:9000/s3/b/k"},
+		{"encoded key", testCreds, "s3://b/a b+c.txt", "https://b.s3.us-east-1.amazonaws.com/a%20b%2Bc.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signed, err := Presign(config.S3Profiles{"": tc.creds}, http.MethodGet, tc.url, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base, query, _ := strings.Cut(signed, "?")
+			if base != tc.want {
+				t.Errorf("URL = %q, want %q", base, tc.want)
+			}
+			q, err := url.ParseQuery(query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if q.Get("X-Amz-Credential") != "AKIDEXAMPLE/20230102/us-east-1/s3/aws4_request" || q.Get("X-Amz-Expires") != "60" || len(q.Get("X-Amz-Signature")) != 64 {
+				t.Errorf("query = %v", q)
+			}
+		})
+	}
+}
+
+func TestPresign_SessionTokenIsSigned(t *testing.T) {
 	fixedClock(t)
 	creds := testCreds
-	creds.Endpoint = "http://minio:9000"
-	req, err := newSignedS3Request(t.Context(), http.MethodPut, "s3://mybucket/obj", nil, 0, config.S3Profiles{"": creds})
+	creds.SessionToken = "tok/en+="
+	plain, _ := Presign(config.S3Profiles{"": testCreds}, http.MethodGet, "s3://b/k", time.Minute)
+	signed, err := Presign(config.S3Profiles{"": creds}, http.MethodGet, "s3://b/k", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := req.URL.String(), "http://minio:9000/mybucket/obj"; got != want {
-		t.Errorf("URL = %q, want %q", got, want)
+	u, _ := url.Parse(signed)
+	if u.Query().Get("X-Amz-Security-Token") != "tok/en+=" {
+		t.Errorf("security token not carried: %s", signed)
 	}
-	if req.Host != "minio:9000" {
-		t.Errorf("Host = %q, want minio:9000", req.Host)
-	}
-}
-
-func TestNewSignedS3Request_EndpointPathPrefix(t *testing.T) {
-	fixedClock(t)
-	creds := testCreds
-	creds.Endpoint = "http://gw:9000/s3"
-	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://mybucket/obj", nil, 0, config.S3Profiles{"": creds})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The endpoint's /s3 prefix must survive into the target URL...
-	if got, want := req.URL.String(), "http://gw:9000/s3/mybucket/obj"; got != want {
-		t.Errorf("URL = %q, want %q", got, want)
-	}
-	// ...and into the signed canonical URI (else the gateway rejects the signature).
-	if got := req.URL.EscapedPath(); got != "/s3/mybucket/obj" {
-		t.Errorf("path = %q, want /s3/mybucket/obj", got)
+	if signature(t, signed) == signature(t, plain) {
+		t.Error("the session token must be part of the signature")
 	}
 }
 
-func TestNewSignedS3Request_SessionToken(t *testing.T) {
-	fixedClock(t)
-	creds := testCreds
-	creds.SessionToken = "FQoGZ-session-token"
-	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, config.S3Profiles{"": creds})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := req.Header.Get("X-Amz-Security-Token"); got != "FQoGZ-session-token" {
-		t.Errorf("X-Amz-Security-Token = %q, want the session token", got)
-	}
-	// The token header must be part of SignedHeaders (sorted after x-amz-date)
-	// or AWS rejects the signature with 403.
-	if got := req.Header.Get("Authorization"); !strings.Contains(got, "SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token") {
-		t.Errorf("session token not in SignedHeaders: %q", got)
-	}
-}
-
-func TestNewSignedS3Request_Deterministic(t *testing.T) {
-	fixedClock(t)
-	a, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, config.S3Profiles{"": testCreds})
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, config.S3Profiles{"": testCreds})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.Header.Get("Authorization") != b.Header.Get("Authorization") {
-		t.Error("signature is not deterministic for identical inputs")
-	}
-}
-
-func TestNewSignedS3Request_NoCredentials(t *testing.T) {
-	_, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://b/k", nil, 0, nil)
-	if err == nil {
-		t.Fatal("expected error when credentials are not configured")
-	}
-}
-
-func TestNewSignedS3Request_Profile(t *testing.T) {
+func TestPresign_Profiles(t *testing.T) {
 	fixedClock(t)
 	archive := testCreds
 	archive.AccessKeyID = "AKIDARCHIVE"
-	archive.Endpoint = "http://minio:9000"
 	profiles := config.S3Profiles{"": testCreds, "archive": archive}
 
-	req, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://archive@mybucket/obj", nil, 0, profiles)
+	signed, err := Presign(profiles, http.MethodPut, "s3://archive@b/k", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := req.URL.String(), "http://minio:9000/mybucket/obj"; got != want {
-		t.Errorf("URL = %q, want %q", got, want)
+	if u, _ := url.Parse(signed); !strings.HasPrefix(u.Query().Get("X-Amz-Credential"), "AKIDARCHIVE/") {
+		t.Errorf("signed with the wrong profile: %s", signed)
 	}
-	if auth := req.Header.Get("Authorization"); !strings.Contains(auth, "Credential=AKIDARCHIVE/") {
-		t.Errorf("signed with the wrong profile: %q", auth)
+	if _, err := Presign(profiles, http.MethodGet, "s3://missing@b/k", time.Minute); err == nil {
+		t.Error("an unconfigured profile must not sign")
 	}
-
-	if _, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://missing@mybucket/obj", nil, 0, profiles); err == nil || !strings.Contains(err.Error(), `"missing"`) {
-		t.Errorf("unknown profile: err = %v, want one naming the profile", err)
+	if _, err := Presign(config.S3Profiles{}, http.MethodGet, "s3://b/k", time.Minute); err == nil {
+		t.Error("no credentials must not sign")
 	}
-}
-
-func TestNewSignedS3Request_BadURL(t *testing.T) {
-	if _, err := newSignedS3Request(t.Context(), http.MethodGet, "s3://bucket", nil, 0, config.S3Profiles{"": testCreds}); err == nil {
-		t.Error("expected error for s3 URL with no key")
+	if _, err := Presign(profiles, http.MethodGet, "s3://b/", time.Minute); err == nil {
+		t.Error("a URL without a key must not sign")
 	}
 }
 
 func TestUriEncodePath(t *testing.T) {
-	cases := map[string]string{
-		"path/to/obj":   "path/to/obj",
-		"a b+c":         "a%20b%2Bc",
-		"tilde~and.dot": "tilde~and.dot",
-	}
-	for in, want := range cases {
+	for in, want := range map[string]string{
+		"a/b/c.txt":   "a/b/c.txt",
+		"a b/c":       "a%20b/c",
+		"x+y=z":       "x%2By%3Dz",
+		"unreserved~": "unreserved~",
+	} {
 		if got := uriEncodePath(in); got != want {
 			t.Errorf("uriEncodePath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
 
-// TestDownload_ApplyS3 exercises the s3:// branch end to end against a test
-// server acting as the object store, asserting the request is signed.
-func TestDownload_ApplyS3(t *testing.T) {
-	const content = "s3 object body"
-	var gotAuth, gotPath, gotContentHash string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		gotPath = r.URL.Path
-		gotContentHash = r.Header.Get("X-Amz-Content-Sha256")
-		_, _ = w.Write([]byte(content))
-	}))
-	defer server.Close()
-
-	creds := testCreds
-	creds.Endpoint = server.URL
-
-	tmp := t.TempDir()
-	a := &Download{ID: "d", In: "s3://bucket/dir/key.txt", Out: "out.txt"}
-	a.SetS3Profiles(config.S3Profiles{"": creds})
-	if res := a.Apply(t.Context(), tmp); res.Error != nil {
-		t.Fatalf("Apply() error = %v", res.Error)
-	}
-
-	if gotPath != "/bucket/dir/key.txt" {
-		t.Errorf("request path = %q, want /bucket/dir/key.txt", gotPath)
-	}
-	if !strings.HasPrefix(gotAuth, "AWS4-HMAC-SHA256 ") {
-		t.Errorf("missing SigV4 Authorization header: %q", gotAuth)
-	}
-	if gotContentHash != emptyPayloadHash {
-		t.Errorf("X-Amz-Content-Sha256 = %q, want empty payload hash", gotContentHash)
-	}
-	got, err := os.ReadFile(filepath.Join(tmp, "out.txt"))
-	if err != nil || string(got) != content {
-		t.Errorf("downloaded content = %q (err %v), want %q", got, err, content)
-	}
-}
-
-// TestDownload_ApplyS3_NoCreds confirms an s3:// download without configured
-// credentials fails clearly instead of sending an unsigned request.
-func TestDownload_ApplyS3_NoCreds(t *testing.T) {
-	a := &Download{ID: "d", In: "s3://bucket/key", Out: "out.txt"}
-	res := a.Apply(t.Context(), t.TempDir())
-	if res.Error == nil {
-		t.Fatal("expected failure without S3 credentials")
-	}
-}
-
-// TestUpload_ApplyS3 exercises the s3:// upload branch: the file body reaches
-// the store via a signed PUT with the body's content hash.
-func TestUpload_ApplyS3(t *testing.T) {
-	const content = "file to upload"
-	var gotBody, gotAuth, gotMethod, gotHash string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
-		gotAuth = r.Header.Get("Authorization")
-		gotMethod = r.Method
-		gotHash = r.Header.Get("X-Amz-Content-Sha256")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	tmp := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmp, "in.txt"), []byte(content), 0o600); err != nil {
+func signature(t *testing.T, signed string) string {
+	t.Helper()
+	u, err := url.Parse(signed)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	creds := testCreds
-	creds.Endpoint = server.URL
-
-	a := &Upload{ID: "u", In: "in.txt", Out: "s3://bucket/key.txt"}
-	a.SetS3Profiles(config.S3Profiles{"": creds})
-	if res := a.Apply(t.Context(), tmp); res.Error != nil {
-		t.Fatalf("Apply() error = %v", res.Error)
-	}
-
-	if gotMethod != http.MethodPut {
-		t.Errorf("method = %q, want PUT", gotMethod)
-	}
-	if gotBody != content {
-		t.Errorf("uploaded body = %q, want %q", gotBody, content)
-	}
-	if !strings.HasPrefix(gotAuth, "AWS4-HMAC-SHA256 ") {
-		t.Errorf("missing SigV4 Authorization header: %q", gotAuth)
-	}
-	if gotHash == "" || gotHash == emptyPayloadHash {
-		t.Errorf("X-Amz-Content-Sha256 = %q, want the file's content hash", gotHash)
-	}
-}
-
-// TestUpload_ApplyS3_RetryRehashesBody guards the ReadSeeker rewind: a retried
-// s3:// upload must re-read the body, re-hash it, and resend the full content —
-// not send an empty or truncated body on the second attempt.
-func TestUpload_ApplyS3_RetryRehashesBody(t *testing.T) {
-	const content = "body that must survive a retry"
-	var attempts int
-	var lastBody, lastHash string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		b, _ := io.ReadAll(r.Body)
-		lastBody = string(b)
-		lastHash = r.Header.Get("X-Amz-Content-Sha256")
-		if attempts == 1 {
-			w.WriteHeader(http.StatusInternalServerError) // force one retry
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	tmp := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmp, "in.txt"), []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	creds := testCreds
-	creds.Endpoint = server.URL
-
-	a := &Upload{ID: "u", In: "in.txt", Out: "s3://bucket/key.txt"}
-	a.SetS3Profiles(config.S3Profiles{"": creds})
-	if res := a.Apply(t.Context(), tmp); res.Error != nil {
-		t.Fatalf("Apply() error = %v", res.Error)
-	}
-
-	if attempts < 2 {
-		t.Fatalf("expected a retry, got %d attempt(s)", attempts)
-	}
-	if lastBody != content {
-		t.Errorf("retried body = %q, want %q", lastBody, content)
-	}
-	if lastHash == "" || lastHash == emptyPayloadHash {
-		t.Errorf("retried X-Amz-Content-Sha256 = %q, want the file's content hash", lastHash)
-	}
+	return u.Query().Get("X-Amz-Signature")
 }

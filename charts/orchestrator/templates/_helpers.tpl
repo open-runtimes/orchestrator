@@ -130,8 +130,14 @@ app.kubernetes.io/component: {{ . }}
 {{- define "orchestrator.workloadEnv" -}}
 {{- $root := .root -}}
 {{- $workload := index $root.Values .plane "workload" }}
+{{- $values := index $root.Values .plane }}
 - name: KUBE_NAMESPACE
   value: {{ include "orchestrator.planeNamespace" . | quote }}
+{{- if ne .plane "jobs" }}
+{{- /* Where the plane's pods redeem S3 grants; job pods use ARTIFACT_ENDPOINT, the same service. Every component of a plane gets the same value: warm pods are hashed with it. */}}
+- name: PRESIGN_ENDPOINT
+  value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "orchestrator.componentName" (dict "root" $root "component" .plane)) $root.Release.Namespace $values.service.port) $values.presignEndpoint | quote }}
+{{- end }}
 - name: KUBE_CPU_OVERCOMMIT
   value: {{ $workload.cpuOvercommit | quote }}
 - name: KUBE_MEMORY_OVERCOMMIT

@@ -334,7 +334,9 @@ Upload a file to a presigned URL:
 
 ### S3 URLs
 
-`download` and `upload` also take `s3://bucket/key` URLs. The sidecar signs them with the service's S3 credentials (`jobs.s3` in the chart), which the worker never sees. To use a second store, configure a named profile (`jobs.s3.profiles.<name>`) and put its name in the URL:
+`download` and `upload` also take `s3://bucket/key` URLs. The S3 keys (`jobs.s3` in the chart) stay in the service: no pod, sidecar or worker, ever holds one. The service gives each pod a grant per transfer its artifacts make (`GET` for a download, `PUT` for an upload, both for a synced mount), and the sidecar redeems it at `ARTIFACT_ENDPOINT` for a URL pre-signed for 15 minutes, right before the transfer. A grant names one object and one method, so a leaked one reaches nothing else; rotating the profile's secret key revokes every grant minted from it. Deployments and sandboxes work the same way, against their own plane's service.
+
+To use a second store, configure a named profile (`jobs.s3.profiles.<name>`) and put its name in the URL:
 
 ```json
 [

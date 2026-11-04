@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/backoff"
-	"orchestrator/internal/config"
 	"os"
 	"path/filepath"
 	"time"
@@ -29,15 +28,15 @@ type Upload struct {
 	Retries        int               `json:"retries,omitempty"`        // Max retry attempts (default 3)
 	Headers        map[string]string `json:"headers,omitempty"`
 
-	s3 config.S3Profiles // injected by the runner for s3:// URLs
+	signer Signer // injected by the runner for s3:// URLs
 }
 
 func (a *Upload) ArtifactID() string   { return a.ID }
 func (a *Upload) ArtifactType() string { return "upload" }
 func (a *Upload) DependsOn() string    { return a.Depends }
 
-// SetS3Profiles satisfies s3Configurable.
-func (a *Upload) SetS3Profiles(p config.S3Profiles) { a.s3 = p }
+// SetSigner satisfies signable.
+func (a *Upload) SetSigner(s Signer) { a.signer = s }
 
 // Apply uploads a file to a URL with retry.
 func (a *Upload) Apply(ctx context.Context, basePath string) *Result {
@@ -101,7 +100,7 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, filePath str
 	}
 	defer file.Close()
 
-	req, err := buildRequest(ctx, http.MethodPut, a.Out, file, size, a.s3)
+	req, err := buildRequest(ctx, http.MethodPut, a.Out, file, size, a.signer)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

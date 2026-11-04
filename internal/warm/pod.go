@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/pool"
@@ -109,17 +110,15 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 // poolSpecHash identifies what a warm pod was built from, so a pool whose spec
 // changes is replaced. Turning the node mount agent on or off changes a
 // mounting pool's pods too, and so does a change to the operator's pod security
-// context or to the S3 credentials the proxy is given: a new profile or rotated
-// keys reach warm pods only by replacing them. Only the hash is stored, never
-// the credentials.
+// context or to the endpoint its proxy redeems S3 grants at reaches warm pods
+// only by replacing them.
 func poolSpecHash(spec *pool.Spec, cfg Config) string {
 	encoded, _ := json.Marshal(spec)
 	if spec.Mounts && cfg.MountAgentPort > 0 {
 		encoded = append(encoded, " agent"...)
 	}
-	if s3 := config.LoadS3Profiles().ToEnv(); len(s3) > 0 {
-		forwarded, _ := json.Marshal(s3)
-		encoded = append(encoded, forwarded...)
+	if cfg.PresignEndpoint != "" {
+		encoded = append(encoded, " "+cfg.PresignEndpoint...)
 	}
 	if security, _ := json.Marshal(cfg.PodSecurityContext); string(security) != "{}" {
 		encoded = append(encoded, security...)
@@ -186,10 +185,10 @@ func proxyContainer(cfg Config, token string, mounting *kube.Mounting) corev1.Co
 		workspace.MountPropagation = &mounting.SidecarPropagation
 		security = mounting.SidecarSecurity
 	}
-	// The proxy materializes s3:// artifacts in-process on claim, so it needs
-	// the deployments/pools service's S3 credentials.
-	for _, kv := range config.LoadS3Profiles().ToEnv() {
-		env = append(env, corev1.EnvVar{Name: kv[0], Value: kv[1]})
+	// The proxy materializes s3:// artifacts in-process on claim. A claim
+	// carries grants for them, never keys; this is where they are redeemed.
+	if cfg.PresignEndpoint != "" {
+		env = append(env, corev1.EnvVar{Name: artifact.EnvPresignEndpoint, Value: cfg.PresignEndpoint})
 	}
 	return corev1.Container{
 		Name:            ContainerProxy,

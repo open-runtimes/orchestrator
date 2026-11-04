@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/artifact"
-	"orchestrator/internal/config"
 	"orchestrator/internal/emitter"
 	"orchestrator/internal/job"
 	"orchestrator/internal/mount"
@@ -63,11 +62,10 @@ func WithPostJobFileGrace(d time.Duration) Option {
 	return func(r *Runner) { r.postFileGrace = d }
 }
 
-// WithS3Profiles sets the credential profiles used to sign s3:// download/upload
-// artifacts. Configured per service (jobs vs deployments) and forwarded by the
-// orchestrator into this sidecar's environment.
-func WithS3Profiles(profiles config.S3Profiles) Option {
-	return func(r *Runner) { r.s3 = profiles }
+// WithSigner sets how s3:// download/upload artifacts are pre-signed: by
+// redeeming the grants the service put in this sidecar's environment.
+func WithSigner(s artifact.Signer) Option {
+	return func(r *Runner) { r.signer = s }
 }
 
 // Runner orchestrates the sidecar flow.
@@ -83,7 +81,7 @@ type Runner struct {
 	mounter          Mounter
 	mounted          []string // mount targets to unmount on teardown
 	emitter          emitter.Emitter[job.ArtifactReport]
-	s3               config.S3Profiles
+	signer           artifact.Signer
 	postFileGrace    time.Duration // wait for a post-job artifact's source file
 	sync             syncState     // delta sync loops for synced mounts
 }
@@ -540,11 +538,10 @@ func (r *Runner) unmountAll() error {
 	return errors.Join(errs...)
 }
 
-// s3Configurable is implemented by artifacts that transfer over s3:// and need
-// SigV4 credentials. Download and Upload satisfy it; artifacts that never touch
-// S3 do not, so the runner injects credentials only where they are used.
-type s3Configurable interface {
-	SetS3Profiles(config.S3Profiles)
+// signable is implemented by artifacts that may transfer over s3:// and need a
+// signer. Download and Upload satisfy it; artifacts that never touch S3 do not.
+type signable interface {
+	SetSigner(artifact.Signer)
 }
 
 // processArtifacts processes artifacts in dependency order. For post-job
@@ -553,8 +550,8 @@ type s3Configurable interface {
 func (r *Runner) processArtifacts(ctx context.Context, artifacts []artifact.Artifact, waitForFiles bool) error {
 	return artifact.RunInOrder(ctx, artifacts, func(ctx context.Context, a artifact.Artifact) error {
 		start := time.Now()
-		if c, ok := a.(s3Configurable); ok {
-			c.SetS3Profiles(r.s3)
+		if c, ok := a.(signable); ok {
+			c.SetSigner(r.signer)
 		}
 		if waitForFiles {
 			if srcPath := artifact.SourceFile(a); srcPath != "" {
