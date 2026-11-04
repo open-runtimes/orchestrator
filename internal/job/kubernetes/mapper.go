@@ -153,8 +153,9 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 	// sidecar that mounts without the agent), the agent refuses a synced
 	// mount in one, and a persistent volume's filesystem may not support the
 	// ID-mapped mounts it needs (NFS does not).
+	privileged := hasMounts && cfg.MountAgentPort == 0
 	var hostUsers *bool
-	if !cfg.HostUsers && !(hasMounts && cfg.MountAgentPort == 0) && !hasSyncedMount(req.Artifacts) && len(req.Volumes) == 0 {
+	if !cfg.HostUsers && !privileged && !hasSyncedMount(req.Artifacts) && len(req.Volumes) == 0 {
 		hostUsers = new(false)
 	}
 
