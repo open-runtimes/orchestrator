@@ -331,29 +331,21 @@ jobs:
           config: hack/kind-config.yaml
 
       - name: Let the kind node run user-namespaced pods
-        # On x86 kind binds files over /sys/class/dmi/id/product_{name,uuid}. The
-        # kernel refuses a fresh sysfs mount in a user namespace while any of
-        # /sys is covered, so every `hostUsers: false` sandbox fails with EPERM.
-        # One node needs no unique product_uuid. kind binds product_uuid twice, so
-        # unmount until nothing is left, then check the kernel allows sysfs.
+        # The kernel lets a user namespace mount sysfs (every `hostUsers: false`
+        # sandbox does) only while the node's /sys is fully visible, and on the
+        # runner's kernel only while its superblock is writable. kind breaks both:
+        # it binds files over /sys/class/dmi/id/product_{name,uuid} (product_uuid
+        # twice) and remounts /sys read-only. One node needs no fake product ids;
+        # the superblock goes writable while the node's /sys mount stays read-only.
         run: |
-          set -x
-          uname -a; cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
-          mkdir -p /tmp/p
-          sudo unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p && echo HOST-OK || true
-          docker exec orchestrator-dev-control-plane sh -c '
-            set -x
+          docker exec orchestrator-dev-control-plane sh -ec '
             for f in product_name product_uuid; do
               while umount /sys/class/dmi/id/$f 2>/dev/null; do :; done
             done
-            mkdir -p /tmp/p
-            probe() { unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p; }
-            probe && echo NODE-OK
-            unshare --mount --propagation private sh -c "umount /sys/fs/cgroup; unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p" && echo NO-CGROUP-OK
-            unshare --mount --propagation private sh -c "mount -o remount,rw /sys; unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p" && echo RW-SYS-OK
-            unshare --mount --propagation private sh -c "umount /sys/fs/cgroup; mount -o remount,rw /sys; unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p" && echo BOTH-OK
-            grep -E " /sys( |/)" /proc/self/mountinfo
-            true'
+            mount -o remount,rw /sys
+            mount -o remount,bind,ro /sys
+            mkdir -p /tmp/sysfs-probe
+            unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe'
 
       - name: Build and load images into kind
         run: |
