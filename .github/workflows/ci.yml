@@ -335,15 +335,14 @@ jobs:
         # sandbox does) only while the node's /sys is fully visible, and on the
         # runner's kernel only while its superblock is writable. kind breaks both:
         # it binds files over /sys/class/dmi/id/product_{name,uuid} (product_uuid
-        # twice) and remounts /sys read-only. One node needs no fake product ids;
-        # the superblock goes writable while the node's /sys mount stays read-only.
+        # twice) and remounts /sys read-only. One node needs no fake product ids,
+        # and a CI node can keep /sys writable.
         run: |
           docker exec orchestrator-dev-control-plane sh -ec '
             for f in product_name product_uuid; do
               while umount /sys/class/dmi/id/$f 2>/dev/null; do :; done
             done
             mount -o remount,rw /sys
-            mount -o remount,bind,ro /sys
             mkdir -p /tmp/sysfs-probe
             unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe'
 
