@@ -333,10 +333,9 @@ jobs:
       - name: Let the kind node run user-namespaced pods
         # The kernel lets a user namespace mount sysfs (every `hostUsers: false`
         # sandbox does) only while the node's /sys is fully visible, and on the
-        # runner's kernel only while its superblock is writable. kind breaks both:
-        # it binds files over /sys/class/dmi/id/product_{name,uuid} (product_uuid
-        # twice) and remounts /sys read-only. One node needs no fake product ids,
-        # and a CI node can keep /sys writable.
+        # runner's kernel only while /sys is writable. kind breaks both: it binds
+        # files over /sys/class/dmi/id/product_{name,uuid} (product_uuid twice)
+        # and remounts /sys read-only. One CI node needs neither.
         run: |
           docker exec orchestrator-dev-control-plane sh -ec '
             for f in product_name product_uuid; do
