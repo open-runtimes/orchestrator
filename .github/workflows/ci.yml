@@ -342,8 +342,12 @@ jobs:
               while umount /sys/class/dmi/id/$f 2>/dev/null; do :; done
             done
             mkdir -p /tmp/sysfs-probe
-            unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe || {
-              grep -E " /sys( |/)" /proc/self/mountinfo; dmesg 2>/dev/null | tail -5; exit 1; }'
+            probe() { unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe 2>/dev/null; }
+            for m in "" /sys/kernel/config /sys/fs/fuse/connections /sys/kernel/tracing /sys/kernel/debug; do
+              [ -z "$m" ] || umount "$m" 2>/dev/null || true
+              if probe; then echo "sysfs allowed after unmounting: ${m:-nothing}"; exit 0; fi
+            done
+            grep -E " /sys( |/)" /proc/self/mountinfo; exit 1'
 
       - name: Build and load images into kind
         run: |
