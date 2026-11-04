@@ -337,17 +337,23 @@ jobs:
         # One node needs no unique product_uuid. kind binds product_uuid twice, so
         # unmount until nothing is left, then check the kernel allows sysfs.
         run: |
-          docker exec orchestrator-dev-control-plane sh -ec '
+          set -x
+          uname -a; cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns || true
+          mkdir -p /tmp/p
+          sudo unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p && echo HOST-OK || true
+          docker exec orchestrator-dev-control-plane sh -c '
+            set -x
             for f in product_name product_uuid; do
               while umount /sys/class/dmi/id/$f 2>/dev/null; do :; done
             done
-            mkdir -p /tmp/sysfs-probe
-            probe() { unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe 2>/dev/null; }
-            for m in "" /sys/kernel/config /sys/fs/fuse/connections /sys/kernel/tracing /sys/kernel/debug; do
-              [ -z "$m" ] || umount "$m" 2>/dev/null || true
-              if probe; then echo "sysfs allowed after unmounting: ${m:-nothing}"; exit 0; fi
-            done
-            grep -E " /sys( |/)" /proc/self/mountinfo; exit 1'
+            mkdir -p /tmp/p
+            probe() { unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p; }
+            probe && echo NODE-OK
+            unshare --mount --propagation private sh -c "umount /sys/fs/cgroup; unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p" && echo NO-CGROUP-OK
+            unshare --mount --propagation private sh -c "mount -o remount,rw /sys; unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p" && echo RW-SYS-OK
+            unshare --mount --propagation private sh -c "umount /sys/fs/cgroup; mount -o remount,rw /sys; unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/p" && echo BOTH-OK
+            grep -E " /sys( |/)" /proc/self/mountinfo
+            true'
 
       - name: Build and load images into kind
         run: |
