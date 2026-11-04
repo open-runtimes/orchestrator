@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/workload"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeInventory yields a fixed free set; Create mints cold-N units.
@@ -316,5 +318,50 @@ func TestClaimRecordsTelemetry(t *testing.T) {
 	}
 	if len(rec.bursts) != 1 || rec.bursts[0] != BurstCold {
 		t.Errorf("bursts = %v, want [cold]", rec.bursts)
+	}
+}
+
+func TestDeadlineCoversTheArtifactBudget(t *testing.T) {
+	seconds := func(n int) *workload.ClaimRequest { return &workload.ClaimRequest{TimeoutSeconds: &n} }
+	def := time.Duration(workload.DefaultTimeoutSeconds)*time.Second + claimMargin
+
+	cases := []struct {
+		name string
+		req  *workload.ClaimRequest
+		want time.Duration
+	}{
+		{"unset takes the sidecar default", &workload.ClaimRequest{}, def},
+		{"zero is an unbounded request, not an unbounded download", seconds(0), def},
+		{"positive bounds the artifacts", seconds(900), 900*time.Second + claimMargin},
+		{"nil request", nil, def},
+		{"a mount adds its own phase", &workload.ClaimRequest{TimeoutSeconds: new(900), Artifacts: []artifact.Artifact{&artifact.Mount{ID: "m"}}}, 2*900*time.Second + claimMargin},
+	}
+	for _, c := range cases {
+		if got := Deadline(c.req); got != c.want {
+			t.Errorf("%s: Deadline = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestNewPosterLeavesTheBoundToDeadline(t *testing.T) {
+	// The sidecar answers a claim only after its artifacts are in place; the
+	// poster must not give up on a slow download that is within budget.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poster := NewPoster().(*httpPoster)
+	if poster.client.Timeout != 0 {
+		t.Fatalf("client timeout = %v, want none: Deadline bounds each claim", poster.client.Timeout)
+	}
+	target := Unit{ID: "u", Addr: u.Hostname(), Token: "tok"}
+	if err := poster.postTo(t.Context(), server.URL+workload.ClaimPath, target, req()); err != nil {
+		t.Errorf("slow claim within budget: got %v, want nil", err)
 	}
 }

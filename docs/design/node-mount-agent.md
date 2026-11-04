@@ -1,6 +1,6 @@
 # Node mount agent
 
-**Status: implemented for jobs, deployment revisions, pools and sandboxes, when `mountAgent.enabled` is set** (`cmd/mount-agent`, `internal/mountagent`, `internal/mountagent/node`, `internal/mount`; services read `KUBE_MOUNT_AGENT_PORT`). The loop-backed workspace and user-namespace ID mapping below are not built yet. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node, gVisor included (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
+**Status: implemented for jobs, deployment revisions, pools and sandboxes, when `mountAgent.enabled` is set** (`cmd/mount-agent`, `internal/mountagent`, `internal/mountagent/node`, `internal/mount`; services read `KUBE_MOUNT_AGENT_PORT`). User-namespace ID mapping is implemented too (`internal/mount/idmap_linux.go`, `internal/mountagent/node/userns_linux.go`); the loop-backed workspace below is not built yet. The propagation questions [the mounts design](sandbox-mounts-and-shutdown-artifacts.md#what-i-would-do-next) left open have been answered on kind and then on a production-shaped DOKS node, gVisor included (results below), and the answers changed the design more than once. The workspace size limit and the cold-start cost of each isolation tier are measured too.
 
 ## The problem
 
@@ -98,7 +98,7 @@ Kind (Kubernetes 1.37, containerd 2.3.4, kernel 7.2 arm64), gVisor `release-2026
 | --- | --- | --- | --- |
 | erofs on a subdirectory the container never looked at | ✅ read, exec, 200-file listing | ✅ | ✅ |
 | erofs on a subdirectory the container had already listed | ✅ | ✅ | ✅ |
-| writable overlay (erofs lower, tmpfs upper) on a subdirectory | ✅ | ✅ | ✅ on kernel 7.2; on 6.12 it needs ID mapping (below) |
+| writable overlay (erofs lower, tmpfs upper) on a subdirectory | ✅ | ✅ | looked ✅; a retest refuses it without ID mapping (below) |
 | a mount stacked on the volume root | ✅ | ❌ still shows the old contents | ✅ |
 | control: no `HostToContainer` | ❌ not visible, as expected | | |
 | plain `emptyDir` workspace instead of CSI | ✅ | ✅ | ✅ |
@@ -114,7 +114,7 @@ DOKS, amd64, kernel 6.12.96, containerd 2.2.3, kubelet 1.36.3, plain `emptyDir` 
 - **Propagation is the same as on kind, for all three tiers.** Late erofs mounts on fresh and already-listed subdirectories appear in running runc, gVisor and `hostUsers: false` containers. A plain writable overlay works under runc and gVisor. gVisor again does not see a mount stacked on the volume root. The control pod without `HostToContainer` sees nothing. `hostUsers: false` pods start with no node changes.
 - **gVisor with `hostUsers: false` is refused by kubelet** before runsc is involved: `RuntimeClass handler "runsc" does not support user namespaces`.
 - **gVisor holds late mounts busy while the sandbox runs.** The host cannot unmount them (`target is busy`) until the sandbox exits; afterwards they unmount cleanly. Teardown is unaffected, because kubelet only tears volumes down after the containers have stopped. But an agent `Release` while a gVisor pod is still running has to detach lazily (`MNT_DETACH`) and let the sandbox drop its references.
-- **Writable overlays in user-namespaced pods differ from kind, and they are the one case that needs care.** On kernel 6.12 the container gets `Permission denied` writing to an overlay whose layers belong to host root. (On kind's kernel 7.2 the same overlay was writable.) What I tried:
+- **Writable overlays in user-namespaced pods are the one case that needs care.** On kernel 6.12 the container gets `Permission denied` writing to an overlay whose layers belong to host root. (On kind's kernel 7.2 the same overlay looked writable. A retest on 7.2 from a process that really is the namespace's root, `TestBeneathIDMapped`, is refused there too, so that was the test, not the kernel.) What I tried:
 
   | Overlay setup | Result in the `hostUsers: false` pod |
   | --- | --- |
@@ -123,7 +123,12 @@ DOKS, amd64, kernel 6.12.96, containerd 2.2.3, kubelet 1.36.3, plain `emptyDir` 
   | ID-mapped lower **and** ID-mapped tmpfs for upper/work | mounts, but read-only: overlayfs creates its `work/` directory as the mounter, which has no ID in that mapping (`EOVERFLOW`), so it falls back to read-only |
   | **ID-mapped lower, plain tmpfs for upper/work owned by the pod's root host uid** | ✅ files show as uid 0; writes at the root, modifying an image file, `mkdir` inside an image directory, and deleting an image file all work. The upper holds the pod's mapped uid on the host |
 
-  So in user-namespace mode, the agent ID-maps the erofs lower layer into the pod's user namespace (`mount_setattr(MOUNT_ATTR_IDMAP)` with `/proc/<pid>/ns/user` of any process in the pod). It also creates the upper and work directories owned by the host uid that the pod's root maps to (read from the same process's `uid_map`). Read-only mounts should be ID-mapped too, so code shows as root-owned rather than `65534`. That is cosmetic for reading, but it matches what runtimes expect.
+  So in user-namespace mode, the agent ID-maps every mount it makes into the pod's user namespace (`mount_setattr(MOUNT_ATTR_IDMAP)`), and makes the upper and work directories belong to the host uid and gid that the pod's root maps to. As built:
+
+  - **The mapping comes from kubelet, not from the pod.** kubelet records a `hostUsers: false` pod's mapping in `<pod dir>/userns` before it creates the sandbox, and the agent finds it from the publish target (`<kubelet>/pods/<uid>/volumes/kubernetes.io~csi/<volume>/mount`). No record means the pod shares the host's user namespace and nothing is mapped. Looking for a process in the pod instead would need `hostPID`, and would let the workload pick the namespace by nesting one of its own.
+  - **The namespace is the agent's own copy.** `MOUNT_ATTR_IDMAP` takes a namespace descriptor, and a namespace only comes from a process, so the agent starts itself, traced so it stops at exec and runs nothing, in a new user namespace with kubelet's mapping, opens the namespace and kills it. In the agent's tests a writable mount request took 4.0ms with the mapping and 3.5ms without.
+  - **Images are created detached** (`fsopen`, `fsmount`), ID-mapped, then attached by descriptor, so they are never visible unmapped. A directory source is ID-mapped on its read-only bind.
+  - **Synced mounts are refused** in a user-namespaced pod: the upper would be written with host ids the sidecar, reading the workspace through its own ID-mapped volume, cannot map back.
 
 ### Workspace size limits
 
@@ -187,5 +192,5 @@ The same measurement on the DOKS node (amd64), with the driver running in a pod 
    - unprivileged tests for symlink refusal in every `Root` operation
 2. ~~**Revisions and pools next.**~~ Done. The warm-pod claim path needed no new agent behaviour. A revision's replicas share one pod template, so each pod is stamped with its own token when it is built from it; an unstamped pod carries an empty token, which the agent refuses. Kind tests cover a two-replica revision and a warm-pod claim, whose mount lands in an already running worker, in both modes.
 3. **Loop-backed workspaces**, for a hard size limit (measured above).
-4. **User-namespace ID mapping in the agent**, and a writable-overlay test in a `hostUsers: false` pod, because that case behaves differently across kernels. **Then turn on `hostUsers: false` for mounting pools.** It costs nothing at cold start or per request, and it is most of what gVisor would buy.
+4. ~~**User-namespace ID mapping in the agent**~~, done: `TestBeneathIDMapped` runs the writes from the pod's side. **Then turn on `hostUsers: false` for mounting pools.** It costs nothing at cold start or per request, and it is most of what gVisor would buy.
 5. **gVisor stays per pool.** It costs about 350ms at p50 on DOKS, more for apps that load many files. It needs a runsc install per node: one containerd drop-in plus a restart, which a DaemonSet can do, gated by a node label the RuntimeClass selects. An agent `Release` on a running gVisor pod must detach lazily.

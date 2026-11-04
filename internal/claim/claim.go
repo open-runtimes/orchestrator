@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"orchestrator/internal/apperrors"
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/workload"
 	"strconv"
 	"time"
@@ -218,13 +219,48 @@ type httpPoster struct {
 	client *http.Client
 }
 
-// NewPoster creates the production Poster with a bounded per-claim timeout.
-// The seam is real — backend tests substitute fakes — so the concrete type
-// stays hidden.
+// claimMargin is what a claim may take beyond its artifact budget: handing the
+// payload to the workload and binding the data plane once the artifacts are in
+// place.
+const claimMargin = 30 * time.Second
+
+// NewPoster creates the production Poster. Each claim is bounded by
+// Deadline, not by a fixed client timeout: the sidecar answers only once the
+// claim's artifacts are materialized, so a short bound would abandon every
+// claim whose download takes longer. The seam is real — backend tests
+// substitute fakes — so the concrete type stays hidden.
 //
 //nolint:iface // see above
 func NewPoster() Poster {
-	return &httpPoster{client: &http.Client{Timeout: 10 * time.Second}}
+	return &httpPoster{client: &http.Client{}}
+}
+
+// Deadline is how long a claim POST may wait for the sidecar's answer. The
+// sidecar materializes the claim's artifacts before it answers, and gives the
+// pre phase and, when the claim mounts, the mount phase each their own budget:
+// the claim's TimeoutSeconds when positive and the sidecar default otherwise
+// (0 is an unbounded REQUEST timeout, never an unbounded download).
+func Deadline(req *workload.ClaimRequest) time.Duration {
+	if req == nil {
+		return Budget(0, false)
+	}
+	timeoutSeconds := 0
+	if req.TimeoutSeconds != nil {
+		timeoutSeconds = *req.TimeoutSeconds
+	}
+	return Budget(timeoutSeconds, artifact.HasMount(req.Artifacts))
+}
+
+// Budget is the claim deadline for a timeout and whether the claim mounts:
+// one phase budget per phase the sidecar runs, plus claimMargin.
+func Budget(timeoutSeconds int, mounts bool) time.Duration {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = workload.DefaultTimeoutSeconds
+	}
+	if mounts {
+		timeoutSeconds *= 2
+	}
+	return time.Duration(timeoutSeconds)*time.Second + claimMargin
 }
 
 func (p *httpPoster) Post(ctx context.Context, u Unit, req *workload.ClaimRequest) error {
@@ -239,6 +275,8 @@ func (p *httpPoster) postTo(ctx context.Context, url string, u Unit, req *worklo
 	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, Deadline(req))
+	defer cancel()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err

@@ -181,6 +181,9 @@
               "type": "integer",
               "minimum": 0
             },
+            "hostUsers": {
+              "type": "boolean"
+            },
             "serviceAccount": {
               "type": "object",
               "additionalProperties": false,
@@ -611,6 +614,13 @@
         },
         "port": {
           "$ref": "#/$defs/port"
+        },
+        "extraAllowedNamespaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "resources": {
           "$ref": "#/$defs/resources"

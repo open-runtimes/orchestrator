@@ -14,6 +14,12 @@ const (
 // reads those mounts until they are in place.
 const MountsReadyPath = "/mounts-ready"
 
+// DefaultTimeoutSeconds is the sidecar's per-request bound when
+// EnvTimeoutSeconds is unset. Artifact materialization during a claim keeps
+// this budget unless the claim names a positive TimeoutSeconds, so a claim
+// poster must wait at least this long for the claim to answer.
+const DefaultTimeoutSeconds = 300
+
 // Environment variable names — the contract stamped by backends into sidecar
 // containers.
 const (

@@ -78,7 +78,7 @@ func LoadConfigFromEnv() Config {
 
 		Mounts:        config.GetBoolEnv(workload.EnvMounts, false),
 		ArtifactsJSON: config.GetEnv(workload.EnvArtifacts, ""),
-		Timeout:       time.Duration(config.GetIntEnv(workload.EnvTimeoutSeconds, 300)) * time.Second,
+		Timeout:       time.Duration(config.GetIntEnv(workload.EnvTimeoutSeconds, workload.DefaultTimeoutSeconds)) * time.Second,
 		MaxDrain:      time.Duration(config.GetIntEnv(workload.EnvMaxDrainSeconds, 90)) * time.Second,
 
 		Concurrency: config.GetIntEnv(workload.EnvConcurrency, 0),

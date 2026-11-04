@@ -20,6 +20,12 @@ type Options struct {
 	Handler http.Handler
 	Port    string
 
+	// WriteTimeout bounds how long a handler may take to write its response.
+	// Zero keeps the 30s default; a service whose requests legitimately run
+	// longer (a sandbox create waits for a cold start and its artifacts) sets
+	// its own.
+	WriteTimeout time.Duration
+
 	// Extra servers (e.g. a data-plane listener) started alongside the API
 	// server and shut down with it. Addr and Handler must be set.
 	Extra []*http.Server
@@ -45,11 +51,15 @@ func Serve(ctx context.Context, opts Options) error {
 	// stream. Must run before any klog-using library is invoked.
 	klog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
+	writeTimeout := opts.WriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = 30 * time.Second
+	}
 	apiServer := &http.Server{
 		Addr:         ":" + opts.Port,
 		Handler:      opts.Handler,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  60 * time.Second,
 	}
 

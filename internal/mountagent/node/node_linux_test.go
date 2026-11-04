@@ -162,3 +162,69 @@ func mountsUnder(t *testing.T, dir string) []string {
 	}
 	return mount.MountsUnder(string(info), dir)
 }
+
+// A pod kubelet runs with `hostUsers: false` gets its mounts ID-mapped into
+// its user namespace, from the mapping kubelet recorded for it; a pod without
+// that record gets them unmapped, as before.
+func TestPublishMountInUserNamespace(t *testing.T) {
+	testutil.RequireMountPrivilege(t)
+	a, err := New("test", "node", t.TempDir(), []string{"r-*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		uid    string
+		userns string
+		owner  uint32
+	}{
+		{"pod-userns", `{"uidMappings":[{"hostId":196608,"containerId":0,"length":65536}],"gidMappings":[{"hostId":196608,"containerId":0,"length":65536}]}`, 196608},
+		{"pod-host", "", 0},
+	} {
+		t.Run(tc.uid, func(t *testing.T) {
+			podDir := filepath.Join(t.TempDir(), "pods", tc.uid)
+			target := filepath.Join(podDir, "volumes/kubernetes.io~csi/workspace/mount")
+			if tc.userns != "" {
+				if err := os.MkdirAll(podDir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(podDir, "userns"), []byte(tc.userns), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			token := rand.Text()
+			publish := publishRequest(target, "r-"+tc.uid, token)
+			publish.VolumeId = "csi-" + tc.uid
+			if _, err := a.NodePublishVolume(ctx, publish); err != nil {
+				t.Fatal(err)
+			}
+			defer a.NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{VolumeId: publish.VolumeId, TargetPath: target})
+
+			testutil.WriteErofs(t, filepath.Join(target, "code.erofs"))
+			if err := mountagent.NewClient(srv.URL, token).Mount("code.erofs", "code", mount.Opts{Writable: true, SizeMiB: 8}); err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range []string{"code", "code/hello.txt"} {
+				var st unix.Stat_t
+				if err := unix.Stat(filepath.Join(target, p), &st); err != nil {
+					t.Fatal(err)
+				}
+				if st.Uid != tc.owner || st.Gid != tc.owner {
+					t.Errorf("%s is owned by %d:%d, want %d", p, st.Uid, st.Gid, tc.owner)
+				}
+			}
+		})
+	}
+}
+
+func TestNamespacePrefixes(t *testing.T) {
+	a := &Agent{namespaces: []string{"jobs", "r-*", "*"}}
+	for ns, want := range map[string]bool{"jobs": true, "r-abc": true, "r-": true, "jobs-2": false, "default": false} {
+		if got := a.allowed(ns); got != want {
+			t.Errorf("allowed(%q) = %v, want %v", ns, got, want)
+		}
+	}
+}

@@ -171,6 +171,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `<plane>.networkPolicy.enabled` | jobs `false`, others `true` | Per-plane NetworkPolicy (below) |
 | `<plane>.workload.{nodeSelector,tolerations,podSecurityContext}` | empty (`RuntimeDefault` seccomp) | Placement and pod security of the pods a plane creates (below) |
 | `<plane>.workload.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for those pods (below) |
+| `jobs.workload.hostUsers` | `false` | `false` gives each job pod its own user namespace (below) |
 | `<plane>.replicaCount`, `.autoscaling`, `.leaderElection` | `1`, off, off | More than one replica, or an HPA, requires leader election |
 | `<plane>.leaderElection.{leaseDurationSeconds,renewDeadlineSeconds,retryPeriodSeconds}` | `15` / `10` / `2` | Failure-detection bound and renewal budget; a hard leader loss delays work by roughly the lease duration |
 | `<plane>.auth.existingSecret` | `""` | Bearer-token auth for the plane's API (above) |
@@ -208,6 +209,8 @@ Defense in depth, each layer independently optional:
 **Pod security floor (always on).** Every container the services run themselves (sidecars, init containers) runs as non-root (uid 65532) with all capabilities dropped and a read-only root filesystem, and no workload pod gets a ServiceAccount token — admissible under Pod Security Standards `restricted`. A user's own container keeps its image's user, without new privileges.
 
 **Workload pod security** (`<plane>.workload.podSecurityContext`). The pod-level security context of every pod a plane's service creates, in the standard schema: seccomp and AppArmor profiles, SELinux options, `fsGroup`, supplemental groups, sysctls. Unset keeps `RuntimeDefault` seccomp; a profile you name replaces it for every container in the pod, since no container sets its own. `runAsUser`, `runAsGroup` and `runAsNonRoot` are refused at startup: on the pod they would reach every container, refusing the sidecars that run as root and replacing a build image's user. Changing it replaces warm pods; running revisions keep theirs until the next deploy mints a new one.
+
+**Job user namespaces** (`jobs.workload.hostUsers`, `KUBE_WORKLOAD_HOST_USERS`). Builds run as their image's user, usually root. By default each job pod gets its own user namespace (`hostUsers: false`), so that root is an unprivileged id on the node and its capabilities stop at the pod. It costs nothing at start ([measurements](design/node-mount-agent.md)). A job keeps the node's user namespace when it cannot have one: it mounts without the node mount agent (Kubernetes refuses a user namespace to a pod with a privileged container), it has a synced mount (the agent refuses one), or it has a persistent volume (the volume's filesystem must support ID-mapped mounts, and NFS does not). Nodes need Linux 6.3+ and containerd 2.0+ or CRI-O 1.25+. Set it to `true` to keep every job pod on the node's.
 
 - `fsGroup` makes the kubelet re-own a deployment's persistent volumes on every pod start; pair it with `fsGroupChangePolicy: OnRootMismatch`.
 - Container runtimes skip seccomp and `RuntimeDefault` AppArmor for privileged containers, but not a `Localhost` AppArmor profile or SELinux options: without the node mount agent, those must still allow the mounting sidecar's loop mounts.

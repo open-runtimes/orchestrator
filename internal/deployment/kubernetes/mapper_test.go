@@ -243,14 +243,14 @@ func TestBuildRevision_ProxyResources(t *testing.T) {
 	t.Parallel()
 	p := buildRevision(testRequest(), Config{}, "web-00001").Spec.Template.Spec.InitContainers[0]
 
-	if cpu := p.Resources.Requests.Cpu(); cpu.MilliValue() != 25 {
-		t.Errorf("proxy cpu request: want 25m, got %s", cpu)
+	if cpu := p.Resources.Requests.Cpu(); cpu.MilliValue() != 100 {
+		t.Errorf("proxy cpu request: want 100m, got %s", cpu)
 	}
 	if mem := p.Resources.Requests.Memory(); mem.Value() != 32*1024*1024 {
 		t.Errorf("proxy memory request: want 32Mi, got %s", mem)
 	}
-	if mem := p.Resources.Limits.Memory(); mem.Value() != 64*1024*1024 {
-		t.Errorf("proxy memory limit: want 64Mi, got %s", mem)
+	if mem := p.Resources.Limits.Memory(); mem.Value() != 512*1024*1024 {
+		t.Errorf("proxy memory limit: want 512Mi, got %s", mem)
 	}
 	if _, ok := p.Resources.Limits[corev1.ResourceCPU]; ok {
 		t.Errorf("proxy cpu limit: want none, got %s", p.Resources.Limits.Cpu())

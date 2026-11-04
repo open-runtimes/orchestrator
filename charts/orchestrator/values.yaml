@@ -205,6 +205,11 @@ jobs:
     #     seccompProfile: {type: Localhost, localhostProfile: profiles/builds.json}
     # How long the kubelet waits for the sidecar's post phase after SIGTERM.
     terminationGracePeriodSeconds: 600
+    # false gives each job pod its own user namespace, so a build running as
+    # root is an unprivileged id on the node. Pods that cannot have one keep
+    # the node's: a mount without mountAgent (privileged sidecar), a synced
+    # mount, or a persistent volume. true keeps every job pod on the node's.
+    hostUsers: false
     # The account job pods run as. It holds no RBAC; it is where their pull
     # credentials go.
     serviceAccount:
@@ -516,6 +521,10 @@ mountAgent:
     pullPolicy: IfNotPresent
   # Port the mount API listens on, on each node's own IP.
   port: 9878
+  # Namespaces outside the orchestrator's planes whose pods may use the
+  # driver, for another platform's mounting pods on the same nodes. An entry
+  # ending in * matches a prefix (r-* for one namespace per workload).
+  extraAllowedNamespaces: []
   resources:
     requests:
       cpu: 10m

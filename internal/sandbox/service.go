@@ -17,10 +17,15 @@ import (
 	"time"
 )
 
+// MaxTimeoutSeconds is the largest per-request timeout a sandbox accepts. A
+// claim's artifacts are bounded by the same value, so it also sizes how long a
+// create may take to answer.
+const MaxTimeoutSeconds = 3600
+
 // Validation limits, shared scale with the deployments service.
 const (
 	maxIDLength    = 63
-	maxTimeoutSecs = 3600
+	maxTimeoutSecs = MaxTimeoutSeconds
 	maxArtifacts   = 64
 	defaultTimeout = 300
 	maxPorts       = 16

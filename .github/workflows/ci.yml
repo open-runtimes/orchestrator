@@ -59,7 +59,7 @@ jobs:
           go test -c ./internal/mount -o /tmp/mount.test
           go test -c ./internal/mountagent/node -o /tmp/node.test
           sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/mount.test -test.run 'TestBeneath|TestRoot' -test.v
-          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/node.test -test.run TestPublishMountUnpublish -test.v
+          sudo env REQUIRE_MOUNT_TESTS=1 unshare --mount --propagation private /tmp/node.test -test.run 'TestPublishMount' -test.v
 
       - name: Upload coverage
         uses: actions/upload-artifact@v7
@@ -329,6 +329,21 @@ jobs:
           version: v0.33.0
           cluster_name: orchestrator-dev
           config: hack/kind-config.yaml
+
+      - name: Let the kind node run user-namespaced pods
+        # The kernel lets a user namespace mount sysfs (every `hostUsers: false`
+        # sandbox does) only while the node's /sys is fully visible, and on the
+        # runner's kernel only while /sys is writable. kind breaks both: it binds
+        # files over /sys/class/dmi/id/product_{name,uuid} (product_uuid twice)
+        # and remounts /sys read-only. One CI node needs neither.
+        run: |
+          docker exec orchestrator-dev-control-plane sh -ec '
+            for f in product_name product_uuid; do
+              while umount /sys/class/dmi/id/$f 2>/dev/null; do :; done
+            done
+            mount -o remount,rw /sys
+            mkdir -p /tmp/sysfs-probe
+            unshare --user --map-root-user --net --mount mount -t sysfs -o ro sysfs /tmp/sysfs-probe'
 
       - name: Build and load images into kind
         run: |

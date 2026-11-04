@@ -13,16 +13,20 @@ import (
 
 // BindReadOnly attaches a read-only, nodev, nosuid bind of src onto dst, both
 // given as open directories. The bind is cloned detached (open_tree), made
-// read-only while detached (mount_setattr), and only then attached by
-// descriptor (move_mount), so it is never visible writable — which the
-// two-step bind-then-remount cannot promise once propagation is involved — and it lands on exactly the directory dst holds. Kernel 5.12+.
-func BindReadOnly(src, dst *os.File) error {
+// read-only (and ID-mapped, with an IDMap) while detached (mount_setattr), and
+// only then attached by descriptor (move_mount), so it is never visible
+// writable — which the two-step bind-then-remount cannot promise once
+// propagation is involved — and it lands on exactly the directory dst holds.
+// A bind of a mount that is already ID-mapped keeps its mapping and takes a
+// nil IDMap. Kernel 5.12+.
+func BindReadOnly(src, dst *os.File, idmap *IDMap) error {
 	tree, err := unix.OpenTree(int(src.Fd()), "", unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC|unix.AT_EMPTY_PATH|unix.AT_RECURSIVE)
 	if err != nil {
 		return fmt.Errorf("clone %s: %w", src.Name(), err)
 	}
 	defer unix.Close(tree)
 	attr := unix.MountAttr{Attr_set: unix.MOUNT_ATTR_RDONLY | unix.MOUNT_ATTR_NODEV | unix.MOUNT_ATTR_NOSUID}
+	idmap.attr(&attr)
 	if err := unix.MountSetattr(tree, "", unix.AT_EMPTY_PATH|unix.AT_RECURSIVE, &attr); err != nil {
 		return fmt.Errorf("make %s read-only: %w", src.Name(), err)
 	}

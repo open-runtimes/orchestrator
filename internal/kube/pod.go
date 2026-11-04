@@ -75,15 +75,27 @@ func PodSecurity(operator corev1.PodSecurityContext) *corev1.PodSecurityContext 
 	return &operator
 }
 
+// sidecarMemoryLimit caps a workload sidecar's memory, page cache included.
+const sidecarMemoryLimit = "512Mi"
+
 // SidecarResources is what a workload sidecar asks for: a small CPU request and
-// a memory request with a matching cap. No CPU limit — throttling a proxy adds
+// a memory request, with a memory cap. No CPU limit — throttling a proxy adds
 // latency to every request through it, and the request already buys its share.
+//
+// The cap is well above what the proxy itself uses because the sidecar also
+// materializes artifacts. The page cache of every file it writes into the
+// workspace is charged to its cgroup, so a download or unpack larger than the
+// cap stalls the sidecar in reclaim (failing its readiness probe and dropping
+// the claim in flight) rather than finishing. The memory request stays small:
+// the cap is headroom for that burst, not a reservation. The CPU request is
+// what the sidecar is guaranteed under contention while it downloads and
+// unpacks on a busy node; with no limit it still bursts above it.
 func SidecarResources() corev1.ResourceRequirements {
 	requests := corev1.ResourceList{}
-	requests[corev1.ResourceCPU] = resource.MustParse("25m")
+	requests[corev1.ResourceCPU] = resource.MustParse("100m")
 	requests[corev1.ResourceMemory] = resource.MustParse("32Mi")
 	limits := corev1.ResourceList{}
-	limits[corev1.ResourceMemory] = resource.MustParse("64Mi")
+	limits[corev1.ResourceMemory] = resource.MustParse(sidecarMemoryLimit)
 	return corev1.ResourceRequirements{Requests: requests, Limits: limits}
 }
 

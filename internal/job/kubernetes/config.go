@@ -40,6 +40,11 @@ type Config struct {
 	// a privileged sidecar in the pod. Jobs without a mount are unaffected.
 	// The chart sets it when mountAgent is enabled.
 	MountAgentPort int
+	// HostUsers keeps job pods in the node's user namespace. False (the
+	// default) gives each job pod its own, so a build running as root is an
+	// unprivileged id on the node. buildJob keeps the node's for a pod that
+	// cannot have one.
+	HostUsers bool
 	// Metrics wires backend-specific recorders (leadership, status cache,
 	// tracker saturation, K8s API latency). Optional — when nil, recording
 	// is skipped.
@@ -86,6 +91,7 @@ func LoadConfigFromEnv() (Config, error) {
 		NodeSelector:                  nodeSelector,
 		PodSecurityContext:            podSecurity,
 		MountAgentPort:                config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
+		HostUsers:                     config.GetBoolEnv("KUBE_WORKLOAD_HOST_USERS", false),
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", ""),

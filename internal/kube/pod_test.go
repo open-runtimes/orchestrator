@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // The policy, pinned where it lives. Every field matters and none of them fails
@@ -44,6 +45,11 @@ func TestSidecarResources_CapsMemoryAndNotCPU(t *testing.T) {
 	}
 	if r.Limits.Memory().IsZero() {
 		t.Error("memory must be capped")
+	}
+	// The cap must leave room for the page cache of the artifacts the sidecar
+	// writes: at 64Mi a repository archive stalled it mid-claim.
+	if r.Limits.Memory().Cmp(resource.MustParse("256Mi")) < 0 {
+		t.Errorf("memory cap %s is too small to materialize artifacts", r.Limits.Memory())
 	}
 	if r.Requests.Cpu().IsZero() || r.Requests.Memory().IsZero() {
 		t.Errorf("requests: got %+v", r.Requests)

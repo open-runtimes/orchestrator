@@ -65,6 +65,15 @@ func callbackDestFromAnnotations(ann map[string]string) *job.CallbackDest {
 	}
 }
 
+func hasSyncedMount(artifacts []artifact.Artifact) bool {
+	for _, a := range artifacts {
+		if m, ok := a.(*artifact.Mount); ok && m.Sync != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func jobNameFor(jobID string) string {
 	return "job-" + jobID
 }
@@ -139,6 +148,17 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		sidecarSecurityContext = kube.FileAccessSecurityContext()
 	}
 
+	// A user namespace of its own (Config.HostUsers), except where it cannot
+	// work: Kubernetes refuses one to a pod with a privileged container (a
+	// sidecar that mounts without the agent), the agent refuses a synced
+	// mount in one, and a persistent volume's filesystem may not support the
+	// ID-mapped mounts it needs (NFS does not).
+	privileged := hasMounts && cfg.MountAgentPort == 0
+	var hostUsers *bool
+	if !cfg.HostUsers && !privileged && !hasSyncedMount(req.Artifacts) && len(req.Volumes) == 0 {
+		hostUsers = new(false)
+	}
+
 	var cmd []string
 	if req.Command != "" {
 		cmd = []string{"/bin/sh", "-c", req.Command}
@@ -155,6 +175,7 @@ func buildJob(req *job.Request, cfg Config, sidecarImage string) *batchv1.Job {
 		RestartPolicy:                 corev1.RestartPolicyNever,
 		ServiceAccountName:            cfg.ServiceAccount,
 		AutomountServiceAccountToken:  &automount,
+		HostUsers:                     hostUsers,
 		Tolerations:                   cfg.Tolerations,
 		NodeSelector:                  cfg.NodeSelector,
 		SecurityContext:               kube.PodSecurity(cfg.PodSecurityContext),

@@ -36,7 +36,7 @@ type Agent struct {
 
 	version    string
 	nodeID     string
-	namespaces []string // pods outside these may not use the driver; empty = any
+	namespaces []string // pods outside these may not use the driver; empty = any; a trailing * matches a prefix
 	reg        *registry
 }
 
@@ -90,7 +90,7 @@ func (a *Agent) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeR
 		return nil, status.Error(codes.InvalidArgument, "only inline ephemeral volumes are supported")
 	}
 	ns := attrs["csi.storage.k8s.io/pod.namespace"]
-	if len(a.namespaces) > 0 && !slices.Contains(a.namespaces, ns) {
+	if !a.allowed(ns) {
 		return nil, status.Errorf(codes.PermissionDenied, "namespace %q may not use %s", ns, mountagent.Driver)
 	}
 	token := attrs[mountagent.AttributeToken]
@@ -134,6 +134,21 @@ func (a *Agent) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeR
 	}
 	slog.Info("Published workspace", "volume", id, "pod", v.Pod)
 	return &csi.NodePublishVolumeResponse{}, nil
+}
+
+// allowed reports whether pods in namespace ns may use the driver. An entry
+// ending in * admits every namespace with that prefix, for platforms that give
+// each workload its own namespace.
+func (a *Agent) allowed(ns string) bool {
+	if len(a.namespaces) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(a.namespaces, func(allowed string) bool {
+		if prefix, ok := strings.CutSuffix(allowed, "*"); ok {
+			return prefix != "" && strings.HasPrefix(ns, prefix)
+		}
+		return ns == allowed
+	})
 }
 
 // unpublishLockWait bounds how long unpublish waits for a mount request in
@@ -225,6 +240,14 @@ func teardown(target string) error {
 func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/mount", serve(a, func(b mount.Beneath, req mountagent.MountRequest) (any, error) {
+		idmap, err := podIDMap(b.Dir)
+		if err != nil {
+			return nil, err
+		}
+		if idmap != nil {
+			defer idmap.Close()
+			b.IDMap = idmap
+		}
 		return struct{}{}, b.Mount(req.Source, req.Target, req.Opts)
 	}))
 	mux.HandleFunc("POST /v1/unmount", serve(a, func(b mount.Beneath, req mountagent.TargetRequest) (any, error) {
