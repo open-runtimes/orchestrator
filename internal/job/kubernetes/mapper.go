@@ -2,6 +2,8 @@ package kubernetes
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"orchestrator/internal/artifact"
@@ -9,6 +11,7 @@ import (
 	"orchestrator/internal/job"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/workload"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -74,8 +77,30 @@ func hasSyncedMount(artifacts []artifact.Artifact) bool {
 	return false
 }
 
+// maxJobNameLength is the longest label value, because Kubernetes copies a job's
+// name into the job-name label on its pods.
+const maxJobNameLength = 63
+
+var invalidJobNameChars = regexp.MustCompile(`[^a-z0-9.-]`)
+
+// jobNameFor returns a valid Kubernetes job name for jobID. An ID that is already
+// valid keeps its plain name. Anything else, such as one holding capital letters
+// or too long for the job-name label Kubernetes adds to its pods, is normalised
+// and made unique with a hash of the original ID.
 func jobNameFor(jobID string) string {
-	return "job-" + jobID
+	name := "job-" + jobID
+	normalised := invalidJobNameChars.ReplaceAllString(strings.ToLower(name), "-")
+	if normalised == name && len(name) <= maxJobNameLength {
+		return name
+	}
+
+	hash := sha256.Sum256([]byte(jobID))
+	suffix := "-" + hex.EncodeToString(hash[:4])
+	if limit := maxJobNameLength - len(suffix); len(normalised) > limit {
+		normalised = normalised[:limit]
+	}
+
+	return strings.TrimRight(normalised, "-.") + suffix
 }
 
 // buildJob maps a job.Request to a batch/v1.Job.

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // --- callbackDestFromAnnotations ---
@@ -151,6 +152,24 @@ func TestBuildJob_DefaultDeadlineAndEntrypoint(t *testing.T) {
 	}
 	if len(j.Spec.Template.Spec.Containers[0].Command) != 0 {
 		t.Fatal("must preserve the image entrypoint when command is omitted")
+	}
+
+	for id, want := range map[string]string{
+		"project-deployment-build":                    "job-project-deployment-build",
+		"almostEvades-deployment-build":               "",
+		"snake_case-deployment-build":                 "",
+		strings.Repeat("a", 36) + "-deployment-build": "",
+	} {
+		name := buildJob(&job.Request{ID: id, Image: "alpine:latest"}, Config{}, "sidecar:latest").Name
+		if want != "" && name != want {
+			t.Errorf("job name for %q = %q, want %q", id, name, want)
+		}
+		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 || len(name) > validation.LabelValueMaxLength {
+			t.Errorf("job name %q for %q is invalid: %v", name, id, errs)
+		}
+	}
+	if jobNameFor("Abc") == jobNameFor("abc") {
+		t.Error("IDs differing only by case must keep different job names")
 	}
 }
 
