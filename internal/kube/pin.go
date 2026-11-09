@@ -76,8 +76,9 @@ func (p *Pin) Affinity(key string) *corev1.Affinity {
 		return nil
 	}
 	slices.SortFunc(candidates, func(a, b ranked) int { return cmp.Compare(b.score, a.score) })
-	hosts := make([]string, 0, p.n)
-	for _, c := range candidates[:min(p.n, len(candidates))] {
+	candidates = candidates[:min(p.n, len(candidates))]
+	hosts := make([]string, 0, len(candidates))
+	for _, c := range candidates {
 		hosts = append(hosts, c.host)
 	}
 	slices.Sort(hosts) // a stable spec for the same set
