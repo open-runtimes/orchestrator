@@ -49,6 +49,10 @@ preparation fails the Job without starting the worker or retrying until its dead
 A native sidecar establishes mounts before execution and processes outputs after
 SIGTERM when the worker exits. The Job deadline still bounds execution and mount retries.
 
+`placementKey` (optional) sends jobs with the same key to the same few nodes when
+`jobs.workload.pinNodes` is set, so a rebuild finds the images it pulled last time
+([pinning](operations.md#resource-model)). It is a preference, never a requirement.
+
 `timeoutSeconds` (default 1800) also sets the Kubernetes Job's active deadline,
 covering scheduling, setup, and execution. This also bounds mount failures in the
 resident sidecar, which restarts even with the Job's retry limit set to zero. At the deadline,

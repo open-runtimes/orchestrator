@@ -18,6 +18,7 @@
   "leader" true) $c) }}
 {{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" (include "orchestrator.componentName" $c) "rules" (include "orchestrator.sandboxRules" .)) $c) }}
 {{- include "orchestrator.runtimeClassReader" $c }}
+{{- include "orchestrator.nodeReader" $c }}
 {{- if .Values.sandbox.proxy.enabled }}
 {{- /*
 The sandbox proxy resolves a sandbox from the capability token in the Host.

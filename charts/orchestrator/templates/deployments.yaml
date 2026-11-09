@@ -19,6 +19,7 @@
   "leader" true) $c) }}
 {{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" $name "rules" (include "orchestrator.deploymentsRules" .)) $c) }}
 {{- include "orchestrator.runtimeClassReader" $c }}
+{{- include "orchestrator.nodeReader" $c }}
 {{- if ne $ns .Release.Namespace }}
 {{- /* The cold endpoint flip watches activator pods, which stay with the control plane. */}}
 {{- include "orchestrator.rbac" (merge (dict "namespace" .Release.Namespace "name" (printf "%s-activator-reader" $name) "rules" "- apiGroups: [\"\"]\n  resources: [\"pods\"]\n  verbs: [\"get\", \"list\", \"watch\"]") $c) }}

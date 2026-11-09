@@ -97,6 +97,7 @@ type Config struct {
 	RuntimeClasses         map[string]string         // isolation tier → RuntimeClass (internal/kube)
 	MountAgentPort         int                       // node mount agent's port; 0 mounts from a privileged sidecar (kube.NewMounting)
 	OrphanTTL              time.Duration             // discard claimed-but-unlabeled pods (crashed mid-claim) after this
+	Pin                    *kube.Pin                 // prefers a spec's PlacementKey nodes; nil pins nothing
 	Naming                 Naming
 
 	// ReapUnpooled extends the control loop's end-of-life rule to claims whose

@@ -10,6 +10,7 @@
   "s3" .Values.jobs.s3
   "leader" true) $c) }}
 {{- include "orchestrator.rbac" (merge (dict "namespace" $ns "name" (include "orchestrator.componentName" $c) "rules" (include "orchestrator.jobsRules" .)) $c) }}
+{{- include "orchestrator.nodeReader" $c }}
 {{- with .Values.jobs.workload.serviceAccount }}
 {{- if .create }}
 ---
