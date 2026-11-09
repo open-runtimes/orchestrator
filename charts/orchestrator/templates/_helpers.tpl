@@ -144,6 +144,10 @@ app.kubernetes.io/component: {{ . }}
 - name: KUBE_WORKLOAD_NODE_SELECTOR
   value: {{ toJson . | quote }}
 {{- end }}
+{{- with $workload.pinNodes }}
+- name: KUBE_WORKLOAD_PIN_NODES
+  value: {{ . | quote }}
+{{- end }}
 {{- if $root.Values.mountAgent.enabled }}
 - name: KUBE_MOUNT_AGENT_PORT
   value: {{ $root.Values.mountAgent.port | quote }}
@@ -482,6 +486,43 @@ rules:
   - apiGroups: ["node.k8s.io"]
     resources: ["runtimeclasses"]
     verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "orchestrator.serviceAccountName" . }}
+    namespace: {{ .root.Release.Namespace }}
+{{- end }}
+{{- end -}}
+
+{{/*
+  nodeReader: with workload.pinNodes, the service watches the nodes its pods
+  can land on to rank them per placement key (internal/kube/pin.go). Call with
+  (dict "root" $ "component" ... "values" ...).
+*/}}
+{{- define "orchestrator.nodeReader" -}}
+{{- if and .root.Values.rbac.create .values.workload.pinNodes }}
+{{- $name := printf "%s-nodes" (include "orchestrator.componentName" .) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "orchestrator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -87,6 +87,7 @@ func (m *Manager) buildPod(p *pool.Spec, poolID, name, token string) *corev1.Pod
 			AutomountServiceAccountToken:  &autoMount,
 			Tolerations:                   cfg.Tolerations,
 			NodeSelector:                  cfg.NodeSelector,
+			Affinity:                      cfg.Pin.Affinity(p.PlacementKey),
 			SecurityContext:               kube.PodSecurity(cfg.PodSecurityContext),
 			Volumes: append([]corev1.Volume{
 				{Name: VolumeWorkspace, VolumeSource: workspaceVolume},

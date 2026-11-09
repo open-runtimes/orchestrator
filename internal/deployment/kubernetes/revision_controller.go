@@ -544,6 +544,10 @@ func (o *Orchestrator) ensureRevisionPod(ctx context.Context, revision *revision
 		// direct template retained on every Revision.
 	}
 	pod := buildRevisionPod(revision, slot, terminating)
+	// Per pod, not in the template: the node set moves, and a template change
+	// would read as a new revision. Keyed by deployment, so a new revision of
+	// the same deployment goes back to the same nodes.
+	pod.Spec.Affinity = o.pin.Affinity(pod.Labels[LabelDeploymentID])
 	_, err := o.client.CoreV1().Pods(o.namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		return false, nil

@@ -29,6 +29,7 @@ type Orchestrator struct {
 	emitter     *job.CallbackEmitter
 	watcher     LifecycleWatcher
 	statusCache *statusCache
+	pin         *kube.Pin
 
 	mu         sync.Mutex
 	cancelTerm context.CancelFunc // cancels the current leadership term (or single-replica run)
@@ -48,6 +49,7 @@ func NewOrchestrator(cfg Config, emitter *job.CallbackEmitter) (*Orchestrator, e
 		emitter:     emitter,
 		watcher:     newK8sLifecycleWatcher(cs, cfg.Namespace, emitter, cfg.LogFlushInterval),
 		statusCache: newStatusCache(),
+		pin:         kube.NewPin(cs, cfg.PinNodes, cfg.NodeSelector, cfg.Tolerations),
 	}
 	if err := cfg.Metrics.ObserveInt64("orchestrator_trackers",
 		"In-flight per-job lifecycle trackers on the leader (saturation)",
@@ -96,6 +98,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // when K8s creates the owning Pod.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 	jobSpec := buildJob(req, o.cfg, o.cfg.SidecarImage)
+	jobSpec.Spec.Template.Spec.Affinity = o.pin.Affinity(req.PlacementKey)
 	if _, err := o.client.BatchV1().Jobs(o.cfg.Namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return apperrors.Conflict("job already exists")

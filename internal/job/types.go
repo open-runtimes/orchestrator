@@ -20,6 +20,11 @@ type Request struct {
 	Artifacts      artifact.Set      `json:"artifacts,omitempty"`
 	Volumes        []volume.Volume   `json:"volumes,omitempty"` // existing Docker volumes / K8s PVCs mounted into the worker
 	Callback       *Callback         `json:"callback,omitempty"`
+	// PlacementKey, when the service pins nodes (KUBE_WORKLOAD_PIN_NODES),
+	// prefers the same few nodes for every pod created with the same key, so
+	// what a node kept from the last one (images, cached artifacts) is reused.
+	// Soft: a full node never blocks the pod. Empty pins nothing.
+	PlacementKey string `json:"placementKey,omitempty"`
 
 	// ArtifactToken authenticates the sidecar's posts to the internal artifact
 	// endpoint. Set by the Service, never by API clients — json:"-" keeps it

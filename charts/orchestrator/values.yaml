@@ -194,6 +194,12 @@ jobs:
     # Pin job pods to a node pool, and tolerate its taints.
     nodeSelector: {}
     tolerations: []
+    # Prefer this many nodes per placement key (the request's placementKey;
+    # a deployment's id), so a workload returns to nodes that still hold its
+    # images and artifacts. Soft: full nodes never block a pod. Needs a
+    # ClusterRole to watch nodes, which the chart adds. 0 is off. Likewise
+    # for deployments and sandbox.
+    pinNodes: 0
     # request = limit / overcommit (docs/operations.md "Resource model").
     cpuOvercommit: 1
     memoryOvercommit: 1
@@ -300,6 +306,7 @@ deployments:
   workload:
     nodeSelector: {}
     tolerations: []
+    pinNodes: 0
     cpuOvercommit: 1
     memoryOvercommit: 1
   # Base domain for auto-assigned hosts: {id}.{domain}.
@@ -420,6 +427,7 @@ sandbox:
   workload:
     nodeSelector: {}
     tolerations: []
+    pinNodes: 0
     cpuOvercommit: 1
     memoryOvercommit: 1
   # Wildcard domain sandboxes are addressed at: s-{token}.{domain}, and

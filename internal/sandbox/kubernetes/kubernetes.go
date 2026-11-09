@@ -78,6 +78,7 @@ func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 // defaults applied.
 func wireOrchestrator(cs kubernetes.Interface, cfg Config, tune func(*warm.Config)) *Orchestrator {
 	warmCfg := cfg.warmConfig()
+	warmCfg.Pin = kube.NewPin(cs, cfg.PinNodes, cfg.NodeSelector, cfg.Tolerations)
 	if tune != nil {
 		tune(&warmCfg)
 	}

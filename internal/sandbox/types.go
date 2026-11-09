@@ -65,6 +65,12 @@ type Request struct {
 	// Volumes attach existing storage and participate in exact pool matching.
 	Volumes []volume.Volume `json:"volumes,omitempty"`
 
+	// PlacementKey, when the service pins nodes (KUBE_WORKLOAD_PIN_NODES),
+	// prefers the same few nodes for every pod created with the same key, so
+	// what a node kept from the last one (images, cached artifacts) is reused.
+	// Soft: a full node never blocks the pod. Empty pins nothing.
+	PlacementKey string `json:"placementKey,omitempty"`
+
 	// Token is the capability the sandbox's hostname carries — minted by the
 	// service, never accepted from or echoed back into a request body.
 	Token string `json:"-"`
@@ -84,6 +90,7 @@ func (r *Request) Shape() pool.Spec {
 		Volumes:                       r.Volumes,
 		TerminationGracePeriodSeconds: r.TerminationGracePeriodSeconds,
 		Mounts:                        artifact.HasMount(r.Artifacts),
+		PlacementKey:                  r.PlacementKey,
 	}
 }
 

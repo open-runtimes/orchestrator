@@ -41,6 +41,8 @@ type Config struct {
 	Tolerations []corev1.Toleration
 	// NodeSelector pins every workload pod to a node pool (internal/kube).
 	NodeSelector map[string]string
+	// PinNodes is how many nodes a placement key prefers (kube.Pin); 0 is off.
+	PinNodes int
 	// PodSecurityContext is stamped on every workload pod (kube.PodSecurity).
 	PodSecurityContext corev1.PodSecurityContext
 	Pools              []pool.Pool
@@ -107,6 +109,7 @@ func LoadConfigFromEnv() (Config, error) {
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,
+		PinNodes:               config.GetIntEnv("KUBE_WORKLOAD_PIN_NODES", 0),
 		PodSecurityContext:     podSecurity,
 		RuntimeClasses:         classes,
 		MountAgentPort:         config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),

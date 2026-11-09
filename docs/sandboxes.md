@@ -67,6 +67,7 @@ curl -X POST http://localhost:8080/v1/sandbox \
 | `artifacts` | array | — | Materialized into the workspace before the sandbox reports ready. Same schema as [job artifacts](jobs.md#artifacts), except [`mount`](jobs.md#mount-artifact). See [artifacts](#artifacts). |
 | `timeoutSeconds` | int | `300` | Bounds each request to the sandbox's URL. `0` means **no bound**, for sessions meant to outlive one. Max `3600`. |
 | `idleTimeoutSeconds` | int | `0` | Tear the sandbox down after this long with no traffic. `0` = live until `DELETE`. |
+| `placementKey` | string | — | With `sandbox.workload.pinNodes`, sandboxes with the same key prefer the same nodes ([pinning](operations.md#resource-model)). Soft, and only for a sandbox no warm pool serves. |
 
 The response is a **sandbox status**, the same shape every read returns:
 

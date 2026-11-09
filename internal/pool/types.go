@@ -53,6 +53,11 @@ type Spec struct {
 	// workspace of any size — so a shape whose claims snapshot on shutdown must
 	// raise it.
 	TerminationGracePeriodSeconds int `json:"terminationGracePeriodSeconds,omitempty"`
+
+	// PlacementKey pins a poolless pod's node (kube.Pin). It is per request,
+	// never part of a pool: json:"-" keeps it out of the pool spec hash, and
+	// ShapeKey ignores it, so it never changes which pool matches.
+	PlacementKey string `json:"-"`
 }
 
 // Pool is the service-config schema for one warm pool (Helm renders it from a

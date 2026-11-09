@@ -172,6 +172,7 @@ The most consequential values (see `charts/orchestrator/values.yaml` for the ful
 | `<plane>.namespace` | `""` | Namespace the plane's pods run in; empty is the release namespace (below) |
 | `<plane>.networkPolicy.enabled` | jobs `false`, others `true` | Per-plane NetworkPolicy (below) |
 | `<plane>.workload.{nodeSelector,tolerations,podSecurityContext}` | empty (`RuntimeDefault` seccomp) | Placement and pod security of the pods a plane creates (below) |
+| `<plane>.workload.pinNodes` | `0` (off) | Prefer this many nodes per placement key (below) |
 | `<plane>.workload.{cpu,memory}Overcommit` | `1` | Request = limit / overcommit for those pods (below) |
 | `jobs.workload.hostUsers` | `false` | `false` gives each job pod its own user namespace (below) |
 | `<plane>.replicaCount`, `.autoscaling`, `.leaderElection` | `1`, off, off | More than one replica, or an HPA, requires leader election |
@@ -266,6 +267,7 @@ The client declares one ceiling per resource (`cpu` cores, `memory` MiB); the pl
 
 - **CPU**: request = `cpu / cpuOvercommit` and **no CPU limit** — CPU is compressible, and limits cause needless throttling. Raising `cpuOvercommit` packs workloads denser at the cost of contention under load.
 - **Memory**: limit as declared, request = `memory / memoryOvercommit`. Memory is incompressible — overcommitting it trades OOM kills for density, so raise it only with headroom to spare.
+- **Pinning**: `<plane>.workload.pinNodes: 3` sends pods with the same placement key back to the same three nodes, so the images and artifacts a node kept from the last pod are still there for the next. The service watches the nodes its pods can land on (the chart grants it `list`/`watch` on nodes), ranks them by `hash(key, node)` and adds a *preferred* node affinity for the top three. It is soft: when those nodes are full the scheduler places the pod anywhere. Cordoned nodes and nodes with a `NoSchedule`/`NoExecute` taint the plane does not tolerate are left out of the ranking. A node joining or leaving moves only the keys that ranked it (rendezvous hashing). The key is a deployment's `id`, and a job's or sandbox's `placementKey`; a job or sandbox without one, and a warm pool pod, is not pinned.
 - **Tolerations**: to run workloads on tainted node pools (e.g. `workload=edge-builds:NoSchedule`), set `<plane>.workload.tolerations` — a list in the standard pod-spec tolerations schema, stamped on every workload pod of that plane.
 - **Node selector**: tolerations only *allow* the tainted pool; to *pin* pods to it, also set `<plane>.workload.nodeSelector` (e.g. `{workload: edge-builds}`) — a standard pod-spec nodeSelector stamped on every workload/job pod of that plane.
 - Replicas spread across nodes via topology spread constraints, and durably multi-replica deployments get a PodDisruptionBudget automatically.

@@ -43,6 +43,7 @@ type Orchestrator struct {
 	stop       context.CancelFunc
 	controller *revisionController
 	pools      *warm.Manager
+	pin        *kube.Pin
 
 	leaderMu      sync.Mutex
 	leaderTerm    context.Context
@@ -71,7 +72,8 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dynamic kube client: %w", err)
 	}
-	o := &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg}
+	o := &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg,
+		pin: kube.NewPin(cs, cfg.PinNodes, cfg.NodeSelector, cfg.Tolerations)}
 	if len(cfg.Pools) > 0 {
 		o.pools, err = NewRevisionPoolManager(cs, cfg)
 		if err != nil {
