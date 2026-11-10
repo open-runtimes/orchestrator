@@ -11,7 +11,7 @@
 {{- $ns := include "orchestrator.planeNamespace" (dict "root" . "plane" "deployments") }}
 {{ include "orchestrator.component" (merge (dict
   "container" "deployments-service"
-  "ports" (list (dict "name" "service" "port" .Values.deployments.service.port))
+  "ports" (list (dict "name" "service" "port" .Values.deployments.service.port) (dict "name" "internal" "port" 8082))
   "probe" (dict "port" "service" "readiness" "/readyz" "liveness" "/livez")
   "env" (include "orchestrator.deploymentsEnv" .)
   "auth" .Values.deployments.auth

@@ -227,7 +227,8 @@ jobs:
       # Names resolve in jobs.namespace. Empty = imagePullSecrets.
       imagePullSecrets: []
   # URL job sidecars post artifact reports to and redeem S3 grants at.
-  # Empty = the jobs Service.
+  # Empty = the jobs Service's internal port, 8082, which serves only these
+  # pod-facing routes and is never on the HTTPRoute.
   artifactEndpoint: ""
   # How long finished jobs are kept, and how often they are swept.
   retention: 15m
@@ -301,7 +302,7 @@ deployments:
     secretAccessKey: ""
     existingSecret: ""
     profiles: {} # see jobs.s3.profiles
-  # Where pods redeem S3 grants. Empty = this plane's Service.
+  # Where pods redeem S3 grants. Empty = this plane's Service, internal port 8082.
   presignEndpoint: ""
   # The service reconciles an HTTPRoute per deployment on the gateway above
   # (Traefik, Envoy Gateway, Istio with backendRef-filter support).
@@ -425,7 +426,7 @@ sandbox:
     secretAccessKey: ""
     existingSecret: ""
     profiles: {} # see jobs.s3.profiles
-  # Where pods redeem S3 grants. Empty = this plane's Service.
+  # Where pods redeem S3 grants. Empty = this plane's Service, internal port 8082.
   presignEndpoint: ""
   # One wildcard HTTPRoute for *.{domain}, backed by the sandbox proxy. Per
   # sandbox routes are deliberately not used: gateway programming takes

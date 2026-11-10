@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"orchestrator/internal/config"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,6 +26,10 @@ type Options struct {
 	// longer (a sandbox create waits for a cold start and its artifacts) sets
 	// its own.
 	WriteTimeout time.Duration
+
+	// Internal serves the plane's own pods (artifact reports, S3 grant
+	// redemption) on INTERNAL_PORT, default 8082, apart from the API.
+	Internal http.Handler
 
 	// Extra servers (e.g. a data-plane listener) started alongside the API
 	// server and shut down with it. Addr and Handler must be set.
@@ -61,6 +66,16 @@ func Serve(ctx context.Context, opts Options) error {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: writeTimeout,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	if opts.Internal != nil {
+		opts.Extra = append(opts.Extra, &http.Server{
+			Addr:         ":" + config.GetEnv("INTERNAL_PORT", "8082"),
+			Handler:      opts.Internal,
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 30 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		})
 	}
 
 	serverErr := make(chan error, 1)

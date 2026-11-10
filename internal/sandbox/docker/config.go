@@ -52,7 +52,7 @@ func LoadConfigFromEnv() Config {
 		AgentImage:       config.GetEnv("SANDBOX_AGENT_IMAGE", sandbox.AgentImage),
 		JobSidecarImage:  config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Network:          config.GetEnv("DOCKER_NETWORK", ""),
-		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8080"),
+		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8082"),
 		ExtraHosts:       extraHosts,
 		SandboxDomain:    config.GetEnv("SANDBOX_DOMAIN", defaultSandboxDomain),
 		Scheme:           config.GetEnv("SANDBOX_SCHEME", "http"),

@@ -18,6 +18,7 @@ import (
 	"orchestrator/internal/observability"
 	"orchestrator/internal/testutil"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -428,15 +429,22 @@ func createBenchServer(tb testing.TB) (string, func()) {
 	svc := job.NewService(orchestrator, metrics, "")
 	healthChecker := health.NewChecker(orchestrator)
 
-	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
+	routes := api.OrchestratorRouterConfig{
 		JobService:    svc,
 		JobCallbacks:  emitter,
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
-	})
+	}
+	public, internal := api.NewOrchestratorRouter(routes), api.NewInternalRouter(routes)
 
-	// Assign the router and start the server
-	tempServer.Config.Handler = router
+	// One test server stands in for both listeners: the sidecars report to it.
+	tempServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/") {
+			internal.ServeHTTP(w, r)
+			return
+		}
+		public.ServeHTTP(w, r)
+	})
 	tempServer.Start()
 
 	cleanup := func() {

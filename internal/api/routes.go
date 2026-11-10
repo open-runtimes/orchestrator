@@ -10,10 +10,6 @@ import (
 // isolation is not enough).
 func registerJobRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler, cfg OrchestratorRouterConfig) {
 	h := &Handler{svc: cfg.JobService, callbacks: cfg.JobCallbacks}
-
-	artifactAuth := ArtifactauthMiddleware(cfg.APIKey)
-	mux.Handle("POST /internal/jobs/{jobId}/artifact", artifactAuth(http.HandlerFunc(h.ReportArtifact)))
-
 	mux.Handle("POST /v1/jobs", auth(http.HandlerFunc(h.CreateJob)))
 	mux.Handle("GET /v1/jobs", auth(http.HandlerFunc(h.ListJobs)))
 	mux.Handle("GET /v1/jobs/{jobId}", auth(http.HandlerFunc(h.GetJob)))

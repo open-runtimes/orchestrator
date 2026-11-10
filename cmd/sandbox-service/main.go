@@ -80,19 +80,20 @@ func main() {
 	}
 
 	healthChecker := health.NewChecker(orchestrator)
-	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
+	routes := api.OrchestratorRouterConfig{
 		SandboxService: svc,
 		Metrics:        metrics,
 		HealthChecker:  healthChecker,
 		APIKey:         svcCfg.APIKey,
-	})
+	}
 
 	if svcCfg.APIKey == "" {
 		slog.Warn("API authentication disabled - no API_KEY configured")
 	}
 
 	if err := server.Serve(ctx, server.Options{
-		Handler:           router,
+		Handler:           api.NewOrchestratorRouter(routes),
+		Internal:          api.NewInternalRouter(routes),
 		Port:              svcCfg.Port,
 		WriteTimeout:      createWriteTimeout(),
 		Extra:             extra,

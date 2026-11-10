@@ -72,8 +72,9 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # The plane's service: S3 grants are redeemed there, and job sidecars
-    # report artifacts. Some CNIs never match pod IPs with an ipBlock, so it
+    # The plane's service, on its internal port only: S3 grants are redeemed
+    # there and job sidecars report artifacts; the API port stays out of
+    # reach of workload code. Some CNIs never match pod IPs with an ipBlock, so it
     # gets its own rule. The node mount agent is on the host network, which
     # NetworkPolicy cannot name: with it enabled, allow the node on
     # mountAgent.port in a CNI policy.
@@ -87,7 +88,7 @@ spec:
               app.kubernetes.io/component: {{ $plane }}
       ports:
         - protocol: TCP
-          port: {{ $values.service.port }}
+          port: 8082
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

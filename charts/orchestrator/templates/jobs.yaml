@@ -3,7 +3,7 @@
 {{- $ns := include "orchestrator.planeNamespace" (dict "root" . "plane" "jobs") }}
 {{ include "orchestrator.component" (merge (dict
   "container" "jobs-service"
-  "ports" (list (dict "name" "service" "port" .Values.jobs.service.port))
+  "ports" (list (dict "name" "service" "port" .Values.jobs.service.port) (dict "name" "internal" "port" 8082))
   "probe" (dict "port" "service" "readiness" "/readyz" "liveness" "/livez")
   "env" (include "orchestrator.jobsEnv" .)
   "auth" .Values.jobs.auth
@@ -46,7 +46,7 @@ imagePullSecrets:
 - name: JOB_SIDECAR_IMAGE
   value: {{ include "orchestrator.image" (dict "root" . "image" .Values.images.jobSidecar) | quote }}
 - name: ARTIFACT_ENDPOINT
-  value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" $name .Release.Namespace $port) .Values.jobs.artifactEndpoint | quote }}
+  value: {{ default (printf "http://%s.%s.svc.cluster.local:8082" $name .Release.Namespace) .Values.jobs.artifactEndpoint | quote }}
 - name: JOB_RETENTION
   value: {{ .Values.jobs.retention | quote }}
 - name: MAINTENANCE_INTERVAL
