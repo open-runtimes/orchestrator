@@ -20,7 +20,9 @@ func (p *capturePoster) Post(_ context.Context, _ claim.Unit, req *workload.Clai
 // claim stored on a Revision or handed in by a caller never holds them.
 func TestHTTPClient_ClaimCarriesGrants(t *testing.T) {
 	poster := &capturePoster{}
-	c := &httpClient{poster: poster, s3: config.S3Profiles{"": {AccessKeyID: "AKID", SecretAccessKey: "secret"}}}
+	c := &httpClient{poster: poster, s3: func() config.S3Profiles {
+		return config.S3Profiles{"": {AccessKeyID: "AKID", SecretAccessKey: "secret"}}
+	}}
 	req := &workload.ClaimRequest{ClaimID: "c", Artifacts: artifact.Set{
 		&artifact.Download{ID: "img", In: "s3://bucket/base.erofs", Out: "base.erofs"},
 	}}

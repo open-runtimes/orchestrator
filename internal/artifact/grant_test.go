@@ -68,7 +68,7 @@ func TestPresignHandler_RedeemsOnlyWhatWasGranted(t *testing.T) {
 	other := testCreds
 	other.SecretAccessKey = "other"
 	profiles := config.S3Profiles{"": testCreds, "other": other}
-	h := PresignHandler(profiles)
+	h := PresignHandler(func() config.S3Profiles { return profiles })
 	g := GrantsFor([]Artifact{&Download{In: "s3://b/k"}, &Upload{Out: "s3://other@b/k"}}, profiles)
 
 	rec := redeem(t, h, http.MethodGet, "s3://b/k", g["GET s3://b/k"])
@@ -137,7 +137,7 @@ func grantedTransfer(t *testing.T, store *objectStore, artifacts ...Artifact) *G
 	creds := testCreds
 	creds.Endpoint = objects.URL
 	profiles := config.S3Profiles{"": creds}
-	service := httptest.NewServer(PresignHandler(profiles))
+	service := httptest.NewServer(PresignHandler(func() config.S3Profiles { return profiles }))
 	t.Cleanup(service.Close)
 	return &GrantSigner{Endpoint: service.URL, Grants: GrantsFor(artifacts, profiles)}
 }
@@ -221,5 +221,27 @@ func TestDownload_GrantRedemptionKeepsTheArtifactTimeout(t *testing.T) {
 	}
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("download gave up after %s, want about its 1s timeout", took)
+	}
+}
+
+// A secret file rotated in place applies to redemption without a restart, so a
+// grant minted after the rotation redeems at a service started before it.
+func TestPresignHandler_RotatedSecretFile(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "secret")
+	write := func(s string) {
+		if err := os.WriteFile(secret, []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("before")
+	t.Setenv("S3_ACCESS_KEY_ID", "AKID")
+	t.Setenv("S3_SECRET_ACCESS_KEY_FILE", secret)
+	t.Setenv("S3_REGION", "us-east-1")
+	h := PresignHandler(config.LoadS3Profiles)
+
+	write("after")
+	g := GrantsFor([]Artifact{&Download{In: "s3://b/k"}}, config.LoadS3Profiles())
+	if rec := redeem(t, h, http.MethodGet, "s3://b/k", g["GET s3://b/k"]); rec.Code != http.StatusOK {
+		t.Fatalf("grant minted after rotation: status %d: %s", rec.Code, rec.Body)
 	}
 }

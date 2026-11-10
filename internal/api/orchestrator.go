@@ -35,7 +35,7 @@ func NewOrchestratorRouter(cfg OrchestratorRouterConfig) http.Handler {
 	registerHealthRoutes(mux, cfg.HealthChecker)
 	// Pods redeem S3 grants here; the grant is the credential, minted from the
 	// same keys this service holds.
-	mux.Handle("POST "+artifact.PresignPath, artifact.PresignHandler(config.LoadS3Profiles()))
+	mux.Handle("POST "+artifact.PresignPath, artifact.PresignHandler(config.LoadS3Profiles))
 
 	auth := authMiddleware(cfg.APIKey)
 	if cfg.JobService != nil {

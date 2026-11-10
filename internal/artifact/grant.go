@@ -163,9 +163,12 @@ func (s *GrantSigner) Sign(ctx context.Context, method, rawURL string) (string, 
 
 // PresignHandler redeems grants: POST {method, url, grant} answers {url}, a
 // pre-signed URL for exactly that transfer. The grant is the only credential,
-// so the route sits outside the API key, like the artifact reports.
-func PresignHandler(profiles config.S3Profiles) http.Handler {
+// so the route sits outside the API key, like the artifact reports. load runs
+// per request, so a secret file rotated in place applies without a restart,
+// as it does for the services minting grants.
+func PresignHandler(load func() config.S3Profiles) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		profiles := load()
 		var req presignRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
 			http.Error(w, "malformed presign request", http.StatusBadRequest)

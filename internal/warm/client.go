@@ -37,14 +37,14 @@ type Client interface {
 type httpClient struct {
 	client *http.Client
 	poster claim.Poster
-	s3     config.S3Profiles // mints each claim's S3 grants; the pod never sees them
+	s3     func() config.S3Profiles // per claim, so a rotated secret file applies; the pod never sees the keys
 }
 
 func newHTTPClient() *httpClient {
 	return &httpClient{
 		client: &http.Client{Timeout: 10 * time.Second},
 		poster: claim.NewPoster(),
-		s3:     config.LoadS3Profiles(),
+		s3:     config.LoadS3Profiles,
 	}
 }
 
@@ -55,7 +55,7 @@ func adminURL(podIP, path string) string {
 
 func (c *httpClient) Claim(ctx context.Context, podIP, token string, req *workload.ClaimRequest) error {
 	granted := *req
-	granted.S3Grants = artifact.GrantsFor(req.Artifacts, c.s3)
+	granted.S3Grants = artifact.GrantsFor(req.Artifacts, c.s3())
 	return c.poster.Post(ctx, claim.Unit{Addr: podIP, Token: token}, &granted)
 }
 

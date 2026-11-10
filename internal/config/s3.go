@@ -56,7 +56,7 @@ type S3Credentials struct {
 // S3Profiles maps a profile name to its credentials. The default profile is
 // "", used by s3://bucket/key; s3://name@bucket/key selects a named one. It is
 // loaded per service (jobs vs deployments) from that service's environment and
-// forwarded into the sidecar containers via ToEnv.
+// never leaves it: pods get grants (artifact.GrantsFor) instead.
 type S3Profiles map[string]S3Credentials
 
 // LoadS3Profiles reads the default profile and every profile named in
