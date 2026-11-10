@@ -292,6 +292,18 @@ func TestPresignHandler_PrefixGrant(t *testing.T) {
 	if code := redeemRequest(t, h, presignRequest{Method: http.MethodGet, URL: "s3://b/site/x", Grant: mac, Prefix: "s3://b/site/"}).Code; code != http.StatusForbidden {
 		t.Errorf("write prefix used to read: status %d, want 403", code)
 	}
+	if code := redeem(t, h, http.MethodPut, "s3://b/site/", mac); code.Code != http.StatusForbidden {
+		t.Errorf("prefix grant used for the prefix as one object: status %d, want 403", code.Code)
+	}
+
+	// A grant for one object whose key ends in "/" stays a grant for that object.
+	object := GrantsFor([]Artifact{&Mount{ID: "m", Sync: "s3://b/site/"}}, profiles)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		claimed := presignRequest{Method: method, URL: "s3://b/site/index.html", Grant: object[method+" s3://b/site/"], Prefix: "s3://b/site/"}
+		if code := redeemRequest(t, h, claimed).Code; code != http.StatusForbidden {
+			t.Errorf("object grant (%s) redeemed as a prefix: status %d, want 403", method, code)
+		}
+	}
 }
 
 // A directory upload sends each regular file to its path below Out, through

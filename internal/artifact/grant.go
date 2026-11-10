@@ -42,11 +42,11 @@ type Grants map[string]string
 // when there are none.
 func GrantsFor(artifacts []Artifact, profiles config.S3Profiles) Grants {
 	var g Grants
-	add := func(method, rawURL string) {
+	add := func(scope, method, rawURL string) {
 		if !isS3URL(rawURL) {
 			return
 		}
-		if mac, ok := grant(profiles, method, rawURL); ok {
+		if mac, ok := grant(profiles, scope, method, rawURL); ok {
 			if g == nil {
 				g = Grants{}
 			}
@@ -56,12 +56,16 @@ func GrantsFor(artifacts []Artifact, profiles config.S3Profiles) Grants {
 	for _, a := range artifacts {
 		switch a := a.(type) {
 		case *Download:
-			add(http.MethodGet, a.In)
+			add(objectScope, http.MethodGet, a.In)
 		case *Upload:
-			add(http.MethodPut, a.Out)
+			if strings.HasSuffix(a.Out, "/") {
+				add(prefixScope, http.MethodPut, a.Out)
+			} else {
+				add(objectScope, http.MethodPut, a.Out)
+			}
 		case *Mount:
-			add(http.MethodGet, a.Sync)
-			add(http.MethodPut, a.Sync)
+			add(objectScope, http.MethodGet, a.Sync)
+			add(objectScope, http.MethodPut, a.Sync)
 		}
 	}
 	return g
@@ -92,10 +96,19 @@ func ParseGrants(raw string) Grants {
 
 func transfer(method, rawURL string) string { return method + " " + rawURL }
 
-// grant is HMAC-SHA256 of the transfer under the secret key of the profile the
-// URL names, so whoever holds a plane's S3 keys can mint and redeem grants
-// with no other key to distribute. False when that profile is not configured.
-func grant(profiles config.S3Profiles, method, rawURL string) (string, bool) {
+// A grant's scope is part of what it signs, so a grant for one object whose
+// key happens to end in "/" can never be redeemed as a prefix grant: only a
+// directory upload mints those.
+const (
+	objectScope = "orchestrator-s3-grant\n"
+	prefixScope = "orchestrator-s3-prefix-grant\n"
+)
+
+// grant is HMAC-SHA256 of the scope and transfer under the secret key of the
+// profile the URL names, so whoever holds a plane's S3 keys can mint and
+// redeem grants with no other key to distribute. False when that profile is
+// not configured.
+func grant(profiles config.S3Profiles, scope, method, rawURL string) (string, bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", false
@@ -104,7 +117,7 @@ func grant(profiles config.S3Profiles, method, rawURL string) (string, bool) {
 	if !creds.Enabled() {
 		return "", false
 	}
-	return hex.EncodeToString(hmacSHA256([]byte(creds.SecretAccessKey), "orchestrator-s3-grant\n"+transfer(method, rawURL))), true
+	return hex.EncodeToString(hmacSHA256([]byte(creds.SecretAccessKey), scope+transfer(method, rawURL))), true
 }
 
 // Signer turns an s3:// URL into one a plain request can be sent to.
@@ -191,15 +204,15 @@ func PresignHandler(load func() config.S3Profiles) http.Handler {
 			http.Error(w, "presign takes GET or PUT of an s3:// URL", http.StatusBadRequest)
 			return
 		}
-		granted := req.URL
+		granted, scope := req.URL, objectScope
 		if req.Prefix != "" {
 			if !strings.HasSuffix(req.Prefix, "/") || !underPrefix(req.URL, req.Prefix) {
 				http.Error(w, "url is not under the granted prefix", http.StatusForbidden)
 				return
 			}
-			granted = req.Prefix
+			granted, scope = req.Prefix, prefixScope
 		}
-		want, ok := grant(profiles, req.Method, granted)
+		want, ok := grant(profiles, scope, req.Method, granted)
 		if !ok || !hmac.Equal([]byte(req.Grant), []byte(want)) {
 			http.Error(w, "invalid grant", http.StatusForbidden)
 			return
@@ -226,7 +239,7 @@ func underPrefix(rawURL, prefix string) bool {
 	if err != nil {
 		return false
 	}
-	for _, segment := range strings.Split(decoded, "/") {
+	for segment := range strings.SplitSeq(decoded, "/") {
 		if segment == "" || segment == "." || segment == ".." {
 			return false
 		}
