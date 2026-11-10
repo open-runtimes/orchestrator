@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -58,7 +59,12 @@ func TestGrants_JSONRoundTrip(t *testing.T) {
 // redeem posts to the handler the way GrantSigner does and returns the status.
 func redeem(t *testing.T, h http.Handler, method, rawURL, grant string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, _ := json.Marshal(presignRequest{Method: method, URL: rawURL, Grant: grant})
+	return redeemRequest(t, h, presignRequest{Method: method, URL: rawURL, Grant: grant})
+}
+
+func redeemRequest(t *testing.T, h http.Handler, req presignRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(req)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, PresignPath, bytes.NewReader(body)))
 	return rec
@@ -103,12 +109,15 @@ func TestPresignHandler_RedeemsOnlyWhatWasGranted(t *testing.T) {
 // objectStore stands in for S3: it records each request and serves or stores
 // bodies by path. failFirst fails the first request with a 500.
 type objectStore struct {
+	mu        sync.Mutex
 	objects   map[string]string
 	requests  []*http.Request
 	failFirst bool
 }
 
 func (s *objectStore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.requests = append(s.requests, r)
 	if s.failFirst && len(s.requests) == 1 {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -243,5 +252,117 @@ func TestPresignHandler_RotatedSecretFile(t *testing.T) {
 	g := GrantsFor([]Artifact{&Download{In: "s3://b/k"}}, config.LoadS3Profiles())
 	if rec := redeem(t, h, http.MethodGet, "s3://b/k", g["GET s3://b/k"]); rec.Code != http.StatusOK {
 		t.Fatalf("grant minted after rotation: status %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// A directory upload's grant covers keys below its prefix and nothing else:
+// not a sibling, not a key that climbs out with "..", and not a wider prefix
+// the pod claims for itself.
+func TestPresignHandler_PrefixGrant(t *testing.T) {
+	profiles := config.S3Profiles{"": testCreds}
+	h := PresignHandler(func() config.S3Profiles { return profiles })
+	g := GrantsFor([]Artifact{&Upload{In: "tree", Out: "s3://b/site/"}}, profiles)
+	mac := g["PUT s3://b/site/"]
+	if mac == "" {
+		t.Fatalf("grants = %v, want one for the prefix", g)
+	}
+
+	put := func(url, prefix string) int {
+		return redeemRequest(t, h, presignRequest{Method: http.MethodPut, URL: url, Grant: mac, Prefix: prefix}).Code
+	}
+	for _, url := range []string{"s3://b/site/index.html", "s3://b/site/assets/a%20b.css"} {
+		if code := put(url, "s3://b/site/"); code != http.StatusOK {
+			t.Errorf("%s: status %d, want 200", url, code)
+		}
+	}
+	for name, tc := range map[string]struct{ url, prefix string }{
+		"sibling":            {"s3://b/other/index.html", "s3://b/site/"},
+		"climbs out":         {"s3://b/site/../other", "s3://b/site/"},
+		"climbs out encoded": {"s3://b/site/%2e%2e/other", "s3://b/site/"},
+		"empty segment":      {"s3://b/site//x", "s3://b/site/"},
+		"query":              {"s3://b/site/x?versionId=1", "s3://b/site/"},
+		"wider prefix":       {"s3://b/other/x", "s3://b/"},
+		"prefix as object":   {"s3://b/site/x", "s3://b/site"},
+		"the prefix itself":  {"s3://b/site/", "s3://b/site/"},
+	} {
+		if code := put(tc.url, tc.prefix); code != http.StatusForbidden {
+			t.Errorf("%s: status %d, want 403", name, code)
+		}
+	}
+	if code := redeemRequest(t, h, presignRequest{Method: http.MethodGet, URL: "s3://b/site/x", Grant: mac, Prefix: "s3://b/site/"}).Code; code != http.StatusForbidden {
+		t.Errorf("write prefix used to read: status %d, want 403", code)
+	}
+}
+
+// A directory upload sends each regular file to its path below Out, through
+// the one prefix grant, and skips excluded names and symlinks.
+func TestUpload_DirectoryThroughPrefixGrant(t *testing.T) {
+	tmp := t.TempDir()
+	files := map[string]string{
+		"site/index.html":        "<html>",
+		"site/assets/app.css":    "body{}",
+		"site/a b#1.txt":         "spaced",
+		"site/.env":              "SECRET=1",
+		"site/.env.local":        "SECRET=2",
+		"site/node_modules/x.js": "x",
+		"site/assets/.git/HEAD":  "ref",
+		"outside.txt":            "not in the tree",
+	}
+	for name, body := range files {
+		p := filepath.Join(tmp, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("../outside.txt", filepath.Join(tmp, "site/link.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &objectStore{objects: map[string]string{}}
+	a := &Upload{ID: "u", In: "site", Out: "s3://bucket/sites/abc/", Exclude: []string{".env*", "node_modules", ".git"}}
+	a.SetSigner(grantedTransfer(t, store, a))
+	if res := a.Apply(t.Context(), workspace(t, tmp)); res.Error != nil {
+		t.Fatalf("Apply() error = %v", res.Error)
+	}
+
+	want := map[string]string{
+		"/bucket/sites/abc/index.html":     "<html>",
+		"/bucket/sites/abc/assets/app.css": "body{}",
+		"/bucket/sites/abc/a b#1.txt":      "spaced",
+	}
+	if len(store.objects) != len(want) {
+		t.Errorf("stored %v, want exactly %v", store.objects, want)
+	}
+	for key, body := range want {
+		if store.objects[key] != body {
+			t.Errorf("%s = %q, want %q", key, store.objects[key], body)
+		}
+	}
+}
+
+// One file that cannot be uploaded fails the whole directory.
+func TestUpload_DirectoryFailsOnAnyFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/bad.txt") {
+			w.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	t.Cleanup(server.Close)
+	tmp := t.TempDir()
+	for _, name := range []string{"ok.txt", "bad.txt"} {
+		if err := os.MkdirAll(filepath.Join(tmp, "d"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tmp, "d", name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := &Upload{ID: "u", In: "d", Out: server.URL + "/dir/"}
+	res := a.Apply(t.Context(), workspace(t, tmp))
+	if res.Error == nil || !strings.Contains(res.Error.Error(), "bad.txt") {
+		t.Fatalf("Apply() error = %v, want one naming bad.txt", res.Error)
 	}
 }

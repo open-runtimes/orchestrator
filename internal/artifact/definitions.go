@@ -85,7 +85,15 @@ func Validate(i int, a Artifact) error {
 		}
 		return nil
 	case *Upload:
-		return firstErr(requiredPath(field, "in", "path", a.In), requiredURL(field, "out", "url", a.Out))
+		if err := firstErr(requiredPath(field, "in", "path", a.In), requiredURL(field, "out", "url", a.Out)); err != nil {
+			return err
+		}
+		for _, pattern := range a.Exclude {
+			if _, err := path.Match(pattern, ""); err != nil {
+				return apperrors.Validation(field+".exclude", fmt.Sprintf("invalid exclude pattern %q", pattern))
+			}
+		}
+		return nil
 	case *Write:
 		if err := requiredPath(field, "out", "path", a.Out); err != nil {
 			return err

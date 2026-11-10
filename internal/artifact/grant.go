@@ -31,8 +31,10 @@ const (
 
 // Grants maps a transfer ("GET s3://bucket/key") to the grant that has it
 // pre-signed. It is all a pod holds for S3: a grant names one object and one
-// method, so a leaked one reaches nothing else, and it carries no key. Grants
-// are stateless: rotating the profile's secret key revokes every one of them.
+// method, so a leaked one reaches nothing else, and it carries no key. A
+// directory upload's grant names a prefix ("PUT s3://bucket/dir/") and covers
+// every key under it. Grants are stateless: rotating the profile's secret key
+// revokes every one of them.
 type Grants map[string]string
 
 // GrantsFor returns a grant for every s3:// transfer the artifacts can make:
@@ -121,6 +123,7 @@ type presignRequest struct {
 	Method string `json:"method"`
 	URL    string `json:"url"`
 	Grant  string `json:"grant"`
+	Prefix string `json:"prefix,omitempty"` // the granted prefix, when the grant covers one rather than URL itself
 }
 
 type presignResponse struct {
@@ -129,24 +132,34 @@ type presignResponse struct {
 
 // Sign implements Signer.
 func (s *GrantSigner) Sign(ctx context.Context, method, rawURL string) (string, error) {
-	mac, ok := s.Grants[transfer(method, rawURL)]
-	if !ok {
+	req := presignRequest{Method: method, URL: rawURL}
+	if mac, ok := s.Grants[transfer(method, rawURL)]; ok {
+		req.Grant = mac
+	} else {
+		for granted, mac := range s.Grants {
+			if prefix, ok := strings.CutPrefix(granted, method+" "); ok && strings.HasSuffix(prefix, "/") && underPrefix(rawURL, prefix) {
+				req.Grant, req.Prefix = mac, prefix
+				break
+			}
+		}
+	}
+	if req.Grant == "" {
 		return "", fmt.Errorf("no S3 grant for %s %s", method, rawURL)
 	}
 	if s.Endpoint == "" {
 		return "", fmt.Errorf("cannot sign %s: no PRESIGN_ENDPOINT to redeem the grant at", rawURL)
 	}
-	body, _ := json.Marshal(presignRequest{Method: method, URL: rawURL, Grant: mac})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(s.Endpoint, "/")+PresignPath, bytes.NewReader(body))
+	body, _ := json.Marshal(req)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(s.Endpoint, "/")+PresignPath, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 	client := s.Client
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("presign %s: %w", rawURL, err)
 	}
@@ -178,7 +191,15 @@ func PresignHandler(load func() config.S3Profiles) http.Handler {
 			http.Error(w, "presign takes GET or PUT of an s3:// URL", http.StatusBadRequest)
 			return
 		}
-		want, ok := grant(profiles, req.Method, req.URL)
+		granted := req.URL
+		if req.Prefix != "" {
+			if !strings.HasSuffix(req.Prefix, "/") || !underPrefix(req.URL, req.Prefix) {
+				http.Error(w, "url is not under the granted prefix", http.StatusForbidden)
+				return
+			}
+			granted = req.Prefix
+		}
+		want, ok := grant(profiles, req.Method, granted)
 		if !ok || !hmac.Equal([]byte(req.Grant), []byte(want)) {
 			http.Error(w, "invalid grant", http.StatusForbidden)
 			return
@@ -191,4 +212,24 @@ func PresignHandler(load func() config.S3Profiles) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(presignResponse{URL: signed})
 	})
+}
+
+// underPrefix reports whether rawURL names an object below prefix: the same
+// profile and bucket, and a key that only adds path segments, none of them
+// "." or "..", and no query or fragment.
+func underPrefix(rawURL, prefix string) bool {
+	rest, ok := strings.CutPrefix(rawURL, prefix)
+	if !ok || rest == "" || strings.ContainsAny(rest, "?#") {
+		return false
+	}
+	decoded, err := url.PathUnescape(rest)
+	if err != nil {
+		return false
+	}
+	for _, segment := range strings.Split(decoded, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
 }
