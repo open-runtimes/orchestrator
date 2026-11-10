@@ -86,7 +86,7 @@ func LoadConfigFromEnv() (Config, error) {
 		SidecarImagePullPolicy:        config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		JobRetention:                  config.GetDurationEnv("JOB_RETENTION", 15*time.Minute),
 		LogFlushInterval:              config.GetDurationEnv("KUBE_LOG_FLUSH_INTERVAL", 1*time.Second),
-		ArtifactEndpoint:              config.GetEnv("ARTIFACT_ENDPOINT", "http://jobs-service.orchestrator.svc.cluster.local:8080"),
+		ArtifactEndpoint:              config.GetEnv("ARTIFACT_ENDPOINT", "http://jobs-service.orchestrator.svc.cluster.local:8082"),
 		TerminationGracePeriodSeconds: int64(config.GetIntEnv("KUBE_TERMINATION_GRACE_SECONDS", 600)),
 		Overcommit:                    kube.OvercommitFromEnv(),
 		Tolerations:                   tolerations,

@@ -10,7 +10,7 @@ type Config struct {
 	SidecarImage     string   // workload-sidecar (proxy) image (set by the caller, e.g. from WORKLOAD_SIDECAR_IMAGE)
 	JobSidecarImage  string   // job-sidecar image for artifact materialization (JOB_SIDECAR_IMAGE)
 	Network          string   // Docker network to attach deployment containers to
-	ArtifactEndpoint string   // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8080)
+	ArtifactEndpoint string   // Base URL for sidecar artifact reporting (e.g., http://host.docker.internal:8082)
 	ExtraHosts       []string // Extra /etc/hosts entries for containers (e.g., ["appwrite.test:host-gateway"])
 }
 
@@ -25,7 +25,7 @@ func LoadConfigFromEnv() Config {
 	return Config{
 		JobSidecarImage:  config.GetEnv("JOB_SIDECAR_IMAGE", "ghcr.io/open-runtimes/orchestrator/job-sidecar:latest"),
 		Network:          config.GetEnv("DOCKER_NETWORK", ""),
-		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8080"),
+		ArtifactEndpoint: config.GetEnv("ARTIFACT_ENDPOINT", "http://host.docker.internal:8082"),
 		ExtraHosts:       extraHosts,
 	}
 }

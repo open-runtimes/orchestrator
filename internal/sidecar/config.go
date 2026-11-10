@@ -1,6 +1,7 @@
 package sidecar
 
 import (
+	"orchestrator/internal/artifact"
 	"orchestrator/internal/config"
 	"time"
 )
@@ -13,7 +14,8 @@ type Config struct {
 	ArtifactTimeout  time.Duration // Per-request timeout for artifact reporting
 	TimeoutSeconds   int           // Job deadline; 0 = unbounded workload (holds until the shutdown signal; artifact phases keep the default budget)
 	SharedVolumePath string
-	S3               config.S3Profiles
+	S3Grants         artifact.Grants // redeemed at PresignEndpoint for pre-signed s3:// URLs
+	PresignEndpoint  string
 }
 
 // LoadConfigFromEnv loads sidecar configuration from environment variables.
@@ -25,6 +27,7 @@ func LoadConfigFromEnv() *Config {
 		ArtifactTimeout:  config.GetDurationEnv("ARTIFACT_TIMEOUT", 30*time.Second),
 		TimeoutSeconds:   config.GetIntEnv("TIMEOUT_SECONDS", 1800),
 		SharedVolumePath: config.Workspace(),
-		S3:               config.LoadS3Profiles(),
+		PresignEndpoint:  config.GetEnv(artifact.EnvPresignEndpoint, ""),
+		S3Grants:         artifact.ParseGrants(config.GetEnv(artifact.EnvS3Grants, "")),
 	}
 }

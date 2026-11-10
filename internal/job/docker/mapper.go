@@ -164,8 +164,9 @@ func sidecarEnv(req *job.Request, artifactEndpoint string) ([]string, error) {
 		env = append(env, "ARTIFACT_TOKEN="+req.ArtifactToken)
 	}
 
-	for _, kv := range artifact.S3ProfilesFor(req.Artifacts, config.LoadS3Profiles()).ToEnv() {
-		env = append(env, kv[0]+"="+kv[1])
+	// Grants, never keys: the sidecar redeems them at the orchestrator.
+	if grants := artifact.GrantsFor(req.Artifacts, config.LoadS3Profiles()).JSON(); grants != "" {
+		env = append(env, artifact.EnvS3Grants+"="+grants, artifact.EnvPresignEndpoint+"="+artifactEndpoint)
 	}
 	return env, nil
 }

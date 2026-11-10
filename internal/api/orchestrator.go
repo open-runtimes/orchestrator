@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"orchestrator/internal/artifact"
+	"orchestrator/internal/config"
 	"orchestrator/internal/deployment"
 	"orchestrator/internal/health"
 	"orchestrator/internal/job"
@@ -43,6 +45,21 @@ func NewOrchestratorRouter(cfg OrchestratorRouterConfig) http.Handler {
 		registerSandboxRoutes(mux, auth, cfg.SandboxService)
 	}
 
+	return withMiddleware(mux, cfg.Metrics)
+}
+
+// NewInternalRouter serves what a plane's own pods call: sidecar artifact
+// reports and S3 grant redemption. It listens on its own port
+// (server.Options.Internal), so neither a gateway route to the API nor a
+// workload pod's egress to the service reaches the other's routes.
+func NewInternalRouter(cfg OrchestratorRouterConfig) http.Handler {
+	mux := http.NewServeMux()
+	// The grant is the credential, minted from the keys this service holds.
+	mux.Handle("POST "+artifact.PresignPath, artifact.PresignHandler(config.LoadS3Profiles))
+	if cfg.JobService != nil {
+		h := &Handler{svc: cfg.JobService, callbacks: cfg.JobCallbacks}
+		mux.Handle("POST /internal/jobs/{jobId}/artifact", ArtifactauthMiddleware(cfg.APIKey)(http.HandlerFunc(h.ReportArtifact)))
+	}
 	return withMiddleware(mux, cfg.Metrics)
 }
 

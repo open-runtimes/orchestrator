@@ -81,7 +81,7 @@ The worker can write anything in the workspace, including replacing `out` with a
 | `kube.MountingSecurityContext` on the sidecar | gone in agent mode; the sidecar keeps file access (root with only `CAP_DAC_OVERRIDE`) for sync and post-job artifacts, and nothing more |
 | workspace `emptyDir`, `Bidirectional` on the sidecar | workspace CSI volume, `HostToContainer` on the worker and the sidecar |
 | sidecar calls the mounter directly | the runner is unchanged; its `Mounter` is an agent client (`mountagent.Client`), so restore, sync, adoption and the ready marker all work as before |
-| S3 credentials in the sidecar env | unchanged in this change, and the obvious follow-up: once there is a node component, it can own the credentials, and `s3://` downloads can move to it as well |
+| S3 credentials in the sidecar env | unchanged in this change. Since fixed differently: pods hold per-transfer grants and the plane's service pre-signs (docs/jobs.md, S3 URLs) |
 | `HasMount` means "privileged pod" | `HasMount` means "agent workspace"; pools still key on `mounts: true`, because the volume source differs |
 
 New pieces:

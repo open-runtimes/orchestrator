@@ -10,7 +10,7 @@
 {{- $domain := required "sandbox.domain is required (the wildcard domain sandboxes are addressed at)" .Values.sandbox.domain }}
 {{ include "orchestrator.component" (merge (dict
   "container" "sandbox-service"
-  "ports" (list (dict "name" "service" "port" .Values.sandbox.service.port))
+  "ports" (list (dict "name" "service" "port" .Values.sandbox.service.port) (dict "name" "internal" "port" 8082))
   "probe" (dict "port" "service" "readiness" "/readyz" "liveness" "/livez")
   "env" (include "orchestrator.sandboxEnv" .)
   "auth" .Values.sandbox.auth

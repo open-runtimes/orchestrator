@@ -118,7 +118,7 @@ func main() {
 	defer sandboxes.orchestrator.Close()
 
 	healthChecker := health.NewChecker(jobs.orchestrator, deployments.orchestrator, sandboxes.orchestrator)
-	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
+	routes := api.OrchestratorRouterConfig{
 		Metrics:           metrics,
 		HealthChecker:     healthChecker,
 		APIKey:            svcCfg.APIKey,
@@ -126,7 +126,7 @@ func main() {
 		JobCallbacks:      jobs.callbacks,
 		DeploymentService: deployments.service,
 		SandboxService:    sandboxes.service,
-	})
+	}
 
 	if svcCfg.APIKey == "" {
 		slog.Warn("API authentication disabled (including the internal artifact endpoint) - no API_KEY configured")
@@ -159,7 +159,8 @@ func main() {
 	}
 
 	if err := server.Serve(ctx, server.Options{
-		Handler:           router,
+		Handler:           api.NewOrchestratorRouter(routes),
+		Internal:          api.NewInternalRouter(routes),
 		Port:              svcCfg.Port,
 		Extra:             []*http.Server{dataServer},
 		DrainWait:         svcCfg.ShutdownDrainWait,

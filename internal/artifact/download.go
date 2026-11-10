@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"orchestrator/internal/config"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,7 +22,7 @@ type Download struct {
 	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 	Headers        map[string]string `json:"headers,omitempty"`
 
-	s3 config.S3Profiles // injected by the runner for s3:// URLs
+	signer Signer // injected by the runner for s3:// URLs
 }
 
 // HTTPStatusError is a download response outside 2xx. Callers that treat a
@@ -40,8 +39,8 @@ func (a *Download) ArtifactID() string   { return a.ID }
 func (a *Download) ArtifactType() string { return "download" }
 func (a *Download) DependsOn() string    { return a.Depends }
 
-// SetS3Profiles satisfies s3Configurable.
-func (a *Download) SetS3Profiles(p config.S3Profiles) { a.s3 = p }
+// SetSigner satisfies signable.
+func (a *Download) SetSigner(s Signer) { a.signer = s }
 
 // Apply downloads a file from a URL.
 func (a *Download) Apply(ctx context.Context, root *os.Root) *Result {
@@ -49,19 +48,19 @@ func (a *Download) Apply(ctx context.Context, root *os.Root) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.s3)
+	timeoutSecs := a.TimeoutSeconds
+	if timeoutSecs <= 0 {
+		timeoutSecs = defaultDownloadTimeoutSeconds
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second}
+
+	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.signer, client.Timeout)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create request: %w", err)}
 	}
 	for key, value := range a.Headers {
 		req.Header.Set(key, value)
 	}
-
-	timeoutSecs := a.TimeoutSeconds
-	if timeoutSecs <= 0 {
-		timeoutSecs = defaultDownloadTimeoutSeconds
-	}
-	client := &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second}
 
 	resp, err := client.Do(req)
 	if err != nil {

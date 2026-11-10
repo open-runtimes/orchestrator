@@ -695,3 +695,42 @@ func TestBuildRevision_OperatorPodSecurity(t *testing.T) {
 		}
 	}
 }
+
+// A revision that downloads from S3 and syncs a mount there carries grants for
+// exactly those transfers, in the containers that make them, and no key.
+func TestBuildRevision_S3GrantsNotKeys(t *testing.T) {
+	t.Setenv("S3_ACCESS_KEY_ID", "AKIDNEVERINPOD")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "secret-never-in-pod")
+	req := testRequest()
+	req.Artifacts = artifact.Set{
+		&artifact.Download{ID: "img", In: "s3://bucket/base.erofs", Out: "base.erofs"},
+		&artifact.Mount{ID: "tree", In: "base.erofs", Out: "work", Depends: "img", Writable: true, Sync: "s3://bucket/delta.tgz"},
+	}
+	revision := buildRevision(req, Config{Namespace: "orchestrator", PresignEndpoint: "http://deployments:8080"}, "web-00001")
+
+	encoded, _ := json.Marshal(revision)
+	for _, key := range []string{"AKIDNEVERINPOD", "secret-never-in-pod", "S3_SECRET_ACCESS_KEY"} {
+		if strings.Contains(string(encoded), key) {
+			t.Errorf("the Revision carries %q", key)
+		}
+	}
+	spec := revision.Spec.Template.Spec
+	for _, name := range []string{ContainerArtifactPre, ContainerProxy} {
+		var env map[string]string
+		for _, c := range append(spec.InitContainers, spec.Containers...) {
+			if c.Name == name {
+				env = map[string]string{}
+				for _, e := range c.Env {
+					env[e.Name] = e.Value
+				}
+			}
+		}
+		grants := artifact.ParseGrants(env[artifact.EnvS3Grants])
+		if len(grants) != 3 || env[artifact.EnvPresignEndpoint] != "http://deployments:8080" {
+			t.Errorf("%s: grants %v at %q, want the download and both sync directions", name, grants, env[artifact.EnvPresignEndpoint])
+		}
+	}
+	if len(revision.Spec.Claim.S3Grants) != 0 {
+		t.Error("the stored claim must not carry grants; they are minted when it is sent")
+	}
+}

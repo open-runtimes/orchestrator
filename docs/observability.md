@@ -23,6 +23,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
 - `localhost:8080` - API server
 - `localhost:8080/livez` - Liveness (process running)
 - `localhost:8080/readyz` - Readiness (backend reachable — Docker daemon or K8s API server)
+- `localhost:8082` - internal routes the plane's own pods call: sidecar artifact reports and S3 grant redemption (`INTERNAL_PORT`). Never expose it.
 - `localhost:4318` - local collector's OTLP/HTTP receiver (not served by the orchestrator)
 
 ## Design Decisions

@@ -130,8 +130,14 @@ app.kubernetes.io/component: {{ . }}
 {{- define "orchestrator.workloadEnv" -}}
 {{- $root := .root -}}
 {{- $workload := index $root.Values .plane "workload" }}
+{{- $values := index $root.Values .plane }}
 - name: KUBE_NAMESPACE
   value: {{ include "orchestrator.planeNamespace" . | quote }}
+{{- if ne .plane "jobs" }}
+{{- /* Where the plane's pods redeem S3 grants: the service's internal port. Job pods use ARTIFACT_ENDPOINT, the same listener. Every component of a plane gets the same value: warm pods are hashed with it. */}}
+- name: PRESIGN_ENDPOINT
+  value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "orchestrator.componentName" (dict "root" $root "component" .plane)) $root.Release.Namespace 8082) $values.presignEndpoint | quote }}
+{{- end }}
 - name: KUBE_CPU_OVERCOMMIT
   value: {{ $workload.cpuOvercommit | quote }}
 - name: KUBE_MEMORY_OVERCOMMIT
@@ -216,8 +222,9 @@ annotations:
                resources, podAnnotations, nodeSelector, tolerations, affinity,
                priorityClassName, serviceAccount, service)
     container  the container name
-    ports      [{name, port}]: container ports; "service" is the one the
-               Service exposes, the rest stay pod-local
+    ports      [{name, port}]: container ports; the Service exposes
+               "service" and "internal" (the plane's pod-facing routes), the
+               rest stay pod-local
     probe      {port, readiness, liveness}: httpGet paths
     env        the component's own env (YAML list as a string)
     auth       the plane's auth values, mounted when existingSecret is set
@@ -232,6 +239,7 @@ annotations:
 {{- $name := include "orchestrator.componentName" . -}}
 {{- $sel := include "orchestrator.selectorLabels" . -}}
 {{- $labels := include "orchestrator.labels" . -}}
+{{- $ports := .ports -}}
 {{- $autoscaling := $v.autoscaling | default dict -}}
 {{- if and .leader (or (gt (int $v.replicaCount) 1) $autoscaling.enabled) (not $v.leaderElection.enabled) -}}
 {{- fail (printf "%s: replicaCount > 1 and autoscaling require leaderElection.enabled=true" .component) -}}
@@ -378,6 +386,13 @@ spec:
     - name: service
       port: {{ .port }}
       targetPort: service
+    {{- range $ports }}
+    {{- if eq .name "internal" }}
+    - name: internal
+      port: {{ .port }}
+      targetPort: internal
+    {{- end }}
+    {{- end }}
 {{- end }}
 {{- if $v.serviceAccount.create }}
 ---

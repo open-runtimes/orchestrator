@@ -80,13 +80,13 @@ func Run(ctx context.Context, orchestrator job.Orchestrator, emitter *job.Callba
 	healthChecker := health.NewChecker(orchestrator)
 	jobService := job.NewService(orchestrator, metrics, svcCfg.APIKey)
 
-	router := api.NewOrchestratorRouter(api.OrchestratorRouterConfig{
+	routes := api.OrchestratorRouterConfig{
 		JobService:    jobService,
 		JobCallbacks:  emitter,
 		Metrics:       metrics,
 		HealthChecker: healthChecker,
 		APIKey:        svcCfg.APIKey,
-	})
+	}
 
 	if svcCfg.APIKey != "" {
 		slog.Info("API authentication enabled")
@@ -95,7 +95,8 @@ func Run(ctx context.Context, orchestrator job.Orchestrator, emitter *job.Callba
 	}
 
 	return Serve(ctx, Options{
-		Handler:           router,
+		Handler:           api.NewOrchestratorRouter(routes),
+		Internal:          api.NewInternalRouter(routes),
 		Port:              svcCfg.Port,
 		DrainWait:         svcCfg.ShutdownDrainWait,
 		SetDraining:       healthChecker.SetShuttingDown,
