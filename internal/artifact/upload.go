@@ -101,7 +101,7 @@ func (a *Upload) doUpload(ctx context.Context, client *http.Client, root *os.Roo
 	}
 	defer file.Close()
 
-	req, err := buildRequest(ctx, http.MethodPut, a.Out, file, size, a.signer)
+	req, err := buildRequest(ctx, http.MethodPut, a.Out, file, size, a.signer, client.Timeout)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

@@ -48,19 +48,19 @@ func (a *Download) Apply(ctx context.Context, root *os.Root) *Result {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create directory: %w", err)}
 	}
 
-	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.signer)
+	timeoutSecs := a.TimeoutSeconds
+	if timeoutSecs <= 0 {
+		timeoutSecs = defaultDownloadTimeoutSeconds
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second}
+
+	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.signer, client.Timeout)
 	if err != nil {
 		return &Result{Status: "failed", Error: fmt.Errorf("failed to create request: %w", err)}
 	}
 	for key, value := range a.Headers {
 		req.Header.Set(key, value)
 	}
-
-	timeoutSecs := a.TimeoutSeconds
-	if timeoutSecs <= 0 {
-		timeoutSecs = defaultDownloadTimeoutSeconds
-	}
-	client := &http.Client{Timeout: time.Duration(timeoutSecs) * time.Second}
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGrantsFor(t *testing.T) {
@@ -199,5 +200,26 @@ func TestDownload_S3WithoutGrantFails(t *testing.T) {
 	bare := &Download{ID: "d", In: "s3://bucket/ok", Out: "out"}
 	if res := bare.Apply(t.Context(), workspace(t, t.TempDir())); res.Error == nil {
 		t.Fatal("an s3 download with no signer must fail")
+	}
+}
+
+// A presign service that never answers costs the artifact its own timeout,
+// not the signer's longer default.
+func TestDownload_GrantRedemptionKeepsTheArtifactTimeout(t *testing.T) {
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	t.Cleanup(stalled.Close)
+	t.Cleanup(func() { close(release) }) // runs first: Close waits for the handler
+	a := &Download{ID: "d", In: "s3://bucket/k", Out: "out", TimeoutSeconds: 1}
+	a.SetSigner(&GrantSigner{Endpoint: stalled.URL, Grants: Grants{"GET s3://bucket/k": "g"}})
+
+	start := time.Now()
+	if res := a.Apply(t.Context(), workspace(t, t.TempDir())); res.Error == nil {
+		t.Fatal("a stalled presign must fail the download")
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("download gave up after %s, want about its 1s timeout", took)
 	}
 }
