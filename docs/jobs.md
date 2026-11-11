@@ -336,10 +336,10 @@ Upload a file to a presigned URL:
 - `in` - Path to read from (required)
 - `out` - URL to upload to (required)
 
-An `out` ending in `/` uploads the directory `in` instead: each regular file under it goes to `out` plus its path, eight at a time, and any one failing fails the artifact. Symlinks are skipped, and so is any file or directory whose name matches a glob in `exclude`:
+An `out` ending in `/` uploads the directory `in` instead: each regular file under it goes to `out` plus its path, eight at a time, and any one failing fails the artifact. Symlinks are skipped, and so is any file or directory whose name matches a glob in `excludes`:
 
 ```json
-{"id": "site", "type": "upload", "in": "site", "out": "s3://sites/abc/", "exclude": [".env*", "node_modules", ".git"]}
+{"id": "site", "type": "upload", "in": "site", "out": "s3://sites/abc/", "excludes": [".env*", "node_modules", ".git"]}
 ```
 
 ### S3 URLs

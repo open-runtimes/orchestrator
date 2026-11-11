@@ -88,9 +88,9 @@ func Validate(i int, a Artifact) error {
 		if err := firstErr(requiredPath(field, "in", "path", a.In), requiredURL(field, "out", "url", a.Out)); err != nil {
 			return err
 		}
-		for _, pattern := range a.Exclude {
+		for _, pattern := range a.Excludes {
 			if _, err := path.Match(pattern, ""); err != nil {
-				return apperrors.Validation(field+".exclude", fmt.Sprintf("invalid exclude pattern %q", pattern))
+				return apperrors.Validation(field+".excludes", fmt.Sprintf("invalid excludes pattern %q", pattern))
 			}
 		}
 		return nil

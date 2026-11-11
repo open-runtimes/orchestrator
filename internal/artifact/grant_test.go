@@ -334,7 +334,7 @@ func TestUpload_DirectoryThroughPrefixGrant(t *testing.T) {
 	}
 
 	store := &objectStore{objects: map[string]string{}}
-	a := &Upload{ID: "u", In: "site", Out: "s3://bucket/sites/abc/", Exclude: []string{".env*", "node_modules", ".git"}}
+	a := &Upload{ID: "u", In: "site", Out: "s3://bucket/sites/abc/", Excludes: []string{".env*", "node_modules", ".git"}}
 	a.SetSigner(grantedTransfer(t, store, a))
 	if res := a.Apply(t.Context(), workspace(t, tmp)); res.Error != nil {
 		t.Fatalf("Apply() error = %v", res.Error)

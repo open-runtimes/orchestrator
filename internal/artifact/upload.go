@@ -33,7 +33,7 @@ type Upload struct {
 	TimeoutSeconds int               `json:"timeoutSeconds,omitempty"` // HTTP timeout in seconds (default 300)
 	Retries        int               `json:"retries,omitempty"`        // Max retry attempts (default 3)
 	Headers        map[string]string `json:"headers,omitempty"`
-	Exclude        []string          `json:"exclude,omitempty"` // Directory uploads skip any entry whose name matches one of these globs
+	Excludes       []string          `json:"excludes,omitempty"` // Directory uploads skip any entry whose name matches one of these globs
 
 	signer Signer // injected by the runner for s3:// URLs
 }
@@ -114,7 +114,7 @@ func (a *Upload) applyDir(ctx context.Context, root *os.Root) *Result {
 		if err != nil {
 			return err
 		}
-		if p != dir && a.excluded(d.Name()) {
+		if p != dir && matchesAnyPattern(d.Name(), a.Excludes) {
 			if d.IsDir() {
 				return fs.SkipDir
 			}
@@ -156,15 +156,6 @@ func (a *Upload) applyDir(ctx context.Context, root *os.Root) *Result {
 		return &Result{Status: "failed", Error: err}
 	}
 	return &Result{Status: "success"}
-}
-
-func (a *Upload) excluded(name string) bool {
-	for _, pattern := range a.Exclude {
-		if ok, _ := path.Match(pattern, name); ok {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *Upload) doUpload(ctx context.Context, client *http.Client, root *os.Root, size int64) error {
