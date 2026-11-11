@@ -124,7 +124,7 @@ Artifacts handle file operations before and after job execution. An artifact run
 | `write` | Write inline content |
 | `unarchive` | Extract a tar (plain/gzip/zstd/lz4), squashfs, or erofs archive |
 | `mount` | Mount a tar archive, squashfs image, or erofs image into the workspace |
-| `upload` | Upload file to URL |
+| `upload` | Upload a file, or a directory, to a URL |
 | `read` | Include file contents in callback event |
 | `archive` | Create tar, squashfs, or erofs archive |
 | `list` | List files with glob pattern exclusions |
@@ -336,9 +336,15 @@ Upload a file to a presigned URL:
 - `in` - Path to read from (required)
 - `out` - URL to upload to (required)
 
+An `out` ending in `/` uploads the directory `in` instead: each regular file under it goes to `out` plus its path, eight at a time, and any one failing fails the artifact. Symlinks are skipped, and so is any file or directory whose name matches a glob in `excludes`:
+
+```json
+{"id": "site", "type": "upload", "in": "site", "out": "s3://sites/abc/", "excludes": [".env*", "node_modules", ".git"]}
+```
+
 ### S3 URLs
 
-`download` and `upload` also take `s3://bucket/key` URLs. The S3 keys (`jobs.s3` in the chart) stay in the service: no pod, sidecar or worker, ever holds one. The service gives each pod a grant per transfer its artifacts make (`GET` for a download, `PUT` for an upload, both for a synced mount), and the sidecar redeems it at `ARTIFACT_ENDPOINT` for a URL pre-signed for 15 minutes, right before the transfer. A grant names one object and one method, so a leaked one reaches nothing else; rotating the profile's secret key revokes every grant minted from it. Deployments and sandboxes work the same way, against their own plane's service.
+`download` and `upload` also take `s3://bucket/key` URLs. The S3 keys (`jobs.s3` in the chart) stay in the service: no pod, sidecar or worker, ever holds one. The service gives each pod a grant per transfer its artifacts make (`GET` for a download, `PUT` for an upload, both for a synced mount), and the sidecar redeems it at `ARTIFACT_ENDPOINT` for a URL pre-signed for 15 minutes, right before the transfer. A grant names one object and one method, so a leaked one reaches nothing else, except a directory upload's, which names the `out` prefix and covers every key below it; rotating the profile's secret key revokes every grant minted from it. Deployments and sandboxes work the same way, against their own plane's service.
 
 To use a second store, configure a named profile (`jobs.s3.profiles.<name>`) and put its name in the URL:
 

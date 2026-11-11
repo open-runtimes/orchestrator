@@ -31,8 +31,10 @@ const (
 
 // Grants maps a transfer ("GET s3://bucket/key") to the grant that has it
 // pre-signed. It is all a pod holds for S3: a grant names one object and one
-// method, so a leaked one reaches nothing else, and it carries no key. Grants
-// are stateless: rotating the profile's secret key revokes every one of them.
+// method, so a leaked one reaches nothing else, and it carries no key. A
+// directory upload's grant names a prefix ("PUT s3://bucket/dir/") and covers
+// every key under it. Grants are stateless: rotating the profile's secret key
+// revokes every one of them.
 type Grants map[string]string
 
 // GrantsFor returns a grant for every s3:// transfer the artifacts can make:
@@ -40,11 +42,11 @@ type Grants map[string]string
 // when there are none.
 func GrantsFor(artifacts []Artifact, profiles config.S3Profiles) Grants {
 	var g Grants
-	add := func(method, rawURL string) {
+	add := func(scope, method, rawURL string) {
 		if !isS3URL(rawURL) {
 			return
 		}
-		if mac, ok := grant(profiles, method, rawURL); ok {
+		if mac, ok := grant(profiles, scope, method, rawURL); ok {
 			if g == nil {
 				g = Grants{}
 			}
@@ -54,12 +56,16 @@ func GrantsFor(artifacts []Artifact, profiles config.S3Profiles) Grants {
 	for _, a := range artifacts {
 		switch a := a.(type) {
 		case *Download:
-			add(http.MethodGet, a.In)
+			add(objectScope, http.MethodGet, a.In)
 		case *Upload:
-			add(http.MethodPut, a.Out)
+			if strings.HasSuffix(a.Out, "/") {
+				add(prefixScope, http.MethodPut, a.Out)
+			} else {
+				add(objectScope, http.MethodPut, a.Out)
+			}
 		case *Mount:
-			add(http.MethodGet, a.Sync)
-			add(http.MethodPut, a.Sync)
+			add(objectScope, http.MethodGet, a.Sync)
+			add(objectScope, http.MethodPut, a.Sync)
 		}
 	}
 	return g
@@ -90,10 +96,19 @@ func ParseGrants(raw string) Grants {
 
 func transfer(method, rawURL string) string { return method + " " + rawURL }
 
-// grant is HMAC-SHA256 of the transfer under the secret key of the profile the
-// URL names, so whoever holds a plane's S3 keys can mint and redeem grants
-// with no other key to distribute. False when that profile is not configured.
-func grant(profiles config.S3Profiles, method, rawURL string) (string, bool) {
+// A grant's scope is part of what it signs, so a grant for one object whose
+// key happens to end in "/" can never be redeemed as a prefix grant: only a
+// directory upload mints those.
+const (
+	objectScope = "orchestrator-s3-grant\n"
+	prefixScope = "orchestrator-s3-prefix-grant\n"
+)
+
+// grant is HMAC-SHA256 of the scope and transfer under the secret key of the
+// profile the URL names, so whoever holds a plane's S3 keys can mint and
+// redeem grants with no other key to distribute. False when that profile is
+// not configured.
+func grant(profiles config.S3Profiles, scope, method, rawURL string) (string, bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", false
@@ -102,7 +117,7 @@ func grant(profiles config.S3Profiles, method, rawURL string) (string, bool) {
 	if !creds.Enabled() {
 		return "", false
 	}
-	return hex.EncodeToString(hmacSHA256([]byte(creds.SecretAccessKey), "orchestrator-s3-grant\n"+transfer(method, rawURL))), true
+	return hex.EncodeToString(hmacSHA256([]byte(creds.SecretAccessKey), scope+transfer(method, rawURL))), true
 }
 
 // Signer turns an s3:// URL into one a plain request can be sent to.
@@ -121,6 +136,7 @@ type presignRequest struct {
 	Method string `json:"method"`
 	URL    string `json:"url"`
 	Grant  string `json:"grant"`
+	Prefix string `json:"prefix,omitempty"` // the granted prefix, when the grant covers one rather than URL itself
 }
 
 type presignResponse struct {
@@ -129,24 +145,34 @@ type presignResponse struct {
 
 // Sign implements Signer.
 func (s *GrantSigner) Sign(ctx context.Context, method, rawURL string) (string, error) {
-	mac, ok := s.Grants[transfer(method, rawURL)]
-	if !ok {
+	req := presignRequest{Method: method, URL: rawURL}
+	if mac, ok := s.Grants[transfer(method, rawURL)]; ok {
+		req.Grant = mac
+	} else {
+		for granted, mac := range s.Grants {
+			if prefix, ok := strings.CutPrefix(granted, method+" "); ok && strings.HasSuffix(prefix, "/") && underPrefix(rawURL, prefix) {
+				req.Grant, req.Prefix = mac, prefix
+				break
+			}
+		}
+	}
+	if req.Grant == "" {
 		return "", fmt.Errorf("no S3 grant for %s %s", method, rawURL)
 	}
 	if s.Endpoint == "" {
 		return "", fmt.Errorf("cannot sign %s: no PRESIGN_ENDPOINT to redeem the grant at", rawURL)
 	}
-	body, _ := json.Marshal(presignRequest{Method: method, URL: rawURL, Grant: mac})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(s.Endpoint, "/")+PresignPath, bytes.NewReader(body))
+	body, _ := json.Marshal(req)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(s.Endpoint, "/")+PresignPath, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 	client := s.Client
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("presign %s: %w", rawURL, err)
 	}
@@ -178,7 +204,15 @@ func PresignHandler(load func() config.S3Profiles) http.Handler {
 			http.Error(w, "presign takes GET or PUT of an s3:// URL", http.StatusBadRequest)
 			return
 		}
-		want, ok := grant(profiles, req.Method, req.URL)
+		granted, scope := req.URL, objectScope
+		if req.Prefix != "" {
+			if !strings.HasSuffix(req.Prefix, "/") || !underPrefix(req.URL, req.Prefix) {
+				http.Error(w, "url is not under the granted prefix", http.StatusForbidden)
+				return
+			}
+			granted, scope = req.Prefix, prefixScope
+		}
+		want, ok := grant(profiles, scope, req.Method, granted)
 		if !ok || !hmac.Equal([]byte(req.Grant), []byte(want)) {
 			http.Error(w, "invalid grant", http.StatusForbidden)
 			return
@@ -191,4 +225,24 @@ func PresignHandler(load func() config.S3Profiles) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(presignResponse{URL: signed})
 	})
+}
+
+// underPrefix reports whether rawURL names an object below prefix: the same
+// profile and bucket, and a key that only adds path segments, none of them
+// "." or "..", and no query or fragment.
+func underPrefix(rawURL, prefix string) bool {
+	rest, ok := strings.CutPrefix(rawURL, prefix)
+	if !ok || rest == "" || strings.ContainsAny(rest, "?#") {
+		return false
+	}
+	decoded, err := url.PathUnescape(rest)
+	if err != nil {
+		return false
+	}
+	for segment := range strings.SplitSeq(decoded, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
 }
