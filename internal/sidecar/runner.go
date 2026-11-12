@@ -12,6 +12,7 @@ import (
 	"orchestrator/internal/emitter"
 	"orchestrator/internal/job"
 	"orchestrator/internal/mount"
+	"orchestrator/internal/mountagent"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -171,6 +172,7 @@ func waitForSignal(ctx context.Context) {
 func (r *Runner) Run(ctx context.Context, artifacts []artifact.Artifact) error {
 	mounts, rest := splitMounts(artifacts)
 	preJob, postJob := artifact.Partition(rest)
+	preJob = withoutCached(preJob, r.cachedDownloads(artifacts))
 
 	logger := slog.With("jobId", r.jobID, "preJob", len(preJob), "mounts", len(mounts), "postJob", len(postJob), "timeoutSeconds", r.timeoutSeconds)
 	logger.Info("Sidecar starting")
@@ -323,7 +325,7 @@ func (r *Runner) Mount(ctx context.Context, artifacts []artifact.Artifact) error
 		}
 	}
 
-	if err := r.establishMounts(ctx, mounts); err != nil {
+	if err := r.establishMounts(ctx, mounts, r.cachedDownloads(artifacts)); err != nil {
 		return errors.Join(err, r.unmountAll()) // roll back partially established mounts
 	}
 
@@ -457,11 +459,27 @@ func (r *Runner) adoptExistingMounts(mounts []*artifact.Mount) (bool, error) {
 }
 
 // establishMounts mounts each image read-only into the workspace. A failure
-// aborts the job — the worker must not start without its inputs.
-func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount) error {
+// aborts the job — the worker must not start without its inputs. A mount paired
+// with a download in cached has the node agent fetch and mount the image; if it
+// does not, the image is downloaded here, as it would have been without a cache.
+func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount, cached map[*artifact.Mount]*artifact.Download) error {
 	for _, m := range mounts {
 		image := filepath.Join(r.sharedVolumePath, m.In)
 		target := filepath.Clean(m.Out)
+
+		// A job pod's pre container has no agent and has downloaded the image
+		// already; then it is mounted from the workspace as before.
+		if d := cached[m]; d != nil {
+			if _, err := os.Stat(image); errors.Is(err, os.ErrNotExist) {
+				if r.fetchMount(ctx, d, m, target) {
+					r.mounted = append(r.mounted, target)
+					continue
+				}
+				if err := r.processArtifacts(ctx, []artifact.Artifact{d}, false); err != nil {
+					return fmt.Errorf("mount %s: %w", m.ID, err)
+				}
+			}
+		}
 
 		start := time.Now()
 		err := r.waitForPath(ctx, image)
@@ -506,6 +524,33 @@ func (r *Runner) establishMounts(ctx context.Context, mounts []*artifact.Mount) 
 		slog.With("artifactId", m.ID, "image", m.In, "target", m.Out, "format", format, "compression", compression).Info("Mounted image")
 	}
 	return nil
+}
+
+// fetchMount has the node agent fetch d through its cache and mount it for m,
+// and reports both artifacts. False means the agent did not and nothing was
+// mounted; the caller downloads the image itself.
+func (r *Runner) fetchMount(ctx context.Context, d *artifact.Download, m *artifact.Mount, target string) bool {
+	start := time.Now()
+	d.SetSigner(r.signer)
+	url, err := d.SignedURL(ctx)
+	var res mountagent.FetchMountResponse
+	if err == nil {
+		res, err = r.mounter.(fetcher).FetchMount(url, target, mount.Opts{Writable: m.Writable, SizeMiB: m.Size})
+	}
+	if err != nil {
+		slog.Warn("Node cache did not serve the image, downloading it here", "artifactId", d.ID, "error", err)
+		// A request that timed out here may still have mounted on the agent,
+		// which runs one request per workspace at a time: this waits for it
+		// and takes the mount down before the fallback stacks its own.
+		if err := r.mounter.Unmount(target); err != nil {
+			slog.Warn("Clearing the mount target failed", "artifactId", m.ID, "error", err)
+		}
+		return false
+	}
+	r.emitArtifact(d, artifact.Result{Status: "success"}, start)
+	r.emitArtifact(m, artifact.Result{Status: "success", Format: res.Format}, start)
+	slog.Info("Mounted image from the node cache", "artifactId", m.ID, "target", m.Out, "hit", res.Hit, "format", res.Format)
+	return true
 }
 
 // extractTarMountLower materializes a tar into the implementation directory
