@@ -109,7 +109,8 @@ func TestBuildJob_Tolerations(t *testing.T) {
 }
 
 // The worker runs the user's command, so it keeps root and a writable image, but
-// gets the runtime's seccomp profile, no new privileges and no raw sockets.
+// gets the runtime's seccomp profile, no new privileges and only the
+// capabilities a root package install uses.
 func TestBuildJob_WorkerSecurityContext(t *testing.T) {
 	t.Parallel()
 	req := &job.Request{ID: "job-7", Image: "alpine:latest", Command: "npm install"}
@@ -124,8 +125,12 @@ func TestBuildJob_WorkerSecurityContext(t *testing.T) {
 	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
 		t.Errorf("allowPrivilegeEscalation: want false, got %v", sc.AllowPrivilegeEscalation)
 	}
-	if sc.Capabilities == nil || !reflect.DeepEqual(sc.Capabilities.Drop, []corev1.Capability{"NET_RAW"}) {
-		t.Errorf("capabilities.drop: want [NET_RAW], got %+v", sc.Capabilities)
+	if sc.Capabilities == nil || !reflect.DeepEqual(sc.Capabilities.Drop, []corev1.Capability{"ALL"}) {
+		t.Fatalf("capabilities.drop: want [ALL], got %+v", sc.Capabilities)
+	}
+	want := []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETUID", "SETGID", "KILL"}
+	if !reflect.DeepEqual(sc.Capabilities.Add, want) {
+		t.Errorf("capabilities.add: want %v, got %v", want, sc.Capabilities.Add)
 	}
 	if sc.RunAsNonRoot != nil || sc.RunAsUser != nil || sc.ReadOnlyRootFilesystem != nil {
 		t.Errorf("worker must keep the image's user and a writable root: got %+v", sc)

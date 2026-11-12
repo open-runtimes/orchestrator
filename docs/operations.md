@@ -209,7 +209,7 @@ A pull secret is referenced **by name only, and the name resolves in the namespa
 
 Defense in depth, each layer independently optional:
 
-**Pod security floor (always on).** Every container the services run themselves (sidecars, init containers) runs as non-root (uid 65532) with all capabilities dropped and a read-only root filesystem, and no workload pod gets a ServiceAccount token — admissible under Pod Security Standards `restricted`. A user's own container keeps its image's user, without new privileges.
+**Pod security floor (always on).** Every container the services run themselves (sidecars, init containers) runs as non-root (uid 65532) with all capabilities dropped and a read-only root filesystem, and no workload pod gets a ServiceAccount token — admissible under Pod Security Standards `restricted`. A user's own container keeps its image's user, without new privileges. A job's worker also keeps only the capabilities a root package install uses: `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `FSETID`, `SETUID`, `SETGID` and `KILL`.
 
 **Workload pod security** (`<plane>.workload.podSecurityContext`). The pod-level security context of every pod a plane's service creates, in the standard schema: seccomp and AppArmor profiles, SELinux options, `fsGroup`, supplemental groups, sysctls. Unset keeps `RuntimeDefault` seccomp; a profile you name replaces it for every container in the pod, since no container sets its own. `runAsUser`, `runAsGroup` and `runAsNonRoot` are refused at startup: on the pod they would reach every container, refusing the sidecars that run as root and replacing a build image's user. Changing it replaces warm pods; running revisions keep theirs until the next deploy mints a new one.
 

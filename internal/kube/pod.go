@@ -34,11 +34,22 @@ func HardenedSecurityContext(uid int64) *corev1.SecurityContext {
 // WorkloadSecurityContext is for a container running the user's own command,
 // such as a build: it keeps the image's user and a writable filesystem, since
 // installers run as root and write everywhere, but takes no new privileges and
-// no CAP_NET_RAW, which no build needs. Seccomp comes from the pod.
+// only the capabilities a root package install uses. Seccomp comes from the pod.
+//
+// apk, apt and dpkg chown and chmod what they unpack (CHOWN, FOWNER, FSETID),
+// installers write into files the sidecar owns (DAC_OVERRIDE), apt drops to
+// _apt and scripts step down with su (SETUID, SETGID), and a build can stop
+// processes it started under another user (KILL). apk and apt work without the
+// rest of the runtime's defaults (NET_RAW, NET_BIND_SERVICE, MKNOD, SYS_CHROOT,
+// AUDIT_WRITE, SETPCAP, SETFCAP); without SETFCAP a packaged file capability is
+// only a warning.
 func WorkloadSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: new(false),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"NET_RAW"}},
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETUID", "SETGID", "KILL"},
+		},
 	}
 }
 
