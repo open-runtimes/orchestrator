@@ -61,6 +61,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The node artifact cache (docs/design/node-artifact-cache.md), on when the
+	// chart names the object store endpoints it may fetch from. It sits beside
+	// the workspaces, on the node's disk.
+	if raw := config.GetEnv("CACHE_ENDPOINTS", ""); raw != "" {
+		agent.Cache, err = node.NewCache(pluginDir+"/cache", strings.Split(raw, ","),
+			int64(config.GetIntEnv("CACHE_SIZE_MIB", 20<<10))<<20,
+			int64(config.GetIntEnv("CACHE_MAX_OBJECT_MIB", 200))<<20)
+		if err != nil {
+			return err
+		}
+	}
 
 	if err := os.Remove(csiEndpoint); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -93,7 +104,7 @@ func run() error {
 	errs := make(chan error, 2)
 	go func() { errs <- grpcServer.Serve(csiListener) }()
 	go func() { errs <- api.Serve(netutil.LimitListener(apiListener, 256)) }()
-	slog.Info("Mount agent started", "node", nodeID, "csi", csiEndpoint, "api", listen, "namespaces", namespaces)
+	slog.Info("Mount agent started", "node", nodeID, "csi", csiEndpoint, "api", listen, "namespaces", namespaces, "cache", agent.Cache != nil)
 
 	select {
 	case err := <-errs:
