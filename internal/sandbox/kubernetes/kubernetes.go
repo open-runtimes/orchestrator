@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/claim"
@@ -24,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 )
 
 // Label and annotation contract for sandbox pods. Deliberately distinct from
@@ -57,6 +59,7 @@ func naming() warm.Naming {
 // Orchestrator implements sandbox.Orchestrator using Kubernetes.
 type Orchestrator struct {
 	client kubernetes.Interface
+	leases coordinationv1client.LeasesGetter
 	warm   *warm.Manager
 	cfg    Config
 	addr   sandbox.Addressing
@@ -65,16 +68,27 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes sandbox orchestrator.
 func NewOrchestrator(_ context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
-	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
+	restConfig, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
 	if err != nil {
 		return nil, err
 	}
-	return wireOrchestrator(cs, cfg, nil), nil
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kube client: %w", err)
+	}
+	leases, err := kube.NewLeaseClient(restConfig)
+	if err != nil {
+		return nil, err
+	}
+	o := wireOrchestrator(client, cfg, nil)
+	o.leases = leases
+	return o, nil
 }
 
 // wireOrchestrator wires an Orchestrator around an injected client (tests pass
 // a fake, and tune the warm layer: a fake sidecar client, since fake-clientset
-// pods have no reachable IPs, and shorter waits). cfg must already have
+// pods have no reachable IPs, and shorter waits). Leases go through that
+// client too until the caller installs a dedicated one. cfg must already have
 // defaults applied.
 func wireOrchestrator(cs kubernetes.Interface, cfg Config, tune func(*warm.Config)) *Orchestrator {
 	warmCfg := cfg.warmConfig()
@@ -84,6 +98,7 @@ func wireOrchestrator(cs kubernetes.Interface, cfg Config, tune func(*warm.Confi
 	}
 	return &Orchestrator{
 		client: cs,
+		leases: cs.CoordinationV1(),
 		warm:   warm.New(cs, cfg.Pools, warmCfg),
 		cfg:    cfg,
 		addr:   cfg.addressing(),
@@ -101,7 +116,7 @@ func NewPoolManager(client kubernetes.Interface, cfg Config) *warm.Manager {
 // Start verifies the claim contract and runs only claimed-sandbox lifecycle.
 // Bare warm inventory is reconciled by the standalone pool-controller.
 func (o *Orchestrator) Start(ctx context.Context) error {
-	return o.warm.RunClaims(ctx, func(ctx context.Context, _, sandboxID string) error {
+	return o.warm.RunClaims(ctx, o.leases, func(ctx context.Context, _, sandboxID string) error {
 		return o.Delete(ctx, sandboxID)
 	})
 }

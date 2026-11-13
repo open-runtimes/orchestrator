@@ -64,6 +64,13 @@ Configuration is loaded from environment variables. Each package manages its own
 
 `ORCHESTRATOR_BACKEND` selects the backend (`docker` default, or `kubernetes`).
 
+### Kubernetes API Client Configuration
+
+| Variable | Default | Read by | Description |
+|----------|---------|---------|-------------|
+| `KUBE_CLIENT_QPS` | 200 | jobs-service, sandbox-service, deployments-service, deployments-activator, sandbox-proxy, pool-controller | Steady-state client-side API requests per second, shared by every client in the process except the leader-election Lease client, which has its own; 0 or unset takes the default |
+| `KUBE_CLIENT_BURST` | 400 | same as `KUBE_CLIENT_QPS` | Client-side API burst; 0 or unset takes the default |
+
 ### Dispatcher Configuration
 
 | Variable | Default | Description |

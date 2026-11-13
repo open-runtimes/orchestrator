@@ -19,8 +19,6 @@ const (
 	defaultActivatorSelector    = "app.kubernetes.io/component=deployments-activator"
 	defaultRevisionHistoryLimit = 3
 	defaultRevisionWorkers      = 32
-	defaultClientQPS            = 200
-	defaultClientBurst          = 400
 	defaultLeaderLeaseName      = "deployments-service-leader"
 )
 
@@ -67,8 +65,8 @@ type Config struct {
 	ActivatorSelector    string // pod selector for activator endpoints (cold endpoint flip)
 	RevisionHistoryLimit int    // retained revisions beyond the routed set; default 3
 	RevisionWorkers      int    // concurrent direct-pod revision reconciles; default 32
-	ClientQPS            int    // client-side K8s API steady-state QPS; default 200
-	ClientBurst          int    // client-side K8s API burst; default 400
+	ClientQPS            int    // client-side K8s API steady-state QPS; 0 = kube.DefaultClientQPS
+	ClientBurst          int    // client-side K8s API burst; 0 = kube.DefaultClientBurst
 
 	// LeaderElection gates the background reconcilers (and any caller-supplied
 	// loop via RunLeaderElected) to one replica; disabled = single-replica mode.
@@ -172,12 +170,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RevisionWorkers <= 0 {
 		c.RevisionWorkers = defaultRevisionWorkers
-	}
-	if c.ClientQPS <= 0 {
-		c.ClientQPS = defaultClientQPS
-	}
-	if c.ClientBurst <= 0 {
-		c.ClientBurst = defaultClientBurst
 	}
 	if c.RuntimeClasses == nil {
 		c.RuntimeClasses, _ = kube.ParseRuntimeClasses("")

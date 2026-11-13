@@ -4,6 +4,7 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
 	"orchestrator/internal/job"
@@ -13,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 )
 
 // Orchestrator implements job.Orchestrator using Kubernetes. It is HA-ready:
@@ -25,6 +27,7 @@ import (
 //     watches and emits — no duplicate callbacks across replicas.
 type Orchestrator struct {
 	client      kubernetes.Interface
+	leases      coordinationv1client.LeasesGetter
 	cfg         Config
 	emitter     *job.CallbackEmitter
 	watcher     LifecycleWatcher
@@ -39,17 +42,26 @@ type Orchestrator struct {
 // NewOrchestrator creates a Kubernetes orchestrator. Register listeners on
 // the emitter before calling Start.
 func NewOrchestrator(cfg Config, emitter *job.CallbackEmitter) (*Orchestrator, error) {
-	cs, err := kube.NewClient(cfg.Kubeconfig, cfg.Context, cfg.Metrics)
+	restConfig, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
+	if err != nil {
+		return nil, err
+	}
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kube client: %w", err)
+	}
+	leases, err := kube.NewLeaseClient(restConfig)
 	if err != nil {
 		return nil, err
 	}
 	o := &Orchestrator{
-		client:      cs,
+		client:      client,
+		leases:      leases,
 		cfg:         cfg,
 		emitter:     emitter,
-		watcher:     newK8sLifecycleWatcher(cs, cfg.Namespace, emitter, cfg.LogFlushInterval),
+		watcher:     newK8sLifecycleWatcher(client, cfg.Namespace, emitter, cfg.LogFlushInterval),
 		statusCache: newStatusCache(),
-		pin:         kube.NewPin(cs, cfg.PinNodes, cfg.NodeSelector, cfg.Tolerations),
+		pin:         kube.NewPin(client, cfg.PinNodes, cfg.NodeSelector, cfg.Tolerations),
 	}
 	if err := cfg.Metrics.ObserveInt64("orchestrator_trackers",
 		"In-flight per-job lifecycle trackers on the leader (saturation)",
@@ -86,7 +98,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 
 	go func() {
 		defer close(done)
-		kube.RunLeaderElected(termCtx, o.client, o.cfg.Namespace, o.cfg.LeaderElection, o.watcher.Start, o.cfg.Metrics.RecordLeadership)
+		kube.RunLeaderElected(termCtx, o.leases, o.cfg.Namespace, o.cfg.LeaderElection, o.watcher.Start, o.cfg.Metrics.RecordLeadership)
 	}()
 	return nil
 }
