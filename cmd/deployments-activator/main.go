@@ -44,17 +44,17 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("failed to init metrics: %w", err)
 	}
 
-	clientQPS := config.GetIntEnv("KUBE_CLIENT_QPS", 200)
-	clientBurst := config.GetIntEnv("KUBE_CLIENT_BURST", 400)
-	restCfg, err := kube.NewConfig(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics, float32(clientQPS), clientBurst)
+	clientQPS := config.GetIntEnv("KUBE_CLIENT_QPS", 0)
+	clientBurst := config.GetIntEnv("KUBE_CLIENT_BURST", 0)
+	restConfig, err := kube.NewConfig(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics, float32(clientQPS), clientBurst)
 	if err != nil {
 		return err
 	}
-	client, err := kubernetes.NewForConfig(restCfg)
+	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create kube client: %w", err)
 	}
-	dynamicClient, err := dynamic.NewForConfig(restCfg)
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create dynamic kube client: %w", err)
 	}

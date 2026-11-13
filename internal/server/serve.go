@@ -58,7 +58,7 @@ func Serve(ctx context.Context, opts Options) error {
 
 	writeTimeout := opts.WriteTimeout
 	if writeTimeout <= 0 {
-		writeTimeout = 30 * time.Second
+		writeTimeout = config.DefaultWriteTimeout
 	}
 	apiServer := &http.Server{
 		Addr:         ":" + opts.Port,

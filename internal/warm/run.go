@@ -7,6 +7,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 )
 
 // Teardown removes one claim. Consumers supply their own — a sandbox teardown
@@ -16,14 +17,15 @@ type Teardown func(ctx context.Context, poolID, claimID string) error
 
 // RunClaims starts only the leader-elected claimed-workload lifecycle loop.
 // Consumer services use this after bare-pod inventory moved to pool-controller.
-func (m *Manager) RunClaims(ctx context.Context, teardown Teardown) error {
+// The election renews through leases.
+func (m *Manager) RunClaims(ctx context.Context, leases coordinationv1client.LeasesGetter, teardown Teardown) error {
 	if err := m.Verify(ctx); err != nil {
 		return err
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.stop = cancel
 	hooks := NewIdleReaper(m, teardown).Hooks()
-	go kube.RunLeaderElected(runCtx, m.client, m.cfg.Namespace, m.cfg.LeaderElection,
+	go kube.RunLeaderElected(runCtx, leases, m.cfg.Namespace, m.cfg.LeaderElection,
 		func(loopCtx context.Context) { m.RunClaimControl(loopCtx, hooks) }, m.onLeadership)
 	return nil
 }

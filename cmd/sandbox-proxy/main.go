@@ -28,6 +28,8 @@ import (
 	"orchestrator/internal/server"
 	"os"
 	"time"
+
+	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
@@ -49,9 +51,16 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("failed to init metrics: %w", err)
 	}
 
-	client, err := kube.NewClient(config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics)
+	restConfig, err := kube.NewConfig(
+		config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics,
+		float32(config.GetIntEnv("KUBE_CLIENT_QPS", 0)), config.GetIntEnv("KUBE_CLIENT_BURST", 0),
+	)
 	if err != nil {
 		return err
+	}
+	client, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create kube client: %w", err)
 	}
 
 	targets := activator.NewPodTargets(client, activator.PodTargetsConfig{

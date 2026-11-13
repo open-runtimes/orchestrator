@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"log/slog"
 	"orchestrator/internal/config"
 	"orchestrator/internal/kube"
 	"orchestrator/internal/observability"
@@ -9,6 +10,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 )
+
+const defaultRequestTimeout = 20 * time.Second
 
 // Config holds configuration for the Kubernetes orchestrator.
 type Config struct {
@@ -25,6 +28,9 @@ type Config struct {
 	ArtifactEndpoint              string
 	TerminationGracePeriodSeconds int64 // grace period for the combined sidecar to run post-artifacts
 	LeaderElection                LeaderElectionConfig
+	ClientQPS                     int           // client-side K8s API steady-state QPS; 0 = kube.DefaultClientQPS
+	ClientBurst                   int           // client-side K8s API burst; 0 = kube.DefaultClientBurst
+	RequestTimeout                time.Duration // bounds the K8s calls behind create, cancel and status; 0 = defaultRequestTimeout
 
 	// Overcommit derives worker requests from declared limits (internal/kube).
 	Overcommit kube.Overcommit
@@ -95,6 +101,9 @@ func LoadConfigFromEnv() (Config, error) {
 		PodSecurityContext:            podSecurity,
 		MountAgentPort:                config.GetIntEnv("KUBE_MOUNT_AGENT_PORT", 0),
 		HostUsers:                     config.GetBoolEnv("KUBE_WORKLOAD_HOST_USERS", false),
+		ClientQPS:                     config.GetIntEnv("KUBE_CLIENT_QPS", 0),
+		ClientBurst:                   config.GetIntEnv("KUBE_CLIENT_BURST", 0),
+		RequestTimeout:                config.GetDurationEnv("KUBE_REQUEST_TIMEOUT", 0),
 		LeaderElection: LeaderElectionConfig{
 			Enabled:       config.GetBoolEnv("KUBE_LEADER_ELECTION", false),
 			LeaseName:     config.GetEnv("KUBE_LEADER_LEASE_NAME", ""),
@@ -105,5 +114,9 @@ func LoadConfigFromEnv() (Config, error) {
 		},
 	}
 	cfg.LeaderElection.ApplyDefaults("jobs-service-leader")
+	if cfg.RequestTimeout >= config.DefaultWriteTimeout {
+		slog.Warn("KUBE_REQUEST_TIMEOUT is not under the API write timeout, so a stalled Kubernetes call outlives its response",
+			"requestTimeout", cfg.RequestTimeout, "writeTimeout", config.DefaultWriteTimeout)
+	}
 	return cfg, nil
 }

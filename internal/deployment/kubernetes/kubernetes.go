@@ -30,12 +30,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	gatewayclient "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 // Orchestrator implements deployment.Orchestrator using Kubernetes.
 type Orchestrator struct {
 	client     kubernetes.Interface
+	leases     coordinationv1client.LeasesGetter
 	revisions  *revisionapi.Client
 	gateway    gatewayclient.Interface
 	namespace  string
@@ -56,26 +58,30 @@ func NewOrchestrator(ctx context.Context, cfg Config) (*Orchestrator, error) {
 	cfg.applyDefaults()
 	// One rest config, so the configured budget is a single bucket shared by
 	// the typed, dynamic, and Gateway clients rather than one bucket each.
-	restCfg, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
+	restConfig, err := kube.NewConfig(cfg.Kubeconfig, cfg.Context, cfg.Metrics, float32(cfg.ClientQPS), cfg.ClientBurst)
 	if err != nil {
 		return nil, err
 	}
-	cs, err := kubernetes.NewForConfig(restCfg)
+	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kube client: %w", err)
 	}
-	gw, err := gatewayclient.NewForConfig(restCfg)
+	gateway, err := gatewayclient.NewForConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gateway client: %w", err)
 	}
-	dynamicClient, err := dynamic.NewForConfig(restCfg)
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dynamic kube client: %w", err)
 	}
-	o := &Orchestrator{client: cs, revisions: revisionapi.NewClient(dynamicClient), gateway: gw, namespace: cfg.Namespace, cfg: cfg,
-		pin: kube.NewPin(cs, cfg.PinNodes, cfg.NodeSelector, cfg.Tolerations)}
+	leases, err := kube.NewLeaseClient(restConfig)
+	if err != nil {
+		return nil, err
+	}
+	o := &Orchestrator{client: client, leases: leases, revisions: revisionapi.NewClient(dynamicClient), gateway: gateway, namespace: cfg.Namespace, cfg: cfg,
+		pin: kube.NewPin(client, cfg.PinNodes, cfg.NodeSelector, cfg.Tolerations)}
 	if len(cfg.Pools) > 0 {
-		o.pools, err = NewRevisionPoolManager(cs, cfg)
+		o.pools, err = NewRevisionPoolManager(client, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -144,7 +150,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		o.leaderMu.Unlock()
 		return apperrors.Internal("kubernetes.syncRevisionCaches", err)
 	}
-	go kube.RunLeaderElected(runCtx, o.client, o.namespace, o.cfg.LeaderElection, o.runReconcilers, o.onLeadership)
+	go kube.RunLeaderElected(runCtx, o.leases, o.namespace, o.cfg.LeaderElection, o.runReconcilers, o.onLeadership)
 	return nil
 }
 

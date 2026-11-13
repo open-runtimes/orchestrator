@@ -36,6 +36,7 @@ func newTestOrchestrator(t *testing.T) (*Orchestrator, *fake.Clientset) {
 	cfg.applyDefaults()
 	return &Orchestrator{
 		client:    cs,
+		leases:    cs.CoordinationV1(),
 		revisions: revisionapi.NewClient(dynamicClient),
 		gateway:   gatewayfake.NewClientset(),
 		namespace: cfg.Namespace,
