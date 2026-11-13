@@ -4,6 +4,7 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"orchestrator/internal/apperrors"
@@ -109,13 +110,15 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // The job's watcher will be spawned automatically by the leader's informer
 // when K8s creates the owning Pod.
 func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
+	ctx, cancel := o.bound(ctx)
+	defer cancel()
 	jobSpec := buildJob(req, o.cfg, o.cfg.SidecarImage)
 	jobSpec.Spec.Template.Spec.Affinity = o.pin.Affinity(req.PlacementKey)
 	if _, err := o.client.BatchV1().Jobs(o.cfg.Namespace).Create(ctx, jobSpec, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return apperrors.Conflict("job already exists")
 		}
-		return apperrors.Internal("kubernetes.createJob", err)
+		return classify(apperrors.Unconfirmed, "kubernetes.createJob", err)
 	}
 	return nil
 }
@@ -124,17 +127,19 @@ func (o *Orchestrator) Run(ctx context.Context, req *job.Request) error {
 // a second call against a non-existent Job returns our NotFound error. The
 // leader's watcher observes the Pod deletion and tears down its tracker.
 func (o *Orchestrator) Stop(ctx context.Context, jobID string) error {
-	prop := metav1.DeletePropagationForeground
+	defer o.statusCache.invalidate(jobID)
+	ctx, cancel := o.bound(ctx)
+	defer cancel()
+	propagation := metav1.DeletePropagationForeground
 	err := o.client.BatchV1().Jobs(o.cfg.Namespace).Delete(ctx, jobNameFor(jobID), metav1.DeleteOptions{
-		PropagationPolicy: &prop,
+		PropagationPolicy: &propagation,
 	})
 	if apierrors.IsNotFound(err) {
 		return apperrors.NotFound("job", jobID)
 	}
 	if err != nil {
-		return apperrors.Internal("kubernetes.deleteJob", err)
+		return classify(apperrors.Unconfirmed, "kubernetes.deleteJob", err)
 	}
-	o.statusCache.invalidate(jobID)
 	return nil
 }
 
@@ -150,20 +155,39 @@ func (o *Orchestrator) Status(ctx context.Context, jobID string) (*job.StatusRes
 	}
 	o.cfg.Metrics.RecordStatusCacheMiss(ctx)
 
+	ctx, cancel := o.bound(ctx)
+	defer cancel()
 	j, err := o.client.BatchV1().Jobs(o.cfg.Namespace).Get(ctx, jobNameFor(jobID), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, apperrors.NotFound("job", jobID)
 	}
 	if err != nil {
-		return nil, apperrors.Internal("kubernetes.getJob", err)
+		return nil, classify(apperrors.Unavailable, "kubernetes.getJob", err)
 	}
 	status, err := deriveStatus(ctx, o.client, o.cfg.Namespace, j)
 	if err != nil {
-		return nil, apperrors.Internal("kubernetes.deriveStatus", err)
+		return nil, classify(apperrors.Unavailable, "kubernetes.deriveStatus", err)
 	}
 	o.statusCache.put(jobID, status)
 	out := status
 	return &out, nil
+}
+
+// bound gives a request-path call its deadline, so a stalled API server turns
+// into a definite error before the caller's own timeout fires.
+func (o *Orchestrator) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := o.cfg.RequestTimeout
+	if timeout <= 0 {
+		timeout = defaultRequestTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func classify(unavailable func(string, error) error, operation string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return unavailable(operation, err)
+	}
+	return apperrors.Internal(operation, err)
 }
 
 // Callback returns the job's callback destination from the annotations its
@@ -192,6 +216,9 @@ func (o *Orchestrator) List(ctx context.Context) ([]job.StatusResponse, error) {
 	statuses := make([]job.StatusResponse, 0, len(jobs.Items))
 	for i := range jobs.Items {
 		status, err := deriveStatus(ctx, o.client, o.cfg.Namespace, &jobs.Items[i])
+		if cutShort(ctx, err) {
+			return nil, classify(apperrors.Unavailable, "kubernetes.deriveStatus", err)
+		}
 		if err != nil {
 			slog.Warn("Failed to derive status for job", "name", jobs.Items[i].Name, "error", err)
 			continue

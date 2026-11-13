@@ -1,9 +1,11 @@
 package apperrors
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +65,42 @@ func TestExhausted(t *testing.T) {
 	}
 }
 
+func TestUnavailable(t *testing.T) {
+	t.Parallel()
+	err := Unavailable("kubernetes.getJob", context.DeadlineExceeded)
+
+	if !errors.Is(err, ErrUnavailable) {
+		t.Error("expected error to match ErrUnavailable")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Error("expected cause to be preserved")
+	}
+	if want := "kubernetes.getJob did not finish in time: context deadline exceeded"; err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+	if got := HTTPStatus(fmt.Errorf("wrap: %w", err)); got != http.StatusServiceUnavailable {
+		t.Errorf("HTTPStatus() = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
+func TestUnconfirmed(t *testing.T) {
+	t.Parallel()
+	err := Unconfirmed("kubernetes.createJob", context.DeadlineExceeded)
+
+	if !errors.Is(err, ErrUnavailable) {
+		t.Error("expected error to match ErrUnavailable")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Error("expected cause to be preserved")
+	}
+	if !strings.Contains(err.Error(), "outcome is unknown") {
+		t.Errorf("message must say the outcome is unknown, got %q", err.Error())
+	}
+	if got := HTTPStatus(fmt.Errorf("wrap: %w", err)); got != http.StatusServiceUnavailable {
+		t.Errorf("HTTPStatus() = %d, want %d", got, http.StatusServiceUnavailable)
+	}
+}
+
 func TestInternal(t *testing.T) {
 	t.Parallel()
 	cause := errors.New("docker daemon unavailable")
@@ -91,11 +129,14 @@ func TestHTTPStatus(t *testing.T) {
 		{"not found", NotFound("job", "123"), http.StatusNotFound},
 		{"conflict", Conflict("exists"), http.StatusConflict},
 		{"exhausted", Exhausted("no free warm pod"), http.StatusTooManyRequests},
+		{"unavailable", Unavailable("op", context.DeadlineExceeded), http.StatusServiceUnavailable},
+		{"unconfirmed", Unconfirmed("op", context.DeadlineExceeded), http.StatusServiceUnavailable},
 		{"internal", Internal("op", errors.New("fail")), http.StatusInternalServerError},
 		{"sentinel validation", ErrValidation, http.StatusBadRequest},
 		{"sentinel not found", ErrNotFound, http.StatusNotFound},
 		{"sentinel conflict", ErrConflict, http.StatusConflict},
 		{"sentinel exhausted", ErrExhausted, http.StatusTooManyRequests},
+		{"sentinel unavailable", ErrUnavailable, http.StatusServiceUnavailable},
 		{"sentinel internal", ErrInternal, http.StatusInternalServerError},
 		{"wrapped validation", fmt.Errorf("wrap: %w", Validation("f", "m")), http.StatusBadRequest},
 		{"unknown error", errors.New("unknown"), http.StatusInternalServerError},
