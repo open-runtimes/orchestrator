@@ -820,17 +820,26 @@ func TestRunner_RestartAdoptsMounts(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	runner := NewRunner("test-job", tmpDir, 0, WithSignalFunc(sigFn), WithMounter(fake))
+	holding := make(chan struct{})
+	holdingSignal := func(ctx context.Context) {
+		close(holding)
+		sigFn(ctx)
+	}
+
+	runner := NewRunner("test-job", tmpDir, 0, WithSignalFunc(holdingSignal), WithMounter(fake))
 
 	done := make(chan error, 1)
 	go func() { done <- runner.Run(t.Context(), artifacts) }()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !CheckReady(tmpDir) {
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-holding:
+	case err := <-done:
+		t.Fatalf("Run() returned before holding for the worker: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not start holding for the worker within deadline")
 	}
 	if !CheckReady(tmpDir) {
-		t.Fatal("ready marker not rewritten within deadline")
+		t.Fatal("ready marker not rewritten before holding for the worker")
 	}
 
 	fake.mu.Lock()
