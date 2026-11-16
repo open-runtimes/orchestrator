@@ -1,6 +1,6 @@
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.159.0
+    image: otel/opentelemetry-collector-contrib:0.165.0
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     ports:
       - "4317:4317"
@@ -10,7 +10,7 @@ services:
     networks: [orchestrator]
 
   prometheus:
-    image: prom/prometheus:v2.50.1
+    image: prom/prometheus:v2.55.1
     ports:
       - "9091:9090"
     volumes:
@@ -20,7 +20,7 @@ services:
     networks: [orchestrator]
 
   grafana:
-    image: grafana/grafana:10.4.1
+    image: grafana/grafana:10.4.19-security-01
     ports:
       - "3000:3000"
     environment:
