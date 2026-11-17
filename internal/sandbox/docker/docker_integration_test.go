@@ -77,7 +77,7 @@ func agentTestImage() string {
 	if img := os.Getenv("SANDBOX_AGENT_IMAGE"); img != "" {
 		return img
 	}
-	return "ghcr.io/open-runtimes/sandbox:0.1.0"
+	return "ghcr.io/open-runtimes/sandbox:0.2.0"
 }
 
 // testPool mirrors what an operator declares for an ordinary runtime image: an
