@@ -106,6 +106,10 @@ func (a *Download) Apply(ctx context.Context, root *os.Root) *Result {
 		slog.Warn("Download failed, retrying", "artifactId", a.ID, "attempt", attempt, "backoff", wait, "error", retryable.err)
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				// The caller gave up, not the budget: report it as canceled.
+				return &Result{Status: "failed", Error: fmt.Errorf("download canceled while retrying: %w (last attempt: %s)", ctx.Err(), retryable.err.Error())}
+			}
 			return &Result{Status: "failed", Error: gaveUp(retryable.err, attempt)}
 		case <-time.After(wait):
 		}

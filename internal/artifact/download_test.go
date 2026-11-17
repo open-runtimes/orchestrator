@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -203,6 +204,61 @@ func TestDownload_Apply_RetriesDroppedConnection(t *testing.T) {
 	}
 	if got := requests.Load(); got != 2 {
 		t.Errorf("requests = %d, want 2", got)
+	}
+}
+
+// A connection cut partway through the body is retried, and the partial body
+// is not left behind.
+func TestDownload_Apply_RetriesBodyCutShort(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			conn, buf, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+			buf.Flush()
+			conn.Close()
+			return
+		}
+		w.Write([]byte("complete"))
+	}))
+	t.Cleanup(server.Close)
+	tmpDir := t.TempDir()
+
+	a := &Download{ID: "dl", In: server.URL, Out: "file.txt", TimeoutSeconds: 10}
+	if result := a.Apply(t.Context(), workspace(t, tmpDir)); result.Error != nil {
+		t.Fatalf("Apply() error = %v", result.Error)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Errorf("requests = %d, want 2", got)
+	}
+	if content, _ := os.ReadFile(filepath.Join(tmpDir, "file.txt")); string(content) != "complete" {
+		t.Errorf("content = %q, want %q", content, "complete")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "file.txt.partial")); err == nil {
+		t.Error("partial file left behind")
+	}
+}
+
+// A caller that cancels during the wait sees a cancellation, not the last
+// attempt's status.
+func TestDownload_Apply_CancelDuringBackoffIsCanceled(t *testing.T) {
+	t.Parallel()
+	server, _ := flaky(t, 1<<30, http.StatusServiceUnavailable, "5", "")
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	a := &Download{ID: "dl", In: server.URL, Out: "file.txt", TimeoutSeconds: 30}
+	result := a.Apply(ctx, workspace(t, t.TempDir()))
+	if result.Error == nil {
+		t.Fatal("expected the download to fail")
+	}
+	if code := FailureCode("download", result.Error); code != ErrArtifactCanceled {
+		t.Errorf("FailureCode = %q, want %q (error %v)", code, ErrArtifactCanceled, result.Error)
 	}
 }
 
