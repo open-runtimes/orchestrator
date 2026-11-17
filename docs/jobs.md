@@ -179,6 +179,10 @@ Download a file from a URL:
 
 - `in` - URL to download from (required)
 - `out` - Path to write to (required)
+- `headers` - Headers sent with the request (optional), typically `Authorization`
+- `timeoutSeconds` - Budget for the whole download, retries included (default 300)
+
+A dropped or refused connection, a 5xx and a 429 are retried with exponential backoff (0.5s doubling to 5s, never sooner than the response's `Retry-After`) until `timeoutSeconds` runs out. Any other status fails the artifact at once with `download_http_error`.
 
 ### Write Artifact
 
