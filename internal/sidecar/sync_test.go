@@ -235,8 +235,8 @@ func TestMakeWritable_DoesNotFollowSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := makeWritable(openRoot(t, root), "."); err != nil {
-		t.Fatalf("makeWritable: %v", err)
+	if err := artifact.MakeWritable(openRoot(t, root), "."); err != nil {
+		t.Fatalf("MakeWritable: %v", err)
 	}
 	info, err := os.Stat(outside)
 	if err != nil {

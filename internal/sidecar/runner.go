@@ -529,7 +529,7 @@ func (r *Runner) extractTarMountLower(ctx context.Context, m *artifact.Mount, lo
 		if m.Writable {
 			// Open the extracted tree to the unknown workload uid just like a
 			// restored sync delta and the overlay upper directory.
-			if err := makeWritable(ws, lowerRel); err != nil {
+			if err := artifact.MakeWritable(ws, lowerRel); err != nil {
 				_ = ws.RemoveAll(lowerRel)
 				return fmt.Errorf("make tar lower writable: %w", err)
 			}
