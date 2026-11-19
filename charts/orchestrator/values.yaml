@@ -90,7 +90,7 @@ images:
   sandboxAgent:
     ref: ""
     repository: ghcr.io/open-runtimes/sandbox
-    tag: "0.1.0"
+    tag: "0.2.0"
   # The node mount agent's CSI registration sidecar.
   csiRegistrar:
     ref: ""

@@ -212,7 +212,7 @@ func TestBuildPod_AgentInstall(t *testing.T) {
 	t.Parallel()
 	builder := testBuilder(t, func(c *Config) {
 		c.Agent = Agent{
-			Image:  "ghcr.io/open-runtimes/sandbox:0.1.0",
+			Image:  "ghcr.io/open-runtimes/sandbox:0.2.0",
 			Source: "/usr/local/bin/sandbox",
 			Dest:   "/workspace/.sandbox-agent",
 		}
@@ -223,7 +223,7 @@ func TestBuildPod_AgentInstall(t *testing.T) {
 		t.Fatalf("want shim-install, agent-install, proxy; got %d", len(pod.Spec.InitContainers))
 	}
 	agent := pod.Spec.InitContainers[1]
-	if agent.Name != ContainerAgentInstall || agent.Image != "ghcr.io/open-runtimes/sandbox:0.1.0" {
+	if agent.Name != ContainerAgentInstall || agent.Image != "ghcr.io/open-runtimes/sandbox:0.2.0" {
 		t.Errorf("agent-install: got %s/%s", agent.Name, agent.Image)
 	}
 	// Plain cp: no shell, no mkdir, so the publishing image needs to contain

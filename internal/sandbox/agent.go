@@ -13,7 +13,7 @@ const (
 	// AgentImage publishes the reference agent, pinned by tag: the tag IS the
 	// version, and an operator may pin harder with a digest. The Helm chart
 	// carries the same pin in values.yaml (sandboxes.agentImage) — bump both.
-	AgentImage = "ghcr.io/open-runtimes/sandbox:0.1.0"
+	AgentImage = "ghcr.io/open-runtimes/sandbox:0.2.0"
 	// AgentSource is the binary's path inside AgentImage.
 	AgentSource = "/usr/local/bin/sandbox"
 	// AgentName is the copy's filename. It sits at the workspace root so the
