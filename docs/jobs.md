@@ -217,6 +217,7 @@ This extracts `code.tar.gz` into the `src/` directory.
 - `subdir` - Extract only this subdirectory from the archive (optional; `./` prefixes and trailing slashes are normalized)
 - `strip` - Drop the first path component of every entry (optional)
 - `symlinkPolicy` - Preserve symlink targets verbatim with `preserve` (default), or omit links resolving outside the destination with `contained` (optional). Neither mode permits later archive entries to write through a symlinked parent.
+- `writable` - Open the destination to any user: directories `0777`, files `0666`, the execute bit kept, symlinks untouched (optional, default `0755`/`0644`). Covers everything under `out`, including what was there before. Set it when the tree is packed into an image a non-root workload will write to through a writable `mount`: an image is mounted with the modes it stores, unlike a tar, which `mount` opens itself.
 
 Git-forge archive downloads wrap the tree in a single root directory whose name varies by provider (GitHub uses `repo-main/`, Gitea uses `repo/`). Set `strip` to unwrap it without knowing its name:
 
