@@ -42,6 +42,16 @@ func (a *Download) DependsOn() string    { return a.Depends }
 // SetSigner satisfies signable.
 func (a *Download) SetSigner(s Signer) { a.signer = s }
 
+// SignedURL returns a URL a plain GET of this download can be sent to: In
+// itself, or for an s3:// URL one pre-signed by redeeming the pod's grant.
+func (a *Download) SignedURL(ctx context.Context) (string, error) {
+	req, err := buildRequest(ctx, http.MethodGet, a.In, nil, 0, a.signer, 30*time.Second)
+	if err != nil {
+		return "", err
+	}
+	return req.URL.String(), nil
+}
+
 // Apply downloads a file from a URL.
 func (a *Download) Apply(ctx context.Context, root *os.Root) *Result {
 	if err := root.MkdirAll(filepath.Dir(a.Out), 0o755); err != nil {

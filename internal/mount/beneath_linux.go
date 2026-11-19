@@ -39,13 +39,31 @@ const unmountBudget = 500 * time.Millisecond
 // binds a directory) at target directly; a writable mount makes it the lower
 // layer of an overlay whose upper and work layers sit in ScratchDir(target).
 func (b Beneath) Mount(source, target string, opts Opts) error {
+	return b.mountFrom(source, nil, target, opts)
+}
+
+// MountImage mounts img at target as Mount mounts a workspace image. The image
+// lives outside the workspace (the node agent's cache), so the caller opens it
+// and nothing in the workspace can name or replace it.
+func (b Beneath) MountImage(img *os.File, target string, opts Opts) error {
+	if opts.SourceDir {
+		return errors.New("an image is not a directory")
+	}
+	return b.mountFrom("", img, target, opts)
+}
+
+// mountFrom mounts img, or the workspace image or directory at source when
+// img is nil.
+func (b Beneath) mountFrom(source string, img *os.File, target string, opts Opts) error {
 	root, err := OpenRoot(b.Dir)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	if source, err = Local(source); err != nil {
-		return err
+	if img == nil {
+		if source, err = Local(source); err != nil {
+			return err
+		}
 	}
 	if target, err = Local(target); err != nil {
 		return err
@@ -81,7 +99,7 @@ func (b Beneath) Mount(source, target string, opts Opts) error {
 		}
 	}
 	if opts.Writable {
-		return mountOverlay(root, source, target, t, opts, b.IDMap)
+		return mountOverlay(root, source, img, target, t, opts, b.IDMap)
 	}
 	if opts.SourceDir {
 		dir, err := root.OpenDir(source) // the read-only bind just stacked
@@ -94,15 +112,16 @@ func (b Beneath) Mount(source, target string, opts Opts) error {
 		}
 		return err
 	}
-	img, err := root.OpenFile(source)
-	if err != nil {
-		return fmt.Errorf("open image: %w", err)
+	if img == nil {
+		if img, err = root.OpenFile(source); err != nil {
+			return fmt.Errorf("open image: %w", err)
+		}
+		defer img.Close()
 	}
-	defer img.Close()
 	return Image(img, t, b.IDMap)
 }
 
-func mountOverlay(root *Root, source, target string, t *os.File, opts Opts, idmap *IDMap) (err error) {
+func mountOverlay(root *Root, source string, img *os.File, target string, t *os.File, opts Opts, idmap *IDMap) (err error) {
 	lower, scratch := LowerDir(target), ScratchDir(target)
 	defer func() {
 		if err != nil {
@@ -124,13 +143,14 @@ func mountOverlay(root *Root, source, target string, t *os.File, opts Opts, idma
 		if err != nil {
 			return err
 		}
-		img, err := root.OpenFile(source)
-		if err != nil {
-			l.Close()
-			return fmt.Errorf("open image: %w", err)
+		if img == nil {
+			if img, err = root.OpenFile(source); err != nil {
+				l.Close()
+				return fmt.Errorf("open image: %w", err)
+			}
+			defer img.Close()
 		}
 		err = Image(img, l, idmap)
-		img.Close()
 		l.Close()
 		if err != nil {
 			return err

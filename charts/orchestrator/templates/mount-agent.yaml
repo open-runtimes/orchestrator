@@ -107,6 +107,16 @@ spec:
             # empty list would let any namespace use the driver.
             - name: ALLOWED_NAMESPACES
               value: {{ $namespaces | uniq | join "," | quote }}
+            {{- with .Values.mountAgent.cache }}
+            {{- if .endpoints }}
+            - name: CACHE_ENDPOINTS
+              value: {{ .endpoints | join "," | quote }}
+            - name: CACHE_SIZE_MIB
+              value: {{ mul .sizeGiB 1024 | quote }}
+            - name: CACHE_MAX_OBJECT_MIB
+              value: {{ .maxObjectMiB | quote }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: api
               containerPort: {{ .Values.mountAgent.port }}
