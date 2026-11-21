@@ -46,6 +46,8 @@ type Config struct {
 	SidecarImagePullPolicy string
 	WorkerImagePullPolicy  string
 	RunAsUser              int64
+	ClientQPS              int // client-side K8s API steady-state QPS; 0 = kube.DefaultClientQPS
+	ClientBurst            int // client-side K8s API burst; 0 = kube.DefaultClientBurst
 
 	// Overcommit derives warm-pod requests from declared limits (internal/kube).
 	Overcommit kube.Overcommit
@@ -112,6 +114,8 @@ func LoadConfigFromEnv() (Config, error) {
 		SidecarImagePullPolicy: config.GetEnv("KUBE_SIDECAR_IMAGE_PULL_POLICY", ""),
 		WorkerImagePullPolicy:  config.GetEnv("KUBE_WORKER_IMAGE_PULL_POLICY", ""),
 		RunAsUser:              int64(config.GetIntEnv("KUBE_RUN_AS_USER", defaultRunAsUser)),
+		ClientQPS:              config.GetIntEnv("KUBE_CLIENT_QPS", 0),
+		ClientBurst:            config.GetIntEnv("KUBE_CLIENT_BURST", 0),
 		Overcommit:             kube.OvercommitFromEnv(),
 		Tolerations:            tolerations,
 		NodeSelector:           nodeSelector,

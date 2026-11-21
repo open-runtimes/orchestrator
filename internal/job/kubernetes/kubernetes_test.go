@@ -415,6 +415,7 @@ func TestLeaderElection_Failover(t *testing.T) {
 	mkOrch := func(id string) *Orchestrator {
 		return &Orchestrator{
 			client: cs,
+			leases: cs.CoordinationV1(),
 			cfg: Config{
 				Namespace: "orchestrator",
 				LeaderElection: LeaderElectionConfig{

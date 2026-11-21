@@ -8,11 +8,12 @@ import (
 
 // Sentinel errors for classification via errors.Is().
 var (
-	ErrValidation = errors.New("validation error")
-	ErrNotFound   = errors.New("not found")
-	ErrConflict   = errors.New("conflict")
-	ErrExhausted  = errors.New("exhausted")
-	ErrInternal   = errors.New("internal error")
+	ErrValidation  = errors.New("validation error")
+	ErrNotFound    = errors.New("not found")
+	ErrConflict    = errors.New("conflict")
+	ErrExhausted   = errors.New("exhausted")
+	ErrUnavailable = errors.New("unavailable")
+	ErrInternal    = errors.New("internal error")
 )
 
 // Error is a classified error: the sentinel says which HTTP status it maps to,
@@ -58,8 +59,30 @@ func Exhausted(reason string) error {
 	return &Error{Sentinel: ErrExhausted, Message: reason}
 }
 
-// Internal creates an internal error wrapping an underlying cause; op names
-// the operation that failed (e.g. "docker.createVolume").
-func Internal(op string, cause error) error {
-	return &Error{Sentinel: ErrInternal, Message: fmt.Sprintf("%s: %v", op, cause), Cause: cause}
+// Unavailable creates an error for an operation whose dependency did not
+// answer in time; operation names it (e.g. "kubernetes.getJob"). Maps to
+// HTTP 503.
+func Unavailable(operation string, cause error) error {
+	return &Error{
+		Sentinel: ErrUnavailable,
+		Message:  fmt.Sprintf("%s did not finish in time: %v", operation, cause),
+		Cause:    cause,
+	}
+}
+
+// Unconfirmed is Unavailable for a write: the request may have reached the
+// dependency before the deadline, so the client is told the outcome is
+// unknown rather than that nothing happened. Maps to HTTP 503.
+func Unconfirmed(operation string, cause error) error {
+	return &Error{
+		Sentinel: ErrUnavailable,
+		Message:  fmt.Sprintf("%s did not finish in time; its outcome is unknown and it may have taken effect: %v", operation, cause),
+		Cause:    cause,
+	}
+}
+
+// Internal creates an internal error wrapping an underlying cause; operation
+// names the operation that failed (e.g. "docker.createVolume").
+func Internal(operation string, cause error) error {
+	return &Error{Sentinel: ErrInternal, Message: fmt.Sprintf("%s: %v", operation, cause), Cause: cause}
 }

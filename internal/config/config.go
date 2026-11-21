@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// DefaultWriteTimeout bounds an API response unless a service sets its own.
+const DefaultWriteTimeout = 30 * time.Second
+
 // ServiceConfig holds configuration shared by the orchestrator services.
 // Image names are namespace-prefixed (job/deployment) because this config is
 // read by more than one binary — nothing here may assume the jobs context.

@@ -40,16 +40,20 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("initialize metrics: %w", err)
 	}
-	restCfg, err := kube.NewConfig(
+	restConfig, err := kube.NewConfig(
 		config.GetEnv("KUBECONFIG", ""), config.GetEnv("KUBE_CONTEXT", ""), metrics,
-		float32(config.GetIntEnv("KUBE_CLIENT_QPS", 200)), config.GetIntEnv("KUBE_CLIENT_BURST", 400),
+		float32(config.GetIntEnv("KUBE_CLIENT_QPS", 0)), config.GetIntEnv("KUBE_CLIENT_BURST", 0),
 	)
 	if err != nil {
 		return fmt.Errorf("build Kubernetes configuration: %w", err)
 	}
-	client, err := kubernetes.NewForConfig(restCfg)
+	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return fmt.Errorf("create Kubernetes client: %w", err)
+	}
+	leases, err := kube.NewLeaseClient(restConfig)
+	if err != nil {
+		return err
 	}
 	manager, poolCount, namespace, err := buildManager(client, metrics, kind)
 	if err != nil {
@@ -75,7 +79,7 @@ func run(ctx context.Context) error {
 		RetryPeriod:   config.GetDurationEnv("KUBE_POOL_LEADER_RETRY_PERIOD", 0),
 	}
 	leader.ApplyDefaults("pool-controller-leader")
-	go kube.RunLeaderElected(ctx, client, namespace, leader,
+	go kube.RunLeaderElected(ctx, leases, namespace, leader,
 		func(termCtx context.Context) { manager.RunControl(termCtx, warm.Hooks{}) },
 		metrics.RecordLeadership)
 	slog.Info("Pool controller ready", "kind", kind, "namespace", namespace, "pools", poolCount)

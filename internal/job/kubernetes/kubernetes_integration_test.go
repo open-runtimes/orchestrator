@@ -766,7 +766,7 @@ func TestIntegration_CombinedArtifacts(t *testing.T) {
 	}
 	var pod *corev1.Pod
 	testutil.MustWaitFor(t, func() bool {
-		pod = fetchPodForJob(t.Context(), o.client, testNamespace, id)
+		pod, _ = fetchPodForJob(t.Context(), o.client, testNamespace, id)
 		return pod != nil && isPodTerminal(pod)
 	}, testutil.WithTimeout(90*time.Second), testutil.WithInterval(time.Second))
 	if pod.Status.Phase != corev1.PodSucceeded {
@@ -799,7 +799,7 @@ func TestIntegration_PostJobArtifactsCrossOwners(t *testing.T) {
 	}
 	var pod *corev1.Pod
 	testutil.MustWaitFor(t, func() bool {
-		pod = fetchPodForJob(t.Context(), o.client, testNamespace, id)
+		pod, _ = fetchPodForJob(t.Context(), o.client, testNamespace, id)
 		return pod != nil && isPodTerminal(pod)
 	}, testutil.WithTimeout(90*time.Second), testutil.WithInterval(time.Second))
 	if pod.Status.Phase != corev1.PodSucceeded {
@@ -860,7 +860,7 @@ func TestIntegration_PreparationFailure(t *testing.T) {
 			}
 			var pod *corev1.Pod
 			testutil.MustWaitFor(t, func() bool {
-				pod = fetchPodForJob(t.Context(), o.client, testNamespace, id)
+				pod, _ = fetchPodForJob(t.Context(), o.client, testNamespace, id)
 				return pod != nil && pod.Status.Phase == corev1.PodFailed
 			}, testutil.WithTimeout(30*time.Second), testutil.WithInterval(time.Second))
 			for _, cs := range pod.Status.ContainerStatuses {

@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"orchestrator/internal/job"
 	"orchestrator/internal/lifecycle"
@@ -13,6 +14,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+// errNoPod reports that a Job has no Pod: not yet created, or already
+// garbage collected.
+var errNoPod = errors.New("job has no pod")
 
 // statusCacheTTL is how long a derived StatusResponse is reused for the same
 // jobID before we re-query the K8s API. Short enough that transient hot-path
@@ -94,13 +99,17 @@ func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace st
 		if condition.Type == batchv1.JobFailed && condition.Status == corev1.ConditionTrue {
 			resp.State = job.StateFailed
 			resp.Error = condition.Reason
-			annotateFailure(ctx, client, namespace, jobID, &resp)
+			if err := annotateFailure(ctx, client, namespace, jobID, &resp); err != nil {
+				return job.StatusResponse{}, err
+			}
 			return resp, nil
 		}
 	}
 	if j.Status.Failed > 0 {
 		resp.State = job.StateFailed
-		annotateFailure(ctx, client, namespace, jobID, &resp)
+		if err := annotateFailure(ctx, client, namespace, jobID, &resp); err != nil {
+			return job.StatusResponse{}, err
+		}
 		return resp, nil
 	}
 
@@ -108,8 +117,11 @@ func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace st
 	// exited: a Job counts its Pod as done only once EVERY container has
 	// stopped, and the native sidecar keeps running to process post-job
 	// artifacts. So ask the Pod what the worker did.
-	pod := fetchPodForJob(ctx, client, namespace, jobID)
-	if pod != nil {
+	pod, err := fetchPodForJob(ctx, client, namespace, jobID)
+	if cutShort(ctx, err) {
+		return job.StatusResponse{}, err
+	}
+	if err == nil {
 		if worker := findWorkerStatus(pod); worker != nil {
 			switch {
 			case worker.State.Terminated != nil:
@@ -131,12 +143,20 @@ func deriveStatus(ctx context.Context, client kubernetes.Interface, namespace st
 
 // annotateFailure fills in ExitCode and Error on a Failed status from the Pod,
 // when the Pod is still present. Best-effort: if the Pod has been garbage
-// collected (TTL elapsed), status stays minimal.
-func annotateFailure(ctx context.Context, client kubernetes.Interface, namespace, jobID string, resp *job.StatusResponse) {
-	pod := fetchPodForJob(ctx, client, namespace, jobID)
-	if pod == nil {
-		return
+// collected (TTL elapsed) or cannot be read, status stays minimal; only a
+// lookup the request's deadline or cancellation cut short is an error.
+func annotateFailure(ctx context.Context, client kubernetes.Interface, namespace, jobID string, resp *job.StatusResponse) error {
+	pod, err := fetchPodForJob(ctx, client, namespace, jobID)
+	if cutShort(ctx, err) {
+		return err
 	}
+	if err == nil {
+		annotatePod(pod, resp)
+	}
+	return nil
+}
+
+func annotatePod(pod *corev1.Pod, resp *job.StatusResponse) {
 	worker := findWorkerStatus(pod)
 	if worker == nil || worker.State.Terminated == nil {
 		if pod.Status.Reason != "" {
@@ -166,16 +186,26 @@ func annotateTermination(worker *corev1.ContainerStatus, resp *job.StatusRespons
 }
 
 // fetchPodForJob returns the first Pod carrying the job.id label in the given
-// namespace, or nil if none exists. The K8s Job controller only ever creates
+// namespace, or errNoPod if none exists. The K8s Job controller only ever creates
 // one Pod per Job in our setup (parallelism=1, backoffLimit=0, restartPolicy=Never).
-func fetchPodForJob(ctx context.Context, client kubernetes.Interface, namespace, jobID string) *corev1.Pod {
+func fetchPodForJob(ctx context.Context, client kubernetes.Interface, namespace, jobID string) (*corev1.Pod, error) {
 	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: LabelJobID + "=" + jobID,
 	})
-	if err != nil || len(pods.Items) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return &pods.Items[0]
+	if len(pods.Items) == 0 {
+		return nil, errNoPod
+	}
+	return &pods.Items[0], nil
+}
+
+// cutShort reports whether a pod lookup failed because the request ran out of
+// time or was abandoned. Answering that with the Job alone would regress a
+// running or exited job to Accepted, and Status would cache the regression.
+func cutShort(ctx context.Context, err error) bool {
+	return err != nil && (ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled))
 }
 
 func findWorkerStatus(pod *corev1.Pod) *corev1.ContainerStatus {

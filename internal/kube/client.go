@@ -7,43 +7,40 @@ import (
 	"fmt"
 	"orchestrator/internal/observability"
 
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/flowcontrol"
 )
 
+// DefaultClientQPS and DefaultClientBurst are the client-side API budget a
+// process gets when it does not configure one.
+const (
+	DefaultClientQPS   = 200
+	DefaultClientBurst = 400
+)
+
 // NewConfig resolves the rest config every client of one process is built
 // from. When metrics is non-nil, all API requests are instrumented with
-// latency/error recorders. A positive qps installs one shared token bucket,
-// so typed, dynamic, and Gateway clients derived from the same config draw on
-// a single budget rather than one bucket each; zero retains client-go
-// defaults.
+// latency/error recorders. It always installs one shared token bucket, so
+// typed, dynamic, and Gateway clients derived from the same config draw on a
+// single budget rather than one bucket each; a qps or burst of zero or less
+// takes DefaultClientQPS or DefaultClientBurst.
 func NewConfig(kubeconfig, kubeContext string, metrics *observability.Metrics, qps float32, burst int) (*rest.Config, error) {
-	restCfg, err := buildRestConfig(kubeconfig, kubeContext)
+	restConfig, err := buildRestConfig(kubeconfig, kubeContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build kube config: %w", err)
 	}
 	if metrics != nil {
-		restCfg.Wrap(newMetricsTransport(metrics))
+		restConfig.Wrap(newMetricsTransport(metrics))
 	}
-	if qps > 0 {
-		restCfg.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(qps, max(burst, 1))
+	if qps <= 0 {
+		qps = DefaultClientQPS
 	}
-	return restCfg, nil
-}
-
-// NewClient builds a Kubernetes client with client-go's default rate limits.
-func NewClient(kubeconfig, kubeContext string, metrics *observability.Metrics) (*kubernetes.Clientset, error) {
-	restCfg, err := NewConfig(kubeconfig, kubeContext, metrics, 0, 0)
-	if err != nil {
-		return nil, err
+	if burst <= 0 {
+		burst = DefaultClientBurst
 	}
-	cs, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kube client: %w", err)
-	}
-	return cs, nil
+	restConfig.RateLimiter = deadlineLimiter{flowcontrol.NewTokenBucketRateLimiter(qps, burst)}
+	return restConfig, nil
 }
 
 // buildRestConfig resolves a *rest.Config in this order:
@@ -54,8 +51,8 @@ func NewClient(kubeconfig, kubeContext string, metrics *observability.Metrics) (
 //     with optional context override.
 func buildRestConfig(kubeconfig, kubeContext string) (*rest.Config, error) {
 	if kubeconfig == "" && kubeContext == "" {
-		if cfg, err := rest.InClusterConfig(); err == nil {
-			return cfg, nil
+		if config, err := rest.InClusterConfig(); err == nil {
+			return config, nil
 		}
 	}
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()

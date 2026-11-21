@@ -133,7 +133,7 @@ func writeError(w http.ResponseWriter, status int, message string) {
 func handleServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	status := apperrors.HTTPStatus(err)
 	if status >= 500 {
-		slog.Error("Internal error", "error", err, "path", r.URL.Path)
+		slog.Error("Service error", "error", err, "path", r.URL.Path, "status", status)
 	} else {
 		slog.Warn("Client error", "error", err, "path", r.URL.Path, "status", status)
 	}

@@ -8,9 +8,18 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/util/flowcontrol"
+)
+
+// The Lease budget covers a renewal's get and update every retry period, with
+// headroom for the acquire attempts of a contested election.
+const (
+	leaseQPS   = 5
+	leaseBurst = 10
 )
 
 // LeaderElectionConfig controls how replicas coordinate so that exactly one
@@ -50,12 +59,26 @@ func (cfg *LeaderElectionConfig) ApplyDefaults(defaultLeaseName string) {
 	}
 }
 
+// NewLeaseClient builds the Lease client leader election renews through, on a
+// copy of restConfig with its own token bucket: a request burst that drains
+// the process's shared budget must not delay a renewal past RenewDeadline and
+// cost the replica its leadership.
+func NewLeaseClient(restConfig *rest.Config) (*coordinationv1client.CoordinationV1Client, error) {
+	leaseConfig := rest.CopyConfig(restConfig)
+	leaseConfig.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(leaseQPS, leaseBurst)
+	client, err := coordinationv1client.NewForConfig(leaseConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create lease client: %w", err)
+	}
+	return client, nil
+}
+
 // RunLeaderElected runs `run` while this process holds the lease, looping so
 // that if the lease is lost the process re-competes, until ctx cancels. With
 // Enabled=false (single-replica mode) it runs `run` directly. onLeadership,
 // when non-nil, is called as leadership is gained/lost — with the identity
 // label to record against.
-func RunLeaderElected(ctx context.Context, client kubernetes.Interface, namespace string, cfg LeaderElectionConfig, run func(context.Context), onLeadership func(context.Context, string, bool)) {
+func RunLeaderElected(ctx context.Context, leases coordinationv1client.LeasesGetter, namespace string, cfg LeaderElectionConfig, run func(context.Context), onLeadership func(context.Context, string, bool)) {
 	notify := func(ctx context.Context, identity string, leading bool) {
 		if onLeadership != nil {
 			onLeadership(ctx, identity, leading)
@@ -89,7 +112,7 @@ func RunLeaderElected(ctx context.Context, client kubernetes.Interface, namespac
 				Name:      cfg.LeaseName,
 				Namespace: namespace,
 			},
-			Client: client.CoordinationV1(),
+			Client: leases,
 			LockConfig: resourcelock.ResourceLockConfig{
 				Identity: cfg.Identity,
 			},
