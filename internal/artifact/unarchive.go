@@ -93,6 +93,7 @@ type Unarchive struct {
 	Subdir        string `json:"subdir,omitempty"`        // Extract only this subdirectory
 	Strip         bool   `json:"strip,omitempty"`         // Drop the archive's wrapper root directory
 	SymlinkPolicy string `json:"symlinkPolicy,omitempty"` // "preserve" (default) or "contained"
+	Writable      bool   `json:"writable,omitempty"`      // Open the destination to any uid
 	Depends       string `json:"depends,omitempty"`
 }
 
@@ -392,7 +393,21 @@ func underRoot(candidate, root string) bool {
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..")
 }
 
-// Apply extracts the archive, detecting squashfs / plain tar / gzip / zstd / lz4 from
+// Apply extracts the archive. With Writable the destination is then opened to
+// any uid: an image packed from it is mounted as stored, so the modes have to
+// be in the tree before it is archived.
+func (a *Unarchive) Apply(ctx context.Context, root *os.Root) *Result {
+	result := a.extract(root)
+	if result.Error != nil || !a.Writable {
+		return result
+	}
+	if err := MakeWritable(root, a.Out); err != nil {
+		return &Result{Status: "failed", Error: fmt.Errorf("failed to make destination writable: %w", err)}
+	}
+	return result
+}
+
+// extract materializes the archive, detecting squashfs / plain tar / gzip / zstd / lz4 from
 // its magic bytes. If Strip is set, the first path component of every entry
 // is dropped — git-forge archives (GitHub's "{repo}-{ref}/", Gitea's
 // "{repo}/") wrap the tree in a single root directory whose name the caller
@@ -400,7 +415,7 @@ func underRoot(candidate, root string) bool {
 // subdirectory are extracted, with the subdir prefix stripped; with Strip
 // the subdir is resolved against the unwrapped tree, without it (legacy) a
 // tar's detected root folder is implicitly prepended to the subdir.
-func (a *Unarchive) Apply(ctx context.Context, root *os.Root) *Result {
+func (a *Unarchive) extract(root *os.Root) *Result {
 	// Read enough to cover every magic we sniff. squashfs "hsqs" sits at offset
 	// 0 and tar "ustar" at 257, but erofs's magic is at offset 1024 — so read
 	// past it (1028 bytes) rather than the 512 the tar/squashfs checks needed.
@@ -754,4 +769,36 @@ func extractFS(fsys fs.FS, destDir, subdir string, strip bool) error {
 		return fmt.Errorf("%w: no entries extracted (strip=%t, subdir=%q): archive layout does not match", ErrArchiveLayoutMismatch, strip, subdir)
 	}
 	return nil
+}
+
+// MakeWritable opens a sidecar-materialized tree up to whoever the workload
+// runs as. The sidecar unpacks as root and extraction deliberately does not
+// trust archive modes, so an existing lower or restored file would otherwise
+// be root-owned 0644 and fail overlayfs's permission check before copy-up.
+// World-writable for the same reason the upper layer is — the sidecar cannot
+// know the workload's uid — and these trees belong to one workload. The
+// execute bit survives, since a workspace legitimately holds scripts.
+func MakeWritable(ws *os.Root, dir string) error {
+	return fs.WalkDir(ws.FS(), filepath.ToSlash(filepath.Clean(dir)), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// Archive links are preserved verbatim and may point anywhere in the
+		// workspace; Chmod follows them, so they are left alone rather than
+		// mutating some other file's permissions.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		mode := os.FileMode(0o666)
+		if d.IsDir() {
+			mode = 0o777
+		} else if info.Mode().Perm()&0o111 != 0 {
+			mode |= 0o111
+		}
+		return ws.Chmod(filepath.FromSlash(p), mode)
+	})
 }

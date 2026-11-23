@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"orchestrator/internal/artifact"
@@ -137,7 +136,7 @@ func (r *Runner) restoreDelta(ctx context.Context, m *artifact.Mount) error {
 	}
 	err := r.inWorkspace(func(ws *os.Root) error {
 		_ = ws.Remove(archiveRel)
-		return makeWritable(ws, relativeTo(r.sharedVolumePath, upper))
+		return artifact.MakeWritable(ws, relativeTo(r.sharedVolumePath, upper))
 	})
 	if err != nil {
 		return fmt.Errorf("open up restored delta: %w", err)
@@ -263,38 +262,6 @@ func (r *Runner) StopSync(ctx context.Context) {
 // the S3 credentials, which stay on this side of the workload.
 func (r *Runner) apply(ctx context.Context, arts ...artifact.Artifact) error {
 	return r.processArtifacts(ctx, arts, false)
-}
-
-// makeWritable opens a sidecar-materialized tree up to whoever the workload
-// runs as. The sidecar unpacks as root and extraction deliberately does not
-// trust archive modes, so an existing lower or restored file would otherwise
-// be root-owned 0644 and fail overlayfs's permission check before copy-up.
-// World-writable for the same reason the upper layer is — the sidecar cannot
-// know the workload's uid — and these trees belong to one workload. The
-// execute bit survives, since a workspace legitimately holds scripts.
-func makeWritable(ws *os.Root, dir string) error {
-	return fs.WalkDir(ws.FS(), filepath.ToSlash(filepath.Clean(dir)), func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		// Archive links are preserved verbatim and may point anywhere in the
-		// workspace; Chmod follows them, so they are left alone rather than
-		// mutating some other file's permissions.
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		mode := os.FileMode(0o666)
-		if d.IsDir() {
-			mode = 0o777
-		} else if info.Mode().Perm()&0o111 != 0 {
-			mode |= 0o111
-		}
-		return ws.Chmod(filepath.FromSlash(p), mode)
-	})
 }
 
 // deltaArchivePath is where a delta is staged inside the workspace, next to the

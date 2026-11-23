@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"testing/fstest"
+
+	"orchestrator/internal/erofs"
 )
 
 // TestExtractFS_SkipsNonRegular verifies the shared image extractor writes only
@@ -462,6 +464,74 @@ func TestUnarchive_Apply_NormalizesExistingFileMode(t *testing.T) {
 	}
 	if got := fi.Mode().Perm(); got != 0o644 {
 		t.Errorf("pre-existing 0o600 destination left as %#o, want %#o", got, 0o644)
+	}
+}
+
+// A tree unarchived with Writable and packed as erofs has to carry the open
+// modes in the image itself: a mounted image keeps what it stores, so this is
+// what a non-root workload meets under a writable mount.
+func TestUnarchive_Apply_Writable_ModesReachErofsImage(t *testing.T) {
+	defer syscall.Umask(syscall.Umask(0o077))
+
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "code.tar.gz")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	for _, e := range []struct {
+		name string
+		mode int64
+	}{
+		{"app/cache/data.json", 0o600},
+		{"app/run.sh", 0o700},
+	} {
+		if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: e.mode, Size: 2, Typeflag: tar.TypeReg}); err != nil {
+			t.Fatalf("WriteHeader: %v", err)
+		}
+		if _, err := tw.Write([]byte("{}")); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if err := errors.Join(tw.Close(), gz.Close(), file.Close()); err != nil {
+		t.Fatalf("close archive: %v", err)
+	}
+
+	ws := workspace(t, tmpDir)
+	unarchive := &Unarchive{ID: "tree", In: "code.tar.gz", Out: "tree", Writable: true}
+	if result := unarchive.Apply(t.Context(), ws); result.Error != nil {
+		t.Fatalf("unarchive: %v", result.Error)
+	}
+	archive := &Archive{ID: "image", In: "tree", Out: "code.erofs", Format: "erofs", Compression: "lz4hc"}
+	if result := archive.Apply(t.Context(), ws); result.Error != nil {
+		t.Fatalf("archive: %v", result.Error)
+	}
+
+	f, err := os.Open(filepath.Join(tmpDir, "code.erofs"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+	img, err := erofs.Open(f)
+	if err != nil {
+		t.Fatalf("erofs.Open: %v", err)
+	}
+	for name, want := range map[string]fs.FileMode{
+		".":                   0o777,
+		"app":                 0o777,
+		"app/cache":           0o777,
+		"app/cache/data.json": 0o666,
+		"app/run.sh":          0o777,
+	} {
+		info, err := fs.Stat(img, name)
+		if err != nil {
+			t.Fatalf("Stat %s: %v", name, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s stored as %#o in the image, want %#o", name, got, want)
+		}
 	}
 }
 
