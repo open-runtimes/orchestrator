@@ -9,8 +9,8 @@ require (
 	github.com/go-logr/logr v1.4.4
 	github.com/klauspost/compress v1.20.4
 	github.com/klauspost/pgzip v1.3.0
-	github.com/moby/moby/api v1.56.1
-	github.com/moby/moby/client v0.6.2
+	github.com/moby/moby/api v1.57.0
+	github.com/moby/moby/client v0.6.3
 	github.com/pierrec/lz4/v4 v4.1.33
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
