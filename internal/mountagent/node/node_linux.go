@@ -38,6 +38,9 @@ type Agent struct {
 	nodeID     string
 	namespaces []string // pods outside these may not use the driver; empty = any; a trailing * matches a prefix
 	reg        *registry
+	// Cache, when set, serves /v1/fetch-mount. Without it the route is absent
+	// and the sidecar downloads images itself.
+	Cache *Cache
 }
 
 // New loads the registry from stateDir and returns an agent for this node.
@@ -250,6 +253,9 @@ func (a *Agent) Handler() http.Handler {
 		}
 		return struct{}{}, b.Mount(req.Source, req.Target, req.Opts)
 	}))
+	if a.Cache != nil {
+		mux.HandleFunc("POST /v1/fetch-mount", serve(a, a.fetchMount))
+	}
 	mux.HandleFunc("POST /v1/unmount", serve(a, func(b mount.Beneath, req mountagent.TargetRequest) (any, error) {
 		return struct{}{}, b.Unmount(req.Target)
 	}))
@@ -259,6 +265,36 @@ func (a *Agent) Handler() http.Handler {
 	}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return mux
+}
+
+// fetchMount mounts an image from the node's cache. The image is checked to be
+// one the kernel mounts before anything is stacked: a tar build is refused, and
+// the sidecar extracts it itself.
+func (a *Agent) fetchMount(b mount.Beneath, req mountagent.FetchMountRequest) (any, error) {
+	if req.SourceDir || req.UpperOnDisk {
+		return nil, errors.New("only an image mount can come from the cache")
+	}
+	img, hit, err := a.Cache.Open(context.Background(), req.URL)
+	if err != nil {
+		return nil, err
+	}
+	defer img.Close()
+	format, err := mount.FsType(img)
+	if err != nil {
+		return nil, err
+	}
+	idmap, err := podIDMap(b.Dir)
+	if err != nil {
+		return nil, err
+	}
+	if idmap != nil {
+		defer idmap.Close()
+		b.IDMap = idmap
+	}
+	if err := b.MountImage(img, req.Target, req.Opts); err != nil {
+		return nil, err
+	}
+	return mountagent.FetchMountResponse{Hit: hit, Format: format}, nil
 }
 
 func serve[T any](a *Agent, op func(mount.Beneath, T) (any, error)) http.HandlerFunc {

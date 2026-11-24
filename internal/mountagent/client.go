@@ -42,6 +42,23 @@ type MountRequest struct {
 	mount.Opts
 }
 
+// FetchMountRequest asks the agent to fetch the image at URL, a pre-signed GET
+// for one object, through the node's cache and mount it at Target, relative to
+// the workspace.
+type FetchMountRequest struct {
+	URL    string `json:"url"`
+	Target string `json:"target"`
+	mount.Opts
+}
+
+// FetchMountResponse answers /v1/fetch-mount.
+type FetchMountResponse struct {
+	// Hit says the image was already on the node.
+	Hit bool `json:"hit"`
+	// Format is the image's filesystem: erofs or squashfs.
+	Format string `json:"format"`
+}
+
 // TargetRequest names a mount target, relative to the workspace.
 type TargetRequest struct {
 	Target string `json:"target"`
@@ -73,6 +90,17 @@ func NewClient(endpoint, token string) *Client {
 // Mount implements the sidecar's Mounter.
 func (c *Client) Mount(source, target string, opts mount.Opts) error {
 	return c.call("/v1/mount", MountRequest{Source: source, Target: target, Opts: opts}, nil)
+}
+
+// FetchMount has the agent fetch url through the node's cache and mount it at
+// target. Any error means the caller should download and mount the image
+// itself: an agent without a cache answers 404, and one that will not cache
+// this object (too large, not an image, a host it does not fetch from) refuses
+// it.
+func (c *Client) FetchMount(url, target string, opts mount.Opts) (FetchMountResponse, error) {
+	var resp FetchMountResponse
+	err := c.call("/v1/fetch-mount", FetchMountRequest{URL: url, Target: target, Opts: opts}, &resp)
+	return resp, err
 }
 
 // Unmount implements the sidecar's Mounter.

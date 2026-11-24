@@ -626,6 +626,27 @@
             "minLength": 1
           }
         },
+        "cache": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoints": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^https?://[^/@]+$"
+              }
+            },
+            "sizeGiB": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxObjectMiB": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
         "resources": {
           "$ref": "#/$defs/resources"
         },

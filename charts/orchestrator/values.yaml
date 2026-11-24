@@ -538,6 +538,16 @@ mountAgent:
   # driver, for another platform's mounting pods on the same nodes. An entry
   # ending in * matches a prefix (r-* for one namespace per workload).
   extraAllowedNamespaces: []
+  # The node artifact cache (docs/design/node-artifact-cache.md): a mounted
+  # download is fetched once per node and mounted from the node's disk. On when
+  # endpoints names the object stores the agent may fetch from, as
+  # scheme://host[:port]; every URL a pod sends must be on one of them exactly.
+  cache:
+    endpoints: []
+    # Disk kept for images, least recently used out first.
+    sizeGiB: 20
+    # Larger images are not cached; the sidecar downloads them itself.
+    maxObjectMiB: 200
   resources:
     requests:
       cpu: 10m

@@ -5,6 +5,8 @@ package node
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"orchestrator/internal/mount"
 	"orchestrator/internal/mountagent"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -226,5 +229,107 @@ func TestNamespacePrefixes(t *testing.T) {
 		if got := a.allowed(ns); got != want {
 			t.Errorf("allowed(%q) = %v, want %v", ns, got, want)
 		}
+	}
+}
+
+// A pod's image comes from the node's cache: the first pod downloads it, the
+// next one mounts the same file, and an object the kernel would not mount is
+// refused before anything is stacked, so the sidecar can fetch it itself.
+func TestPublishMountFromCache(t *testing.T) {
+	testutil.RequireMountPrivilege(t)
+	images := t.TempDir()
+	testutil.WriteSquashfs(t, filepath.Join(images, "a.sqfs"))
+	if err := os.WriteFile(filepath.Join(images, "build.tar"), []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var downloads atomic.Int32
+	files := http.FileServer(http.Dir(images))
+	store := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("sig") != "ok" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("Range") == "" {
+			downloads.Add(1)
+		}
+		w.Header().Set("ETag", `"v1"`)
+		files.ServeHTTP(w, r)
+	}))
+	defer store.Close()
+
+	state := t.TempDir()
+	a, err := New("test", "node", state, []string{"ns"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Cache, err = NewCache(filepath.Join(state, "cache"), []string{store.URL}, 1<<30, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	ctx := context.Background()
+	for i, wantHit := range []bool{false, true} {
+		target := filepath.Join(t.TempDir(), "workspace")
+		token := rand.Text()
+		publish := publishRequest(target, "ns", token)
+		publish.VolumeId = fmt.Sprintf("csi-%d", i)
+		if _, err := a.NodePublishVolume(ctx, publish); err != nil {
+			t.Fatal(err)
+		}
+		c := mountagent.NewClient(srv.URL, token)
+
+		res, err := c.FetchMount(store.URL+"/a.sqfs?sig=ok", "code", mount.Opts{Writable: true, SizeMiB: 8})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Hit != wantHit || res.Format != "squashfs" {
+			t.Fatalf("pod %d: fetch-mount = %+v, want hit %v of a squashfs image", i, res, wantHit)
+		}
+		if got, err := os.ReadFile(filepath.Join(target, "code/hello.txt")); err != nil || string(got) != "hello from the image" {
+			t.Fatalf("pod %d: mounted content = %q, %v", i, got, err)
+		}
+		// The overlay is the pod's own: a write lands in its upper, not in the
+		// cached image every pod mounts.
+		if err := os.WriteFile(filepath.Join(target, "code/hello.txt"), []byte("changed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		for _, bad := range []string{store.URL + "/a.sqfs?sig=forged", store.URL + "/build.tar?sig=ok"} {
+			if _, err := c.FetchMount(bad, "bad", mount.Opts{}); err == nil {
+				t.Fatalf("pod %d: mounted %s", i, bad)
+			}
+			if mounted, _ := c.IsMounted("bad"); mounted {
+				t.Fatalf("pod %d: a refused fetch left a mount", i)
+			}
+		}
+		if _, err := a.NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{VolumeId: publish.VolumeId, TargetPath: target}); err != nil {
+			t.Fatal(err)
+		}
+		if left := mountsUnder(t, target); len(left) > 0 {
+			t.Fatalf("pod %d: mounts left after unpublish: %v", i, left)
+		}
+	}
+	if n := downloads.Load(); n != 2 { // the image once, and the tar once
+		t.Fatalf("downloaded %d times, want the image once and the tar once", n)
+	}
+
+	// An agent without a cache has no fetch-mount, so the sidecar downloads.
+	plain, err := New("test", "node", t.TempDir(), []string{"ns"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainSrv := httptest.NewServer(plain.Handler())
+	defer plainSrv.Close()
+	target := filepath.Join(t.TempDir(), "workspace")
+	token := rand.Text()
+	if _, err := plain.NodePublishVolume(ctx, publishRequest(target, "ns", token)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mountagent.NewClient(plainSrv.URL, token).FetchMount(store.URL+"/a.sqfs?sig=ok", "code", mount.Opts{}); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("fetch-mount without a cache: %v, want 404", err)
+	}
+	if _, err := plain.NodeUnpublishVolume(ctx, &csi.NodeUnpublishVolumeRequest{VolumeId: "csi-test", TargetPath: target}); err != nil {
+		t.Fatal(err)
 	}
 }
