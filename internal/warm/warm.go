@@ -60,7 +60,7 @@ const (
 // straight out of the image that publishes it — no vendoring, no download, and
 // the version is pinned the way every other image is.
 type Agent struct {
-	Image string // image publishing the binary, e.g. ghcr.io/open-runtimes/sandbox:0.1.0
+	Image string // image publishing the binary, e.g. ghcr.io/open-runtimes/sandbox:0.2.0
 	// Source is the binary's path inside that image, Dest where it lands in the
 	// workspace. Dest sits at the workspace root so the copy needs no mkdir, and
 	// therefore no shell in the publishing image.
